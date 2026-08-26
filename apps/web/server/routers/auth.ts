@@ -38,6 +38,7 @@ import {
 } from "@/lib/auth-input-policy";
 import { ACQUISITION_VALUE_MAX_LENGTH } from "@/lib/acquisition";
 import { recordRegistration } from "@/lib/funnel-events-server";
+import { ONBOARDING_JOURNEY_EVIDENCE_VERSION } from "@/lib/onboarding/journey-evidence";
 import { regionDefaults } from "@/lib/locale/format";
 import {
   CLINIC_REGION_CODES,
@@ -291,22 +292,9 @@ export const authRouter = createRouter({
           "registration",
           registeredAt,
         ),
+        journeyEvidenceVersion: ONBOARDING_JOURNEY_EVIDENCE_VERSION,
+        journeyRevision: 0,
       };
-      if (registrationProfile) {
-        Object.assign(onboardingState, {
-          onboardingIntent: onboardingIntentForGoal(
-            registrationProfile.firstGoal,
-          ),
-          onboardingIntentSelectedAt: registeredAt,
-          clinicModel: registrationProfile.clinicModel,
-          clinicModelSelectedAt: registeredAt,
-          firstGoal: registrationProfile.firstGoal,
-          firstGoalSelectedAt: registeredAt,
-          journeyStepId: "basics",
-          journeyLastProgressAt: registeredAt,
-          journeyDismissed: false,
-        });
-      }
       const practiceSettings: Record<string, unknown> = { onboardingState };
       if (input.acquisition) {
         practiceSettings.acquisition = {
@@ -348,6 +336,27 @@ export const authRouter = createRouter({
             throw new TRPCError({
               code: "INTERNAL_SERVER_ERROR",
               message: "Account setup failed.",
+            });
+          }
+
+          // The database-created practice time is the canonical lower bound
+          // for prospective journey evidence. A profile-less signup receives
+          // only the version/revision contract; it must not fabricate intent.
+          if (registrationProfile) {
+            const practiceCreatedAt = createdPractice.createdAt.toISOString();
+            Object.assign(onboardingState, {
+              onboardingIntent: onboardingIntentForGoal(
+                registrationProfile.firstGoal,
+              ),
+              onboardingIntentSelectedAt: practiceCreatedAt,
+              journeyIntentCompletedAt: practiceCreatedAt,
+              clinicModel: registrationProfile.clinicModel,
+              clinicModelSelectedAt: practiceCreatedAt,
+              firstGoal: registrationProfile.firstGoal,
+              firstGoalSelectedAt: practiceCreatedAt,
+              journeyStepId: "basics",
+              journeyLastProgressAt: practiceCreatedAt,
+              journeyDismissed: false,
             });
           }
 

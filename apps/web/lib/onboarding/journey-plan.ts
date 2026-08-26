@@ -1,4 +1,12 @@
-export type OnboardingJourneyStepId = "intent" | "basics" | "data" | "allSet";
+export const ONBOARDING_JOURNEY_STEP_IDS = [
+  "intent",
+  "basics",
+  "data",
+  "allSet",
+] as const;
+
+export type OnboardingJourneyStepId =
+  (typeof ONBOARDING_JOURNEY_STEP_IDS)[number];
 
 export interface OnboardingJourneyStep {
   id: OnboardingJourneyStepId;
@@ -24,6 +32,10 @@ const retiredStepIds = new Set([
   "phone",
   "billing",
 ]);
+
+export function isRetiredOnboardingJourneyStepId(stepId: string): boolean {
+  return retiredStepIds.has(stepId);
+}
 
 /**
  * Preserve progress from the former nine-step journey. A clinic paused on a

@@ -93,6 +93,7 @@ vi.mock("@/lib/audit", () => ({
 }));
 
 const { authRouter } = await import("../routers/auth");
+const PRACTICE_CREATED_AT = new Date("2026-08-25T12:00:00.000Z");
 
 function sqlIncludesValue(
   value: unknown,
@@ -191,7 +192,7 @@ function createRegistrationDb(opts?: { insertRows?: unknown[] }) {
   const insertRows = opts?.insertRows
     ? [...opts.insertRows]
     : [
-        { id: "practice-1" },
+        { id: "practice-1", createdAt: PRACTICE_CREATED_AT },
         { id: "location-1" },
         { id: "user-1", email: "owner@example.com", name: "Dr Owner" },
       ];
@@ -463,14 +464,17 @@ describe("auth router input validation", () => {
           jurisdictionCountry: "IE",
           jurisdictionSelectedAt: expect.any(String),
           jurisdictionSource: "registration",
+          journeyEvidenceVersion: 1,
+          journeyRevision: 0,
           onboardingIntent: "alongside",
-          onboardingIntentSelectedAt: expect.any(String),
+          onboardingIntentSelectedAt: PRACTICE_CREATED_AT.toISOString(),
+          journeyIntentCompletedAt: PRACTICE_CREATED_AT.toISOString(),
           clinicModel: "mobile",
-          clinicModelSelectedAt: expect.any(String),
+          clinicModelSelectedAt: PRACTICE_CREATED_AT.toISOString(),
           firstGoal: "run_visit",
-          firstGoalSelectedAt: expect.any(String),
+          firstGoalSelectedAt: PRACTICE_CREATED_AT.toISOString(),
           journeyStepId: "basics",
-          journeyLastProgressAt: expect.any(String),
+          journeyLastProgressAt: PRACTICE_CREATED_AT.toISOString(),
           journeyDismissed: false,
         },
         acquisition: {
@@ -604,6 +608,8 @@ describe("auth router input validation", () => {
           jurisdictionCountry: "US",
           jurisdictionSelectedAt: expect.any(String),
           jurisdictionSource: "registration",
+          journeyEvidenceVersion: 1,
+          journeyRevision: 0,
         },
         onboardingCompletedAt: null,
         demoData: {},
@@ -801,6 +807,8 @@ describe("auth router input validation", () => {
           jurisdictionCountry: "US",
           jurisdictionSelectedAt: expect.any(String),
           jurisdictionSource: "registration",
+          journeyEvidenceVersion: 1,
+          journeyRevision: 0,
         },
         onboardingCompletedAt: null,
         demoData: {},

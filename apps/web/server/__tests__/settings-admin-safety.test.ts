@@ -64,6 +64,8 @@ const APPOINTMENT_ID = "00000000-0000-0000-0000-000000000005";
 const WAITLIST_ID = "00000000-0000-0000-0000-000000000006";
 const SCHEDULE_ID = "00000000-0000-0000-0000-000000000007";
 const LOCATION_ID = "00000000-0000-0000-0000-000000000008";
+const PRACTICE_CREATED_AT = new Date("2026-08-25T12:00:00.000Z");
+const DB_NOW = new Date("2026-08-25T13:00:00.000Z");
 
 function callerWithDb(db: Record<string, unknown>) {
   const session = {
@@ -234,13 +236,17 @@ describe("settings admin stale target safety", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
-      callerWithDb(db).setOnboardingIntent({ intent: "unknown" as never }),
+      callerWithDb(db).setOnboardingIntent({
+        intent: "unknown" as never,
+        expectedRevision: 0,
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).setOnboardingIntent({
         intent: "alongside",
         clinicModel: "unknown" as never,
+        expectedRevision: 0,
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -248,6 +254,7 @@ describe("settings admin stale target safety", () => {
       callerWithDb(db).setOnboardingIntent({
         intent: "alongside",
         firstGoal: "unknown" as never,
+        expectedRevision: 0,
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
@@ -257,7 +264,81 @@ describe("settings admin stale target safety", () => {
 
   it("persists a validated onboarding pathway without a schema write", async () => {
     const { db, updateSet } = createDb({
-      updatedRows: [{ id: PRACTICE_ID }],
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: {
+            onboardingState: {
+              journeyEvidenceVersion: 1,
+              journeyRevision: 0,
+              journeyStepId: "intent",
+            },
+          },
+        },
+      ],
+      updatedRows: [
+        {
+          settings: {
+            onboardingState: {
+              journeyEvidenceVersion: 1,
+              journeyRevision: 1,
+              journeyStepId: "intent",
+              journeyDismissed: false,
+              onboardingIntent: "alongside",
+              onboardingIntentSelectedAt: DB_NOW.toISOString(),
+              journeyIntentCompletedAt: DB_NOW.toISOString(),
+              clinicModel: "mobile",
+              clinicModelSelectedAt: DB_NOW.toISOString(),
+              firstGoal: "run_visit",
+              firstGoalSelectedAt: DB_NOW.toISOString(),
+              journeyLastProgressAt: DB_NOW.toISOString(),
+            },
+          },
+        },
+      ],
+    });
+
+    const result = await callerWithDb(db).setOnboardingIntent({
+      intent: "alongside",
+      clinicModel: "mobile",
+      firstGoal: "run_visit",
+      expectedRevision: 0,
+    });
+
+    expect(result).toMatchObject({
+      onboardingIntent: "alongside",
+      clinicModel: "mobile",
+      firstGoal: "run_visit",
+      journeyStepId: "intent",
+      journeyRevision: 1,
+      journeyEvidenceMode: "prospective",
+    });
+    expect(updateSet).toHaveBeenCalledTimes(1);
+    expect(SETTINGS_SOURCE).toContain("lockActiveOnboardingPractice(");
+    expect(SETTINGS_SOURCE).toContain("assertExpectedOnboardingRevision(");
+    expect(SETTINGS_SOURCE).toContain("onboardingIntentSelectedAt: selectedAt");
+    expect(SETTINGS_SOURCE).toContain(
+      "journeyIntentCompletedAt: intentCompletedAt",
+    );
+    expect(SETTINGS_SOURCE).toContain("journeyRevision: revision + 1");
+  });
+
+  it("requires an exact revision before any journey writer reaches update", async () => {
+    const { db, updateSet } = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: {
+            onboardingState: {
+              journeyEvidenceVersion: 1,
+              journeyRevision: 2,
+              journeyStepId: "intent",
+            },
+          },
+        },
+      ],
     });
 
     await expect(
@@ -265,38 +346,67 @@ describe("settings admin stale target safety", () => {
         intent: "alongside",
         clinicModel: "mobile",
         firstGoal: "run_visit",
+        expectedRevision: 0,
       }),
-    ).resolves.toEqual({ ok: true });
-
-    expect(updateSet).toHaveBeenCalledTimes(1);
-    expect(SETTINGS_SOURCE).toContain(
-      "onboardingProfileStatePatch({ ...input, now })",
-    );
-    expect(SETTINGS_SOURCE).toContain(
-      "'onboardingIntent', ${input.intent}::text",
-    );
-    expect(SETTINGS_SOURCE).toContain("${input.clinicModel ?? null}::text");
-    expect(SETTINGS_SOURCE).toContain("${input.firstGoal ?? null}::text");
-    expect(SETTINGS_SOURCE).toContain("${input.now}::text");
-    expect(SETTINGS_SOURCE).toContain("onboardingIntentSelectedAt");
-    expect(SETTINGS_SOURCE).toContain("clinicModelSelectedAt");
-    expect(SETTINGS_SOURCE).toContain("firstGoalSelectedAt");
-    expect(SETTINGS_SOURCE).toContain("journeyLastProgressAt");
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
-  it("keeps setup start and completion cohort timestamps first-write-wins", () => {
-    expect(SETTINGS_SOURCE).toContain("function onboardingProfileStatePatch");
-    expect(SETTINGS_SOURCE).toContain(
-      "nullif(${practices.settings}->'onboardingState'->>'onboardingIntentSelectedAt', '')",
-    );
-    expect(SETTINGS_SOURCE).toContain("function onboardingCompletionPatch");
-    expect(SETTINGS_SOURCE).toContain("${now}::text");
-    expect(SETTINGS_SOURCE).toContain(
-      "nullif(${practices.settings}->>'onboardingCompletedAt', '')",
-    );
-    expect(SETTINGS_SOURCE).toContain(
-      "settings: onboardingCompletionPatch(completedAt)",
-    );
+  it("never overflows the bounded revision but keeps exact completion replay idempotent", async () => {
+    const terminalSettings = {
+      onboardingCompletedAt: DB_NOW.toISOString(),
+      onboardingState: {
+        journeyEvidenceVersion: 1,
+        journeyRevision: 2_147_483_646,
+        journeyStepId: "allSet",
+      },
+    };
+    const blocked = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: {
+            onboardingState: terminalSettings.onboardingState,
+          },
+        },
+      ],
+    });
+    await expect(
+      callerWithDb(blocked.db).setOnboardingIntent({
+        intent: "alongside",
+        expectedRevision: 2_147_483_646,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(blocked.updateSet).not.toHaveBeenCalled();
+
+    const replay = createDb({
+      selectRows: [
+        {
+          createdAt: PRACTICE_CREATED_AT,
+          dbNow: DB_NOW,
+          settings: terminalSettings,
+        },
+      ],
+    });
+    await expect(
+      callerWithDb(replay.db).completeOnboarding({
+        expectedRevision: 2_147_483_646,
+      }),
+    ).resolves.toMatchObject({
+      journeyRevision: 2_147_483_646,
+      onboardingCompletedAt: DB_NOW.toISOString(),
+    });
+    expect(replay.updateSet).not.toHaveBeenCalled();
+  });
+
+  it("uses first-write stage timestamps and one database clock value", () => {
+    expect(SETTINGS_SOURCE).toContain("dbNow: sql<string>`clock_timestamp()`");
+    expect(SETTINGS_SOURCE).toContain("databaseTimestamp(practice.dbNow)");
+    expect(SETTINGS_SOURCE).toContain("state.journeyIntentCompletedAt ?? now");
+    expect(SETTINGS_SOURCE).toContain("!state[stageField]");
+    expect(SETTINGS_SOURCE).toContain("journeyAllSetCompletedAt: now");
+    expect(SETTINGS_SOURCE).toContain("orderedProspectiveJourneyEvidence(");
   });
 
   it("lets the clinic owner become a veterinarian provider on the primary location", async () => {
@@ -415,11 +525,13 @@ describe("settings admin stale target safety", () => {
     // completeOnboarding writes with a guarded atomic update: the
     // active-practice predicate excludes missing/deleted rows, so zero
     // updated rows surfaces as NOT_FOUND and no fallback state is created.
-    await expect(callerWithDb(db).completeOnboarding()).rejects.toMatchObject({
+    await expect(
+      callerWithDb(db).completeOnboarding({ expectedRevision: 0 }),
+    ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
     });
-    expect(updateSet).toHaveBeenCalledTimes(1);
+    expect(updateSet).not.toHaveBeenCalled();
     updateSet.mockClear();
 
     await expect(

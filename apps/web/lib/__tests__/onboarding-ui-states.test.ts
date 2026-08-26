@@ -61,9 +61,7 @@ describe("onboarding UI states", () => {
 
   it("keeps onboarding mutations admin-only at the settings router", () => {
     expect(settingsRouter).toContain("onboardingStatus: adminProcedure.query");
-    expect(settingsRouter).toContain(
-      "completeOnboarding: adminProcedure.mutation",
-    );
+    expect(settingsRouter).toContain("completeOnboarding: adminProcedure");
     expect(settingsRouter).toContain("clearDemoData: adminProcedure.mutation");
     expect(settingsRouter).toContain("setOnboardingIntent: adminProcedure");
     expect(settingsRouter).toContain("setJourneyProgress: adminProcedure");
@@ -92,7 +90,8 @@ describe("onboarding UI states", () => {
     expect(choosePath).toContain("firstGoal: state.firstGoal");
     expect(choosePath).toContain("Build my first day");
     expect(clinicIntentBuilder).toContain("Your first OpenVPM day");
-    expect(choosePath).toContain("journeyDismissed: false");
+    expect(choosePath).toContain("expectedRevision: current.journeyRevision");
+    expect(choosePath).toContain("...authoritative");
     expect(settingsRouter).toContain("onboardingIntentSelectedAt");
     expect(settingsRouter).toContain("clinicModelSelectedAt");
     expect(settingsRouter).toContain("firstGoalSelectedAt");

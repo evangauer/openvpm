@@ -266,25 +266,57 @@ function JourneyShell({
   // Do not advance or close until the server accepts the cursor. A local-only
   // optimistic cursor can strand a clinic at an earlier step after a reload.
   const persistCursor = useCallback(
-    async (stepId: string, dismissed?: boolean) => {
-      await setJourneyProgress.mutateAsync({ stepId, dismissed });
+    async (stepId: OnboardingJourneyStep["id"], dismissed?: boolean) => {
+      const current = utils.settings.getOnboardingState.getData();
+      if (!current) {
+        await utils.settings.getOnboardingState.fetch();
+        throw new Error("Setup state refreshed. Try again.");
+      }
+      const authoritative = await setJourneyProgress.mutateAsync({
+        stepId,
+        dismissed,
+        expectedRevision: current.journeyRevision,
+      });
       utils.settings.getOnboardingState.setData(undefined, (prev) =>
-        prev
-          ? {
-              ...prev,
-              journeyStepId: stepId,
-              ...(dismissed === undefined
-                ? {}
-                : { journeyDismissed: dismissed }),
-            }
-          : prev,
+        prev ? { ...prev, ...authoritative } : prev,
       );
     },
     [utils, setJourneyProgress],
   );
 
+  const refetchAuthoritativeJourney = useCallback(async () => {
+    try {
+      const authoritative = await utils.settings.getOnboardingState.fetch(
+        undefined,
+        {
+          staleTime: 0,
+        },
+      );
+      setIndex(
+        onboardingJourneyResumeIndex({
+          onboardingIntent: authoritative.onboardingIntent,
+          journeyStepId: authoritative.journeyStepId,
+          migrationHasCommittedChanges:
+            authoritative.migrationHasCommittedChanges === true,
+        }),
+      );
+    } catch {
+      await utils.settings.getOnboardingState.invalidate();
+    }
+  }, [setIndex, utils]);
+
   const finish = useCallback(async () => {
-    await completeOnboarding.mutateAsync();
+    const current = utils.settings.getOnboardingState.getData();
+    if (!current) {
+      await utils.settings.getOnboardingState.fetch();
+      throw new Error("Setup state refreshed. Try again.");
+    }
+    const authoritative = await completeOnboarding.mutateAsync({
+      expectedRevision: current.journeyRevision,
+    });
+    utils.settings.getOnboardingState.setData(undefined, (previous) =>
+      previous ? { ...previous, ...authoritative } : previous,
+    );
     if (!state.keepSampleData) {
       try {
         await clearDemoData.mutateAsync();
@@ -348,6 +380,7 @@ function JourneyShell({
         setIndex(next);
       }
     } catch (err) {
+      await refetchAuthoritativeJourney();
       toast.error(
         err instanceof Error ? err.message : "Something went wrong. Try again.",
       );
@@ -365,6 +398,7 @@ function JourneyShell({
     step.id,
     steps,
     persistCursor,
+    refetchAuthoritativeJourney,
     setIndex,
   ]);
 
@@ -380,6 +414,7 @@ function JourneyShell({
       setContinueDisabled(false);
       setIndex(prev);
     } catch (err) {
+      await refetchAuthoritativeJourney();
       toast.error(
         err instanceof Error ? err.message : "Progress could not be saved.",
       );
@@ -394,6 +429,7 @@ function JourneyShell({
     steps,
     persistCursor,
     setIndex,
+    refetchAuthoritativeJourney,
   ]);
 
   const handleFinishLater = useCallback(async () => {
@@ -411,6 +447,7 @@ function JourneyShell({
         );
       }
     } catch (err) {
+      await refetchAuthoritativeJourney();
       toast.error(
         err instanceof Error ? err.message : "Progress could not be saved.",
       );
@@ -424,6 +461,7 @@ function JourneyShell({
     state.hasPartialImport,
     persistCursor,
     setIndex,
+    refetchAuthoritativeJourney,
   ]);
 
   return (
