@@ -165,9 +165,7 @@ describe("dashboard onboarding UI states", () => {
     expect(journeyProviderSource).toContain(
       "trpc.settings.clearDemoData.useMutation",
     );
-    expect(settingsRouter).toContain(
-      "completeOnboarding: adminProcedure.mutation",
-    );
+    expect(settingsRouter).toContain("completeOnboarding: adminProcedure");
     expect(settingsRouter).toContain("clearDemoData: adminProcedure.mutation");
     expect(settingsRouter).toContain("setOnboardingIntent: adminProcedure");
     expect(journeyPlanSource).toContain(
@@ -270,7 +268,11 @@ describe("dashboard onboarding UI states", () => {
       "await persistCursor(step.id, true)",
     );
     expect(journeyProviderSource).toContain(
-      "await setJourneyProgress.mutateAsync({ stepId, dismissed })",
+      "expectedRevision: current.journeyRevision",
+    );
+    expect(journeyProviderSource).toContain("...authoritative");
+    expect(journeyProviderSource).toContain(
+      "await utils.settings.getOnboardingState.fetch",
     );
     expect(journeyProviderSource).toContain(
       "await persistCursor(steps[next]!.id, false)",

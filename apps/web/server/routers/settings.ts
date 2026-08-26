@@ -87,6 +87,22 @@ import {
   type ClinicModel,
   type FirstGoal,
 } from "@/lib/onboarding/clinic-profile";
+import {
+  ONBOARDING_JOURNEY_STEP_IDS,
+  isRetiredOnboardingJourneyStepId,
+  type OnboardingJourneyStepId,
+} from "@/lib/onboarding/journey-plan";
+import {
+  MAX_ONBOARDING_JOURNEY_REVISION,
+  boundedJourneyTimestamp,
+  durableOnboardingIntentEvidence,
+  journeyTransitionStage,
+  onboardingJourneyEvidenceMode,
+  onboardingJourneyRevision,
+  orderedProspectiveJourneyEvidence,
+  prospectivePredecessorIsValid,
+  type OnboardingJourneyEvidenceMode,
+} from "@/lib/onboarding/journey-evidence";
 import { isValidMigrationSource } from "@/lib/import/sources";
 import { parseBookingPageConfig } from "@/lib/booking/page-config";
 import { takeAppointmentSchedulingLock } from "@/lib/scheduling/location";
@@ -258,11 +274,12 @@ const tourStepIdInput = z
   .max(128, "Tour step must be at most 128 characters")
   .nullish();
 
-const journeyStepIdInput = z
-  .string()
-  .trim()
-  .max(64, "Journey step must be at most 64 characters")
-  .nullish();
+const journeyStepIdInput = z.enum(ONBOARDING_JOURNEY_STEP_IDS);
+const journeyRevisionInput = z
+  .number()
+  .int()
+  .nonnegative()
+  .max(MAX_ONBOARDING_JOURNEY_REVISION);
 const onboardingIntentInput = z.enum(ONBOARDING_INTENTS);
 const clinicModelInput = z.enum(CLINIC_MODELS);
 const firstGoalInput = z.enum(FIRST_GOALS);
@@ -307,72 +324,140 @@ function settingsAndOnboardingStateMergePatch(
   )`;
 }
 
-/**
- * Selects (and may later change) the clinic's setup path without rewriting the
- * first time setup actually began. That timestamp is cohort evidence, not a
- * last-updated field.
- */
-function onboardingProfileStatePatch(input: {
-  intent: OnboardingIntent;
-  clinicModel?: ClinicModel;
-  firstGoal?: FirstGoal;
-  now: string;
-}) {
-  return sql`jsonb_set(
-    coalesce(${practices.settings}, '{}'::jsonb),
-    '{onboardingState}',
-      coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) ||
-      jsonb_build_object(
-        'onboardingIntent', ${input.intent}::text,
-        'onboardingIntentSelectedAt', coalesce(
-          nullif(${practices.settings}->'onboardingState'->>'onboardingIntentSelectedAt', ''),
-          ${input.now}::text
-        ),
-        'clinicModel', coalesce(
-          ${input.clinicModel ?? null}::text,
-          nullif(${practices.settings}->'onboardingState'->>'clinicModel', '')
-        ),
-        'clinicModelSelectedAt', case
-          when ${input.clinicModel ?? null}::text is null then
-            nullif(${practices.settings}->'onboardingState'->>'clinicModelSelectedAt', '')
-          else coalesce(
-            nullif(${practices.settings}->'onboardingState'->>'clinicModelSelectedAt', ''),
-            ${input.now}::text
-          )
-        end,
-        'firstGoal', coalesce(
-          ${input.firstGoal ?? null}::text,
-          nullif(${practices.settings}->'onboardingState'->>'firstGoal', '')
-        ),
-        'firstGoalSelectedAt', case
-          when ${input.firstGoal ?? null}::text is null then
-            nullif(${practices.settings}->'onboardingState'->>'firstGoalSelectedAt', '')
-          else coalesce(
-            nullif(${practices.settings}->'onboardingState'->>'firstGoalSelectedAt', ''),
-            ${input.now}::text
-          )
-        end,
-        'journeyLastProgressAt', ${input.now}::text,
-        'journeyDismissed', false
-      )
-  )`;
+function onboardingJourneyRevisionSql() {
+  return sql<number>`case
+    when jsonb_typeof(${practices.settings}->'onboardingState'->'journeyRevision') = 'number'
+      and (${practices.settings}->'onboardingState'->>'journeyRevision') ~ '^[0-9]+$'
+      and (${practices.settings}->'onboardingState'->>'journeyRevision')::numeric <= 2147483646
+      then (${practices.settings}->'onboardingState'->>'journeyRevision')::integer
+    when ${practices.settings}->'onboardingState'->'journeyRevision' is null
+      then 0
+    else -1
+  end`;
 }
 
-/** Keep setup completion first-write-wins while recording fresh activity. */
-function onboardingCompletionPatch(now: string) {
-  return sql`jsonb_set(
-    jsonb_set(
-      coalesce(${practices.settings}, '{}'::jsonb),
-      '{onboardingCompletedAt}',
-      to_jsonb(coalesce(
-        nullif(${practices.settings}->>'onboardingCompletedAt', ''),
-        ${now}::text
-      )::text)
-    ),
-    '{onboardingState}',
-    coalesce(${practices.settings}->'onboardingState', '{}'::jsonb) ||
-      jsonb_build_object('journeyLastProgressAt', ${now}::text)
-  )`;
+function onboardingJourneyConflict(
+  message = "Setup changed in another session. Refresh and try again.",
+) {
+  return new TRPCError({ code: "CONFLICT", message });
+}
+
+function onboardingJourneyPrecondition(message: string) {
+  return new TRPCError({ code: "PRECONDITION_FAILED", message });
+}
+
+function assertOnboardingRevisionCanAdvance(revision: number): void {
+  if (revision >= MAX_ONBOARDING_JOURNEY_REVISION) {
+    throw onboardingJourneyConflict(
+      "Setup revision limit reached. Refresh and contact support before continuing.",
+    );
+  }
+}
+
+interface LockedOnboardingPractice {
+  settings: PracticeSettings;
+  createdAt: Date;
+  dbNow: Date | string;
+}
+
+function databaseTimestamp(value: Date | string): string {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "The database clock returned an invalid timestamp.",
+    });
+  }
+  return parsed.toISOString();
+}
+
+async function lockActiveOnboardingPractice(
+  database: Database,
+  practiceId: string,
+): Promise<LockedOnboardingPractice> {
+  const [practice] = await database
+    .select({
+      settings: practices.settings,
+      createdAt: practices.createdAt,
+      dbNow: sql<string>`clock_timestamp()`,
+    })
+    .from(practices)
+    .where(activePracticeWhere(practiceId))
+    .for("update");
+  if (!practice) throw practiceNotFound();
+  return {
+    settings: (practice.settings ?? {}) as PracticeSettings,
+    createdAt: practice.createdAt,
+    dbNow: practice.dbNow,
+  };
+}
+
+function assertExpectedOnboardingRevision(
+  state: PracticeSettings["onboardingState"],
+  expectedRevision: number,
+): { revision: number; mode: OnboardingJourneyEvidenceMode } {
+  const revision = onboardingJourneyRevision(state);
+  const mode = onboardingJourneyEvidenceMode(state);
+  if (!revision.valid || mode === "invalid") {
+    throw onboardingJourneyConflict(
+      "Setup evidence is invalid. Refresh and contact support before continuing.",
+    );
+  }
+  if (revision.revision !== expectedRevision) {
+    throw onboardingJourneyConflict();
+  }
+  return { revision: revision.revision, mode };
+}
+
+function onboardingWriterResult(settings: PracticeSettings) {
+  const state = settings.onboardingState ?? {};
+  const revision = onboardingJourneyRevision(state);
+  return {
+    onboardingIntent: state.onboardingIntent ?? null,
+    onboardingIntentSelectedAt: state.onboardingIntentSelectedAt ?? null,
+    clinicModel: state.clinicModel ?? null,
+    clinicModelSelectedAt: state.clinicModelSelectedAt ?? null,
+    firstGoal: state.firstGoal ?? null,
+    firstGoalSelectedAt: state.firstGoalSelectedAt ?? null,
+    journeyStepId: state.journeyStepId ?? null,
+    journeyLastProgressAt: state.journeyLastProgressAt ?? null,
+    journeyDismissed: state.journeyDismissed === true,
+    journeyIntentCompletedAt: state.journeyIntentCompletedAt ?? null,
+    journeyBasicsCompletedAt: state.journeyBasicsCompletedAt ?? null,
+    journeyDataCompletedAt: state.journeyDataCompletedAt ?? null,
+    journeyAllSetCompletedAt: state.journeyAllSetCompletedAt ?? null,
+    journeyEvidenceVersion: state.journeyEvidenceVersion ?? null,
+    journeyRevision: revision.valid ? revision.revision : 0,
+    journeyEvidenceMode: onboardingJourneyEvidenceMode(state),
+    onboardingCompletedAt: settings.onboardingCompletedAt ?? null,
+  };
+}
+
+async function updateOnboardingWriterState(input: {
+  database: Database;
+  practiceId: string;
+  expectedRevision: number;
+  statePatch: Record<string, unknown>;
+  settingsPatch?: Record<string, unknown>;
+}): Promise<ReturnType<typeof onboardingWriterResult>> {
+  const settingsExpression = input.settingsPatch
+    ? settingsAndOnboardingStateMergePatch(
+        input.settingsPatch,
+        input.statePatch,
+      )
+    : onboardingStateMergePatch(input.statePatch);
+  const [updated] = await input.database
+    .update(practices)
+    .set({ settings: settingsExpression })
+    .where(
+      and(
+        activePracticeWhere(input.practiceId),
+        sql`${onboardingJourneyRevisionSql()} = ${input.expectedRevision}`,
+      ),
+    )
+    .returning({ settings: practices.settings });
+  if (!updated) throw onboardingJourneyConflict();
+  return onboardingWriterResult((updated.settings ?? {}) as PracticeSettings);
 }
 
 function staffAdminRosterLockKey(practiceId: string) {
@@ -398,6 +483,40 @@ function activePracticePredicate(practiceId: string) {
 
 function practiceNotFound(): TRPCError {
   return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
+}
+
+async function resolveStoredOnboardingJourneyStep(input: {
+  database: Database;
+  practiceId: string;
+  state: NonNullable<PracticeSettings["onboardingState"]>;
+  mode: OnboardingJourneyEvidenceMode;
+}): Promise<OnboardingJourneyStepId | null> {
+  const stored = input.state.journeyStepId;
+  if (!input.state.onboardingIntent) return null;
+  if (!stored) return null;
+  if (ONBOARDING_JOURNEY_STEP_IDS.includes(stored as OnboardingJourneyStepId)) {
+    return stored as OnboardingJourneyStepId;
+  }
+  if (input.mode !== "legacy" || !isRetiredOnboardingJourneyStepId(stored)) {
+    throw onboardingJourneyConflict(
+      "Setup progress is invalid. Refresh and restart guided setup.",
+    );
+  }
+  if (input.state.migrationHasCommittedChanges === true) return "allSet";
+
+  const [committedMigration] = await input.database
+    .select({ id: migrationRuns.id })
+    .from(migrationRuns)
+    .where(
+      and(
+        eq(migrationRuns.practiceId, input.practiceId),
+        eq(migrationRuns.status, "committed"),
+        isNull(migrationRuns.deletedAt),
+        sql`${migrationRuns.importedCount} + ${migrationRuns.reconciledCount} > 0`,
+      ),
+    )
+    .limit(1);
+  return committedMigration ? "allSet" : "data";
 }
 
 async function assertActivePractice(ctx: {
@@ -540,12 +659,20 @@ interface PracticeSettings {
   brandColor?: string;
   /** In-app value tour + finish-setup card progress. */
   onboardingState?: {
+    /** Explicit only for journeys instrumented prospectively at first intent. */
+    journeyEvidenceVersion?: number;
+    /** Compare-and-swap revision for every guided-onboarding writer. */
+    journeyRevision?: number;
     tourStatus?: "not_started" | "in_progress" | "completed" | "skipped";
     lastStepId?: string | null;
     setupDismissed?: boolean;
     /** Adoption pathway selected on the first guided-setup step. */
     onboardingIntent?: OnboardingIntent;
     onboardingIntentSelectedAt?: string;
+    journeyIntentCompletedAt?: string;
+    journeyBasicsCompletedAt?: string;
+    journeyDataCompletedAt?: string;
+    journeyAllSetCompletedAt?: string;
     /** Coarse, non-clinical personalization selected during setup. */
     clinicModel?: ClinicModel;
     clinicModelSelectedAt?: string;
@@ -1618,21 +1745,74 @@ export const settingsRouter = createRouter({
     };
   }),
 
-  /** Mark onboarding complete. */
-  completeOnboarding: adminProcedure.mutation(async ({ ctx }) => {
-    const completedAt = new Date().toISOString();
-    const [updated] = await ctx.db
-      .update(practices)
-      .set({
-        settings: onboardingCompletionPatch(completedAt),
-      })
-      .where(activePracticeWhere(ctx.practiceId))
-      .returning({ id: practices.id });
-    if (!updated) {
-      throw practiceNotFound();
-    }
-    return { ok: true };
-  }),
+  /** Complete only the exact, revision-bound all-set journey. */
+  completeOnboarding: adminProcedure
+    .input(z.object({ expectedRevision: journeyRevisionInput }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const practice = await lockActiveOnboardingPractice(
+        ctx.db,
+        ctx.practiceId,
+      );
+      const state = practice.settings.onboardingState ?? {};
+      const { revision, mode } = assertExpectedOnboardingRevision(
+        state,
+        input.expectedRevision,
+      );
+
+      // Repeating completion at the current authoritative revision is the one
+      // idempotent writer replay. It neither rewrites evidence nor increments.
+      if (practice.settings.onboardingCompletedAt) {
+        return onboardingWriterResult(practice.settings);
+      }
+      assertOnboardingRevisionCanAdvance(revision);
+
+      const resolvedStep = await resolveStoredOnboardingJourneyStep({
+        database: ctx.db,
+        practiceId: ctx.practiceId,
+        state,
+        mode,
+      });
+      if (resolvedStep !== "allSet") {
+        throw onboardingJourneyPrecondition(
+          "Finish each guided setup step before completing setup.",
+        );
+      }
+
+      const evidence = orderedProspectiveJourneyEvidence(
+        state,
+        practice.createdAt,
+        practice.dbNow,
+      );
+      if (
+        mode === "prospective" &&
+        !prospectivePredecessorIsValid({
+          completedStage: "allSet",
+          evidence,
+          existingStageTimestamp: state.journeyAllSetCompletedAt,
+        })
+      ) {
+        throw onboardingJourneyPrecondition(
+          "Guided setup evidence is incomplete or out of order.",
+        );
+      }
+
+      const now = databaseTimestamp(practice.dbNow);
+      return updateOnboardingWriterState({
+        database: ctx.db,
+        practiceId: ctx.practiceId,
+        expectedRevision: revision,
+        settingsPatch: { onboardingCompletedAt: now },
+        statePatch: {
+          journeyStepId: "allSet",
+          journeyLastProgressAt: now,
+          journeyDismissed: false,
+          journeyRevision: revision + 1,
+          ...(state.journeyAllSetCompletedAt
+            ? {}
+            : { journeyAllSetCompletedAt: now }),
+        },
+      });
+    }),
 
   /** Read the in-app value-tour + finish-setup progress. */
   getOnboardingState: adminProcedure.query(async ({ ctx }) => {
@@ -1705,9 +1885,16 @@ export const settingsRouter = createRouter({
       clinicModelSelectedAt: null,
       firstGoal: null,
       firstGoalSelectedAt: null,
+      journeyEvidenceVersion: null,
+      journeyEvidenceMode: "legacy" as OnboardingJourneyEvidenceMode,
+      journeyRevision: 0,
       journeyStepId: null,
       journeyLastProgressAt: null,
       journeyDismissed: false,
+      journeyIntentCompletedAt: null,
+      journeyBasicsCompletedAt: null,
+      journeyDataCompletedAt: null,
+      journeyAllSetCompletedAt: null,
       migrationHasCommittedChanges: false,
       migrationLastCommittedAt: null,
       migrationSource: null as string | null,
@@ -1719,6 +1906,8 @@ export const settingsRouter = createRouter({
     return {
       ...defaults,
       ...savedState,
+      journeyRevision: onboardingJourneyRevision(savedState).revision,
+      journeyEvidenceMode: onboardingJourneyEvidenceMode(savedState),
       // migration_runs is authoritative for reviewed imports. The settings
       // marker remains only as a fallback for compatibility-window commits
       // that predate the run ledger.
@@ -1761,25 +1950,80 @@ export const settingsRouter = createRouter({
   /** Persist the selected adoption path for tailored setup and funnel review. */
   setOnboardingIntent: adminProcedure
     .input(
-      z.object({
-        intent: onboardingIntentInput,
-        clinicModel: clinicModelInput.optional(),
-        firstGoal: firstGoalInput.optional(),
-      }),
+      z
+        .object({
+          intent: onboardingIntentInput,
+          clinicModel: clinicModelInput.optional(),
+          firstGoal: firstGoalInput.optional(),
+          expectedRevision: journeyRevisionInput,
+        })
+        .strict(),
     )
     .mutation(async ({ ctx, input }) => {
-      const now = new Date().toISOString();
-      const [updated] = await ctx.db
-        .update(practices)
-        .set({
-          settings: onboardingProfileStatePatch({ ...input, now }),
-        })
-        .where(activePracticeWhere(ctx.practiceId))
-        .returning({ id: practices.id });
-      if (!updated) {
-        throw practiceNotFound();
+      const practice = await lockActiveOnboardingPractice(
+        ctx.db,
+        ctx.practiceId,
+      );
+      const state = practice.settings.onboardingState ?? {};
+      const { revision, mode } = assertExpectedOnboardingRevision(
+        state,
+        input.expectedRevision,
+      );
+      if (practice.settings.onboardingCompletedAt) {
+        throw onboardingJourneyConflict(
+          "Completed setup is terminal. Refresh to view the authoritative state.",
+        );
       }
-      return { ok: true };
+      assertOnboardingRevisionCanAdvance(revision);
+
+      const now = databaseTimestamp(practice.dbNow);
+      const selectedAt = state.onboardingIntentSelectedAt ?? now;
+      const intentCompletedAt = state.journeyIntentCompletedAt ?? now;
+      if (
+        mode === "prospective" &&
+        (!boundedJourneyTimestamp(
+          selectedAt,
+          practice.createdAt,
+          practice.dbNow,
+        ) ||
+          !boundedJourneyTimestamp(
+            intentCompletedAt,
+            practice.createdAt,
+            practice.dbNow,
+          ) ||
+          Date.parse(intentCompletedAt) < Date.parse(selectedAt))
+      ) {
+        throw onboardingJourneyPrecondition(
+          "Guided setup intent evidence is invalid or out of order.",
+        );
+      }
+
+      return updateOnboardingWriterState({
+        database: ctx.db,
+        practiceId: ctx.practiceId,
+        expectedRevision: revision,
+        statePatch: {
+          onboardingIntent: input.intent,
+          onboardingIntentSelectedAt: selectedAt,
+          journeyIntentCompletedAt: intentCompletedAt,
+          journeyStepId: state.journeyStepId ?? "intent",
+          journeyLastProgressAt: now,
+          journeyDismissed: false,
+          journeyRevision: revision + 1,
+          ...(input.clinicModel
+            ? {
+                clinicModel: input.clinicModel,
+                clinicModelSelectedAt: state.clinicModelSelectedAt ?? now,
+              }
+            : {}),
+          ...(input.firstGoal
+            ? {
+                firstGoal: input.firstGoal,
+                firstGoalSelectedAt: state.firstGoalSelectedAt ?? now,
+              }
+            : {}),
+        },
+      });
     }),
 
   /**
@@ -1789,28 +2033,94 @@ export const settingsRouter = createRouter({
    */
   setJourneyProgress: adminProcedure
     .input(
-      z.object({
-        stepId: journeyStepIdInput,
-        dismissed: z.boolean().optional(),
-      }),
+      z
+        .object({
+          stepId: journeyStepIdInput,
+          dismissed: z.boolean().optional(),
+          expectedRevision: journeyRevisionInput,
+        })
+        .strict(),
     )
     .mutation(async ({ ctx, input }) => {
-      const patch: Record<string, unknown> = {
-        journeyLastProgressAt: new Date().toISOString(),
-      };
-      if (input.stepId != null) patch.journeyStepId = input.stepId;
-      if (input.dismissed !== undefined)
-        patch.journeyDismissed = input.dismissed;
-
-      const [updated] = await ctx.db
-        .update(practices)
-        .set({ settings: onboardingStateMergePatch(patch) })
-        .where(activePracticeWhere(ctx.practiceId))
-        .returning({ id: practices.id });
-      if (!updated) {
-        throw practiceNotFound();
+      const practice = await lockActiveOnboardingPractice(
+        ctx.db,
+        ctx.practiceId,
+      );
+      const state = practice.settings.onboardingState ?? {};
+      const { revision, mode } = assertExpectedOnboardingRevision(
+        state,
+        input.expectedRevision,
+      );
+      if (practice.settings.onboardingCompletedAt) {
+        throw onboardingJourneyConflict(
+          "Completed setup is terminal. Refresh to view the authoritative state.",
+        );
       }
-      return { ok: true };
+      assertOnboardingRevisionCanAdvance(revision);
+
+      const currentStepId = await resolveStoredOnboardingJourneyStep({
+        database: ctx.db,
+        practiceId: ctx.practiceId,
+        state,
+        mode,
+      });
+      const completedStage = journeyTransitionStage({
+        currentStepId,
+        targetStepId: input.stepId,
+        dismissed: input.dismissed,
+        durableIntent: durableOnboardingIntentEvidence(
+          state,
+          practice.createdAt,
+          practice.dbNow,
+        ),
+      });
+      if (completedStage === undefined) {
+        throw onboardingJourneyConflict(
+          "Setup progress changed or the requested step is not adjacent. Refresh and try again.",
+        );
+      }
+
+      const fieldByStage = {
+        intent: "journeyIntentCompletedAt",
+        basics: "journeyBasicsCompletedAt",
+        data: "journeyDataCompletedAt",
+        allSet: "journeyAllSetCompletedAt",
+      } as const;
+      const evidence = orderedProspectiveJourneyEvidence(
+        state,
+        practice.createdAt,
+        practice.dbNow,
+      );
+      if (
+        mode === "prospective" &&
+        completedStage &&
+        !prospectivePredecessorIsValid({
+          completedStage,
+          evidence,
+          existingStageTimestamp: state[fieldByStage[completedStage]],
+        })
+      ) {
+        throw onboardingJourneyPrecondition(
+          "Guided setup evidence is incomplete or out of order.",
+        );
+      }
+
+      const now = databaseTimestamp(practice.dbNow);
+      const stageField = completedStage ? fieldByStage[completedStage] : null;
+      return updateOnboardingWriterState({
+        database: ctx.db,
+        practiceId: ctx.practiceId,
+        expectedRevision: revision,
+        statePatch: {
+          journeyStepId: input.stepId,
+          journeyLastProgressAt: now,
+          journeyRevision: revision + 1,
+          ...(input.dismissed === undefined
+            ? {}
+            : { journeyDismissed: input.dismissed }),
+          ...(stageField && !state[stageField] ? { [stageField]: now } : {}),
+        },
+      });
     }),
 
   /**

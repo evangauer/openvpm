@@ -180,6 +180,15 @@ jobs:
           JOURNEY_FUNNEL_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run lib/__tests__/journey-funnel.integration.test.ts
 
+      # Onboarding evidence is a tenant-owned CAS state machine stored in the
+      # existing practice JSONB document. Prove row-lock serialization,
+      # revision conflicts, terminal/idempotent behavior, rollback, and RLS
+      # context cleanup through the real protected router and app role.
+      - name: Execute onboarding journey writer database contract
+        env:
+          ONBOARDING_JOURNEY_WRITER_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/onboarding-journey-writer.integration.test.ts
+
       # Exercise the clinic-facing patient + owner search through the real
       # router and least-privilege RLS role. The fixture proves literal LIKE
       # escaping, deterministic bounds, context cleanup, and cross-tenant deny.
