@@ -126,7 +126,13 @@ describe("portal booking UI", () => {
   it("does not present an unconfirmed request as a scheduled appointment", () => {
     expect(source).toContain("Requested — not yet confirmed");
     expect(appointmentsSource).toContain(
-      'if (status === "scheduled") return "Requested — awaiting confirmation"'
+      'if (status === "scheduled" && isClientRequest)'
+    );
+    expect(appointmentsSource).toContain(
+      'return status.replace(/_/g, " ").replace(/\\b\\w/g, (c) => c.toUpperCase())'
+    );
+    expect(appointmentsSource).toContain(
+      "formatStatusLabel(appt.status, appt.isClientRequest)"
     );
     expect(appointmentsSource).toContain("Upcoming and requests");
   });

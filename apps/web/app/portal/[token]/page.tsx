@@ -1,6 +1,5 @@
 "use client";
 
-import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
   AlertCircle,
@@ -23,15 +22,12 @@ const speciesEmoji: Record<string, string> = {
 };
 
 export default function PortalHomePage() {
-  const params = useParams();
-  const token = params.token as string;
-
-  const { data, isLoading, error } = trpc.portal.getClient.useQuery({ token });
+  const { data, isLoading, error } = trpc.portal.getClient.useQuery({});
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-teal-600 border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     );
   }
@@ -75,11 +71,11 @@ export default function PortalHomePage() {
             {data.patients.map((pet) => (
               <Link
                 key={pet.id}
-                href={`/portal/${token}/pets/${pet.id}`}
-                className="block rounded-xl border border-gray-200 p-5 hover:border-teal-400 hover:shadow-md transition-all"
+                href={`/portal/pets/${pet.id}`}
+                className="block rounded-xl border border-gray-200 p-5 transition-all hover:border-primary/60 hover:shadow-md"
               >
                 <div className="flex items-start gap-3">
-                  <div className="h-12 w-12 rounded-full bg-teal-50 flex items-center justify-center text-2xl flex-shrink-0">
+                  <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-2xl">
                     {speciesEmoji[pet.species] || "🐾"}
                   </div>
                   <div className="min-w-0">
@@ -103,8 +99,8 @@ export default function PortalHomePage() {
       {/* Request Appointment */}
       <section className="mb-10">
         <Link
-          href={`/portal/${token}/book`}
-          className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-teal-300 p-4 font-medium text-teal-700 transition-all hover:border-teal-400 hover:bg-teal-50"
+          href="/portal/book"
+          className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary/40 p-4 font-medium text-primary transition-all hover:border-primary/60 hover:bg-primary/5"
         >
           <CalendarPlus className="h-5 w-5" aria-hidden="true" />
           Request an Appointment
@@ -116,10 +112,10 @@ export default function PortalHomePage() {
         <h2 className="text-lg font-semibold text-gray-800 mb-4">Quick Links</h2>
         <div className="grid gap-3 sm:grid-cols-3">
           <Link
-            href={`/portal/${token}/messages`}
-            className="flex items-center gap-3 rounded-xl border border-gray-200 p-4 hover:border-teal-400 hover:shadow-sm transition-all"
+            href="/portal/messages"
+            className="flex items-center gap-3 rounded-xl border border-gray-200 p-4 transition-all hover:border-primary/60 hover:shadow-sm"
           >
-            <div className="h-10 w-10 rounded-lg bg-teal-50 flex items-center justify-center text-teal-600">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
               <MessageSquare className="h-5 w-5" aria-hidden="true" />
             </div>
             <div>
@@ -128,8 +124,8 @@ export default function PortalHomePage() {
             </div>
           </Link>
           <Link
-            href={`/portal/${token}/appointments`}
-            className="flex items-center gap-3 rounded-xl border border-gray-200 p-4 hover:border-teal-400 hover:shadow-sm transition-all"
+            href="/portal/appointments"
+            className="flex items-center gap-3 rounded-xl border border-gray-200 p-4 transition-all hover:border-primary/60 hover:shadow-sm"
           >
             <div className="h-10 w-10 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600">
               <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -142,8 +138,8 @@ export default function PortalHomePage() {
             </div>
           </Link>
           <Link
-            href={`/portal/${token}/invoices`}
-            className="flex items-center gap-3 rounded-xl border border-gray-200 p-4 hover:border-teal-400 hover:shadow-sm transition-all"
+            href="/portal/invoices"
+            className="flex items-center gap-3 rounded-xl border border-gray-200 p-4 transition-all hover:border-primary/60 hover:shadow-sm"
           >
             <div className="h-10 w-10 rounded-lg bg-green-50 flex items-center justify-center text-green-600">
               <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">

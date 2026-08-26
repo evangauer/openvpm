@@ -18,12 +18,17 @@ import {
   clients,
   invoices,
   patients,
+  portalSessions,
   practices,
   smsConsentEvents,
   smsSuppressions,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
-import { generatePortalAccessToken } from "@/lib/portal/tokens";
+import {
+  generatePortalAccessToken,
+  hashPortalAccessToken,
+  PORTAL_ACCESS_TOKEN_TTL_MS,
+} from "@/lib/portal/tokens";
 import { dispatchWebhookEvent } from "@/lib/webhook-dispatcher";
 import { listOffsetInput } from "./pagination";
 import {
@@ -137,15 +142,6 @@ async function assertActivePractice(ctx: ClientsContext) {
       message: "Practice not found",
     });
   }
-}
-
-function canReadPortalAccessTokenRole(role?: string | null): boolean {
-  return (
-    role === "admin" ||
-    role === "veterinarian" ||
-    role === "technician" ||
-    role === "front_desk"
-  );
 }
 
 function smsSuppressionConsentError(reason: string): TRPCError {
@@ -357,12 +353,19 @@ export const clientsRouter = createRouter({
         .orderBy(desc(smsConsentEvents.occurredAt), desc(smsConsentEvents.id))
         .limit(50);
 
-      const safeClient = canReadPortalAccessTokenRole(ctx.user.role)
-        ? client
-        : redactClientPortalAccessToken(client);
+      const safeClient = redactClientPortalAccessToken(client);
+      const portalAccessState = !client.accessToken
+        ? "not_issued"
+        : client.portalAccessTokenUsedAt
+          ? "consumed"
+          : client.portalAccessTokenExpiresAt &&
+              client.portalAccessTokenExpiresAt.getTime() > Date.now()
+            ? "ready"
+            : "expired";
 
       return {
         ...safeClient,
+        portalAccessState,
         patients: clientPatients,
         smsConsentHistory,
       };
@@ -438,7 +441,7 @@ export const clientsRouter = createRouter({
             ...(preferredContactMethod ? { preferredContactMethod } : {}),
             ...consent,
             practiceId: ctx.practiceId,
-            accessToken: generatePortalAccessToken(),
+            accessToken: null,
           })
           .returning();
         if (!created) {
@@ -896,27 +899,48 @@ export const clientsRouter = createRouter({
   rotatePortalAccessToken: clientManagerProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      const [client] = await ctx.db
-        .update(clients)
-        .set({ accessToken: generatePortalAccessToken() })
-        .where(
-          and(
-            eq(clients.id, input.id),
-            eq(clients.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(clients.deletedAt),
-          ),
-        )
-        .returning({
-          id: clients.id,
-          accessToken: clients.accessToken,
-        });
+      const rawToken = generatePortalAccessToken();
+      const now = new Date();
+      const client = await ctx.db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(clients)
+          .set({
+            accessToken: hashPortalAccessToken(rawToken),
+            portalAccessTokenExpiresAt: new Date(
+              now.getTime() + PORTAL_ACCESS_TOKEN_TTL_MS,
+            ),
+            portalAccessTokenUsedAt: null,
+          })
+          .where(
+            and(
+              eq(clients.id, input.id),
+              eq(clients.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(clients.deletedAt),
+            ),
+          )
+          .returning({ id: clients.id });
+
+        if (!updated) return null;
+
+        await tx
+          .update(portalSessions)
+          .set({ revokedAt: now, revokedReason: "staff_access_reset" })
+          .where(
+            and(
+              eq(portalSessions.clientId, updated.id),
+              eq(portalSessions.practiceId, ctx.practiceId),
+              isNull(portalSessions.revokedAt),
+            ),
+          );
+        return updated;
+      });
 
       if (!client) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
       }
 
-      return client;
+      return { id: client.id, accessToken: rawToken };
     }),
 
   delete: protectedProcedure

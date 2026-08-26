@@ -79,6 +79,33 @@ describe("declaredSchema", () => {
 });
 
 describe("findSchemaDrift", () => {
+  it("gates the portal session tenant boundary and lookup controls", () => {
+    expect(criticalDatabaseContract()).toEqual(
+      expect.arrayContaining([
+        {
+          kind: "constraint",
+          table: "clients",
+          name: "clients_portal_access_token_state_check",
+        },
+        {
+          kind: "constraint",
+          table: "portal_sessions",
+          name: "portal_sessions_client_tenant_fk",
+        },
+        {
+          kind: "index",
+          table: "portal_sessions",
+          name: "portal_sessions_token_hash_uq",
+        },
+        {
+          kind: "rls_policy",
+          table: "portal_sessions",
+          name: "tenant_isolation",
+        },
+      ]),
+    );
+  });
+
   it("reports no drift when the database matches the code", async () => {
     const drift = await findSchemaDrift(fakeDb(liveSchemaWithout(() => false)));
     expect(drift).toEqual({

@@ -26,7 +26,6 @@ import {
 } from "@/lib/scheduling/availability";
 import { providerCoverageForDate } from "@/lib/scheduling/provider-availability";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
-import { generatePortalAccessToken } from "@/lib/portal/tokens";
 import { latestAssignedToForClient } from "@/lib/communications/assignment";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
 import {
@@ -633,7 +632,7 @@ export const bookingRouter = createRouter({
             email: input.contact.email,
             phone: input.contact.phone || null,
             preferredContactMethod: "email",
-            accessToken: generatePortalAccessToken(),
+            accessToken: null,
           })
           .returning({ id: clients.id });
         clientId = created!.id;

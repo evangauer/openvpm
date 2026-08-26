@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, ArrowLeft, MessageSquare, Send } from "lucide-react";
 import { toast } from "sonner";
@@ -11,20 +10,18 @@ import { formatPortalDateTime } from "@/lib/portal/date";
 import { COMMUNICATION_CONTENT_MAX_LENGTH } from "@/lib/communications/policy";
 
 export default function PortalMessagesPage() {
-  const params = useParams();
-  const token = params.token as string;
   const [content, setContent] = useState("");
   const utils = trpc.useUtils();
 
   const { data, isLoading, error } = trpc.portal.getMessages.useQuery(
-    { token },
+    {},
     { refetchInterval: 30000 }
   );
   const sendMessage = trpc.portal.createMessage.useMutation({
     onSuccess: () => {
       setContent("");
       toast.success("Message sent");
-      utils.portal.getMessages.invalidate({ token });
+      utils.portal.getMessages.invalidate({});
     },
     onError: (err) => {
       toast.error(err.message);
@@ -32,7 +29,7 @@ export default function PortalMessagesPage() {
   });
   const markMessagesRead = trpc.portal.markMessagesRead.useMutation({
     onSuccess: () => {
-      utils.portal.getMessages.invalidate({ token });
+      utils.portal.getMessages.invalidate({});
     },
   });
 
@@ -67,13 +64,12 @@ export default function PortalMessagesPage() {
     }
 
     markedReadSignature.current = unreadClinicMessageIds;
-    markMessagesRead.mutate({ token });
-  }, [markMessagesRead, token, unreadClinicMessageIds]);
+    markMessagesRead.mutate({});
+  }, [markMessagesRead, unreadClinicMessageIds]);
 
   function handleSend() {
     if (!canSend) return;
     sendMessage.mutate({
-      token,
       content: trimmedContent,
     });
   }
@@ -81,7 +77,7 @@ export default function PortalMessagesPage() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-teal-600 border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     );
   }
@@ -102,8 +98,8 @@ export default function PortalMessagesPage() {
   return (
     <div>
       <Link
-        href={`/portal/${token}`}
-        className="mb-6 inline-flex items-center gap-1 text-sm text-teal-600 hover:text-teal-700"
+        href="/portal"
+        className="mb-6 inline-flex items-center gap-1 text-sm text-primary hover:text-primary/80"
       >
         <ArrowLeft className="h-4 w-4" aria-hidden="true" />
         Back to portal
@@ -136,7 +132,7 @@ export default function PortalMessagesPage() {
                   <div
                     className={`max-w-[82%] rounded-xl px-4 py-3 text-sm ${
                       isClientMessage
-                        ? "bg-teal-600 text-white"
+                        ? "bg-primary text-primary-foreground"
                         : "border border-gray-200 bg-gray-50 text-gray-900"
                     }`}
                   >
@@ -150,7 +146,9 @@ export default function PortalMessagesPage() {
                     </p>
                     <p
                       className={`mt-2 text-xs ${
-                        isClientMessage ? "text-teal-50" : "text-gray-500"
+                        isClientMessage
+                          ? "text-primary-foreground/80"
+                          : "text-gray-500"
                       }`}
                     >
                       {isClientMessage ? "You" : "Clinic"} -{" "}
@@ -178,7 +176,7 @@ export default function PortalMessagesPage() {
             maxLength={COMMUNICATION_CONTENT_MAX_LENGTH}
             rows={3}
             placeholder="Type your message..."
-            className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition-colors placeholder:text-gray-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
+            className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition-colors placeholder:text-gray-400 focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
           <div className="mt-3 flex items-center justify-between gap-3">
             <p className="text-xs text-gray-500">
@@ -188,7 +186,7 @@ export default function PortalMessagesPage() {
               type="button"
               onClick={handleSend}
               disabled={!canSend}
-              className="inline-flex items-center gap-2 rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Send className="h-4 w-4" aria-hidden="true" />
               {sendMessage.isPending ? "Sending..." : "Send"}

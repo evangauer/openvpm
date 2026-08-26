@@ -12,6 +12,7 @@ import type { Database } from "@openpims/db/client";
 import { withTenant, withSystem } from "@/lib/tenant-db";
 import { assertHostedRlsRoleOnce } from "@/lib/rls-assertion";
 import { clientIpFromRequest } from "@/lib/request-ip";
+import { externallyVisibleRequestOrigin } from "@/lib/request-origin";
 import { practices, users } from "@openpims/db";
 import {
   billingEnforced,
@@ -21,6 +22,11 @@ import {
   type Feature,
 } from "@/lib/billing/plans";
 import { readHostedAiAccess } from "@/lib/billing/ai-access";
+import {
+  portalSessionTokenFromCookie,
+  resolvePortalSession,
+  type PortalSessionClient,
+} from "@/lib/portal/session";
 
 type UserRole =
   | "admin"
@@ -46,6 +52,12 @@ export type TRPCContext = {
   db: Database;
   session: AppSession | null;
   ip?: string | null;
+  portalSessionToken?: string | null;
+  requestOrigin?: string | null;
+  requestUrlOrigin?: string | null;
+  /** Pre-resolved only by portalProcedure (or explicitly injected test callers). */
+  portalClient?: PortalSessionClient;
+  portalSessionId?: string;
   /**
    * Queue a mutation side effect that must begin only after the procedure's
    * outer RLS transaction commits. The callback receives the root pool, not
@@ -134,7 +146,18 @@ export async function createTRPCContext(opts?: {
     ? null
     : ((await getServerSession(authOptions)) as AppSession | null);
   const session = await activeSessionOrNull(db, rawSession);
-  return { db, session, ip: clientIp(opts?.req) };
+  return {
+    db,
+    session,
+    ip: clientIp(opts?.req),
+    portalSessionToken: portalSessionTokenFromCookie(
+      opts?.req?.headers.get("cookie"),
+    ),
+    requestOrigin: opts?.req?.headers.get("origin") ?? null,
+    requestUrlOrigin: opts?.req
+      ? externallyVisibleRequestOrigin(opts.req)
+      : null,
+  };
 }
 
 const t = initTRPC.context<TRPCContext>().create({
@@ -296,6 +319,41 @@ export const publicProcedure = t.procedure.use(
       await runPostCommitEffects(ctx.db, effects, path);
     }
     return result;
+  },
+);
+
+/**
+ * Requires a revocable portal browser session. The opaque cookie is resolved
+ * inside the system-scoped transaction, then every router query still applies
+ * explicit practice/client predicates as defense in depth.
+ */
+export const portalProcedure = publicProcedure.use(
+  async ({ ctx, next, type }) => {
+    const portalSession =
+      ctx.portalClient && ctx.portalSessionId
+        ? { client: ctx.portalClient, sessionId: ctx.portalSessionId }
+        : await resolvePortalSession(ctx.db, ctx.portalSessionToken);
+    if (!portalSession) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: "Portal session expired",
+      });
+    }
+    if (
+      type === "mutation" &&
+      ctx.requestOrigin &&
+      ctx.requestUrlOrigin &&
+      ctx.requestOrigin !== ctx.requestUrlOrigin
+    ) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "Invalid request origin" });
+    }
+    return next({
+      ctx: {
+        ...ctx,
+        portalClient: portalSession.client as PortalSessionClient,
+        portalSessionId: portalSession.sessionId,
+      },
+    });
   },
 );
 

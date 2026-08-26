@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   AlertCircle,
@@ -16,7 +16,7 @@ import { formatPortalDateTime } from "@/lib/portal/date";
 
 const statusStyles: Record<string, string> = {
   scheduled: "bg-blue-100 text-blue-700",
-  confirmed: "bg-teal-100 text-teal-700",
+  confirmed: "bg-primary/10 text-primary",
   checked_in: "bg-amber-100 text-amber-700",
   in_exam: "bg-purple-100 text-purple-700",
   checked_out: "bg-green-100 text-green-700",
@@ -38,26 +38,27 @@ function formatDateTime(d: string | Date, timeZone?: string | null): string {
   return formatPortalDateTime(d, undefined, timeZone);
 }
 
-function formatStatusLabel(status: string): string {
+function formatStatusLabel(status: string, isClientRequest: boolean): string {
   // `scheduled` is the internal state for a request that clinic staff have
-  // not yet confirmed with the owner. Never present it as a firm appointment.
-  if (status === "scheduled") return "Requested — awaiting confirmation";
+  // not yet confirmed with the owner only when the server identified its
+  // request origin. A staff-created scheduled visit is already scheduled.
+  if (status === "scheduled" && isClientRequest) {
+    return "Requested — awaiting confirmation";
+  }
   // Pet-owner wording: "checked out" is clinic jargon.
   if (status === "checked_out") return "Completed";
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 export default function AppointmentsPage() {
-  const params = useParams();
   const router = useRouter();
-  const token = params.token as string;
 
-  const { data, isLoading, error } = trpc.portal.getAppointments.useQuery({ token });
+  const { data, isLoading, error } = trpc.portal.getAppointments.useQuery({});
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-teal-600 border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     );
   }
@@ -80,11 +81,21 @@ export default function AppointmentsPage() {
   return (
     <div>
       <Link
-        href={`/portal/${token}`}
-        className="inline-flex items-center gap-1 text-sm text-teal-600 hover:text-teal-700 mb-6"
+        href="/portal"
+        className="mb-6 inline-flex items-center gap-1 text-sm text-primary hover:text-primary/80"
       >
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+        <svg
+          className="h-4 w-4"
+          fill="none"
+          viewBox="0 0 24 24"
+          strokeWidth={1.5}
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M15.75 19.5L8.25 12l7.5-7.5"
+          />
         </svg>
         Back to portal
       </Link>
@@ -92,11 +103,21 @@ export default function AppointmentsPage() {
       <div className="mb-8 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-gray-900">Appointments</h1>
         <Link
-          href={`/portal/${token}/book`}
-          className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-700 transition-colors"
+          href="/portal/book"
+          className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
         >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+          <svg
+            className="h-4 w-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={2}
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M12 4.5v15m7.5-7.5h-15"
+            />
           </svg>
           Request appointment
         </Link>
@@ -105,7 +126,7 @@ export default function AppointmentsPage() {
       {/* Upcoming and active */}
       <section className="mb-10">
         <h2 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-teal-500" />
+          <span className="h-2 w-2 rounded-full bg-primary" />
           Upcoming and requests
         </h2>
         {upcoming.length === 0 ? (
@@ -115,7 +136,7 @@ export default function AppointmentsPage() {
             title="No upcoming appointments or requests"
             action={{
               label: "Request appointment",
-              onClick: () => router.push(`/portal/${token}/book`),
+              onClick: () => router.push("/portal/book"),
               icon: CalendarPlus,
             }}
           />
@@ -124,7 +145,7 @@ export default function AppointmentsPage() {
             {upcoming.map((appt) => (
               <div
                 key={appt.id}
-                className="rounded-xl border border-gray-200 p-4 hover:border-teal-200 transition-colors"
+                className="rounded-xl border border-gray-200 p-4 transition-colors hover:border-primary/30"
               >
                 <div className="flex items-start justify-between gap-4">
                   <div>
@@ -133,11 +154,16 @@ export default function AppointmentsPage() {
                     </p>
                     <p className="text-sm text-gray-600 mt-1">
                       {appt.patientSpecies && (
-                        <span className="mr-1">{speciesEmoji[appt.patientSpecies] || "🐾"}</span>
+                        <span className="mr-1">
+                          {speciesEmoji[appt.patientSpecies] || "🐾"}
+                        </span>
                       )}
                       {appt.patientName || "No patient"}
                       {appt.typeName && (
-                        <span className="text-gray-400"> &middot; {appt.typeName}</span>
+                        <span className="text-gray-400">
+                          {" "}
+                          &middot; {appt.typeName}
+                        </span>
                       )}
                     </p>
                     {appt.doctorName && (
@@ -157,7 +183,7 @@ export default function AppointmentsPage() {
                       statusStyles[appt.status] || "bg-gray-100 text-gray-600"
                     }`}
                   >
-                    {formatStatusLabel(appt.status)}
+                    {formatStatusLabel(appt.status, appt.isClientRequest)}
                   </span>
                 </div>
               </div>
@@ -192,11 +218,16 @@ export default function AppointmentsPage() {
                     </p>
                     <p className="text-sm text-gray-500 mt-1">
                       {appt.patientSpecies && (
-                        <span className="mr-1">{speciesEmoji[appt.patientSpecies] || "🐾"}</span>
+                        <span className="mr-1">
+                          {speciesEmoji[appt.patientSpecies] || "🐾"}
+                        </span>
                       )}
                       {appt.patientName || "No patient"}
                       {appt.typeName && (
-                        <span className="text-gray-400"> &middot; {appt.typeName}</span>
+                        <span className="text-gray-400">
+                          {" "}
+                          &middot; {appt.typeName}
+                        </span>
                       )}
                     </p>
                     {appt.doctorName && (
@@ -216,7 +247,7 @@ export default function AppointmentsPage() {
                       statusStyles[appt.status] || "bg-gray-100 text-gray-600"
                     }`}
                   >
-                    {formatStatusLabel(appt.status)}
+                    {formatStatusLabel(appt.status, appt.isClientRequest)}
                   </span>
                 </div>
               </div>

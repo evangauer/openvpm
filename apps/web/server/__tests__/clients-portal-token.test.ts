@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   generatePortalAccessToken: vi.fn(() => "portal-token-1"),
+  hashPortalAccessToken: vi.fn((token: string) => `hash:${token}`),
   recordAuditLog: vi.fn(async () => undefined),
   dispatchWebhookEvent: vi.fn(async () => undefined),
 }));
 
 vi.mock("@/lib/portal/tokens", () => ({
   generatePortalAccessToken: mocks.generatePortalAccessToken,
+  hashPortalAccessToken: mocks.hashPortalAccessToken,
+  PORTAL_ACCESS_TOKEN_TTL_MS: 15 * 60 * 1000,
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -53,7 +56,7 @@ function createInsertDb(inserted?: Record<string, unknown>) {
         id: CLIENT_ID,
         firstName: "Ada",
         lastName: "Lovelace",
-        accessToken: "portal-token-1",
+        accessToken: null,
       },
     ]),
   }));
@@ -88,7 +91,7 @@ afterEach(() => {
 });
 
 describe("clients portal access tokens", () => {
-  it("creates a portal access token for every new client", async () => {
+  it("does not persist an unrecoverable portal credential for every new client", async () => {
     const { db, insertValues } = createInsertDb();
 
     await expect(
@@ -97,7 +100,7 @@ describe("clients portal access tokens", () => {
         lastName: "Lovelace",
         email: "ada@example.com",
       })
-    ).resolves.toMatchObject({ accessToken: "portal-token-1" });
+    ).resolves.toMatchObject({ accessToken: null });
 
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -105,7 +108,7 @@ describe("clients portal access tokens", () => {
         firstName: "Ada",
         lastName: "Lovelace",
         email: "ada@example.com",
-        accessToken: "portal-token-1",
+        accessToken: null,
       })
     );
   });
@@ -113,14 +116,25 @@ describe("clients portal access tokens", () => {
   it("rotates a portal access token through a tenant-scoped client update", async () => {
     mocks.generatePortalAccessToken.mockReturnValue("portal-token-2");
     const { db, updateSet } = createUpdateDb([
-      { id: CLIENT_ID, accessToken: "portal-token-2" },
+      { id: CLIENT_ID },
     ]);
 
     await expect(
       callerWithDb(db).rotatePortalAccessToken({ id: CLIENT_ID })
     ).resolves.toEqual({ id: CLIENT_ID, accessToken: "portal-token-2" });
 
-    expect(updateSet).toHaveBeenCalledWith({ accessToken: "portal-token-2" });
+    expect(updateSet).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        accessToken: "hash:portal-token-2",
+        portalAccessTokenExpiresAt: expect.any(Date),
+        portalAccessTokenUsedAt: null,
+      }),
+    );
+    expect(updateSet).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ revokedReason: "staff_access_reset" }),
+    );
   });
 
   it("rejects portal token rotation for missing or cross-tenant clients", async () => {
@@ -130,6 +144,8 @@ describe("clients portal access tokens", () => {
       callerWithDb(db).rotatePortalAccessToken({ id: CLIENT_ID })
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
-    expect(updateSet).toHaveBeenCalledWith({ accessToken: "portal-token-1" });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ accessToken: "hash:portal-token-1" }),
+    );
   });
 });

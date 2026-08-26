@@ -11,12 +11,18 @@ describe("portal empty states", () => {
     const invoices = source("app/portal/[token]/invoices/page.tsx");
     const messages = source("app/portal/[token]/messages/page.tsx");
 
-    expect(home).toContain('import { EmptyState } from "@/components/common/empty-state"');
+    expect(home).toContain(
+      'import { EmptyState } from "@/components/common/empty-state"',
+    );
     expect(home).toContain('title="No pets on file yet"');
-    expect(home).toContain('href={`/portal/${token}/messages`}');
-    expect(invoices).toContain('import { EmptyState } from "@/components/common/empty-state"');
+    expect(home).toContain('href="/portal/messages"');
+    expect(invoices).toContain(
+      'import { EmptyState } from "@/components/common/empty-state"',
+    );
     expect(invoices).toContain('title="No invoices yet"');
-    expect(messages).toContain('import { EmptyState } from "@/components/common/empty-state"');
+    expect(messages).toContain(
+      'import { EmptyState } from "@/components/common/empty-state"',
+    );
     expect(messages).toContain('title="No portal messages yet"');
   });
 
@@ -56,21 +62,23 @@ describe("portal empty states", () => {
     const home = source("app/portal/[token]/page.tsx");
     const petDetail = source("app/portal/[token]/pets/[petId]/page.tsx");
 
-    expect(home).toContain('import { calculatePortalAge } from "@/lib/portal/date"');
+    expect(home).toContain(
+      'import { calculatePortalAge } from "@/lib/portal/date"',
+    );
     expect(home).toContain("calculatePortalAge(pet.dob)");
     expect(home).not.toContain("new Date(dob)");
     expect(petDetail).toContain("formatPortalDate");
     expect(petDetail).toContain(
-      "return formatPortalDate(d, undefined, timeZone)"
+      "return formatPortalDate(d, undefined, timeZone)",
     );
     expect(petDetail).toContain(
-      "formatDate(v.administeredAt, practiceTimeZone)"
+      "formatDate(v.administeredAt, practiceTimeZone)",
     );
     expect(petDetail).toContain("formatDate(v.nextDueDate, practiceTimeZone)");
     expect(petDetail).toContain("formatDate(rx.endDate, practiceTimeZone)");
     expect(petDetail).toContain("formatDate(w.recordedAt, practiceTimeZone)");
     expect(petDetail).toContain(
-      "portalCalendarDayDifference(\n      nextDue,\n      new Date(),\n      practiceTimeZone"
+      "portalCalendarDayDifference(\n      nextDue,\n      new Date(),\n      practiceTimeZone",
     );
     expect(petDetail).toContain("calculatePortalAge(data.dob)");
     expect(petDetail).not.toContain("new Date(nextDue)");
@@ -80,20 +88,27 @@ describe("portal empty states", () => {
   it("uses shared empty states for portal appointments", () => {
     const appointments = source("app/portal/[token]/appointments/page.tsx");
 
-    expect(appointments).toContain('import { EmptyState } from "@/components/common/empty-state"');
     expect(appointments).toContain(
-      'import { splitPortalAppointments } from "@/lib/portal/appointments"'
+      'import { EmptyState } from "@/components/common/empty-state"',
     );
     expect(appointments).toContain(
-      "const { upcoming, past } = splitPortalAppointments(data)"
+      'import { splitPortalAppointments } from "@/lib/portal/appointments"',
+    );
+    expect(appointments).toContain(
+      "const { upcoming, past } = splitPortalAppointments(data)",
     );
     expect(appointments).not.toContain("Upcoming & Active");
     expect(appointments).toContain("Upcoming");
     expect(appointments).toContain(
-      'title="No upcoming appointments or requests"'
+      'title="No upcoming appointments or requests"',
     );
     expect(appointments).toContain('title="No past appointments"');
     expect(appointments).toContain('label: "Request appointment"');
+    expect(appointments).toContain(
+      "formatStatusLabel(status: string, isClientRequest: boolean)",
+    );
+    expect(appointments).toContain('status === "scheduled" && isClientRequest');
+    expect(appointments).toContain("Requested — awaiting confirmation");
     expect(appointments).not.toContain("data.filter((a)");
   });
 
@@ -101,16 +116,16 @@ describe("portal empty states", () => {
     const appointments = source("app/portal/[token]/appointments/page.tsx");
 
     expect(appointments).toContain(
-      'import { formatPortalDateTime } from "@/lib/portal/date"'
+      'import { formatPortalDateTime } from "@/lib/portal/date"',
     );
     expect(appointments).toContain(
-      "function formatDateTime(d: string | Date, timeZone?: string | null)"
+      "function formatDateTime(d: string | Date, timeZone?: string | null)",
     );
     expect(appointments).toContain(
-      "return formatPortalDateTime(d, undefined, timeZone)"
+      "return formatPortalDateTime(d, undefined, timeZone)",
     );
     expect(appointments).toContain(
-      "formatDateTime(appt.startTime, appt.timezone)"
+      "formatDateTime(appt.startTime, appt.timezone)",
     );
     expect(appointments).not.toContain("new Date(d).toLocaleString");
   });
@@ -119,17 +134,19 @@ describe("portal empty states", () => {
     const messages = source("app/portal/[token]/messages/page.tsx");
 
     expect(messages).toContain(
-      'import { formatPortalDateTime } from "@/lib/portal/date"'
+      'import { formatPortalDateTime } from "@/lib/portal/date"',
     );
     expect(messages).toContain("trpc.portal.getMessages.useQuery");
     expect(messages).toContain("trpc.portal.createMessage.useMutation");
     expect(messages).toContain("trpc.portal.markMessagesRead.useMutation");
     expect(messages).toContain('message.direction === "outbound"');
     expect(messages).toContain('message.status !== "read"');
-    expect(messages).toContain("markedReadSignature.current = unreadClinicMessageIds");
-    expect(messages).toContain("markMessagesRead.mutate({ token })");
     expect(messages).toContain(
-      "formatPortalDateTime(\n                        message.createdAt,\n                        undefined,\n                        data.timezone"
+      "markedReadSignature.current = unreadClinicMessageIds",
+    );
+    expect(messages).toContain("markMessagesRead.mutate({})");
+    expect(messages).toContain(
+      "formatPortalDateTime(\n                        message.createdAt,\n                        undefined,\n                        data.timezone",
     );
     expect(messages).not.toContain("new Date(message.createdAt)");
   });
@@ -137,7 +154,9 @@ describe("portal empty states", () => {
   it("uses shared empty states for portal pet detail tabs", () => {
     const petDetail = source("app/portal/[token]/pets/[petId]/page.tsx");
 
-    expect(petDetail).toContain('import { EmptyState } from "@/components/common/empty-state"');
+    expect(petDetail).toContain(
+      'import { EmptyState } from "@/components/common/empty-state"',
+    );
     expect(petDetail).toContain('title="No vaccination records yet"');
     expect(petDetail).toContain('title="No active prescriptions"');
     expect(petDetail).toContain('title="No weight records yet"');

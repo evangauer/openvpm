@@ -50,7 +50,6 @@ function certificateFilename(patientName: string, vaccineName: string): string {
 
 export default function PetDetailPage() {
   const params = useParams();
-  const token = params.token as string;
   const petId = params.petId as string;
   const [activeTab, setActiveTab] = useState<Tab>("vaccinations");
   const [certificatePendingId, setCertificatePendingId] = useState<
@@ -60,14 +59,13 @@ export default function PetDetailPage() {
   const utils = trpc.useUtils();
 
   const { data, isLoading, error } = trpc.portal.getPetDetail.useQuery({
-    token,
     patientId: petId,
   });
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-teal-600 border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     );
   }
@@ -82,8 +80,8 @@ export default function PetDetailPage() {
           description="Please refresh this page or return to the portal home."
         />
         <Link
-          href={`/portal/${token}`}
-          className="mt-4 inline-block text-sm font-medium text-teal-600 hover:text-teal-700"
+          href="/portal"
+          className="mt-4 inline-block text-sm font-medium text-primary hover:text-primary/80"
         >
           Back to portal
         </Link>
@@ -105,7 +103,6 @@ export default function PetDetailPage() {
       const certificate =
         await utils.portal.getVaccinationCertificateData.fetch(
           {
-            token,
             patientId: petId,
             vaccinationRecordId: vaccination.id,
           },
@@ -152,7 +149,6 @@ export default function PetDetailPage() {
         "This certificate is no longer available. Refresh to see current vaccination records."
       );
       await utils.portal.getPetDetail.invalidate({
-        token,
         patientId: petId,
       });
     } finally {
@@ -188,8 +184,8 @@ export default function PetDetailPage() {
     <div>
       {/* Back link */}
       <Link
-        href={`/portal/${token}`}
-        className="inline-flex items-center gap-1 text-sm text-teal-600 hover:text-teal-700 mb-6"
+        href="/portal"
+        className="mb-6 inline-flex items-center gap-1 text-sm text-primary hover:text-primary/80"
       >
         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
@@ -199,7 +195,7 @@ export default function PetDetailPage() {
 
       {/* Pet Header */}
       <div className="flex items-center gap-4 mb-6">
-        <div className="h-16 w-16 rounded-full bg-teal-50 flex items-center justify-center text-3xl flex-shrink-0">
+        <div className="flex h-16 w-16 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-3xl">
           {speciesEmoji[data.species] || "🐾"}
         </div>
         <div>
@@ -254,7 +250,7 @@ export default function PetDetailPage() {
               onClick={() => setActiveTab(tab.key)}
               className={`pb-3 text-sm font-medium border-b-2 transition-colors ${
                 activeTab === tab.key
-                  ? "border-teal-600 text-teal-600"
+                  ? "border-primary text-primary"
                   : "border-transparent text-gray-500 hover:text-gray-700"
               }`}
             >
@@ -320,7 +316,7 @@ export default function PetDetailPage() {
                             type="button"
                             onClick={() => void downloadVaccinationCertificate(v)}
                             disabled={certificatePendingId !== null}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-teal-200 px-3 py-1.5 text-xs font-medium text-teal-700 transition-colors hover:border-teal-300 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:border-primary/50 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <Download className="h-3.5 w-3.5" aria-hidden="true" />
                             {certificatePendingId === v.id

@@ -230,7 +230,14 @@ async function seed() {
 
   const insertedClients = await db
     .insert(clients)
-    .values(clientsData.map((c) => ({ ...c, practiceId, preferredContactMethod: "phone" as const, accessToken: crypto.randomUUID().replace(/-/g, "") })))
+    .values(
+      clientsData.map((c) => ({
+        ...c,
+        practiceId,
+        preferredContactMethod: "phone" as const,
+        accessToken: null,
+      })),
+    )
     .returning();
   console.log(`Clients: ${insertedClients.length} created`);
 

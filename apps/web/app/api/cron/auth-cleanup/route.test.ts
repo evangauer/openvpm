@@ -3,10 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   alertOps: vi.fn(async () => undefined),
   cleanupExpiredAuthArtifacts: vi.fn(async () => ({
-    deleted: 6,
+    deleted: 10,
     authTokensDeleted: 2,
     sessionsDeleted: 3,
     verificationTokensDeleted: 1,
+    portalSessionsDeleted: 4,
     cutoff: new Date("2026-06-28T04:45:00Z"),
   })),
   cronAuthError: vi.fn(() => null),
@@ -34,10 +35,11 @@ const { GET } = await import("./route");
 afterEach(() => {
   vi.clearAllMocks();
   mocks.cleanupExpiredAuthArtifacts.mockResolvedValue({
-    deleted: 6,
+    deleted: 10,
     authTokensDeleted: 2,
     sessionsDeleted: 3,
     verificationTokensDeleted: 1,
+    portalSessionsDeleted: 4,
     cutoff: new Date("2026-06-28T04:45:00Z"),
   });
 });
@@ -66,22 +68,24 @@ describe("auth cleanup cron", () => {
     );
 
     await expect(response.json()).resolves.toEqual({
-      deleted: 6,
+      deleted: 10,
       authTokensDeleted: 2,
       sessionsDeleted: 3,
       verificationTokensDeleted: 1,
+      portalSessionsDeleted: 4,
       cutoff: "2026-06-28T04:45:00.000Z",
     });
     expect(mocks.cleanupExpiredAuthArtifacts).toHaveBeenCalledTimes(1);
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith({
       job: "auth-cleanup",
       status: "ok",
-      detail: "6 expired auth artifacts deleted",
+      detail: "10 expired auth artifacts deleted",
       metrics: {
-        deleted: 6,
+        deleted: 10,
         authTokensDeleted: 2,
         sessionsDeleted: 3,
         verificationTokensDeleted: 1,
+        portalSessionsDeleted: 4,
       },
     });
   });

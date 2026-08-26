@@ -29,11 +29,25 @@ const TOKEN = "portal-token";
 const TOKEN_BUCKET =
   "portal-read:token:0ba11c8c03cc892e40cac090ac14c4db6e655ecfaff2490257fbe4c10fba19f9";
 const IP = "203.0.113.10";
+const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
+const CLIENT_ID = "00000000-0000-0000-0000-0000000000bb";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000001";
 const VACCINATION_RECORD_ID = "00000000-0000-0000-0000-000000000002";
 
 function callerWithDb(db: Record<string, unknown>, ip?: string) {
-  return portalRouter.createCaller({ db, ip } as never);
+  return portalRouter.createCaller({
+    db,
+    ip,
+    portalSessionId: TOKEN,
+    portalClient: {
+      id: CLIENT_ID,
+      practiceId: PRACTICE_ID,
+      firstName: "Portal",
+      lastName: "Client",
+      email: "portal@example.test",
+      phone: null,
+    },
+  } as never);
 }
 
 function createDb() {

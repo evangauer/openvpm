@@ -238,7 +238,7 @@ describe("clients mutation safety", () => {
       callerWithDb(writableDb, "front_desk").getById({ id: CLIENT_ID }),
     ).resolves.toMatchObject({
       id: CLIENT_ID,
-      accessToken: "private-portal-token",
+      accessToken: null,
       patients: [],
     });
   });
@@ -321,7 +321,7 @@ describe("clients mutation safety", () => {
           lastName: "Lovelace",
           email: "ada@example.com",
           phone: "+15555550123",
-          accessToken: "private-token",
+          accessToken: null,
         },
       ],
     });
@@ -338,7 +338,7 @@ describe("clients mutation safety", () => {
         zip: " SW1 ",
         notes: " Prefers email. ",
       }),
-    ).resolves.toMatchObject({ id: CLIENT_ID, accessToken: "private-token" });
+    ).resolves.toMatchObject({ id: CLIENT_ID, accessToken: null });
 
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -352,7 +352,7 @@ describe("clients mutation safety", () => {
         zip: "SW1",
         notes: "Prefers email.",
         practiceId: PRACTICE_ID,
-        accessToken: expect.any(String),
+        accessToken: null,
       }),
     );
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(

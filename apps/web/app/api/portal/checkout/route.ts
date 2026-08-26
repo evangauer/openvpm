@@ -14,6 +14,7 @@ import {
 import { createCheckoutSession } from "@/lib/stripe";
 import { withSystem } from "@/lib/tenant-db";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
+import { stripeConnectApplicationFeeConfigured } from "@/lib/stripe-config";
 import {
   getChargeableStripeConnectAccountId,
   stripeConnectApplicationFeeAmount,
@@ -23,28 +24,44 @@ import {
   moneyToCents,
 } from "@/lib/billing/invoice-balance";
 import {
+  buildInvoicePaymentReturnUrl,
   buildPortalPaymentReturnUrl,
   isSafePortalCheckoutRedirectUrl,
 } from "@/lib/portal/payments";
 import {
-  PORTAL_ACCESS_TOKEN_MAX_LENGTH,
   portalRateLimitKey,
 } from "@/lib/portal/tokens";
+import {
+  portalSessionTokenFromCookie,
+  resolvePortalSession,
+} from "@/lib/portal/session";
+import {
+  INVOICE_PAYMENT_TOKEN_MAX_LENGTH,
+  verifyInvoicePaymentToken,
+} from "@/lib/billing/invoice-payment-tokens";
 import { rateLimit, rateLimitResponseHeaders } from "@/lib/rate-limit";
 import { clientIpFromRequest } from "@/lib/request-ip";
 import { readJsonRequestBody } from "@/lib/request-json";
 import { assertVisitInvoiceReadyForFinancialAction } from "@/server/visit-billing-integrity";
 
-const portalCheckoutInput = z.object({
-  token: z.string().trim().min(1).max(PORTAL_ACCESS_TOKEN_MAX_LENGTH),
-  invoiceId: z.string().uuid(),
-});
+const portalCheckoutInput = z.union([
+  z.object({
+    invoiceId: z.string().uuid(),
+  }),
+  z.object({
+    paymentToken: z
+      .string()
+      .trim()
+      .min(1)
+      .max(INVOICE_PAYMENT_TOKEN_MAX_LENGTH),
+  }),
+]);
 const PORTAL_CHECKOUT_RATE_LIMIT_MESSAGE =
   "Too many payment attempts. Please try again later or call the clinic.";
 
 function portalCheckoutRateLimitResponse(
   limit: number,
-  result: { remaining: number; resetAt: Date }
+  result: { remaining: number; resetAt: Date },
 ) {
   return NextResponse.json(
     {
@@ -101,9 +118,39 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { token, invoiceId } = parsed.data;
-
   try {
+    const paymentToken =
+      "paymentToken" in parsed.data ? parsed.data.paymentToken : null;
+    const paymentCredential = paymentToken
+      ? verifyInvoicePaymentToken(paymentToken)
+      : null;
+    if (paymentToken && !paymentCredential) {
+      return NextResponse.json(
+        { error: "This payment link is invalid or has expired" },
+        { status: 404 },
+      );
+    }
+    const portalSessionToken = paymentToken
+      ? null
+      : portalSessionTokenFromCookie(req.headers.get("cookie"));
+    if (!paymentToken && !portalSessionToken) {
+      return NextResponse.json(
+        { error: "Portal session expired" },
+        { status: 401 },
+      );
+    }
+    if (
+      !paymentToken &&
+      req.headers.get("origin") &&
+      req.headers.get("origin") !== req.nextUrl.origin
+    ) {
+      return NextResponse.json({ error: "Invalid request origin" }, { status: 403 });
+    }
+    const requestedInvoiceId =
+      "invoiceId" in parsed.data
+        ? parsed.data.invoiceId
+        : paymentCredential!.invoiceId;
+    const rateLimitToken = paymentToken ?? portalSessionToken!;
     const clientIp = clientIpFromRequest(req);
     const ipRateLimitResponse = await enforcePortalCheckoutRateLimit({
       key: `portal-checkout:ip:${clientIp}`,
@@ -115,7 +162,7 @@ export async function POST(req: NextRequest) {
     }
 
     const tokenRateLimitResponse = await enforcePortalCheckoutRateLimit({
-      key: portalRateLimitKey("portal-checkout", token),
+      key: portalRateLimitKey("portal-checkout", rateLimitToken),
       limit: 10,
       windowMs: 60 * 60 * 1000,
     });
@@ -125,16 +172,34 @@ export async function POST(req: NextRequest) {
 
     // Public token flow → run cross-tenant lookups in system context (RLS bypass).
     return await withSystem(db, async (tx) => {
-      // Validate client token (same pattern as portal router)
-      const [client] = await tx
-        .select()
-        .from(clients)
-        .where(and(eq(clients.accessToken, token), isNull(clients.deletedAt)))
-        .limit(1);
+      // Full portal links can pay any invoice owned by their client. Emailed
+      // payment links are narrower: the signed credential names exactly one
+      // client, practice, and invoice and expires after 30 days.
+      const client = paymentCredential
+        ? (
+            await tx
+              .select({
+                id: clients.id,
+                practiceId: clients.practiceId,
+                firstName: clients.firstName,
+                lastName: clients.lastName,
+                email: clients.email,
+              })
+              .from(clients)
+              .where(
+                and(
+                  eq(clients.id, paymentCredential.clientId),
+                  eq(clients.practiceId, paymentCredential.practiceId),
+                  isNull(clients.deletedAt),
+                ),
+              )
+              .limit(1)
+          )[0]
+        : (await resolvePortalSession(tx, portalSessionToken))?.client;
 
       if (!client) {
         return NextResponse.json(
-          { error: "Invalid portal link" },
+          { error: "Invalid or expired payment link" },
           { status: 404 },
         );
       }
@@ -155,9 +220,12 @@ export async function POST(req: NextRequest) {
         .from(invoices)
         .where(
           and(
-            eq(invoices.id, invoiceId),
+            eq(invoices.id, requestedInvoiceId),
             eq(invoices.clientId, client.id),
             eq(invoices.practiceId, client.practiceId),
+            ...(paymentCredential
+              ? [eq(invoices.id, paymentCredential.invoiceId)]
+              : []),
             isNull(invoices.deletedAt),
           ),
         )
@@ -209,30 +277,24 @@ export async function POST(req: NextRequest) {
             and(
               eq(appointments.id, invoice.appointmentId),
               eq(appointments.practiceId, invoice.practiceId),
-              isNull(appointments.deletedAt)
-            )
+              isNull(appointments.deletedAt),
+            ),
           )
           .for("update");
         if (!appointment) {
           return NextResponse.json(
             { error: "The linked appointment is no longer available" },
-            { status: 409 }
+            { status: 409 },
           );
         }
         try {
           await assertVisitInvoiceReadyForFinancialAction(
             { db: tx, practiceId: invoice.practiceId },
-            invoice.appointmentId
+            invoice.appointmentId,
           );
         } catch (err) {
-          if (
-            err instanceof TRPCError &&
-            err.code === "PRECONDITION_FAILED"
-          ) {
-            return NextResponse.json(
-              { error: err.message },
-              { status: 409 }
-            );
+          if (err instanceof TRPCError && err.code === "PRECONDITION_FAILED") {
+            return NextResponse.json({ error: err.message }, { status: 409 });
           }
           throw err;
         }
@@ -299,7 +361,10 @@ export async function POST(req: NextRequest) {
         })
         .from(practices)
         .where(
-          and(eq(practices.id, invoice.practiceId), isNull(practices.deletedAt)),
+          and(
+            eq(practices.id, invoice.practiceId),
+            isNull(practices.deletedAt),
+          ),
         )
         .limit(1)
         .for("share", { of: practices });
@@ -339,7 +404,7 @@ export async function POST(req: NextRequest) {
       }
 
       // On hosted, client money must land in the practice's own Stripe
-      // account (Connect destination charge), exactly like the staff
+      // account (Connect direct charge), exactly like the staff
       // "Take Card" path. A platform charge would put clinic revenue in
       // OpenVPM's account. Self-host keeps the platform charge: there the
       // configured Stripe key IS the practice's own account.
@@ -351,6 +416,15 @@ export async function POST(req: NextRequest) {
           {
             error:
               "Online payments are not set up for this clinic yet. Please call the clinic to pay.",
+          },
+          { status: 503 },
+        );
+      }
+      if (connectedAccountId && !stripeConnectApplicationFeeConfigured()) {
+        return NextResponse.json(
+          {
+            error:
+              "Online payments are temporarily unavailable. Please call the clinic to pay.",
           },
           { status: 503 },
         );
@@ -368,18 +442,28 @@ export async function POST(req: NextRequest) {
         applicationFeeAmount: connectedAccountId
           ? stripeConnectApplicationFeeAmount(amountCents)
           : undefined,
-        successUrl: buildPortalPaymentReturnUrl({
-          origin,
-          token,
-          status: "success",
-          invoiceId: invoice.id,
-        }),
-        cancelUrl: buildPortalPaymentReturnUrl({
-          origin,
-          token,
-          status: "cancelled",
-          invoiceId: invoice.id,
-        }),
+        successUrl: paymentToken
+          ? buildInvoicePaymentReturnUrl({
+              origin,
+              token: paymentToken,
+              status: "success",
+            })
+          : buildPortalPaymentReturnUrl({
+              origin,
+              status: "success",
+              invoiceId: invoice.id,
+            }),
+        cancelUrl: paymentToken
+          ? buildInvoicePaymentReturnUrl({
+              origin,
+              token: paymentToken,
+              status: "cancelled",
+            })
+          : buildPortalPaymentReturnUrl({
+              origin,
+              status: "cancelled",
+              invoiceId: invoice.id,
+            }),
       });
 
       if (!isSafePortalCheckoutRedirectUrl(result?.url)) {

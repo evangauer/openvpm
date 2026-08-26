@@ -65,6 +65,36 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       table: "practices",
       name: "practices_recovery_hold_evidence_check",
     },
+    {
+      kind: "constraint",
+      table: "clients",
+      name: "clients_portal_access_token_state_check",
+    },
+    {
+      kind: "constraint",
+      table: "portal_sessions",
+      name: "portal_sessions_client_tenant_fk",
+    },
+    {
+      kind: "index",
+      table: "portal_sessions",
+      name: "portal_sessions_token_hash_uq",
+    },
+    {
+      kind: "index",
+      table: "portal_sessions",
+      name: "portal_sessions_client_active_idx",
+    },
+    {
+      kind: "index",
+      table: "portal_sessions",
+      name: "portal_sessions_expiry_idx",
+    },
+    {
+      kind: "rls_policy",
+      table: "portal_sessions",
+      name: "tenant_isolation",
+    },
     { kind: "constraint", table: "files", name: "files_uploader_tenant_fk" },
     { kind: "constraint", table: "files", name: "files_patient_tenant_fk" },
     {

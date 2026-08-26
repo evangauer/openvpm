@@ -99,6 +99,9 @@ export default function ClientDetailPage() {
   const utils = trpc.useUtils();
   const { data: session } = useSession();
   const [confirmRotatePortal, setConfirmRotatePortal] = useState(false);
+  const [issuedPortalToken, setIssuedPortalToken] = useState<string | null>(
+    null,
+  );
   const canManageClientDetails = canManageClientDetailsRole(
     session?.user?.role
   );
@@ -111,10 +114,11 @@ export default function ClientDetailPage() {
     { enabled: !!params.id }
   );
   const rotatePortalToken = trpc.clients.rotatePortalAccessToken.useMutation({
-    onSuccess: () => {
+    onSuccess: (result) => {
+      setIssuedPortalToken(result.accessToken);
       utils.clients.getById.invalidate({ id: params.id });
       setConfirmRotatePortal(false);
-      toast.success("Portal link updated");
+      toast.success("One-time portal link created");
     },
     onError: (err) => {
       toast.error(err.message);
@@ -146,8 +150,8 @@ export default function ClientDetailPage() {
   const address = [client.address, client.city, client.state, client.zip]
     .filter(Boolean)
     .join(", ");
-  const portalPath = client.accessToken
-    ? `/portal/${client.accessToken}`
+  const portalPath = issuedPortalToken
+    ? `/portal/access/${issuedPortalToken}`
     : null;
 
   const copyPortalLink = async () => {
@@ -165,7 +169,7 @@ export default function ClientDetailPage() {
 
   const handlePortalTokenAction = () => {
     if (!canManageClientDetails) return;
-    if (client.accessToken && !confirmRotatePortal) {
+    if (client.portalAccessState !== "not_issued" && !confirmRotatePortal) {
       setConfirmRotatePortal(true);
       return;
     }
@@ -233,8 +237,8 @@ export default function ClientDetailPage() {
               Client Portal
             </h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              Share this private link so the client can view pets, request
-              appointments, and pay invoices online.
+              Create a private, one-time link so the client can start a secure
+              portal session. Links expire after 15 minutes.
             </p>
             {!canManageClientDetails ? (
               <p className="mt-3 text-sm text-muted-foreground">
@@ -246,13 +250,19 @@ export default function ClientDetailPage() {
               </div>
             ) : (
               <p className="mt-3 text-sm text-muted-foreground">
-                No portal link has been issued for this client yet.
+                {client.portalAccessState === "ready"
+                  ? "A one-time link is active, but its secret is no longer displayed. Reset access to create another."
+                  : client.portalAccessState === "consumed"
+                    ? "The client has used their latest link. Reset access only if they need a new session."
+                    : client.portalAccessState === "expired"
+                      ? "The latest one-time link has expired."
+                      : "No portal link has been issued for this client yet."}
               </p>
             )}
             {confirmRotatePortal ? (
               <p className="mt-2 text-xs text-amber-700">
-                Rotating this link will immediately invalidate the previous
-                portal URL.
+                Resetting access invalidates the previous link and signs this
+                client out of every active portal session.
               </p>
             ) : null}
           </div>
@@ -292,10 +302,10 @@ export default function ClientDetailPage() {
                 <RefreshCw className="h-4 w-4" />
                 {rotatePortalToken.isPending
                   ? "Updating..."
-                  : client.accessToken
+                  : client.portalAccessState !== "not_issued"
                     ? confirmRotatePortal
-                      ? "Confirm Rotate"
-                      : "Rotate Link"
+                      ? "Confirm Reset"
+                      : "Reset Access"
                     : "Create Link"}
               </Button>
             )}

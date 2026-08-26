@@ -22,6 +22,7 @@ export async function GET(request: Request) {
         authTokensDeleted: result.authTokensDeleted,
         sessionsDeleted: result.sessionsDeleted,
         verificationTokensDeleted: result.verificationTokensDeleted,
+        portalSessionsDeleted: result.portalSessionsDeleted,
       },
     });
     return NextResponse.json({
@@ -29,6 +30,7 @@ export async function GET(request: Request) {
       authTokensDeleted: result.authTokensDeleted,
       sessionsDeleted: result.sessionsDeleted,
       verificationTokensDeleted: result.verificationTokensDeleted,
+      portalSessionsDeleted: result.portalSessionsDeleted,
       cutoff: result.cutoff.toISOString(),
     });
   } catch (error) {
