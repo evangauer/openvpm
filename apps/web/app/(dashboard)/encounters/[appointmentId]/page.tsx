@@ -1311,7 +1311,7 @@ function VisitCloseout({
   const canDraftClinical =
     role === "admin" || role === "veterinarian" || role === "technician";
   const canFinalizeClinical =
-    role === "veterinarian" ||
+    data?.canFinalizeDoctorRequiredVisit === true ||
     (appointment.typeRequiresDoctor === 0 &&
       (role === "admin" || role === "technician"));
   const signedClinical =

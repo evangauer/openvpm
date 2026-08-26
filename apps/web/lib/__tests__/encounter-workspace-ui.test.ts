@@ -241,6 +241,12 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("Documented exception");
     expect(workspaceSource).toContain("linkedMedicationCount");
     expect(workspaceSource).toContain("disabled={!canFinalizeNow}");
+    expect(workspaceSource).toContain(
+      "data?.canFinalizeDoctorRequiredVisit === true",
+    );
+    expect(workspaceSource).not.toContain(
+      'role === "veterinarian" ||\n    (appointment.typeRequiresDoctor',
+    );
   });
 
   it("keeps the signed owner handoff reviewable and mobile billing reachable", () => {

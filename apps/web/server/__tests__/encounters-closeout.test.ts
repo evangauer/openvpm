@@ -233,6 +233,39 @@ describe("encounter prescription lifecycle semantics", () => {
   });
 });
 
+describe("encounter closeout clinical capability", () => {
+  it("reports that an admin veterinarian provider can finalize doctor-required visits", async () => {
+    const appointment = {
+      id: APPOINTMENT_ID,
+      patientId: null,
+      clientId: null,
+      practiceName: "Clinic",
+      practicePhone: null,
+      practiceTimezone: "America/Denver",
+    };
+    const { db } = createDb({
+      selectResults: [
+        [appointment],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [{ id: USER_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db, "admin").getCloseout({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).resolves.toMatchObject({
+      canFinalizeDoctorRequiredVisit: true,
+    });
+  });
+});
+
 describe("encounter closeout safety", () => {
   it("blocks checkout when performed visit work is unresolved", async () => {
     const { db, updateSet, execute } = createDb({

@@ -707,6 +707,7 @@ export const encountersRouter = createRouter({
         medications,
         followUpAppointments,
         followUpAssignees,
+        canFinalizeDoctorRequiredVisit,
       ] = await Promise.all([
         getCloseoutRow(ctx, input.appointmentId),
         ctx.db
@@ -867,6 +868,7 @@ export const encountersRouter = createRouter({
             )
             .orderBy(asc(users.name), asc(users.email))
             .limit(100),
+          isVeterinarianProvider(ctx, ctx.user.id, ctx.user.role),
         ]);
 
       const rawInvoices =
@@ -918,6 +920,7 @@ export const encountersRouter = createRouter({
         followUpAppointments,
         followUpAssignees,
         invoices: invoiceSummaries,
+        canFinalizeDoctorRequiredVisit,
       };
     }),
 
