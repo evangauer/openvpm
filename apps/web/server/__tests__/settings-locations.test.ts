@@ -6,19 +6,13 @@ const SETTINGS_SOURCE = readFileSync(
   "utf8",
 );
 
-vi.mock("@/lib/billing/subscription-sync", () => ({
-  syncPracticeSubscriptionQuantities: vi.fn(async () => ({
-    status: "ok",
-    message: "synced",
-    updatedAt: new Date("2026-06-27T00:00:00Z").toISOString(),
-    locationCount: 2,
-    billableSeatCount: 3,
-  })),
+vi.mock("@/lib/billing/stripe-subscription-quantity-sync", () => ({
+  requestAndRunPracticeSubscriptionQuantitySync: vi.fn(async () => true),
 }));
 
 const { settingsRouter } = await import("../routers/settings");
-const { syncPracticeSubscriptionQuantities } =
-  await import("@/lib/billing/subscription-sync");
+const { requestAndRunPracticeSubscriptionQuantitySync } =
+  await import("@/lib/billing/stripe-subscription-quantity-sync");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
@@ -147,7 +141,9 @@ describe("settings location workflows", () => {
 
     expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
-    expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(
+      requestAndRunPracticeSubscriptionQuantitySync,
+    ).not.toHaveBeenCalled();
   });
 
   it("creates a primary location and syncs hosted billing quantities", async () => {
@@ -172,10 +168,10 @@ describe("settings location workflows", () => {
       phone: "555-0100",
       isPrimary: true,
     });
-    expect(syncPracticeSubscriptionQuantities).toHaveBeenCalledWith({
+    expect(requestAndRunPracticeSubscriptionQuantitySync).toHaveBeenCalledWith(
+      PRACTICE_ID,
       db,
-      practiceId: PRACTICE_ID,
-    });
+    );
   });
 
   it("rejects location list and create when the practice is missing or deleted", async () => {
@@ -200,7 +196,9 @@ describe("settings location workflows", () => {
 
     expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
-    expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(
+      requestAndRunPracticeSubscriptionQuantitySync,
+    ).not.toHaveBeenCalled();
   });
 
   it("requires an active practice for location reads, writes, and delete dependencies", () => {
@@ -240,7 +238,9 @@ describe("settings location workflows", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
-    expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(
+      requestAndRunPracticeSubscriptionQuantitySync,
+    ).not.toHaveBeenCalled();
   });
 
   it("retires a primary location, disables its messaging setup, promotes another, and syncs billing", async () => {
@@ -270,10 +270,10 @@ describe("settings location workflows", () => {
     });
     expect(updateSet).toHaveBeenCalledWith({ enabled: false });
     expect(updateSet).toHaveBeenCalledWith({ isPrimary: true });
-    expect(syncPracticeSubscriptionQuantities).toHaveBeenCalledWith({
+    expect(requestAndRunPracticeSubscriptionQuantitySync).toHaveBeenCalledWith(
+      PRACTICE_ID,
       db,
-      practiceId: PRACTICE_ID,
-    });
+    );
   });
 
   it("rejects location deletes while active rooms still use the location", async () => {
@@ -292,7 +292,9 @@ describe("settings location workflows", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
-    expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(
+      requestAndRunPracticeSubscriptionQuantitySync,
+    ).not.toHaveBeenCalled();
   });
 
   it("rejects location deletes while active staff are assigned to the location", async () => {
@@ -312,7 +314,9 @@ describe("settings location workflows", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
-    expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(
+      requestAndRunPracticeSubscriptionQuantitySync,
+    ).not.toHaveBeenCalled();
   });
 
   it("rejects location deletes while active inventory products use the location", async () => {
@@ -333,7 +337,9 @@ describe("settings location workflows", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
-    expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(
+      requestAndRunPracticeSubscriptionQuantitySync,
+    ).not.toHaveBeenCalled();
   });
 
   it("rejects location deletes while active staff schedules use the location", async () => {
@@ -355,7 +361,9 @@ describe("settings location workflows", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
-    expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(
+      requestAndRunPracticeSubscriptionQuantitySync,
+    ).not.toHaveBeenCalled();
   });
 
   it("rejects stale location deletes before disabling messaging or syncing billing", async () => {
@@ -382,7 +390,9 @@ describe("settings location workflows", () => {
       isPrimary: false,
     });
     expect(updateSet).not.toHaveBeenCalledWith({ enabled: false });
-    expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(
+      requestAndRunPracticeSubscriptionQuantitySync,
+    ).not.toHaveBeenCalled();
   });
 
   it("rejects primary location deletes when replacement promotion races", async () => {
@@ -406,7 +416,9 @@ describe("settings location workflows", () => {
 
     expect(updateSet).toHaveBeenCalledWith({ enabled: false });
     expect(updateSet).toHaveBeenCalledWith({ isPrimary: true });
-    expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(
+      requestAndRunPracticeSubscriptionQuantitySync,
+    ).not.toHaveBeenCalled();
   });
 
   it("sets a location primary and clears other active locations", async () => {

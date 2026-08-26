@@ -39,18 +39,15 @@ export const usageRecords = pgTable(
   (t) => ({
     practicePeriodIdx: index("usage_practice_period_idx").on(
       t.practiceId,
-      t.periodMonth
+      t.periodMonth,
     ),
     meterRetryIdx: index("usage_meter_retry_idx").on(t.stripeMeteredAt),
-  })
+  }),
 );
 
 export const stripeConversionEvidenceKindEnum = pgEnum(
   "stripe_conversion_evidence_kind",
-  [
-    "subscription_checkout_completed",
-    "positive_subscription_invoice_paid",
-  ],
+  ["subscription_checkout_completed", "positive_subscription_invoice_paid"],
 );
 
 /**
@@ -75,6 +72,53 @@ export const stripeEvents = pgTable(
     amountCents: integer("amount_cents"),
     /** Lower-case ISO 4217 code, only for positive invoice evidence. */
     currency: varchar("currency", { length: 3 }),
+    subscriptionReconciliationState: varchar(
+      "subscription_reconciliation_state",
+      { length: 16 },
+    ),
+    subscriptionReconciliationAttempts: integer(
+      "subscription_reconciliation_attempts",
+    )
+      .notNull()
+      .default(0),
+    subscriptionReconciliationRevision: integer(
+      "subscription_reconciliation_revision",
+    ),
+    subscriptionReconciliationAuthorizedAt: timestamp(
+      "subscription_reconciliation_authorized_at",
+      { withTimezone: true },
+    ),
+    subscriptionReconciliationResolvedAt: timestamp(
+      "subscription_reconciliation_resolved_at",
+      { withTimezone: true },
+    ),
+    subscriptionReconciliationSubscriptionId: varchar(
+      "subscription_reconciliation_subscription_id",
+      { length: 128 },
+    ),
+    subscriptionQuantitySyncState: varchar("subscription_quantity_sync_state", {
+      length: 16,
+    }),
+    subscriptionQuantitySyncAttempts: integer(
+      "subscription_quantity_sync_attempts",
+    )
+      .notNull()
+      .default(0),
+    subscriptionQuantitySyncLeaseToken: uuid(
+      "subscription_quantity_sync_lease_token",
+    ),
+    subscriptionQuantitySyncLeaseExpiresAt: timestamp(
+      "subscription_quantity_sync_lease_expires_at",
+      { withTimezone: true },
+    ),
+    subscriptionQuantitySyncLastAttemptAt: timestamp(
+      "subscription_quantity_sync_last_attempt_at",
+      { withTimezone: true },
+    ),
+    subscriptionQuantitySyncCompletedAt: timestamp(
+      "subscription_quantity_sync_completed_at",
+      { withTimezone: true },
+    ),
     processedAt: timestamp("processed_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -92,6 +136,13 @@ export const stripeEvents = pgTable(
         table.eventId,
       )
       .where(sql`${table.evidenceKind} is not null`),
+    pendingSubscriptionQuantitySyncIdx: index(
+      "stripe_events_pending_subscription_quantity_sync_idx",
+    )
+      .on(table.subscriptionQuantitySyncLeaseExpiresAt, table.eventId)
+      .where(
+        sql`${table.subscriptionQuantitySyncState} in ('pending', 'running')`,
+      ),
     evidenceShapeCheck: check(
       "stripe_events_conversion_evidence_shape_check",
       sql`(
@@ -115,7 +166,63 @@ export const stripeEvents = pgTable(
         )
       )`,
     ),
-  })
+    subscriptionReconciliationShapeCheck: check(
+      "stripe_events_subscription_reconciliation_shape_check",
+      sql`(
+        ${table.subscriptionReconciliationState} is null and
+        ${table.subscriptionReconciliationAttempts} = 0 and
+        ${table.subscriptionReconciliationRevision} is null and
+        ${table.subscriptionReconciliationAuthorizedAt} is null and
+        ${table.subscriptionReconciliationResolvedAt} is null and
+        ${table.subscriptionReconciliationSubscriptionId} is null
+      ) or (
+        ${table.subscriptionReconciliationState} in ('authorized', 'applied', 'superseded') and
+        ${table.practiceId} is not null and
+        ${table.subscriptionReconciliationSubscriptionId} is not null and
+        length(btrim(${table.subscriptionReconciliationSubscriptionId})) > 0 and
+        ${table.subscriptionReconciliationAttempts} > 0 and
+        ${table.subscriptionReconciliationRevision} is not null and
+        ${table.subscriptionReconciliationRevision} > 0 and
+        ${table.subscriptionReconciliationAuthorizedAt} is not null and
+        ((${table.subscriptionReconciliationState} = 'authorized' and ${table.subscriptionReconciliationResolvedAt} is null) or
+         (${table.subscriptionReconciliationState} in ('applied', 'superseded') and ${table.subscriptionReconciliationResolvedAt} is not null))
+      )`,
+    ),
+    subscriptionQuantitySyncShapeCheck: check(
+      "stripe_events_subscription_quantity_sync_shape_check",
+      sql`(
+        ${table.subscriptionQuantitySyncState} is null and
+        ${table.subscriptionQuantitySyncAttempts} = 0 and
+        ${table.subscriptionQuantitySyncLeaseToken} is null and
+        ${table.subscriptionQuantitySyncLeaseExpiresAt} is null and
+        ${table.subscriptionQuantitySyncLastAttemptAt} is null and
+        ${table.subscriptionQuantitySyncCompletedAt} is null
+      ) or (
+        ${table.subscriptionQuantitySyncState} = 'pending' and
+        ${table.subscriptionReconciliationState} = 'applied' and
+        ${table.subscriptionQuantitySyncLeaseToken} is null and
+        ${table.subscriptionQuantitySyncLeaseExpiresAt} is null and
+        ${table.subscriptionQuantitySyncCompletedAt} is null
+      ) or (
+        ${table.subscriptionQuantitySyncState} = 'running' and
+        ${table.subscriptionReconciliationState} = 'applied' and
+        ${table.subscriptionQuantitySyncAttempts} > 0 and
+        ${table.subscriptionQuantitySyncLeaseToken} is not null and
+        ${table.subscriptionQuantitySyncLeaseExpiresAt} is not null and
+        ${table.subscriptionQuantitySyncLastAttemptAt} is not null and
+        ${table.subscriptionQuantitySyncCompletedAt} is null
+      ) or (
+        ${table.subscriptionQuantitySyncState} = 'completed' and
+        ${table.subscriptionReconciliationState} = 'applied' and
+        ${table.subscriptionQuantitySyncAttempts} > 0 and
+        ${table.subscriptionQuantitySyncLeaseToken} is null and
+        ${table.subscriptionQuantitySyncLeaseExpiresAt} is null and
+        ${table.subscriptionQuantitySyncLastAttemptAt} is not null and
+        ${table.subscriptionQuantitySyncCompletedAt} is not null and
+        ${table.subscriptionQuantitySyncCompletedAt} >= ${table.subscriptionQuantitySyncLastAttemptAt}
+      )`,
+    ),
+  }),
 );
 
 /**
@@ -136,5 +243,5 @@ export const rateLimitBuckets = pgTable(
   },
   (table) => ({
     resetAtIdx: index("rate_limit_buckets_reset_at_idx").on(table.resetAt),
-  })
+  }),
 );

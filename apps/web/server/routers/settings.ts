@@ -42,7 +42,7 @@ import {
   hasExplicitPracticeJurisdiction,
 } from "@/lib/locale/clinic-regions";
 import { alertOps } from "@/lib/alerts";
-import { syncPracticeSubscriptionQuantities } from "@/lib/billing/subscription-sync";
+import { requestAndRunPracticeSubscriptionQuantitySync } from "@/lib/billing/stripe-subscription-quantity-sync";
 import {
   clearSeededDemoData,
   hasLiveDemoData,
@@ -616,31 +616,45 @@ async function assertPrimaryLocationCanChange(ctx: {
 }
 
 async function syncBillingAfterStaffChange(
-  db: Parameters<typeof syncPracticeSubscriptionQuantities>[0]["db"],
+  postCommitEffect:
+    | ((effect: (rootDb: Database) => Promise<void>) => void)
+    | undefined,
   practiceId: string,
 ): Promise<void> {
-  try {
-    await syncPracticeSubscriptionQuantities({ db, practiceId });
-  } catch (err) {
-    await alertOps(
-      "Staff billing sync crashed",
-      `practice=${practiceId}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+  if (!postCommitEffect) {
+    throw new Error("Staff billing mutation requires post-commit dispatch.");
   }
+  postCommitEffect(async (rootDb) => {
+    try {
+      await requestAndRunPracticeSubscriptionQuantitySync(practiceId, rootDb);
+    } catch (err) {
+      await alertOps(
+        "Staff billing sync crashed",
+        `practice=${practiceId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  });
 }
 
 async function syncBillingAfterLocationChange(
-  db: Parameters<typeof syncPracticeSubscriptionQuantities>[0]["db"],
+  postCommitEffect:
+    | ((effect: (rootDb: Database) => Promise<void>) => void)
+    | undefined,
   practiceId: string,
 ): Promise<void> {
-  try {
-    await syncPracticeSubscriptionQuantities({ db, practiceId });
-  } catch (err) {
-    await alertOps(
-      "Location billing sync crashed",
-      `practice=${practiceId}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+  if (!postCommitEffect) {
+    throw new Error("Location billing mutation requires post-commit dispatch.");
   }
+  postCommitEffect(async (rootDb) => {
+    try {
+      await requestAndRunPracticeSubscriptionQuantitySync(practiceId, rootDb);
+    } catch (err) {
+      await alertOps(
+        "Location billing sync crashed",
+        `practice=${practiceId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  });
 }
 
 interface PracticeSettings {
@@ -1215,7 +1229,10 @@ export const settingsRouter = createRouter({
         return inserted!;
       });
 
-      await syncBillingAfterLocationChange(ctx.db, ctx.practiceId);
+      await syncBillingAfterLocationChange(
+        ctx.postCommitEffect,
+        ctx.practiceId,
+      );
       return created;
     }),
 
@@ -1499,7 +1516,10 @@ export const settingsRouter = createRouter({
         }
       });
 
-      await syncBillingAfterLocationChange(ctx.db, ctx.practiceId);
+      await syncBillingAfterLocationChange(
+        ctx.postCommitEffect,
+        ctx.practiceId,
+      );
       return { success: true };
     }),
 
@@ -2600,7 +2620,7 @@ export const settingsRouter = createRouter({
           role: users.role,
           isVeterinarian: users.isVeterinarian,
         });
-      await syncBillingAfterStaffChange(ctx.db, ctx.practiceId);
+      await syncBillingAfterStaffChange(ctx.postCommitEffect, ctx.practiceId);
       return user!;
     }),
 
@@ -2774,7 +2794,7 @@ export const settingsRouter = createRouter({
 
       // Keep the pending seat synchronized even when delivery is refused. A
       // later retry is idempotent: it reuses this user and rotates the token.
-      await syncBillingAfterStaffChange(ctx.db, ctx.practiceId);
+      await syncBillingAfterStaffChange(ctx.postCommitEffect, ctx.practiceId);
 
       try {
         const delivery = await sendStaffInviteEmail({
@@ -3077,7 +3097,7 @@ export const settingsRouter = createRouter({
         // verification link could become usable after a later restoration.
         await tx.delete(authTokens).where(eq(authTokens.userId, input.id));
       });
-      await syncBillingAfterStaffChange(ctx.db, ctx.practiceId);
+      await syncBillingAfterStaffChange(ctx.postCommitEffect, ctx.practiceId);
       return { success: true };
     }),
 
@@ -3098,7 +3118,7 @@ export const settingsRouter = createRouter({
       if (!updated) {
         throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
       }
-      await syncBillingAfterStaffChange(ctx.db, ctx.practiceId);
+      await syncBillingAfterStaffChange(ctx.postCommitEffect, ctx.practiceId);
       return { success: true };
     }),
 

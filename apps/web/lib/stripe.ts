@@ -23,7 +23,7 @@ const EXCLUDED_SUBSCRIPTION_PAYMENT_METHODS: Stripe.Checkout.SessionCreateParams
 function stripeIdempotencyKey(
   scope: string,
   identity: string,
-  params?: unknown
+  params?: unknown,
 ): string {
   const digest = createHash("sha256")
     .update(JSON.stringify(params ?? identity))
@@ -50,7 +50,9 @@ export async function createCheckoutSession(data: {
   applicationFeeAmount?: number;
 }): Promise<{ url: string | null } | null> {
   if (!stripe) {
-    console.warn("[Stripe] No API key configured; checkout session unavailable");
+    console.warn(
+      "[Stripe] No API key configured; checkout session unavailable",
+    );
     return null;
   }
   const params = buildInvoiceCheckoutSessionParams(data);
@@ -58,7 +60,7 @@ export async function createCheckoutSession(data: {
     idempotencyKey: stripeIdempotencyKey(
       "invoice-checkout",
       data.invoiceId,
-      params
+      params,
     ),
     ...(data.connectedAccountId
       ? { stripeAccount: data.connectedAccountId }
@@ -68,9 +70,7 @@ export async function createCheckoutSession(data: {
 }
 
 function checkoutAccountOptions(connectedAccountId?: string) {
-  return connectedAccountId
-    ? { stripeAccount: connectedAccountId }
-    : undefined;
+  return connectedAccountId ? { stripeAccount: connectedAccountId } : undefined;
 }
 
 /**
@@ -96,7 +96,7 @@ export async function captureStripeCheckoutAuthorization(data: {
     ? await stripe.paymentIntents.retrieve(
         data.paymentIntentId,
         {},
-        accountOptions
+        accountOptions,
       )
     : await stripe.paymentIntents.retrieve(data.paymentIntentId);
 
@@ -107,14 +107,11 @@ export async function captureStripeCheckoutAuthorization(data: {
   }
   if (current.status !== "requires_capture") {
     throw new Error(
-      `Stripe Checkout authorization is not capturable: ${current.status}`
+      `Stripe Checkout authorization is not capturable: ${current.status}`,
     );
   }
 
-  const amountToCapture = Math.min(
-    data.amountCents,
-    current.amount_capturable
-  );
+  const amountToCapture = Math.min(data.amountCents, current.amount_capturable);
   if (amountToCapture <= 0) {
     throw new Error("Stripe Checkout authorization has no capturable amount.");
   }
@@ -126,9 +123,9 @@ export async function captureStripeCheckoutAuthorization(data: {
     amountToCapture > 1
       ? Math.min(
           Math.floor(
-            (originalApplicationFee * amountToCapture) / current.amount
+            (originalApplicationFee * amountToCapture) / current.amount,
           ),
-          amountToCapture - 1
+          amountToCapture - 1,
         )
       : 0;
   const overrideApplicationFee =
@@ -146,10 +143,10 @@ export async function captureStripeCheckoutAuthorization(data: {
       idempotencyKey: stripeIdempotencyKey(
         "invoice-capture",
         data.checkoutSessionId,
-        captureParams
+        captureParams,
       ),
       ...(accountOptions ?? {}),
-    }
+    },
   );
   return { amountCapturedCents: captured.amount_received };
 }
@@ -181,7 +178,7 @@ export async function refundInvalidStripeCheckoutPayment(data: {
     ? await stripe.checkout.sessions.retrieve(
         parsed.sessionId,
         {},
-        accountOptions
+        accountOptions,
       )
     : await stripe.checkout.sessions.retrieve(parsed.sessionId);
   const paymentIntentId =
@@ -190,7 +187,7 @@ export async function refundInvalidStripeCheckoutPayment(data: {
       : session.payment_intent?.id;
   if (!paymentIntentId) {
     throw new Error(
-      `Stripe Checkout session has no payment intent: ${parsed.sessionId}`
+      `Stripe Checkout session has no payment intent: ${parsed.sessionId}`,
     );
   }
   const paymentIntent =
@@ -200,7 +197,7 @@ export async function refundInvalidStripeCheckoutPayment(data: {
         ? await stripe.paymentIntents.retrieve(
             paymentIntentId,
             {},
-            accountOptions
+            accountOptions,
           )
         : await stripe.paymentIntents.retrieve(paymentIntentId);
 
@@ -211,10 +208,10 @@ export async function refundInvalidStripeCheckoutPayment(data: {
       {
         idempotencyKey: stripeIdempotencyKey(
           "invalid-checkout-cancel",
-          data.idempotencyKey
+          data.idempotencyKey,
         ),
         ...(accountOptions ?? {}),
-      }
+      },
     );
     return { outcome: "authorization_canceled" };
   }
@@ -226,7 +223,7 @@ export async function refundInvalidStripeCheckoutPayment(data: {
   }
   if (paymentIntent.status !== "succeeded") {
     throw new Error(
-      `Stripe Checkout payment is not ready to resolve: ${paymentIntent.status}`
+      `Stripe Checkout payment is not ready to resolve: ${paymentIntent.status}`,
     );
   }
 
@@ -241,17 +238,15 @@ export async function refundInvalidStripeCheckoutPayment(data: {
     {
       payment_intent: paymentIntentId,
       amount: refundableCents,
-      ...(parsed.connectedAccountId
-        ? { refund_application_fee: true }
-        : {}),
+      ...(parsed.connectedAccountId ? { refund_application_fee: true } : {}),
     },
     {
       idempotencyKey: stripeIdempotencyKey(
         "invalid-checkout-refund",
-        data.idempotencyKey
+        data.idempotencyKey,
       ),
       ...(accountOptions ?? {}),
-    }
+    },
   );
   return {
     outcome: "refunded",
@@ -267,7 +262,7 @@ export async function refundInvalidStripeCheckoutPayment(data: {
  * Returns null for non-Stripe payments (cash, check, manual).
  */
 export function parseStripeCheckoutExternalId(
-  externalId: string | null | undefined
+  externalId: string | null | undefined,
 ): { sessionId: string; connectedAccountId?: string } | null {
   if (!externalId) return null;
   const connect = externalId.match(/^stripe:connect:([^:]+):checkout:(.+)$/);
@@ -305,7 +300,7 @@ export async function refundStripeCheckoutPayment(data: {
     ? await stripe.checkout.sessions.retrieve(
         parsed.sessionId,
         {},
-        accountOptions
+        accountOptions,
       )
     : await stripe.checkout.sessions.retrieve(parsed.sessionId);
   const paymentIntent =
@@ -314,7 +309,7 @@ export async function refundStripeCheckoutPayment(data: {
       : session.payment_intent?.id;
   if (!paymentIntent) {
     throw new Error(
-      `Stripe Checkout session has no payment intent to refund: ${parsed.sessionId}`
+      `Stripe Checkout session has no payment intent to refund: ${parsed.sessionId}`,
     );
   }
 
@@ -328,7 +323,7 @@ export async function refundStripeCheckoutPayment(data: {
   const refund = await stripe.refunds.create(params, {
     idempotencyKey: stripeIdempotencyKey(
       "refund",
-      data.idempotencyKey ?? parsed.sessionId
+      data.idempotencyKey ?? parsed.sessionId,
     ),
     ...(parsed.connectedAccountId
       ? { stripeAccount: parsed.connectedAccountId }
@@ -360,10 +355,11 @@ export function buildInvoiceCheckoutSessionParams(data: {
   if (data.connectedAccountId) {
     metadata.stripeConnectAccountId = data.connectedAccountId;
   }
-  const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData = {
-    metadata,
-    capture_method: "manual",
-  };
+  const paymentIntentData: Stripe.Checkout.SessionCreateParams.PaymentIntentData =
+    {
+      metadata,
+      capture_method: "manual",
+    };
   if (data.applicationFeeAmount && data.applicationFeeAmount > 0) {
     paymentIntentData.application_fee_amount = data.applicationFeeAmount;
   }
@@ -373,14 +369,16 @@ export function buildInvoiceCheckoutSessionParams(data: {
     integration_identifier: INVOICE_CHECKOUT_INTEGRATION_IDENTIFIER,
     customer_email: checkoutCustomerEmail(data.clientEmail),
     client_reference_id: data.invoiceId,
-    line_items: [{
-      price_data: {
-        currency: (data.currency ?? "usd").toLowerCase(),
-        product_data: { name: data.description },
-        unit_amount: data.amount,
+    line_items: [
+      {
+        price_data: {
+          currency: (data.currency ?? "usd").toLowerCase(),
+          product_data: { name: data.description },
+          unit_amount: data.amount,
+        },
+        quantity: 1,
       },
-      quantity: 1,
-    }],
+    ],
     metadata,
     payment_intent_data: paymentIntentData,
     success_url: data.successUrl,
@@ -395,11 +393,7 @@ export async function constructWebhookEvent(
   if (!stripe) return null;
   const endpointSecret = stripeWebhookSecret();
   if (!endpointSecret) return null;
-  return stripe.webhooks.constructEvent(
-    body,
-    signature,
-    endpointSecret,
-  );
+  return stripe.webhooks.constructEvent(body, signature, endpointSecret);
 }
 
 // ── Stripe Connect (clinic-owned client invoice payments) ─────────────────
@@ -442,16 +436,13 @@ export async function createConnectAccount(data: {
       },
     },
     {
-      idempotencyKey: stripeIdempotencyKey(
-        "connect-account",
-        data.practiceId
-      ),
-    }
+      idempotencyKey: stripeIdempotencyKey("connect-account", data.practiceId),
+    },
   );
 }
 
 export async function retrieveConnectAccount(
-  accountId: string
+  accountId: string,
 ): Promise<Stripe.Account | null> {
   if (!stripe) return null;
   return stripe.accounts.retrieve(accountId);
@@ -473,7 +464,7 @@ export async function createConnectAccountLink(data: {
 }
 
 export async function createConnectLoginLink(
-  accountId: string
+  accountId: string,
 ): Promise<{ url: string | null } | null> {
   if (!stripe) return null;
   const loginLink = await stripe.accounts.createLoginLink(accountId);
@@ -487,11 +478,7 @@ export async function constructConnectWebhookEvent(
   if (!stripe) return null;
   const endpointSecret = stripeConnectWebhookSecret();
   if (!endpointSecret) return null;
-  return stripe.webhooks.constructEvent(
-    body,
-    signature,
-    endpointSecret,
-  );
+  return stripe.webhooks.constructEvent(body, signature, endpointSecret);
 }
 
 // ── Hosted-SaaS subscriptions (separate surface from client invoicing) ──────
@@ -512,22 +499,96 @@ export async function createSubscriptionCheckoutSession(data: {
   trialPeriodDays?: number;
   billingCadence?: BillingCadence;
   source?: "signup" | "settings";
-}): Promise<{ url: string | null } | null> {
+  checkoutAttemptId?: string;
+  providerIdempotencyKey?: string;
+}): Promise<
+  { url: string | null } | DurableSubscriptionCheckoutSession | null
+> {
   if (!stripe) {
     console.warn(
-      "[Stripe] No API key configured; subscription checkout unavailable"
+      "[Stripe] No API key configured; subscription checkout unavailable",
     );
     return null;
   }
+  if (
+    Boolean(data.checkoutAttemptId) !== Boolean(data.providerIdempotencyKey)
+  ) {
+    throw new Error(
+      "Durable subscription Checkout identity is only valid as a complete pair.",
+    );
+  }
   const params = buildSubscriptionCheckoutSessionParams(data);
   const session = await stripe.checkout.sessions.create(params, {
-    idempotencyKey: stripeIdempotencyKey(
-      "subscription-checkout",
-      data.practiceId,
-      params
-    ),
+    idempotencyKey:
+      data.providerIdempotencyKey ??
+      stripeIdempotencyKey("subscription-checkout", data.practiceId, params),
   });
-  return { url: stripeCheckoutRedirectUrl(session.url) };
+  const url = stripeCheckoutRedirectUrl(session.url);
+  if (!data.checkoutAttemptId) return { url };
+  return durableSubscriptionCheckoutSession(session, data);
+}
+
+export type DurableSubscriptionCheckoutSession = {
+  sessionId: string;
+  status: "open" | "complete" | "expired";
+  url: string | null;
+  expiresAt: Date;
+  practiceId: string;
+  checkoutAttemptId: string;
+  customerId: string | null;
+  subscriptionId: string | null;
+};
+
+export async function retrieveDurableSubscriptionCheckoutSession(
+  sessionId: string,
+): Promise<DurableSubscriptionCheckoutSession | null> {
+  if (!stripe) return null;
+  const session = await stripe.checkout.sessions.retrieve(sessionId);
+  return durableSubscriptionCheckoutSession(session);
+}
+
+function durableSubscriptionCheckoutSession(
+  session: Stripe.Checkout.Session,
+  expected?: { practiceId: string; checkoutAttemptId?: string },
+): DurableSubscriptionCheckoutSession {
+  const practiceId = session.metadata?.practiceId?.trim() ?? "";
+  const checkoutAttemptId = session.metadata?.checkoutAttemptId?.trim() ?? "";
+  if (
+    !session.id ||
+    session.mode !== "subscription" ||
+    !practiceId ||
+    !checkoutAttemptId ||
+    session.client_reference_id !== practiceId ||
+    (session.status !== "open" &&
+      session.status !== "complete" &&
+      session.status !== "expired") ||
+    !Number.isSafeInteger(session.expires_at) ||
+    session.expires_at <= 0 ||
+    (expected &&
+      (expected.practiceId !== practiceId ||
+        expected.checkoutAttemptId !== checkoutAttemptId))
+  ) {
+    throw new Error("Stripe returned mismatched subscription Checkout state.");
+  }
+  const customerId =
+    typeof session.customer === "string"
+      ? session.customer
+      : (session.customer?.id ?? null);
+  const subscriptionId =
+    typeof session.subscription === "string"
+      ? session.subscription
+      : (session.subscription?.id ?? null);
+  return {
+    sessionId: session.id,
+    status: session.status,
+    url:
+      session.status === "open" ? stripeCheckoutRedirectUrl(session.url) : null,
+    expiresAt: new Date(session.expires_at * 1000),
+    practiceId,
+    checkoutAttemptId,
+    customerId,
+    subscriptionId,
+  };
 }
 
 export function buildSubscriptionCheckoutSessionParams(data: {
@@ -541,6 +602,7 @@ export function buildSubscriptionCheckoutSessionParams(data: {
   trialPeriodDays?: number;
   billingCadence?: BillingCadence;
   source?: "signup" | "settings";
+  checkoutAttemptId?: string;
 }): Stripe.Checkout.SessionCreateParams {
   const trialEnd = data.trialEnd
     ? Math.floor(new Date(data.trialEnd).getTime() / 1000)
@@ -551,6 +613,9 @@ export function buildSubscriptionCheckoutSessionParams(data: {
     practiceId: data.practiceId,
     billingCadence,
     source: data.source ?? "settings",
+    ...(data.checkoutAttemptId
+      ? { checkoutAttemptId: data.checkoutAttemptId }
+      : {}),
   };
   return {
     mode: "subscription",
@@ -568,7 +633,7 @@ export function buildSubscriptionCheckoutSessionParams(data: {
     line_items: data.lineItems.map((item) =>
       item.metered
         ? { price: item.priceId }
-        : { price: item.priceId, quantity: Math.max(0, item.quantity ?? 0) }
+        : { price: item.priceId, quantity: Math.max(0, item.quantity ?? 0) },
     ),
     ...(data.customerId
       ? { customer: data.customerId }
@@ -600,7 +665,7 @@ export function buildSubscriptionCheckoutSessionParams(data: {
 }
 
 function subscriptionTaxCheckoutParams(
-  customerId?: string | null
+  customerId?: string | null,
 ): Partial<Stripe.Checkout.SessionCreateParams> {
   if (!envFlagEnabled(STRIPE_TAX_ENABLED_ENV)) {
     return {};
@@ -636,11 +701,7 @@ export async function constructSubscriptionWebhookEvent(
   if (!stripe) return null;
   const endpointSecret = stripeSubscriptionWebhookSecret();
   if (!endpointSecret) return null;
-  return stripe.webhooks.constructEvent(
-    body,
-    signature,
-    endpointSecret,
-  );
+  return stripe.webhooks.constructEvent(body, signature, endpointSecret);
 }
 
 export { stripe };
@@ -649,7 +710,9 @@ function stripeCheckoutRedirectUrl(value: unknown): string | null {
   return isSafeCheckoutRedirectUrl(value) ? value : null;
 }
 
-function checkoutCustomerEmail(email: string | null | undefined): string | undefined {
+function checkoutCustomerEmail(
+  email: string | null | undefined,
+): string | undefined {
   const normalized = email?.trim().toLowerCase();
   return normalized ? normalized : undefined;
 }

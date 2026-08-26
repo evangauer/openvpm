@@ -56,7 +56,7 @@ DECLARE
     'external_lab_observations','external_lab_reports','external_prescription_fills','external_prescriptions','files','financial_closes','historical_appointments','historical_documents','insurance_claims','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','legacy_financial_allocations','legacy_financial_documents','legacy_financial_line_items','legacy_financial_payments','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
     'locations','patient_merge_events','patients','payment_disputes','payment_processor_payouts','payment_processor_refunds','payment_processor_settlements','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_note_replacements','soap_notes','staff_schedules','suppliers',
-    'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
+    'subscription_checkout_attempts','treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'visit_treatment_plan_response_lines','visit_treatment_plan_responses','visit_treatment_plan_revision_lines','visit_treatment_plan_revisions','visit_treatment_plans',
     'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
   ];
@@ -83,6 +83,14 @@ GRANT SELECT, INSERT, UPDATE ON payment_processor_settlements,
   payment_processor_refunds, payment_processor_payouts, payment_disputes
   TO openpims_app;
 GRANT SELECT, INSERT ON financial_closes TO openpims_app;
+
+-- Hosted subscription Checkout attempts carry an immutable request snapshot
+-- and bounded provider identity. Tenant code can advance its own attempt but
+-- cannot erase the concurrency/idempotency evidence.
+REVOKE ALL ON subscription_checkout_attempts FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON subscription_checkout_attempts TO openpims_app;
+REVOKE ALL ON FUNCTION public.guard_subscription_checkout_attempt_mutation()
+  FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION public.validate_payment_processor_refund_tenant()
   FROM PUBLIC, openpims_app;
 

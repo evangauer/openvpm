@@ -3,10 +3,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import { practices } from "@openpims/db";
-import {
-  createSubscriptionCheckoutSession,
-  createBillingPortalSession,
-} from "@/lib/stripe";
+import { createBillingPortalSession } from "@/lib/stripe";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import {
   PLANS,
@@ -19,7 +16,6 @@ import {
   CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD,
   CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
   CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
-  TRIAL_DAYS,
   hasHostedFullAccess,
 } from "@/lib/billing/plans";
 import { BILLING_CADENCES, CLOUD_BILLING_OPTIONS } from "@/lib/billing/catalog";
@@ -32,6 +28,11 @@ import {
 import { appBaseUrl } from "@/lib/app-url";
 import { billingContactEmail } from "@/lib/billing/contact";
 import { RECOVERY_HOLD_BLOCK_MESSAGE } from "@/lib/recovery-hold";
+import {
+  dispatchSubscriptionCheckoutAttempt,
+  reserveSubscriptionCheckoutAttempt,
+  subscriptionCheckoutTrialTerms,
+} from "@/lib/billing/subscription-checkout-attempts";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -73,7 +74,7 @@ export const subscriptionRouter = createRouter({
     let counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
     let billingSync: BillingSyncState | null = await readBillingSyncState(
       ctx.db,
-      ctx.practiceId
+      ctx.practiceId,
     );
     const period = currentPeriodMonth();
     const [smsUsed, aiUsed] = enforced
@@ -94,7 +95,7 @@ export const subscriptionRouter = createRouter({
       hasFullAccess: hasHostedFullAccess(
         practice.tier,
         practice.billingStatus,
-        practice.trialEndsAt
+        practice.trialEndsAt,
       ),
       locationCount: counts.locationCount,
       billableSeatCount: counts.billableSeatCount,
@@ -102,7 +103,7 @@ export const subscriptionRouter = createRouter({
       seatUnitPriceMonthlyUsd: CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
       estimatedMonthlyBase: estimatedCloudBaseMonthlyUsd(
         counts.locationCount,
-        counts.billableSeatCount
+        counts.billableSeatCount,
       ),
       estimatedAnnualBase: estimatedCloudBaseAnnualUsd(
         counts.locationCount,
@@ -157,7 +158,7 @@ export const subscriptionRouter = createRouter({
         // Where Stripe sends the admin back: the billing page (default) or
         // the guided setup, which resumes where they left off.
         returnTo: z.enum(["settings", "setup"]).default("settings"),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const plan = PLANS[input.tier];
@@ -206,53 +207,73 @@ export const subscriptionRouter = createRouter({
         });
       }
 
-      const counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
+      const counts = await countBillableLocationsAndSeats(
+        ctx.db,
+        ctx.practiceId,
+      );
 
       const base = appBaseUrl();
-      const activeTrialEnd =
-        practice.billingStatus === "trialing" &&
-        practice.trialEndsAt &&
-        new Date(practice.trialEndsAt).getTime() > Date.now()
-          ? practice.trialEndsAt
-          : null;
+      const now = new Date();
+      const trialTerms = subscriptionCheckoutTrialTerms({
+        billingStatus: practice.billingStatus,
+        trialEndsAt: practice.trialEndsAt,
+        now,
+      });
       // Checkout carries only the per-location licensed item so the clinic
       // sees one clean product. The metered overage items (AI + SMS) are
       // attached to the subscription server-side after creation
       // (syncPracticeSubscriptionQuantities), not shown at checkout.
-      const lineItems: Array<{
-        priceId: string;
-        quantity?: number;
-        metered?: boolean;
-      }> = [{ priceId: locationPriceId, quantity: counts.locationCount }];
-      const customerEmail =
-        billingContactEmail(practice.email) ??
-        billingContactEmail(ctx.session.user.email);
-      const result = await createSubscriptionCheckoutSession({
-        lineItems,
+      const practiceBillingEmail = billingContactEmail(practice.email);
+      const userBillingEmail = billingContactEmail(ctx.session.user.email);
+      const customerEmail = practiceBillingEmail ?? userBillingEmail;
+      const customerIdentitySource = practice.stripeCustomerId
+        ? "stripe_customer"
+        : practiceBillingEmail
+          ? "practice_email"
+          : "user_email";
+      const successUrl =
+        input.returnTo === "setup"
+          ? `${base}/?setup=resume&checkout=success`
+          : `${base}/settings?tab=billing&checkout=success&plan=${input.billingCadence}`;
+      const cancelUrl =
+        input.returnTo === "setup"
+          ? `${base}/?setup=resume&checkout=cancelled`
+          : `${base}/settings?tab=billing&checkout=cancelled&plan=${input.billingCadence}`;
+      const reservation = await reserveSubscriptionCheckoutAttempt(ctx.db, {
         practiceId: ctx.practiceId,
-        customerId: practice.stripeCustomerId ?? undefined,
-        customerEmail,
-        trialEnd: activeTrialEnd,
-        trialPeriodDays: activeTrialEnd || practice.trialEndsAt ? undefined : TRIAL_DAYS,
+        locationPriceId,
+        locationQuantity: counts.locationCount,
+        customerId: practice.stripeCustomerId,
+        customerEmail: practice.stripeCustomerId ? null : customerEmail,
+        customerIdentitySource,
+        customerIdentityUserId:
+          customerIdentitySource === "user_email" ? ctx.session.user.id : null,
+        trialEnd: trialTerms.trialEnd,
+        trialPeriodDays: trialTerms.trialPeriodDays,
         billingCadence: input.billingCadence,
         source: "settings",
-        successUrl:
-          input.returnTo === "setup"
-            ? `${base}/?setup=resume&checkout=success`
-            : `${base}/settings?tab=billing&checkout=success&plan=${input.billingCadence}`,
-        cancelUrl:
-          input.returnTo === "setup"
-            ? `${base}/?setup=resume&checkout=cancelled`
-            : `${base}/settings?tab=billing&checkout=cancelled&plan=${input.billingCadence}`,
+        returnTarget: input.returnTo,
+        successUrl,
+        cancelUrl,
       });
-      const checkoutUrl = result?.url;
-      if (!isSafeCheckoutRedirectUrl(checkoutUrl)) {
+      const response: { url: string | null } = { url: null };
+      if (!ctx.postCommitEffect) {
         throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "Billing is not configured on this server.",
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Billing checkout could not be scheduled safely.",
         });
       }
-      return { url: checkoutUrl };
+      ctx.postCommitEffect(async (rootDb) => {
+        const dispatched = await dispatchSubscriptionCheckoutAttempt(
+          rootDb,
+          reservation,
+          now,
+        );
+        response.url = isSafeCheckoutRedirectUrl(dispatched.url)
+          ? dispatched.url
+          : null;
+      });
+      return response;
     }),
 
   /** Open the Stripe Billing Portal to manage/cancel an existing subscription. */

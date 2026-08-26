@@ -27,7 +27,11 @@ import { sendTrackedVerificationEmail } from "@/lib/auth-email-delivery";
 import { sendOptionalPlatformEmail } from "@/lib/email-lifecycle";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
-import { createSubscriptionCheckoutSession } from "@/lib/stripe";
+import {
+  dispatchSubscriptionCheckoutAttempt,
+  reserveSubscriptionCheckoutAttempt,
+  type SubscriptionCheckoutReservation,
+} from "@/lib/billing/subscription-checkout-attempts";
 import {
   AUTH_EMAIL_MAX_LENGTH,
   AUTH_LOCATION_NAME_MAX_LENGTH,
@@ -259,13 +263,7 @@ export const authRouter = createRouter({
       // columns (see hasHostedFullAccess), independent of any Stripe object.
       const noCardTrial = hostedBilling && noCardTrialEnabled();
       const trialEndsAt = noCardTrial ? trialEndsAtFrom() : undefined;
-      let hostedCheckoutLineItems:
-        | Array<{
-            priceId: string;
-            quantity?: number;
-            metered?: boolean;
-          }>
-        | undefined;
+      let hostedCheckoutLocationPriceId: string | undefined;
 
       if (hostedBilling && !noCardTrial) {
         const { locationPriceId } = cloudCheckoutPriceIds();
@@ -280,7 +278,7 @@ export const authRouter = createRouter({
         // Checkout shows the single per-location price so the clinic sees one
         // clean product; the metered overage items (AI + SMS) are attached to
         // the subscription server-side after creation (subscription sync).
-        hostedCheckoutLineItems = [{ priceId: locationPriceId, quantity: 1 }];
+        hostedCheckoutLocationPriceId = locationPriceId;
       }
 
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
@@ -309,7 +307,7 @@ export const authRouter = createRouter({
         practiceSettings.onboardingCompletedAt = null;
       }
 
-      const { practice, user, checkoutUrl } = await ctx.db.transaction(
+      const { practice, user, checkoutReservation } = await ctx.db.transaction(
         async (tx) => {
           const [createdPractice] = await tx
             .insert(practices)
@@ -423,46 +421,34 @@ export const authRouter = createRouter({
             });
           }
 
-          let createdCheckoutUrl: string | undefined;
-          if (hostedCheckoutLineItems) {
-            try {
-              const base = appBaseUrl();
-              const checkout = await createSubscriptionCheckoutSession({
-                lineItems: hostedCheckoutLineItems,
-                practiceId: createdPractice.id,
-                customerEmail: email,
-                trialPeriodDays: TRIAL_DAYS,
-                billingCadence: "month",
-                source: "signup",
-                successUrl: `${base}/login?checkout=success`,
-                cancelUrl: `${base}/login?checkout=cancelled`,
-              });
-              const checkoutUrl = checkout?.url;
-              createdCheckoutUrl = isSafeCheckoutRedirectUrl(checkoutUrl)
-                ? checkoutUrl
-                : undefined;
-            } catch (err) {
-              console.error("[register] subscription checkout failed:", err);
-              throw new TRPCError({
-                code: "SERVICE_UNAVAILABLE",
-                message:
-                  "Could not start hosted billing checkout. Please try again.",
-              });
-            }
-
-            if (!createdCheckoutUrl) {
-              throw new TRPCError({
-                code: "SERVICE_UNAVAILABLE",
-                message:
-                  "Could not start hosted billing checkout. Please try again.",
-              });
-            }
+          let createdCheckoutReservation:
+            | SubscriptionCheckoutReservation
+            | undefined;
+          if (hostedCheckoutLocationPriceId) {
+            const base = appBaseUrl();
+            createdCheckoutReservation =
+              await reserveSubscriptionCheckoutAttempt(
+                tx as unknown as Database,
+                {
+                  practiceId: createdPractice.id,
+                  locationPriceId: hostedCheckoutLocationPriceId,
+                  locationQuantity: 1,
+                  customerEmail: email,
+                  customerIdentitySource: "practice_email",
+                  trialPeriodDays: TRIAL_DAYS,
+                  billingCadence: "month",
+                  source: "signup",
+                  returnTarget: "login",
+                  successUrl: `${base}/login?checkout=success`,
+                  cancelUrl: `${base}/login?checkout=cancelled`,
+                },
+              );
           }
 
           return {
             practice: createdPractice,
             user: createdUser,
-            checkoutUrl: createdCheckoutUrl,
+            checkoutReservation: createdCheckoutReservation,
           };
         },
       );
@@ -519,11 +505,42 @@ export const authRouter = createRouter({
         verificationUrl: exposeAuthLinksForPreview()
           ? verificationUrl
           : undefined,
-        checkoutUrl,
+        checkoutUrl: undefined as string | undefined,
+        checkoutStatus: checkoutReservation
+          ? ("pending" as
+              | "open"
+              | "completed"
+              | "expired"
+              | "pending"
+              | "failed")
+          : undefined,
         // Hosted signups (no-card trial) land in the first-run onboarding wizard
         // instead of the bare dashboard.
         onboardingRequired: noCardTrial,
       };
+
+      if (checkoutReservation) {
+        if (!ctx.postCommitEffect) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Billing checkout could not be scheduled safely.",
+          });
+        }
+        ctx.postCommitEffect(async (rootDb) => {
+          const dispatched = await dispatchSubscriptionCheckoutAttempt(
+            rootDb,
+            checkoutReservation,
+          );
+          const safeCheckoutUrl = isSafeCheckoutRedirectUrl(dispatched.url)
+            ? dispatched.url
+            : undefined;
+          response.checkoutUrl = safeCheckoutUrl;
+          response.checkoutStatus =
+            dispatched.status === "open" && !safeCheckoutUrl
+              ? "pending"
+              : dispatched.status;
+        });
+      }
 
       if (verificationDispatch && ctx.postCommitEffect) {
         ctx.postCommitEffect(async (rootDb) => {
