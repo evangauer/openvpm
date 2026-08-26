@@ -372,6 +372,11 @@ cleanup summary. Enable automatic deletion only for merged topic branches, not
 canonical or release references. Repeat the inventory on a regular cadence so
 the backlog does not regrow.
 
+The versioned [repository retirement register](repository-retirement-register.md)
+is the owner-notice and execution-record surface. An entry in that register is
+a proposal, not deletion authorization; every preservation, promotion, review,
+grace, and final-drift gate in the register remains fail-closed.
+
 ## Retiring Orca as repository authority
 
 Orca worktrees and automation are not canonical repository state. Retire them
