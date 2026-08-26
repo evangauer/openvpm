@@ -3,6 +3,14 @@ import { describe, expect, it } from "vitest";
 
 describe("portal invoices UI", () => {
   const source = readFileSync("app/portal/[token]/invoices/page.tsx", "utf8");
+  const route = readFileSync("app/portal/invoices/page.tsx", "utf8");
+
+  it("wraps query-string state in the Next.js suspense boundary", () => {
+    expect(source).toContain("useSearchParams()");
+    expect(route).toContain('import { Suspense } from "react"');
+    expect(route).toContain("<Suspense");
+    expect(route).toContain("<InvoicesPage />");
+  });
 
   it("only exposes online payment actions for sent or overdue invoices", () => {
     expect(source).toContain(
