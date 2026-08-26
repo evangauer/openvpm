@@ -247,6 +247,35 @@ describe("committed Drizzle migrations", () => {
     );
   });
 
+  it("revokes legacy portal credentials before enforcing one-time session state", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries: Array<{ tag: string }> };
+    const tag = journal.entries.find((entry) =>
+      entry.tag.startsWith("0097_"),
+    )?.tag;
+    expect(tag).toBeTruthy();
+
+    const migration = readRepoFile(`packages/db/drizzle/${tag}.sql`);
+    const revokeLegacyToken = migration.indexOf(
+      'UPDATE "clients"\nSET "access_token" = NULL',
+    );
+    const addStateConstraint = migration.indexOf(
+      'ADD CONSTRAINT "clients_portal_access_token_state_check"',
+    );
+    const validateStateConstraint = migration.indexOf(
+      'VALIDATE CONSTRAINT "clients_portal_access_token_state_check"',
+    );
+
+    expect(migration).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(revokeLegacyToken).toBeGreaterThanOrEqual(0);
+    expect(addStateConstraint).toBeGreaterThan(revokeLegacyToken);
+    expect(migration).toContain("NOT VALID");
+    expect(validateStateConstraint).toBeGreaterThan(addStateConstraint);
+    expect(migration).toContain('CREATE TABLE "portal_sessions"');
+    expect(migration).toContain('"portal_sessions_client_tenant_fk"');
+  });
+
   it("stages file recovery constraints behind a count-only preflight", () => {
     const preflight = readRepoFile(
       "packages/db/preflight/0077_file_recovery.sql",

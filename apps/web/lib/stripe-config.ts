@@ -32,3 +32,7 @@ export function stripeConnectApplicationFeeBps(): number {
 
   return Math.max(0, Math.min(10_000, Math.trunc(parsed)));
 }
+
+export function stripeConnectApplicationFeeConfigured(): boolean {
+  return stripeConnectApplicationFeeBps() > 0;
+}

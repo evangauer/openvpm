@@ -41,6 +41,7 @@ import {
 } from "@/lib/billing/invoice-payment-tokens";
 import { rateLimit, rateLimitResponseHeaders } from "@/lib/rate-limit";
 import { clientIpFromRequest } from "@/lib/request-ip";
+import { isSameOriginRequest } from "@/lib/request-origin";
 import { readJsonRequestBody } from "@/lib/request-json";
 import { assertVisitInvoiceReadyForFinancialAction } from "@/server/visit-billing-integrity";
 
@@ -141,8 +142,7 @@ export async function POST(req: NextRequest) {
     }
     if (
       !paymentToken &&
-      req.headers.get("origin") &&
-      req.headers.get("origin") !== req.nextUrl.origin
+      !isSameOriginRequest(req)
     ) {
       return NextResponse.json({ error: "Invalid request origin" }, { status: 403 });
     }

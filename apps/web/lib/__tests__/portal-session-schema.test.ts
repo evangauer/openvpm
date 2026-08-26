@@ -9,8 +9,17 @@ const clientsSchema = readFileSync(
   "../../packages/db/schema/clients.ts",
   "utf8",
 );
+const journal = JSON.parse(
+  readFileSync("../../packages/db/drizzle/meta/_journal.json", "utf8"),
+) as { entries: Array<{ tag: string }> };
+const portalMigrationTag = journal.entries.find((entry) =>
+  entry.tag.startsWith("0097_"),
+)?.tag;
+if (!portalMigrationTag) {
+  throw new Error("Portal session migration is missing from the journal");
+}
 const migration = readFileSync(
-  "../../packages/db/drizzle/0096_aberrant_juggernaut.sql",
+  `../../packages/db/drizzle/${portalMigrationTag}.sql`,
   "utf8",
 );
 const rls = readFileSync("../../packages/db/rls/enable-rls.sql", "utf8");

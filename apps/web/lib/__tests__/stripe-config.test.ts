@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   stripeConnectApplicationFeeBps,
+  stripeConnectApplicationFeeConfigured,
   stripeConnectWebhookSecret,
   stripeConfigured,
   stripeSecretKey,
@@ -49,9 +50,11 @@ describe("Stripe configuration helpers", () => {
   it("defaults Stripe Connect platform fees to zero and clamps configured basis points", () => {
     vi.stubEnv("STRIPE_CONNECT_APPLICATION_FEE_BPS", "");
     expect(stripeConnectApplicationFeeBps()).toBe(0);
+    expect(stripeConnectApplicationFeeConfigured()).toBe(false);
 
     vi.stubEnv("STRIPE_CONNECT_APPLICATION_FEE_BPS", " 125.8 ");
     expect(stripeConnectApplicationFeeBps()).toBe(125);
+    expect(stripeConnectApplicationFeeConfigured()).toBe(true);
 
     vi.stubEnv("STRIPE_CONNECT_APPLICATION_FEE_BPS", "-10");
     expect(stripeConnectApplicationFeeBps()).toBe(0);
