@@ -687,6 +687,13 @@
       "when": 1787682887382,
       "tag": "0097_handy_toad_men",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1787715795778,
+      "tag": "0098_shallow_jackpot",
+      "breakpoints": true
     }
   ]
 }

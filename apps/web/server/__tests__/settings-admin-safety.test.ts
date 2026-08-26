@@ -25,14 +25,8 @@ vi.mock("@/lib/email", () => ({
   sendStaffInviteEmail: mocks.sendStaffInviteEmail,
 }));
 
-vi.mock("@/lib/billing/subscription-sync", () => ({
-  syncPracticeSubscriptionQuantities: vi.fn(async () => ({
-    status: "ok",
-    message: "synced",
-    updatedAt: new Date("2026-06-27T00:00:00Z").toISOString(),
-    locationCount: 1,
-    billableSeatCount: 1,
-  })),
+vi.mock("@/lib/billing/stripe-subscription-quantity-sync", () => ({
+  requestAndRunPracticeSubscriptionQuantitySync: vi.fn(async () => true),
 }));
 
 vi.mock("@/lib/recovery-hold", () => ({
@@ -45,8 +39,10 @@ vi.mock("@/lib/outbound-email-security", () => ({
 }));
 
 const { settingsRouter } = await import("../routers/settings");
-const { syncPracticeSubscriptionQuantities } =
-  await import("@/lib/billing/subscription-sync");
+const {
+  requestAndRunPracticeSubscriptionQuantitySync:
+    syncPracticeSubscriptionQuantities,
+} = await import("@/lib/billing/stripe-subscription-quantity-sync");
 const { AUTH_PASSWORD_MAX_LENGTH, AUTH_PASSWORD_MIN_LENGTH } =
   await import("@/lib/auth-password");
 const {
@@ -733,7 +729,9 @@ describe("settings admin stale target safety", () => {
     expect(mocks.createAuthToken).toHaveBeenCalledTimes(2);
     expect(execute).toHaveBeenCalled();
     expect(insertValues).toHaveBeenCalledTimes(1);
-    expect(syncPracticeSubscriptionQuantities).toHaveBeenCalledTimes(2);
+    // The pending-invite retry does not change the active seat count, so the
+    // original durable post-commit request remains the only quantity request.
+    expect(syncPracticeSubscriptionQuantities).toHaveBeenCalledTimes(1);
   });
 
   it("keeps staff identity and token issuance atomic when token storage fails", async () => {

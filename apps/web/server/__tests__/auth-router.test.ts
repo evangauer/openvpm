@@ -32,14 +32,17 @@ const mocks = vi.hoisted(() => ({
       return { sent: true, deduped: false };
     },
   ),
-  createSubscriptionCheckoutSession: vi.fn(async () => ({
-    url: "https://checkout.stripe.com/signup-checkout",
-  })),
+  createSubscriptionCheckoutSession: vi.fn(
+    async (_input: Record<string, unknown>) => ({
+      url: "https://checkout.stripe.com/signup-checkout",
+    }),
+  ),
   seedPractice: vi.fn(async () => undefined),
   seedDemoData: vi.fn(async () => ({})),
   billingEnforced: vi.fn(() => false),
   noCardTrialEnabled: vi.fn(() => false),
   recordAuditLog: vi.fn(async () => undefined),
+  checkoutRequests: new Map<string, Record<string, unknown>>(),
 }));
 
 vi.mock("@/lib/rate-limit", () => ({
@@ -86,6 +89,51 @@ vi.mock("@/lib/billing/plans", () => ({
 
 vi.mock("@/lib/stripe", () => ({
   createSubscriptionCheckoutSession: mocks.createSubscriptionCheckoutSession,
+}));
+
+vi.mock("@/lib/billing/subscription-checkout-attempts", () => ({
+  reserveSubscriptionCheckoutAttempt: vi.fn(
+    async (_db: unknown, request: Record<string, unknown>) => {
+      const attemptId = `attempt_${mocks.checkoutRequests.size + 1}`;
+      mocks.checkoutRequests.set(attemptId, request);
+      return { attemptId };
+    },
+  ),
+  dispatchSubscriptionCheckoutAttempt: vi.fn(
+    async (_db: unknown, reservation: { attemptId: string }) => {
+      const request = mocks.checkoutRequests.get(reservation.attemptId)!;
+      try {
+        const result = await mocks.createSubscriptionCheckoutSession({
+          lineItems: [
+            {
+              priceId: request.locationPriceId,
+              quantity: request.locationQuantity,
+            },
+          ],
+          practiceId: request.practiceId,
+          customerEmail: request.customerEmail,
+          trialPeriodDays: request.trialPeriodDays,
+          billingCadence: request.billingCadence,
+          source: request.source,
+          successUrl: request.successUrl,
+          cancelUrl: request.cancelUrl,
+        });
+        return {
+          url: result?.url ?? null,
+          status: result?.url ? "open" : "failed",
+          attemptId: reservation.attemptId,
+          reused: false,
+        };
+      } catch {
+        return {
+          url: null,
+          status: "pending",
+          attemptId: reservation.attemptId,
+          reused: false,
+        };
+      }
+    },
+  ),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -258,6 +306,7 @@ function createAuthUpdateDb(opts?: { returningRows?: unknown[][] }) {
 
 afterEach(() => {
   vi.clearAllMocks();
+  mocks.checkoutRequests.clear();
   mocks.rateLimit.mockResolvedValue({
     success: true,
     remaining: 4,
@@ -553,7 +602,7 @@ describe("auth router input validation", () => {
     expect(updateSet).not.toHaveBeenCalled();
   });
 
-  it("rolls back initialized hosted signup when checkout cannot be created", async () => {
+  it("keeps initialized signup durable when post-commit Checkout is ambiguous", async () => {
     vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
     mocks.billingEnforced.mockReturnValue(true);
     const consoleError = vi
@@ -562,7 +611,7 @@ describe("auth router input validation", () => {
     const { db, insertValues, transaction, updateSet, isInTransaction } =
       createRegistrationDb();
     mocks.createSubscriptionCheckoutSession.mockImplementationOnce(async () => {
-      expect(isInTransaction()).toBe(true);
+      expect(isInTransaction()).toBe(false);
       throw new Error("stripe unavailable");
     });
 
@@ -573,9 +622,10 @@ describe("auth router input validation", () => {
         practiceName: "Neighborhood Veterinary",
         country: "US",
       }),
-    ).rejects.toMatchObject({
-      code: "SERVICE_UNAVAILABLE",
-      message: "Could not start hosted billing checkout. Please try again.",
+    ).resolves.toMatchObject({
+      id: "user-1",
+      checkoutUrl: undefined,
+      checkoutStatus: "pending",
     });
 
     expect(transaction).toHaveBeenCalled();
@@ -594,14 +644,9 @@ describe("auth router input validation", () => {
     expect(mocks.seedDemoData).toHaveBeenCalledWith(db, {
       practiceId: "practice-1",
     });
-    expect(mocks.createAuthToken).not.toHaveBeenCalled();
-    expect(mocks.sendTrackedVerificationEmail).not.toHaveBeenCalled();
-    expect(mocks.sendWelcomeEmail).not.toHaveBeenCalled();
-    expect(consoleError).toHaveBeenCalledWith(
-      "[register] subscription checkout failed:",
-      expect.any(Error),
-    );
-    consoleError.mockRestore();
+    expect(mocks.createAuthToken).toHaveBeenCalled();
+    expect(mocks.sendTrackedVerificationEmail).toHaveBeenCalled();
+    expect(mocks.sendWelcomeEmail).toHaveBeenCalled();
     expect(updateSet).toHaveBeenCalledWith({
       settings: {
         onboardingState: {
@@ -615,6 +660,7 @@ describe("auth router input validation", () => {
         demoData: {},
       },
     });
+    consoleError.mockRestore();
   });
 
   it("creates hosted signup checkout without granting a no-card trial", async () => {
@@ -623,7 +669,7 @@ describe("auth router input validation", () => {
     mocks.billingEnforced.mockReturnValue(true);
     const { db, insertValues, isInTransaction } = createRegistrationDb();
     mocks.createSubscriptionCheckoutSession.mockImplementationOnce(async () => {
-      expect(isInTransaction()).toBe(true);
+      expect(isInTransaction()).toBe(false);
       return { url: "https://checkout.stripe.com/signup-checkout" };
     });
 
@@ -772,7 +818,7 @@ describe("auth router input validation", () => {
     });
   });
 
-  it("rejects hosted signup when Stripe returns an unsafe checkout URL", async () => {
+  it("keeps signup durable but withholds an unsafe checkout URL", async () => {
     vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
     mocks.billingEnforced.mockReturnValue(true);
     const { db, insertValues, updateSet, transaction } = createRegistrationDb();
@@ -787,9 +833,10 @@ describe("auth router input validation", () => {
         practiceName: "Neighborhood Veterinary",
         country: "US",
       }),
-    ).rejects.toMatchObject({
-      code: "SERVICE_UNAVAILABLE",
-      message: "Could not start hosted billing checkout. Please try again.",
+    ).resolves.toMatchObject({
+      id: "user-1",
+      checkoutUrl: undefined,
+      checkoutStatus: "pending",
     });
 
     expect(transaction).toHaveBeenCalled();

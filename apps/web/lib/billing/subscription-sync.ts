@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { locations, practices, users } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
@@ -38,20 +39,22 @@ interface PracticeSettings {
 }
 
 export function countBillableStaffRows(
-  rows: Array<{ deletedAt?: Date | string | null }>
+  rows: Array<{ deletedAt?: Date | string | null }>,
 ): number {
   return rows.filter((row) => !row.deletedAt).length;
 }
 
 export async function countBillableLocationsAndSeats(
   db: Database,
-  practiceId: string
+  practiceId: string,
 ): Promise<BillableCounts> {
   const [locationRow, staffRow] = await Promise.all([
     db
       .select({ c: sql<number>`count(*)::int` })
       .from(locations)
-      .where(and(eq(locations.practiceId, practiceId), isNull(locations.deletedAt))),
+      .where(
+        and(eq(locations.practiceId, practiceId), isNull(locations.deletedAt)),
+      ),
     db
       .select({ c: sql<number>`count(*)::int` })
       .from(users)
@@ -67,7 +70,7 @@ export async function countBillableLocationsAndSeats(
 async function writeBillingSyncState(
   db: Database,
   practiceId: string,
-  state: BillingSyncState
+  state: BillingSyncState,
 ): Promise<void> {
   await db
     .update(practices)
@@ -95,7 +98,7 @@ function buildState(
 
 export async function readBillingSyncState(
   db: Database,
-  practiceId: string
+  practiceId: string,
 ): Promise<BillingSyncState | null> {
   const [practice] = await db
     .select({ settings: practices.settings })
@@ -111,7 +114,10 @@ export async function readBillingSyncState(
 export async function syncPracticeSubscriptionQuantities(opts: {
   db: Database;
   practiceId: string;
-  subscriptionId?: string | null;
+  subscriptionId: string;
+  leaseToken: string;
+  leaseExpiresAt: Date;
+  idempotencyKeyPrefix: string;
   alertOnError?: boolean;
 }): Promise<BillingSyncState> {
   const { db, practiceId } = opts;
@@ -119,6 +125,8 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     .select({
       stripeSubscriptionId: practices.stripeSubscriptionId,
       recoveryHold: practices.recoveryHold,
+      leaseToken: practices.stripeQuantitySyncLeaseToken,
+      leaseExpiresAt: practices.stripeQuantitySyncLeaseExpiresAt,
     })
     .from(practices)
     .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
@@ -126,18 +134,31 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     .for("share", { of: practices });
 
   if (!practice) {
-    return buildState(
-      "skipped",
-      "Practice is unavailable for billing sync.",
-      { locationCount: 0, billableSeatCount: 0 }
-    );
+    return buildState("skipped", "Practice is unavailable for billing sync.", {
+      locationCount: 0,
+      billableSeatCount: 0,
+    });
   }
 
   if (practice.recoveryHold) {
     return buildState(
       "skipped",
       "Subscription quantity sync is paused during protected recovery.",
-      { locationCount: 0, billableSeatCount: 0 }
+      { locationCount: 0, billableSeatCount: 0 },
+    );
+  }
+
+  if (
+    practice.stripeSubscriptionId !== opts.subscriptionId ||
+    practice.leaseToken !== opts.leaseToken ||
+    !practice.leaseExpiresAt ||
+    practice.leaseExpiresAt.getTime() !== opts.leaseExpiresAt.getTime() ||
+    practice.leaseExpiresAt <= new Date()
+  ) {
+    return buildState(
+      "skipped",
+      "Subscription quantity sync lease is unavailable or stale.",
+      { locationCount: 0, billableSeatCount: 0 },
     );
   }
 
@@ -147,12 +168,7 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     return buildState("skipped", "Self-host billing is not enforced.", counts);
   }
 
-  const subscriptionId = opts.subscriptionId ?? practice.stripeSubscriptionId ?? null;
-  if (!subscriptionId) {
-    const state = buildState("skipped", "No Stripe subscription to sync yet.", counts);
-    await writeBillingSyncState(db, practiceId, state);
-    return state;
-  }
+  const subscriptionId = opts.subscriptionId;
 
   const locationPrices = cloudLocationPriceIds();
   const { seatPriceId } = cloudCheckoutPriceIds();
@@ -160,25 +176,35 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     const state = buildState(
       "error",
       "Stripe Cloud location price ID is not configured.",
-      counts
+      counts,
     );
     await writeBillingSyncState(db, practiceId, state);
     return state;
   }
 
   if (!stripe) {
-    const state = buildState("error", "Stripe API key is not configured.", counts);
+    const state = buildState(
+      "error",
+      "Stripe API key is not configured.",
+      counts,
+    );
     await writeBillingSyncState(db, practiceId, state);
     return state;
   }
 
   try {
-    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    const subscription = await stripe.subscriptions.retrieve(
+      subscriptionId,
+      {},
+      STRIPE_QUANTITY_REQUEST_OPTIONS,
+    );
     const items = subscription.items.data;
     const locationItem = items.find((item) =>
       locationPrices.some((entry) => entry.priceId === item.price?.id),
     );
-    const billingCadence = billingCadenceForStripePrice(locationItem?.price?.id);
+    const billingCadence = billingCadenceForStripePrice(
+      locationItem?.price?.id,
+    );
     // Flat model bills locations only; legacy subscriptions may also carry a
     // per-seat item, which we keep in sync for back-compat when present.
     const seatItem = seatPriceId
@@ -194,28 +220,48 @@ export async function syncPracticeSubscriptionQuantities(opts: {
         hasLegacyItem
           ? "Legacy Cloud subscription detected; quantity sync skipped."
           : "Stripe subscription is missing the Cloud location item.",
-        counts
+        counts,
       );
       await writeBillingSyncState(db, practiceId, state);
       if (!hasLegacyItem && opts.alertOnError !== false) {
         await alertOps(
           "Subscription quantity sync failed",
-          `${state.message} practice=${practiceId} subscription=${subscriptionId}`
+          `${state.message} practice=${practiceId} subscription=${subscriptionId}`,
         );
       }
       return state;
     }
 
     const updates: Promise<unknown>[] = [
-      stripe.subscriptionItems.update(locationItem.id, {
-        quantity: counts.locationCount,
-      }),
+      stripe.subscriptionItems.update(
+        locationItem.id,
+        { quantity: counts.locationCount },
+        {
+          ...STRIPE_QUANTITY_REQUEST_OPTIONS,
+          idempotencyKey: quantityIdempotencyKey(
+            opts.idempotencyKeyPrefix,
+            "update",
+            locationItem.id,
+            counts.locationCount,
+          ),
+        },
+      ),
     ];
     if (seatItem) {
       updates.push(
-        stripe.subscriptionItems.update(seatItem.id, {
-          quantity: counts.billableSeatCount,
-        })
+        stripe.subscriptionItems.update(
+          seatItem.id,
+          { quantity: counts.billableSeatCount },
+          {
+            ...STRIPE_QUANTITY_REQUEST_OPTIONS,
+            idempotencyKey: quantityIdempotencyKey(
+              opts.idempotencyKeyPrefix,
+              "update",
+              seatItem.id,
+              counts.billableSeatCount,
+            ),
+          },
+        ),
       );
     }
 
@@ -224,17 +270,28 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     // the subscription exists. Idempotent: only add what is missing, so this
     // also self-heals subscriptions created before overage prices existed.
     const { aiOveragePriceId, smsOveragePriceId } = cloudMeteredPriceIds();
-    for (const meteredPriceId of
-      billingCadence === "year" ? [] : [aiOveragePriceId, smsOveragePriceId]) {
+    for (const meteredPriceId of billingCadence === "year"
+      ? []
+      : [aiOveragePriceId, smsOveragePriceId]) {
       if (
         meteredPriceId &&
         !items.some((item) => item.price?.id === meteredPriceId)
       ) {
         updates.push(
-          stripe.subscriptionItems.create({
-            subscription: subscriptionId,
-            price: meteredPriceId,
-          })
+          stripe.subscriptionItems.create(
+            {
+              subscription: subscriptionId,
+              price: meteredPriceId,
+            },
+            {
+              ...STRIPE_QUANTITY_REQUEST_OPTIONS,
+              idempotencyKey: quantityIdempotencyKey(
+                opts.idempotencyKeyPrefix,
+                "create",
+                meteredPriceId,
+              ),
+            },
+          ),
         );
       }
     }
@@ -247,7 +304,9 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     const state = buildState(
       "ok",
       `Synced ${counts.locationCount} location(s)${
-        seatItem ? ` and ${counts.billableSeatCount} staff seat(s)` : ", unlimited staff"
+        seatItem
+          ? ` and ${counts.billableSeatCount} staff seat(s)`
+          : ", unlimited staff"
       }. Estimated base ${estimatedBase}.`,
       counts,
       billingCadence ?? undefined,
@@ -261,9 +320,25 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     if (opts.alertOnError !== false) {
       await alertOps(
         "Subscription quantity sync failed",
-        `practice=${practiceId} subscription=${subscriptionId}: ${message}`
+        `practice=${practiceId} subscription=${subscriptionId}: ${message}`,
       );
     }
     return state;
   }
+}
+
+const STRIPE_QUANTITY_REQUEST_OPTIONS = {
+  timeout: 30_000,
+  maxNetworkRetries: 1,
+} as const;
+
+function quantityIdempotencyKey(
+  prefix: string,
+  operation: "create" | "update",
+  identity: string,
+  quantity?: number,
+): string {
+  return `billing-quantity:${createHash("sha256")
+    .update(`${prefix}|${operation}|${identity}|${quantity ?? ""}`)
+    .digest("hex")}`;
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "@openpims/db/client";
 import { practices } from "@openpims/db";
@@ -8,20 +8,20 @@ import {
   tierForStripePrice,
   normalizeBillingStatus,
 } from "@/lib/billing/plans";
-import { syncPracticeSubscriptionQuantities } from "@/lib/billing/subscription-sync";
 import { alertOps } from "@/lib/alerts";
 import { withSystem } from "@/lib/tenant-db";
-import {
-  sendPaymentReceiptEmail,
-  sendPaymentFailedEmail,
-} from "@/lib/email";
+import { sendPaymentReceiptEmail, sendPaymentFailedEmail } from "@/lib/email";
 import { sendLifecycleEmail } from "@/lib/email-lifecycle";
 import { enqueueSubscriptionLifecycleEmail } from "@/lib/billing/lifecycle-email-outbox";
 import {
   attachStripeEventPractice,
+  authorizeStripeSubscriptionSync,
   claimStripeEvent,
+  lockStripeSubscriptionReconciliationOutcome,
+  resolveStripeSubscriptionReconciliation,
   type StripeConversionEvidenceInput,
 } from "@/lib/billing/stripe-events";
+import { runDurableSubscriptionQuantitySync } from "@/lib/billing/stripe-subscription-quantity-sync";
 import { billingContactEmail } from "@/lib/billing/contact";
 import { readRequestTextWithLimit } from "@/lib/request-json";
 import {
@@ -29,6 +29,7 @@ import {
   stripeWebhookContentLengthTooLarge,
 } from "@/lib/stripe-webhook-limits";
 import { projectStripeConversionMilestonesForEvent } from "@/lib/conversion-milestones";
+import { reconcileSubscriptionCheckoutWebhook } from "@/lib/billing/subscription-checkout-attempts";
 
 class UnmanagedStripeSubscriptionError extends Error {
   constructor(subscriptionId: string) {
@@ -36,6 +37,17 @@ class UnmanagedStripeSubscriptionError extends Error {
     this.name = "UnmanagedStripeSubscriptionError";
   }
 }
+
+type SubscriptionPreparation =
+  | { state: "duplicate" }
+  | {
+      state: "authorized";
+      practiceId: string;
+      revision: number;
+      subscriptionId: string;
+      subscription: Stripe.Subscription;
+    }
+  | null;
 
 function payloadTooLargeResponse() {
   return NextResponse.json(
@@ -88,30 +100,101 @@ export async function POST(req: NextRequest) {
   }
 
   const conversionEvidence = conversionEvidenceForEvent(event);
+  let preparation: SubscriptionPreparation;
+  try {
+    preparation = await prepareSubscriptionReconciliation(
+      event,
+      conversionEvidence,
+    );
+    if (preparation?.state === "duplicate") {
+      return (await runDurableSubscriptionQuantitySync(event.id))
+        ? NextResponse.json({ received: true })
+        : NextResponse.json(
+            { error: "Subscription quantity reconciliation deferred" },
+            { status: 503, headers: { "Retry-After": "300" } },
+          );
+    }
+  } catch (err) {
+    if (err instanceof UnmanagedStripeSubscriptionError) {
+      console.info(
+        `[Stripe Subscription Webhook] ignored unmanaged event type=${event.type}`,
+      );
+      return NextResponse.json({ received: true, ignored: true });
+    }
+    console.error("[Stripe Subscription Webhook] authorization error:", err);
+    await alertOps(
+      "Subscription webhook authorization error",
+      `Event ${event.type} remains retryable: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return NextResponse.json({ error: "Handler error" }, { status: 500 });
+  }
   const postCommitEffects: Array<() => Promise<unknown>> = [];
   try {
     await withSystem(db, async (tx) => {
-      const claimed = await claimStripeEvent(tx, {
-        eventId: event.id,
-        endpoint: "subscription",
-        eventType: event.type,
-        ...(conversionEvidence ? { evidence: conversionEvidence } : {}),
-      });
+      const claimed = preparation
+        ? true
+        : await claimStripeEvent(tx, {
+            eventId: event.id,
+            endpoint: "subscription",
+            eventType: event.type,
+            ...(conversionEvidence ? { evidence: conversionEvidence } : {}),
+          });
       if (!claimed) return;
+      if (
+        preparation?.state === "authorized" &&
+        !(await lockStripeSubscriptionReconciliationOutcome(tx, {
+          eventId: event.id,
+          expectedRevision: preparation.revision,
+        }))
+      ) {
+        throw new Error(
+          "Subscription reconciliation authorization was superseded.",
+        );
+      }
+      const authorized =
+        preparation?.state === "authorized" ? preparation : null;
+      let queueQuantitySync = false;
 
       switch (event.type) {
         case "checkout.session.completed": {
           const s = event.data.object as Stripe.Checkout.Session;
+          const metadataPracticeId = s.metadata?.practiceId ?? null;
           const practiceId =
-            s.client_reference_id ?? s.metadata?.practiceId ?? null;
+            s.client_reference_id &&
+            metadataPracticeId &&
+            s.client_reference_id !== metadataPracticeId
+              ? null
+              : (s.client_reference_id ?? metadataPracticeId);
           const subscriptionId =
             typeof s.subscription === "string"
               ? s.subscription
               : (s.subscription?.id ?? null);
+          const checkoutCustomerId =
+            typeof s.customer === "string"
+              ? s.customer
+              : (s.customer?.id ?? null);
+          const durableAttemptId = s.metadata?.checkoutAttemptId?.trim();
+          if (durableAttemptId) {
+            const checkoutReconciliation =
+              await reconcileSubscriptionCheckoutWebhook(tx, {
+                attemptId: durableAttemptId,
+                practiceId,
+                providerSessionId: s.id,
+                providerExpiresAt: new Date(s.expires_at * 1000),
+                status: "completed",
+                customerId: checkoutCustomerId,
+                subscriptionId,
+                occurredAt: new Date(event.created * 1000),
+              });
+            if ("reason" in checkoutReconciliation) {
+              throw new Error(
+                `Durable subscription Checkout completion ${checkoutReconciliation.outcome}:${checkoutReconciliation.reason}.`,
+              );
+            }
+          }
           let activePracticeId: string | null = null;
           if (practiceId && s.customer) {
-            const customerId =
-              typeof s.customer === "string" ? s.customer : s.customer.id;
+            const customerId = checkoutCustomerId!;
             const [practice] = await tx
               .update(practices)
               .set({
@@ -122,6 +205,18 @@ export async function POST(req: NextRequest) {
                 and(
                   eq(practices.id, practiceId),
                   isNull(practices.deletedAt),
+                  eq(practices.recoveryHold, false),
+                  or(
+                    isNull(practices.stripeQuantitySyncLeaseToken),
+                    lte(
+                      practices.stripeQuantitySyncLeaseExpiresAt,
+                      sql`clock_timestamp()`,
+                    ),
+                  ),
+                  eq(
+                    practices.stripeSubscriptionSyncRevision,
+                    authorized!.revision,
+                  ),
                   or(
                     isNull(practices.stripeCustomerId),
                     eq(practices.stripeCustomerId, customerId),
@@ -136,15 +231,11 @@ export async function POST(req: NextRequest) {
               )
               .returning({ id: practices.id });
             activePracticeId = practice?.id ?? null;
-          } else if (practiceId) {
-            const [practice] = await tx
-              .select({ id: practices.id })
-              .from(practices)
-              .where(
-                and(eq(practices.id, practiceId), isNull(practices.deletedAt)),
-              )
-              .limit(1);
-            activePracticeId = practice?.id ?? null;
+          }
+          if (!activePracticeId) {
+            throw new Error(
+              "Checkout identity authorization was superseded or conflicted.",
+            );
           }
           if (activePracticeId && conversionEvidence) {
             await attachStripeEventPractice(tx, {
@@ -154,21 +245,24 @@ export async function POST(req: NextRequest) {
             });
           }
           if (activePracticeId && subscriptionId) {
-            if (!stripe) {
-              throw new Error(
-                "Stripe is unavailable while reconciling Checkout.",
-              );
-            }
             // Checkout is itself a signed, authoritative link between the
             // practice and subscription. Apply the current Stripe state now so
             // access never depends on customer.subscription.* event ordering.
-            const subscription =
-              await stripe.subscriptions.retrieve(subscriptionId);
+            const subscription = authorized?.subscription;
+            if (!subscription || subscription.id !== subscriptionId) {
+              throw new Error("Checkout subscription snapshot is unavailable.");
+            }
             const appliedPractice = await applySubscription(
               tx,
               subscription,
               activePracticeId,
+              authorized!.revision,
             );
+            if (!appliedPractice) {
+              throw new Error("Checkout subscription persistence conflicted.");
+            }
+            queueQuantitySync =
+              normalizeBillingStatus(subscription.status) !== "canceled";
             if (
               appliedPractice &&
               normalizeBillingStatus(subscription.status) === "active"
@@ -193,18 +287,56 @@ export async function POST(req: NextRequest) {
           break;
         }
 
+        case "checkout.session.expired": {
+          const s = event.data.object as Stripe.Checkout.Session;
+          const metadataPracticeId = s.metadata?.practiceId ?? null;
+          const practiceId =
+            s.client_reference_id &&
+            metadataPracticeId &&
+            s.client_reference_id !== metadataPracticeId
+              ? null
+              : (s.client_reference_id ?? metadataPracticeId);
+          const durableAttemptId = s.metadata?.checkoutAttemptId?.trim();
+          if (durableAttemptId) {
+            const checkoutReconciliation =
+              await reconcileSubscriptionCheckoutWebhook(tx, {
+                attemptId: durableAttemptId,
+                practiceId,
+                providerSessionId: s.id,
+                providerExpiresAt: new Date(s.expires_at * 1000),
+                status: "expired",
+                occurredAt: new Date(event.created * 1000),
+              });
+            if ("reason" in checkoutReconciliation) {
+              throw new Error(
+                `Durable subscription Checkout expiration ${checkoutReconciliation.outcome}:${checkoutReconciliation.reason}.`,
+              );
+            }
+          }
+          break;
+        }
+
         case "customer.subscription.created":
         case "customer.subscription.updated": {
-          if (!stripe) {
-            throw new Error(
-              "Stripe is unavailable while reconciling a subscription event.",
-            );
-          }
           const eventSubscription = event.data.object as Stripe.Subscription;
-          const currentSubscription = await stripe.subscriptions.retrieve(
-            eventSubscription.id,
+          const currentSubscription = authorized?.subscription;
+          if (
+            !currentSubscription ||
+            currentSubscription.id !== eventSubscription.id
+          ) {
+            throw new Error("Subscription snapshot is unavailable.");
+          }
+          const applied = await applySubscription(
+            tx,
+            currentSubscription,
+            authorized!.practiceId,
+            authorized!.revision,
           );
-          await applySubscription(tx, currentSubscription);
+          if (!applied) {
+            throw new Error("Subscription persistence conflicted.");
+          }
+          queueQuantitySync =
+            normalizeBillingStatus(currentSubscription.status) !== "canceled";
           break;
         }
 
@@ -219,12 +351,21 @@ export async function POST(req: NextRequest) {
                 billingStatus: "canceled",
                 stripeSubscriptionId: null,
                 subscriptionGeneration: sql`${practices.subscriptionGeneration} + 1`,
+                stripeSubscriptionSyncRevision: sql`${practices.stripeSubscriptionSyncRevision} + 1`,
               })
               .where(
                 and(
                   eq(practices.id, practiceId),
                   eq(practices.stripeSubscriptionId, sub.id),
                   isNull(practices.deletedAt),
+                  eq(practices.recoveryHold, false),
+                  or(
+                    isNull(practices.stripeQuantitySyncLeaseToken),
+                    lte(
+                      practices.stripeQuantitySyncLeaseExpiresAt,
+                      sql`clock_timestamp()`,
+                    ),
+                  ),
                 ),
               )
               .returning({
@@ -247,6 +388,24 @@ export async function POST(req: NextRequest) {
                   dedupeKey,
                 });
               }
+            } else {
+              const [blockedByQuantitySync] = await tx
+                .select({ id: practices.id })
+                .from(practices)
+                .where(
+                  and(
+                    eq(practices.id, practiceId),
+                    eq(practices.stripeSubscriptionId, sub.id),
+                    isNotNull(practices.stripeQuantitySyncLeaseToken),
+                    sql`${practices.stripeQuantitySyncLeaseExpiresAt} > clock_timestamp()`,
+                  ),
+                )
+                .limit(1);
+              if (blockedByQuantitySync) {
+                throw new Error(
+                  "Subscription cancellation conflicted with active reconciliation.",
+                );
+              }
             }
           }
           break;
@@ -262,18 +421,29 @@ export async function POST(req: NextRequest) {
             const subscriptionId = subscriptionIdForInvoice(inv);
             let subscriptionPracticeId: string | null = null;
             if (subscriptionId) {
-              if (!stripe) {
-                throw new Error(
-                  "Stripe is unavailable while reconciling a paid invoice.",
-                );
-              }
               // A successful subscription charge is a second authoritative
               // self-healing point if a subscription-created/updated event was
               // omitted or arrived out of order.
-              const subscription =
-                await stripe.subscriptions.retrieve(subscriptionId);
-              subscriptionPracticeId =
-                (await applySubscription(tx, subscription))?.id ?? null;
+              const subscription = authorized?.subscription;
+              if (!subscription || subscription.id !== subscriptionId) {
+                throw new Error(
+                  "Paid-invoice subscription snapshot is unavailable.",
+                );
+              }
+              const applied = await applySubscription(
+                tx,
+                subscription,
+                authorized!.practiceId,
+                authorized!.revision,
+              );
+              if (!applied) {
+                throw new Error(
+                  "Paid-invoice subscription persistence conflicted.",
+                );
+              }
+              subscriptionPracticeId = applied.id;
+              queueQuantitySync =
+                normalizeBillingStatus(subscription.status) !== "canceled";
             }
             const practice = subscriptionPracticeId
               ? await practiceById(tx, subscriptionPracticeId)
@@ -318,17 +488,28 @@ export async function POST(req: NextRequest) {
           const inv = event.data.object as Stripe.Invoice;
           const subscriptionId = subscriptionIdForInvoice(inv);
           if (subscriptionId) {
-            if (!stripe) {
+            const subscription = authorized?.subscription;
+            if (!subscription || subscription.id !== subscriptionId) {
               throw new Error(
-                "Stripe is unavailable while reconciling a failed invoice.",
+                "Failed-invoice subscription snapshot is unavailable.",
               );
             }
-            const subscription =
-              await stripe.subscriptions.retrieve(subscriptionId);
             const authoritativeStatus = normalizeBillingStatus(
               subscription.status,
             );
-            const practiceId = (await applySubscription(tx, subscription))?.id;
+            const applied = await applySubscription(
+              tx,
+              subscription,
+              authorized!.practiceId,
+              authorized!.revision,
+            );
+            if (!applied) {
+              throw new Error(
+                "Failed-invoice subscription persistence conflicted.",
+              );
+            }
+            const practiceId = applied.id;
+            queueQuantitySync = authoritativeStatus !== "canceled";
             const practice = practiceId
               ? await practiceById(tx, practiceId)
               : null;
@@ -380,6 +561,17 @@ export async function POST(req: NextRequest) {
           // Ignore other event types.
           break;
       }
+      if (authorized) {
+        const resolved = await resolveStripeSubscriptionReconciliation(tx, {
+          eventId: event.id,
+          expectedRevision: authorized.revision,
+          outcome: "applied",
+          queueQuantitySync,
+        });
+        if (!resolved) {
+          throw new Error("Subscription reconciliation outcome CAS was lost.");
+        }
+      }
     });
     for (const effect of postCommitEffects) {
       await effect();
@@ -397,6 +589,13 @@ export async function POST(req: NextRequest) {
       `Event ${event.type} failed: ${err instanceof Error ? err.message : String(err)}`,
     );
     return NextResponse.json({ error: "Handler error" }, { status: 500 });
+  }
+
+  if (!(await runDurableSubscriptionQuantitySync(event.id))) {
+    return NextResponse.json(
+      { error: "Subscription quantity reconciliation deferred" },
+      { status: 503, headers: { "Retry-After": "300" } },
+    );
   }
 
   if (conversionEvidence) {
@@ -420,11 +619,133 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ received: true });
 }
 
+/**
+ * Authorize a specific provider read in a short transaction, perform the read
+ * without any database lock, then bind the snapshot to the signed event and
+ * DB-issued practice revision before the persistence transaction starts.
+ */
+async function prepareSubscriptionReconciliation(
+  event: Stripe.Event,
+  evidence?: StripeConversionEvidenceInput,
+): Promise<SubscriptionPreparation> {
+  let subscriptionId: string | null = null;
+  let signedCustomerId: string | null = null;
+  let signedPracticeId: string | null = null;
+  let routingSubscription: Stripe.Subscription | null = null;
+
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object as Stripe.Checkout.Session;
+    const clientPracticeId = session.client_reference_id?.trim() || null;
+    const metadataPracticeId = session.metadata?.practiceId?.trim() || null;
+    if (
+      clientPracticeId &&
+      metadataPracticeId &&
+      clientPracticeId !== metadataPracticeId
+    ) {
+      throw new Error("Checkout session has conflicting practice identifiers.");
+    }
+    signedPracticeId = clientPracticeId ?? metadataPracticeId;
+    subscriptionId =
+      typeof session.subscription === "string"
+        ? session.subscription
+        : (session.subscription?.id ?? null);
+    signedCustomerId =
+      typeof session.customer === "string"
+        ? session.customer
+        : (session.customer?.id ?? null);
+    if (!signedPracticeId || !subscriptionId) return null;
+  } else if (
+    event.type === "customer.subscription.created" ||
+    event.type === "customer.subscription.updated"
+  ) {
+    routingSubscription = event.data.object as Stripe.Subscription;
+    subscriptionId = routingSubscription.id;
+    signedCustomerId = subscriptionCustomerId(routingSubscription);
+  } else if (
+    event.type === "invoice.payment_failed" ||
+    (event.type === "invoice.payment_succeeded" &&
+      ((event.data.object as Stripe.Invoice).amount_paid ?? 0) > 0)
+  ) {
+    const invoice = event.data.object as Stripe.Invoice;
+    subscriptionId = subscriptionIdForInvoice(invoice);
+    if (!subscriptionId) return null;
+    signedCustomerId =
+      typeof invoice.customer === "string"
+        ? invoice.customer
+        : (invoice.customer?.id ?? null);
+    routingSubscription = {
+      id: subscriptionId,
+      customer: invoice.customer,
+      metadata: invoice.parent?.subscription_details?.metadata ?? {},
+    } as unknown as Stripe.Subscription;
+  } else {
+    return null;
+  }
+
+  const authorization = await withSystem(db, async (tx) => {
+    const practiceId =
+      signedPracticeId ??
+      (await resolvePracticeIdForSubscription(tx, routingSubscription!));
+    const result = await authorizeStripeSubscriptionSync(tx, {
+      eventId: event.id,
+      eventType: event.type,
+      practiceId,
+      subscriptionId: subscriptionId!,
+      ...(evidence ? { evidence } : {}),
+    });
+    return result.state === "duplicate"
+      ? result
+      : {
+          state: "authorized" as const,
+          practiceId,
+          revision: result.revision,
+        };
+  });
+  if (authorization.state === "duplicate") return authorization;
+  if (!stripe) {
+    throw new Error("Stripe is unavailable for subscription reconciliation.");
+  }
+
+  // Network boundary: no withSystem transaction is open here.
+  const authoritative = await stripe.subscriptions.retrieve(subscriptionId);
+  if (authoritative.id !== subscriptionId) {
+    throw new Error("Stripe returned a different subscription identity.");
+  }
+  const authoritativeCustomerId = subscriptionCustomerId(authoritative);
+  if (
+    signedCustomerId &&
+    authoritativeCustomerId &&
+    signedCustomerId !== authoritativeCustomerId
+  ) {
+    throw new Error(
+      "Stripe subscription customer conflicts with signed event.",
+    );
+  }
+  const authoritativePracticeId =
+    authoritative.metadata?.practiceId?.trim() || null;
+  if (
+    authoritativePracticeId &&
+    authoritativePracticeId !== authorization.practiceId
+  ) {
+    throw new Error(
+      "Stripe subscription practice conflicts with authorization.",
+    );
+  }
+  return {
+    state: "authorized",
+    practiceId: authorization.practiceId,
+    revision: authorization.revision,
+    subscriptionId,
+    subscription: authoritative,
+  };
+}
+
 /** Apply a subscription's tier/status/trial through one shared mapping path. */
 async function applySubscription(
   tx: typeof db,
   sub: Stripe.Subscription,
   practiceIdHint?: string | null,
+  expectedRevision?: number,
 ): Promise<{ id: string; subscriptionGeneration: number } | null> {
   const practiceId = await resolvePracticeIdForSubscription(
     tx,
@@ -460,10 +781,21 @@ async function applySubscription(
       and(
         eq(practices.id, practiceId),
         isNull(practices.deletedAt),
+        eq(practices.recoveryHold, false),
+        or(
+          isNull(practices.stripeQuantitySyncLeaseToken),
+          lte(
+            practices.stripeQuantitySyncLeaseExpiresAt,
+            sql`clock_timestamp()`,
+          ),
+        ),
         or(
           isNull(practices.stripeSubscriptionId),
           eq(practices.stripeSubscriptionId, sub.id),
         ),
+        ...(expectedRevision !== undefined
+          ? [eq(practices.stripeSubscriptionSyncRevision, expectedRevision)]
+          : []),
       ),
     )
     .returning({
@@ -477,13 +809,6 @@ async function applySubscription(
       practiceId,
     );
     return null;
-  }
-  if (!terminalWithoutSubscriptionIdentity) {
-    await syncPracticeSubscriptionQuantities({
-      db: tx,
-      practiceId: practice.id,
-      subscriptionId: sub.id,
-    });
   }
   return practice;
 }

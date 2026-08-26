@@ -29,6 +29,7 @@
     "db:sms-provider-resolutions:test": "tsx test-sms-provider-event-resolutions.ts",
     "db:migration-runs:test": "tsx test-migration-runs.ts",
     "db:lifecycle-email-outbox:test": "tsx test-lifecycle-email-outbox.ts",
+    "db:subscription-checkout:test": "tsx test-subscription-checkout-attempts.ts",
     "db:migrations:check": "pnpm --filter @openpims/web exec vitest run lib/__tests__/migration-journal-integrity.test.ts lib/__tests__/db-migrations.test.ts",
     "db:migrations:conformance": "tsx migration-conformance.ts",
     "db:target:check": "tsx deployment-target.ts",

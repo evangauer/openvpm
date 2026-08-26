@@ -1,18 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/billing/subscription-sync", () => ({
-  syncPracticeSubscriptionQuantities: vi.fn(async () => ({
-    status: "ok",
-    message: "synced",
-    updatedAt: new Date("2026-06-07T00:00:00Z").toISOString(),
-    locationCount: 1,
-    billableSeatCount: 2,
-  })),
+vi.mock("@/lib/billing/stripe-subscription-quantity-sync", () => ({
+  requestAndRunPracticeSubscriptionQuantitySync: vi.fn(async () => true),
 }));
 
 const { settingsRouter } = await import("../routers/settings");
-const { syncPracticeSubscriptionQuantities } =
-  await import("@/lib/billing/subscription-sync");
+const { requestAndRunPracticeSubscriptionQuantitySync } =
+  await import("@/lib/billing/stripe-subscription-quantity-sync");
 
 function callerWithDb(db: Record<string, unknown>) {
   const session = {
@@ -75,10 +69,10 @@ describe("settings staff billing sync", () => {
       role: "front_desk",
     });
 
-    expect(syncPracticeSubscriptionQuantities).toHaveBeenCalledWith({
+    expect(requestAndRunPracticeSubscriptionQuantitySync).toHaveBeenCalledWith(
+      "00000000-0000-0000-0000-0000000000aa",
       db,
-      practiceId: "00000000-0000-0000-0000-0000000000aa",
-    });
+    );
   });
 
   it("syncs subscription quantities after deactivating staff", async () => {
@@ -112,9 +106,9 @@ describe("settings staff billing sync", () => {
       id: "00000000-0000-0000-0000-000000000002",
     });
 
-    expect(syncPracticeSubscriptionQuantities).toHaveBeenCalledWith({
+    expect(requestAndRunPracticeSubscriptionQuantitySync).toHaveBeenCalledWith(
+      "00000000-0000-0000-0000-0000000000aa",
       db,
-      practiceId: "00000000-0000-0000-0000-0000000000aa",
-    });
+    );
   });
 });

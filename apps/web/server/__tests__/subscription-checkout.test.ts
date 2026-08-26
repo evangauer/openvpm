@@ -2,9 +2,11 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  createSubscriptionCheckoutSession: vi.fn(async () => ({
-    url: "https://checkout.stripe.com/subscription-checkout",
-  })),
+  createSubscriptionCheckoutSession: vi.fn(
+    async (_input: Record<string, unknown>) => ({
+      url: "https://checkout.stripe.com/subscription-checkout",
+    }),
+  ),
   createBillingPortalSession: vi.fn(async () => ({
     url: "https://billing.stripe.com/billing-portal",
   })),
@@ -16,12 +18,61 @@ const mocks = vi.hoisted(() => ({
   syncPracticeSubscriptionQuantities: vi.fn(),
   usageForPractice: vi.fn(async () => 0),
   recordAuditLog: vi.fn(async () => undefined),
+  checkoutRequests: new Map<string, Record<string, unknown>>(),
 }));
 
 vi.mock("@/lib/stripe", () => ({
   createSubscriptionCheckoutSession: mocks.createSubscriptionCheckoutSession,
   createBillingPortalSession: mocks.createBillingPortalSession,
 }));
+
+vi.mock(
+  "@/lib/billing/subscription-checkout-attempts",
+  async (importOriginal) => {
+    const original =
+      await importOriginal<
+        typeof import("@/lib/billing/subscription-checkout-attempts")
+      >();
+    return {
+      ...original,
+      reserveSubscriptionCheckoutAttempt: vi.fn(
+        async (_db: unknown, request: Record<string, unknown>) => {
+          const attemptId = `attempt_${mocks.checkoutRequests.size + 1}`;
+          mocks.checkoutRequests.set(attemptId, request);
+          return { attemptId };
+        },
+      ),
+      dispatchSubscriptionCheckoutAttempt: vi.fn(
+        async (_db: unknown, reservation: { attemptId: string }) => {
+          const request = mocks.checkoutRequests.get(reservation.attemptId)!;
+          const result = await mocks.createSubscriptionCheckoutSession({
+            lineItems: [
+              {
+                priceId: request.locationPriceId,
+                quantity: request.locationQuantity,
+              },
+            ],
+            practiceId: request.practiceId,
+            customerId: request.customerId ?? undefined,
+            customerEmail: request.customerEmail,
+            trialEnd: request.trialEnd,
+            trialPeriodDays: request.trialPeriodDays,
+            billingCadence: request.billingCadence,
+            source: request.source,
+            successUrl: request.successUrl,
+            cancelUrl: request.cancelUrl,
+          });
+          return {
+            url: result?.url ?? null,
+            status: result?.url ? "open" : "failed",
+            attemptId: reservation.attemptId,
+            reused: false,
+          };
+        },
+      ),
+    };
+  },
+);
 
 vi.mock("@/lib/app-url", () => ({
   appBaseUrl: () => "https://app.example.com",
@@ -46,7 +97,7 @@ vi.mock("@/lib/tenant-db", () => ({
   withTenant: async (
     db: unknown,
     _practiceId: string,
-    fn: (tx: unknown) => Promise<unknown>
+    fn: (tx: unknown) => Promise<unknown>,
   ) => fn(db),
   withSystem: async (db: unknown, fn: (tx: unknown) => Promise<unknown>) =>
     fn(db),
@@ -111,6 +162,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
   vi.unstubAllEnvs();
+  mocks.checkoutRequests.clear();
   mocks.createSubscriptionCheckoutSession.mockResolvedValue({
     url: "https://checkout.stripe.com/subscription-checkout",
   });
@@ -131,10 +183,10 @@ describe("subscription checkout", () => {
 
     expect(source).toContain("throw practiceNotFound()");
     expect(source).toContain('tier: practice.tier ?? "free"');
-    expect(source).toContain("customerId: practice.stripeCustomerId ?? undefined");
+    expect(source).toContain("customerId: practice.stripeCustomerId");
     expect(source).toContain("if (!practice.stripeCustomerId)");
-    expect(source).toContain("const checkoutUrl = result?.url");
-    expect(source).toContain("if (!isSafeCheckoutRedirectUrl(checkoutUrl))");
+    expect(source).toContain("reserveSubscriptionCheckoutAttempt(ctx.db");
+    expect(source).toContain("ctx.postCommitEffect(async (rootDb)");
     expect(source).toContain("const portalUrl = result?.url");
     expect(source).toContain("if (!isSafeCheckoutRedirectUrl(portalUrl))");
     expect(source).not.toContain("if (!result?.url)");
@@ -208,7 +260,7 @@ describe("subscription checkout", () => {
     ]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -246,7 +298,9 @@ describe("subscription checkout", () => {
       message: "Practice not found",
     });
 
-    await expect(caller.createCheckout({ tier: "cloud" })).rejects.toMatchObject({
+    await expect(
+      caller.createCheckout({ tier: "cloud" }),
+    ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
     });
@@ -268,8 +322,10 @@ describe("subscription checkout", () => {
     const db = createDb([[practice()]]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
-    ).resolves.toEqual({ url: "https://checkout.stripe.com/subscription-checkout" });
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
+    ).resolves.toEqual({
+      url: "https://checkout.stripe.com/subscription-checkout",
+    });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -285,7 +341,7 @@ describe("subscription checkout", () => {
           "https://app.example.com/settings?tab=billing&checkout=success&plan=month",
         cancelUrl:
           "https://app.example.com/settings?tab=billing&checkout=cancelled&plan=month",
-      })
+      }),
     );
   });
 
@@ -299,7 +355,9 @@ describe("subscription checkout", () => {
         tier: "cloud",
         billingCadence: "year",
       }),
-    ).resolves.toEqual({ url: "https://checkout.stripe.com/subscription-checkout" });
+    ).resolves.toEqual({
+      url: "https://checkout.stripe.com/subscription-checkout",
+    });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -338,13 +396,13 @@ describe("subscription checkout", () => {
       1,
       expect.objectContaining({
         customerEmail: "practice.owner@example.com",
-      })
+      }),
     );
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         customerEmail: "admin@example.com",
-      })
+      }),
     );
   });
 
@@ -364,15 +422,17 @@ describe("subscription checkout", () => {
     ]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
-    ).resolves.toEqual({ url: "https://checkout.stripe.com/subscription-checkout" });
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
+    ).resolves.toEqual({
+      url: "https://checkout.stripe.com/subscription-checkout",
+    });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
         customerId: "cus_123",
         trialEnd: trialEndsAt,
         trialPeriodDays: undefined,
-      })
+      }),
     );
   });
 
@@ -390,14 +450,16 @@ describe("subscription checkout", () => {
     ]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
-    ).resolves.toEqual({ url: "https://checkout.stripe.com/subscription-checkout" });
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
+    ).resolves.toEqual({
+      url: "https://checkout.stripe.com/subscription-checkout",
+    });
 
     expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
         trialEnd: null,
         trialPeriodDays: undefined,
-      })
+      }),
     );
   });
 
@@ -409,11 +471,8 @@ describe("subscription checkout", () => {
     const db = createDb([[practice()]]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
-    ).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
-      message: "Billing is not configured on this server.",
-    });
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
+    ).resolves.toEqual({ url: null });
   });
 
   it("fails closed when Stripe returns an unsafe hosted checkout URL", async () => {
@@ -424,11 +483,8 @@ describe("subscription checkout", () => {
     const db = createDb([[practice()]]);
 
     await expect(
-      callerWithDb(db).createCheckout({ tier: "cloud" })
-    ).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
-      message: "Billing is not configured on this server.",
-    });
+      callerWithDb(db).createCheckout({ tier: "cloud" }),
+    ).resolves.toEqual({ url: null });
   });
 
   it("fails closed when Stripe returns an unsafe billing portal URL", async () => {

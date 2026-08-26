@@ -2078,4 +2078,59 @@ describe("committed Drizzle migrations", () => {
       "GRANT SELECT, INSERT ON messaging_registration_events TO openpims_app",
     );
   });
+
+  it("adopts durable subscription Checkout attempts with tenant and mutation guards", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries: Array<{ tag: string }> };
+    const tag = journal.entries.find((entry) =>
+      entry.tag.startsWith("0098_"),
+    )?.tag;
+    expect(tag).toBe("0098_shallow_jackpot");
+    const migration = readRepoFile(`packages/db/drizzle/${tag}.sql`);
+
+    for (const contract of [
+      'CREATE TABLE "subscription_checkout_attempts"',
+      '"first_provider_attempt_at" timestamp with time zone',
+      "subscription_checkout_attempts_one_active_uq",
+      "'manual_review'",
+      "guard_subscription_checkout_attempt_mutation",
+      "guard_practice_during_subscription_checkout_dispatch",
+      "subscription_checkout_attempts_customer_identity_user_idx",
+      "validate_subscription_checkout_user_identity",
+      "subscription_checkout_attempts_user_identity_check",
+      "guard_user_during_subscription_checkout_dispatch",
+      "Practice billing identity is locked during Subscription Checkout dispatch.",
+      "User billing identity is locked during Subscription Checkout dispatch.",
+      '"stripe_subscription_sync_revision" integer DEFAULT 0 NOT NULL',
+      '"stripe_quantity_sync_requested_revision" integer DEFAULT 0 NOT NULL',
+      '"subscription_reconciliation_state" varchar(16)',
+      '"subscription_quantity_sync_state" varchar(16)',
+      "stripe_events_pending_subscription_quantity_sync_idx",
+      "practices_stripe_quantity_sync_lease_shape_check",
+      "stripe_events_subscription_reconciliation_shape_check",
+      "stripe_events_subscription_quantity_sync_shape_check",
+      "Subscription Checkout first provider attempt is immutable.",
+      "Subscription Checkout attempts cannot be deleted.",
+      "ENABLE ROW LEVEL SECURITY",
+      "CREATE POLICY tenant_isolation",
+      "GRANT SELECT, INSERT, UPDATE ON public.subscription_checkout_attempts TO openpims_app",
+    ]) {
+      expect(migration).toContain(contract);
+    }
+    expect(migration).not.toContain("provider_url");
+    expect(migration).not.toContain("raw_payload");
+    expect(migration).not.toContain("provider_payload");
+    expect(migration).not.toContain(
+      "GRANT SELECT, INSERT, UPDATE, DELETE ON public.subscription_checkout_attempts",
+    );
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(rls).toContain("'subscription_checkout_attempts'");
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT, UPDATE ON subscription_checkout_attempts TO openpims_app",
+    );
+    const reset = readRepoFile("packages/db/reset.ts");
+    expect(reset).toContain('"subscription_checkout_attempts"');
+  });
 });

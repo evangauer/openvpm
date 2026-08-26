@@ -138,6 +138,16 @@ jobs:
 
       - run: pnpm --filter @openpims/db db:rls
 
+      - name: Execute subscription Checkout ownership database contract
+        env:
+          SUBSCRIPTION_CHECKOUT_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/db db:subscription-checkout:test
+
+      - name: Execute subscription Checkout service transition contract
+        env:
+          SUBSCRIPTION_CHECKOUT_SERVICE_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run lib/billing/__tests__/subscription-checkout-attempts.integration.test.ts
+
       # Subscription notices cross Stripe transactions, a durable outbox,
       # provider idempotency, and final-state suppression. Exercise atomic
       # enqueue, SKIP LOCKED workers, lease/CAS recovery, immutable attempts,
