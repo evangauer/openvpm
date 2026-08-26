@@ -30,6 +30,26 @@ beforeAll(async () => {
 afterAll(() => vi.unstubAllEnvs());
 
 describe("subscription lifecycle email outbox safety model", () => {
+  it("fails closed and defers job kinds introduced by a later migration", () => {
+    expect(helpers.isSupportedLifecycleEmailKind("subscription_confirmed")).toBe(
+      true,
+    );
+    expect(helpers.isSupportedLifecycleEmailKind("subscription_canceled")).toBe(
+      true,
+    );
+    expect(helpers.isSupportedLifecycleEmailKind("payment_receipt")).toBe(false);
+    expect(helpers.isSupportedLifecycleEmailKind("payment_failed")).toBe(false);
+
+    const guard = SOURCE.indexOf("isSupportedLifecycleEmailKind(loaded.kind)");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(SOURCE.indexOf("prepareRequest(loaded)"));
+    expect(guard).toBeLessThan(SOURCE.indexOf("reserveAttempt("));
+    expect(SOURCE).toContain('lastErrorCode: "unsupported_job_kind"');
+    expect(SOURCE).toMatch(
+      /state: "pending",[\s\S]*leaseToken: null,[\s\S]*leaseExpiresAt: null/,
+    );
+  });
+
   it("binds recipient identity without persisting the address or rendered body", () => {
     const a = helpers.recipientHash(
       "00000000-0000-0000-0000-000000000001",

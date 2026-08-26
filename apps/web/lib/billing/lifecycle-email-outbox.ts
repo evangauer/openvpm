@@ -55,7 +55,7 @@ type ClaimedJob = {
 type EligibleJob = {
   id: string;
   practiceId: string;
-  kind: SubscriptionLifecycleEmailKind;
+  kind: string;
   providerIdempotencyKey: string;
   recipientHashSha256: string;
   practiceName: string;
@@ -258,12 +258,50 @@ async function claimNextJob(now: Date): Promise<ClaimedJob | null> {
   });
 }
 
+export function isSupportedLifecycleEmailKind(
+  kind: string,
+): kind is SubscriptionLifecycleEmailKind {
+  return (
+    kind === "subscription_confirmed" || kind === "subscription_canceled"
+  );
+}
+
+async function deferUnsupportedJob(
+  claimed: ClaimedJob,
+  now: Date,
+): Promise<void> {
+  await withSystem(db, async (tx) => {
+    await tx
+      .update(lifecycleEmailJobs)
+      .set({
+        state: "pending",
+        nextAttemptAt: new Date(now.getTime() + RECOVERY_RECHECK_MS),
+        leaseToken: null,
+        leaseExpiresAt: null,
+        lastErrorCode: "unsupported_job_kind",
+        lastErrorDetail: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(lifecycleEmailJobs.id, claimed.id),
+          eq(lifecycleEmailJobs.state, "delivering"),
+          eq(lifecycleEmailJobs.leaseToken, claimed.leaseToken),
+        ),
+      );
+  });
+}
+
 async function processClaimedJob(
   claimed: ClaimedJob,
   now: Date,
 ): Promise<LifecycleEmailProcessResult> {
   const loaded = await loadClaimedJob(claimed);
   if (!loaded) return "suppressed";
+  if (!isSupportedLifecycleEmailKind(loaded.kind)) {
+    await deferUnsupportedJob(claimed, now);
+    return "blocked";
+  }
 
   const prepared = await prepareRequest(loaded);
   const fingerprint = requestFingerprint(prepared);
