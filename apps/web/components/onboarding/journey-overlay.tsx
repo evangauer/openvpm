@@ -102,9 +102,8 @@ export function OnboardingJourneyProvider({
     setIndex(resumeIndex);
   }, [isAdmin, resumeIndex]);
 
-  // Returning from Stripe Checkout during setup: ?setup=resume reopens the
-  // journey at the saved step (the card step persisted "allSet" before the
-  // redirect), instead of stranding the admin wherever Stripe landed them.
+  // A setup-recovery link may carry ?setup=resume. Reopen at the durable saved
+  // step instead of trusting any billing return parameter as journey evidence.
   useEffect(() => {
     if (opened.current || index !== null || !isAdmin) return;
     if (typeof window === "undefined") return;

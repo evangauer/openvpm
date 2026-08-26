@@ -273,7 +273,7 @@ export function ActivationChecklist() {
             key: "billing",
             label: "Confirm billing is connected",
             hint: "A saved card lets the trial convert without interrupting access. Cancel anytime.",
-            done: !!subscriptionData.hasBillingAccount,
+            done: subscriptionData.billingSetupCompleted,
             href: "/settings?tab=billing",
           } as Milestone,
         ]

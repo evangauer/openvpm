@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { practices, subscriptionCheckoutAttempts, users } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import type { BillingCadence } from "@/lib/billing/catalog";
@@ -10,13 +10,21 @@ import {
   type DurableSubscriptionCheckoutSession,
 } from "@/lib/stripe";
 import { withSystem } from "@/lib/tenant-db";
+import { rowsFromExecute } from "@/lib/db/execute-rows";
+import {
+  deriveSubscriptionSetupStatus,
+  subscriptionCheckoutAttemptRetryRegime,
+  type SubscriptionCheckoutAttemptState,
+  type SubscriptionSetupStatus,
+} from "@/lib/billing/subscription-setup-state";
+
+export { subscriptionCheckoutAttemptRetryRegime } from "@/lib/billing/subscription-setup-state";
 
 const HOUR_MS = 60 * 60 * 1000;
 const STRIPE_TRIAL_END_MIN_LEAD_MS = 48 * HOUR_MS;
 const STRIPE_TRIAL_END_PROCESSING_BUFFER_MS = 5 * 60 * 1000;
 const NEAR_EXPIRY_TRIAL_PERIOD_DAYS = 3;
 const PROVIDER_LEASE_MS = 2 * 60 * 1000;
-const PROVIDER_IDEMPOTENCY_RETRY_MS = 24 * HOUR_MS;
 const PROVIDER_IDENTITY_CONFLICT_HOLD_REASON =
   "Subscription Checkout provider identity conflict requires billing reconciliation.";
 
@@ -29,6 +37,100 @@ const ACTIVE_STATES = [
 ] as const;
 
 type AttemptRow = typeof subscriptionCheckoutAttempts.$inferSelect;
+
+type SubscriptionSetupSnapshotRow = {
+  tier: string;
+  trialEndsAt: Date | string | null;
+  timezone: string;
+  email: string | null;
+  recoveryHold: boolean;
+  billingStatus: string;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  databaseNow: Date | string;
+  attemptState: SubscriptionCheckoutAttemptState | null;
+  attemptFirstProviderAttemptAt: Date | string | null;
+  attemptLeaseExpiresAt: Date | string | null;
+  attemptProviderExpiresAt: Date | string | null;
+};
+
+export type SubscriptionSetupSnapshot = {
+  tier: string;
+  billingStatus: string;
+  trialEndsAt: Date | string | null;
+  timezone: string;
+  email: string | null;
+  stripeCustomerId: string | null;
+  setup: SubscriptionSetupStatus;
+};
+
+/**
+ * Read the active practice and its newest durable Checkout attempt from one
+ * tenant-scoped database snapshot. This is intentionally provider-free.
+ */
+export async function readSubscriptionSetupSnapshot(
+  tx: Database,
+  practiceId: string,
+  billingEnforced: boolean,
+): Promise<SubscriptionSetupSnapshot | null> {
+  const result = await tx.execute<SubscriptionSetupSnapshotRow>(sql`
+    select
+      ${practices.subscriptionTier} as "tier",
+      ${practices.trialEndsAt} as "trialEndsAt",
+      ${practices.timezone} as "timezone",
+      ${practices.email} as "email",
+      ${practices.recoveryHold} as "recoveryHold",
+      ${practices.billingStatus} as "billingStatus",
+      ${practices.stripeCustomerId} as "stripeCustomerId",
+      ${practices.stripeSubscriptionId} as "stripeSubscriptionId",
+      clock_timestamp() as "databaseNow",
+      latest.state as "attemptState",
+      latest.first_provider_attempt_at as "attemptFirstProviderAttemptAt",
+      latest.lease_expires_at as "attemptLeaseExpiresAt",
+      latest.provider_expires_at as "attemptProviderExpiresAt"
+    from ${practices}
+    left join lateral (
+      select
+        ${subscriptionCheckoutAttempts.state} as state,
+        ${subscriptionCheckoutAttempts.firstProviderAttemptAt} as first_provider_attempt_at,
+        ${subscriptionCheckoutAttempts.leaseExpiresAt} as lease_expires_at,
+        ${subscriptionCheckoutAttempts.providerExpiresAt} as provider_expires_at
+      from ${subscriptionCheckoutAttempts}
+      where ${subscriptionCheckoutAttempts.practiceId} = ${practices.id}
+      order by
+        ${subscriptionCheckoutAttempts.createdAt} desc,
+        ${subscriptionCheckoutAttempts.id} desc
+      limit 1
+    ) latest on true
+    where ${practices.id} = ${practiceId}
+      and ${practices.deletedAt} is null
+    limit 1
+  `);
+  const row = rowsFromExecute<SubscriptionSetupSnapshotRow>(result)[0];
+  if (!row) return null;
+  return {
+    tier: row.tier,
+    billingStatus: row.billingStatus,
+    trialEndsAt: row.trialEndsAt,
+    timezone: row.timezone,
+    email: row.email,
+    stripeCustomerId: row.stripeCustomerId,
+    setup: deriveSubscriptionSetupStatus({
+      billingEnforced,
+      evidence: {
+        recoveryHold: row.recoveryHold,
+        billingStatus: row.billingStatus,
+        stripeCustomerId: row.stripeCustomerId,
+        stripeSubscriptionId: row.stripeSubscriptionId,
+        databaseNow: row.databaseNow,
+        attemptState: row.attemptState,
+        attemptFirstProviderAttemptAt: row.attemptFirstProviderAttemptAt,
+        attemptLeaseExpiresAt: row.attemptLeaseExpiresAt,
+        attemptProviderExpiresAt: row.attemptProviderExpiresAt,
+      },
+    }),
+  };
+}
 
 export type SubscriptionCheckoutRequest = {
   practiceId: string;
@@ -62,16 +164,6 @@ export type SubscriptionCheckoutTrialTerms = {
   trialEnd: Date | string | null;
   trialPeriodDays: number | undefined;
 };
-
-export function subscriptionCheckoutAttemptRetryRegime(input: {
-  firstProviderAttemptAt: Date;
-  now: Date;
-}): "retry_same_identity" | "manual_review" {
-  return input.now.getTime() - input.firstProviderAttemptAt.getTime() <
-    PROVIDER_IDEMPOTENCY_RETRY_MS
-    ? "retry_same_identity"
-    : "manual_review";
-}
 
 export function subscriptionCheckoutProviderIdentityConflict(input: {
   practice: {
