@@ -5,6 +5,11 @@ It turns the branch and pull-request backlog into explicit recovery decisions.
 It is intentionally conservative: an item remains preserved until its successor
 has passed current checks and an owner approves the recorded disposition.
 
+The dated 2026-08-25 observations below remain part of the audit trail. They
+must not be read as live inventory after the following authority checkpoint;
+later dated checkpoints supersede current-state claims without rewriting the
+earlier evidence.
+
 The deployed baseline for this ledger is `staging` and `main` at
 `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`. Protected `development` has
 advanced through reviewed recovery work to
@@ -16,6 +21,67 @@ and the verified offline all-refs bundle. The cleanup owner also holds separate
 snapshots of every dirty worktree. Those archives may contain secrets or
 private operational data and must not be pushed to GitHub or attached to a
 pull request.
+
+## Authority checkpoint — 2026-08-26
+
+The protected `development` branch is now
+`cb22872741db3b9d6a30784ec0b70e41dde03ce1`. The protected `staging` ref and
+deployed `main` remain at `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`;
+Development-only recovery work has not been promoted, and this checkpoint does
+not claim that Staging has a deployed artifact. The canonical Development
+migration tail is now `0098_shallow_jackpot`; future schema work must generate
+from the then-current tail and must not reuse a stale branch's `0098` or later
+lineage.
+
+### Current pull-request and recovery disposition
+
+| Item | Current evidence | Decision and boundary |
+| --- | --- | --- |
+| [#256](https://github.com/evangauer/openvpm/pull/256) | Merged into Development as `cb228727`; reviewed head `fba0103b157ff990462c813fa42a6e652d876de3` and merge commit have identical tree `30e498c3192c9bdc2a83c7c204e3c5dda73e2420` | `close-approved`; pre-merge CI `32928960416` and CodeQL `32928958177`, and post-merge CI `32929333501` and CodeQL `32929332825`, all passed on their exact SHAs |
+| [#202](https://github.com/evangauer/openvpm/pull/202) | [Closed unmerged as superseded/evidence-only](https://github.com/evangauer/openvpm/pull/202#issuecomment-5420726626) at retained remote head `bf2b16cc5f4e2a2c7d6e9941a27ed60879d2c3ea`; the draft remains conflicting against stale `main` | PR closure is `close-approved`; source code remains `evidence-only` and is not a merge, rebase, cherry-pick, file-copy, or migration source. #256 subsumes its near-expiry and exact Checkout/webhook identity behavior, current Development owns the authoritative `past_due` versus `unpaid` entitlement contract and recovery UI, and only the receipt/dunning rebuild remains through [#268](https://github.com/evangauer/openvpm/issues/268) |
+| [#203](https://github.com/evangauer/openvpm/pull/203) | Closed unmerged after exact-head audit of preserved `8ccd86c63794c858f07e6d91b967fa65b209ae34`; current successors preserve approved value | PR closure is `close-approved`; source code remains `evidence-only`. Residual work is decomposed into [#257](https://github.com/evangauer/openvpm/issues/257), [#258](https://github.com/evangauer/openvpm/issues/258), [#259](https://github.com/evangauer/openvpm/issues/259), [#260](https://github.com/evangauer/openvpm/issues/260), and [#261](https://github.com/evangauer/openvpm/issues/261); never replay its colliding `0086` lineage |
+| [#222](https://github.com/evangauer/openvpm/pull/222) | Closed unmerged after exact-head audit of preserved `bd82bbb2987a638776d3bf92dfe6809561cb8b19`; it remains conflicting and contains release-blocking provider, capability, MFA, and migration patterns | PR closure is `close-approved`; source code remains `evidence-only`. Residual work is decomposed into [#262](https://github.com/evangauer/openvpm/issues/262), [#263](https://github.com/evangauer/openvpm/issues/263), [#264](https://github.com/evangauer/openvpm/issues/264), [#265](https://github.com/evangauer/openvpm/issues/265), [#266](https://github.com/evangauer/openvpm/issues/266), and [#267](https://github.com/evangauer/openvpm/issues/267); never replay its colliding `0094`/`0095` lineage |
+| Receipt/dunning recovery | `codex/recover-receipt-dunning-outbox@3dbc3ee42eb9c17f860d99a66c9bd7b6f15cbc98`, tree `b77ee94cd2c8da1bd7353f345b3ef8cd01611136` | Exact-head code-quality review is **GO**, but integration sequencing is **NO-GO**. [#268](https://github.com/evangauer/openvpm/issues/268) owns the current-base rebuild/rebase/release sequence. The evidence predates #256, overlaps the canonical quantity queue, and carries stale `0098`-`0100`; preserve it and rebuild/review the intended delta on then-current Development with fresh generated migration ordinals |
+| Optional lifecycle marketing experiment | `codex/fix-lifecycle-email-provider-boundary@3fc5909aada2d5d16d55a9b9ec3eb5d0d75daae4`, tree `3c52bb47165360f859d95a5fdaa0ae6789da94a9` | `evidence-only`; its own commit is marked `[NO-GO]`, it is not a merge/cherry-pick source, and [#259](https://github.com/evangauer/openvpm/issues/259) owns a current-base durable provider-outside-transaction successor |
+
+All twelve open issues are #257 through #268. Closing #202, #203, and #222 did
+not delete their retained source branches, authorize a provider cutover, or
+make their stale migrations reusable.
+
+### Current inventory checkpoint
+
+Read-only Git and GitHub inventory recorded 158 local branches, 151 `origin`
+remote heads excluding `origin/HEAD`, and 105 registered worktrees. GitHub has
+zero open pull requests, 253 closed-state pull requests (231 merged and 22
+closed without merge), and twelve open issues. These 2026-08-26 counts
+supersede, but do not alter, the dated 2026-08-25 counts below.
+
+The dirty audit still identifies exactly five preserved areas: the primary
+mixed checkout with 301 status entries, GTM/CRO planning with nine, nutrition
+extension with 29, Resend incident hardening with one, and the Orca
+`openvpm-83` history-filter worktree with one. No status was changed and no
+branch, worktree, safety ref, or preserved source is approved for bulk deletion.
+
+### Current promotion and approval gate
+
+Development-to-Staging promotion remains **NO-GO**. The active canonical-branch
+ruleset has no bypass actors and requires pull requests, strict build/migration/
+RLS checks, resolved threads, linear history, and deletion/non-fast-forward
+protection. It still requires zero approving reviews, no code-owner or last-push
+approval, and no stale-review dismissal. GitHub still reports one collaborator,
+who is the administrator. Staging and Production environment review names that
+same user, permits self-review, and Development has no environment reviewer.
+Development and Staging contain zero environment secrets and variables, so the
+manual nonproduction migration paths remain intentionally inert.
+
+The #256 exact-tree and green pre/post CI evidence approves that Development
+merge only; it is not an independent GitHub approval and does not approve a
+release. Before promotion, onboard an independent maintainer/release owner,
+atomically enable independent branch and environment approvals, provision and
+prove isolated Development credentials with a production-isolation canary,
+build and record an immutable Staging artifact, and complete acceptance and
+migration evidence for that exact artifact before advancing `staging` or
+`main`.
 
 ## Decision vocabulary
 
@@ -31,7 +97,7 @@ pull request.
 Only `close-approved` permits closing a pull request or deleting its remote
 branch. Age, conflicts, or failing checks are never sufficient on their own.
 
-## Pull-request register
+## Pull-request register — 2026-08-25 observation
 
 The counts and merge state below are the GitHub state observed on 2026-08-25.
 They are evidence for triage, not acceptance evidence for the underlying code.
@@ -65,7 +131,7 @@ That containment is a preservation fact only; it does not make #205 a safe
 release candidate. #222 is a separate large aggregate with substantial overlap
 and must not be merged beside or on top of #205.
 
-### Current-base triage checkpoint
+### Current-base triage checkpoint — 2026-08-25
 
 The ten still-open pull requests were independently re-audited against fixed
 `development@824913647c67e01c88d2c8afd534a86c82b8f78a` after the environment
@@ -163,9 +229,11 @@ recovery branch. Recover the intended schema change against current
 upgrade from a production-shaped database, and re-run migration integrity,
 drift, RLS, and rollback/forward-repair review.
 
-The current canonical Development migration tail is `0097`. The next available
-ordinal appears to be `0098` only until another migration merges; migration
-recoveries must be serialized and regenerate from the then-current tail.
+At this 2026-08-25 checkpoint, the canonical Development migration tail was
+`0097`, and `0098` only appeared to be the next available ordinal until another
+migration merged. Migration recoveries must be serialized and regenerate from
+the then-current tail. The 2026-08-26 authority checkpoint above records the
+subsequent canonical `0098_shallow_jackpot` merge.
 Current-base review identified these explicit P1 no-go sources:
 
 - #199 carries old `0086`-`0088` migrations/snapshots; its dispense-charge
@@ -235,7 +303,7 @@ same-named origin refs (`codex/attachment-replication`,
 `codex/validate-recovery-signature`, `feat/sms-provider-abstraction`, and
 `main`) and must not be mistaken for current remote state.
 
-## Promotion-control checkpoint
+## Promotion-control checkpoint — 2026-08-25
 
 Development-to-Staging promotion remains **NO-GO** even though canonical branch
 mutation controls are active and all required checks on Development `82491364`

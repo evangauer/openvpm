@@ -112,6 +112,32 @@ describe("repository promotion controls", () => {
     expect(ledger).toContain("feat/lifecycle-emails");
     expect(ledger).toContain("The local `0094` and `0095` names collide");
     expect(ledger).toContain("No migration or snapshot from these worktrees");
+    expect(ledger).toContain("Authority checkpoint — 2026-08-26");
+    expect(ledger).toContain(
+      "`cb22872741db3b9d6a30784ec0b70e41dde03ce1`",
+    );
+    expect(ledger).toContain(
+      "tree `30e498c3192c9bdc2a83c7c204e3c5dda73e2420`",
+    );
+    expect(ledger).toContain("zero open pull requests");
+    expect(ledger).toContain("source code remains `evidence-only`");
+    expect(ledger).toContain("issues are #257 through #268");
+    expect(ledger).toContain("#256 subsumes its near-expiry");
+    expect(ledger).toContain(
+      "[#268](https://github.com/evangauer/openvpm/issues/268)",
+    );
+    expect(ledger).toContain("`0098_shallow_jackpot`");
+    expect(ledger).toContain("158 local branches");
+    expect(ledger).toContain("105 registered worktrees");
+    expect(ledger).toContain("253 closed-state pull requests");
+    expect(policy).toContain("the protected `staging` ref and");
+    expect(policy).toContain(
+      "This does not imply that Staging has a deployed artifact",
+    );
+    expect(policy).toContain("No pull request remains");
+    expect(policy).toContain("`past_due` versus");
+    expect(policy).toContain("Current transition checkpoint — 2026-08-26");
+    expect(policy).toContain("Promotion remains **NO-GO**");
   });
 
   it("requires non-production credential isolation before lifting preview quarantine", () => {
