@@ -276,6 +276,27 @@ describe("committed Drizzle migrations", () => {
     expect(migration).toContain('"portal_sessions_client_tenant_fk"');
   });
 
+  it("stages the zero-dollar closeout constraint change with bounded locks", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries: Array<{ tag: string }> };
+    const tag = journal.entries.find((entry) =>
+      entry.tag.startsWith("0098_"),
+    )?.tag;
+    expect(tag).toBeTruthy();
+
+    const migration = readRepoFile(`packages/db/drizzle/${tag}.sql`);
+    expect(migration).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(migration).toContain("SET LOCAL statement_timeout = '5min'");
+    expect(migration).toContain(
+      'ADD CONSTRAINT "visit_closeouts_completed_state_check"',
+    );
+    expect(migration).toContain("NOT VALID");
+    expect(migration).toContain(
+      'VALIDATE CONSTRAINT "visit_closeouts_completed_state_check"',
+    );
+  });
+
   it("stages file recovery constraints behind a count-only preflight", () => {
     const preflight = readRepoFile(
       "packages/db/preflight/0077_file_recovery.sql",

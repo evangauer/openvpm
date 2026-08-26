@@ -1495,7 +1495,7 @@ function VisitCloseout({
     };
   };
 
-  async function useServerCloseoutDraft() {
+  async function restoreServerCloseoutDraft() {
     try {
       const latest = await utils.encounters.getCloseout.fetch({
         appointmentId,
@@ -1790,7 +1790,7 @@ function VisitCloseout({
               isFinalizing={finalizeClinical.isPending}
               canFinalize={canFinalizeClinical}
               onSave={() => void persistCloseoutDraft()}
-              onUseServer={() => void useServerCloseoutDraft()}
+              onUseServer={() => void restoreServerCloseoutDraft()}
               onOverwrite={() => void overwriteServerCloseoutDraft()}
               onFinalize={() => void finalizeClinicalHandoff()}
             />
@@ -2809,6 +2809,9 @@ function OperationalCloseoutForm({
     id: string;
     status: string;
     itemCount: number;
+    total: string;
+    paidAmount: string;
+    adjustedAmount: string;
     balanceDueCents: number;
     dueDate: Date | string | null;
   } | null;
@@ -2841,7 +2844,16 @@ function OperationalCloseoutForm({
     invoiceDueDate >= minimumDueDate &&
     activeInvoice.balanceDueCents > 0,
   );
-  const noChargeReady = !activeInvoice;
+  const zeroDollarInvoiceReady = Boolean(
+    activeInvoice &&
+      activeInvoice.itemCount > 0 &&
+      activeInvoice.status === "draft" &&
+      moneyToCents(activeInvoice.total) === 0 &&
+      moneyToCents(activeInvoice.paidAmount) === 0 &&
+      moneyToCents(activeInvoice.adjustedAmount) === 0 &&
+      activeInvoice.balanceDueCents === 0,
+  );
+  const noChargeReady = !activeInvoice || zeroDollarInvoiceReady;
   const selectedDispositionReady =
     (chargeDisposition === "paid" && paidReady) ||
     (chargeDisposition === "accounts_receivable" && accountsReceivableReady) ||
@@ -2856,8 +2868,8 @@ function OperationalCloseoutForm({
       <div>
         <h3 className="font-medium">2. Billing and owner handoff</h3>
         <p className="text-sm text-muted-foreground">
-          Resolve payment or explicitly place the invoice in accounts receivable
-          before completing the visit.
+          Confirm the paid, pay-later, or documented no-charge outcome before
+          completing the visit.
         </p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
@@ -2889,7 +2901,11 @@ function OperationalCloseoutForm({
               Pay later — present with due date
             </option>
             <option value="no_charge" disabled={!noChargeReady}>
-              No charge for this visit{noChargeReady ? "" : " — invoice exists"}
+              {zeroDollarInvoiceReady
+                ? "No charge — $0 invoice"
+                : `No charge for this visit${
+                    noChargeReady ? "" : " — invoice has a balance"
+                  }`}
             </option>
           </select>
         </div>
@@ -2956,9 +2972,11 @@ function OperationalCloseoutForm({
           {formatCurrency(activeInvoice.balanceDueCents / 100)}.{" "}
           {paidReady
             ? "Ready for paid checkout. "
-            : accountsReceivableReady
-              ? "Ready for accounts-receivable checkout. "
-              : "Save charges and choose a valid due date before checkout. "}
+            : zeroDollarInvoiceReady
+              ? "Ready for no-charge checkout; the $0 invoice will be finalized without recording a payment. "
+              : accountsReceivableReady
+                ? "Ready for accounts-receivable checkout. "
+                : "Save charges and choose a valid due date before checkout. "}
           <Button variant="link" size="sm" asChild className="h-auto p-0">
             <Link href={`/billing?expand=${activeInvoice.id}`}>
               Open billing

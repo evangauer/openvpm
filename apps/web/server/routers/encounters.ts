@@ -2342,9 +2342,66 @@ export const encountersRouter = createRouter({
         let invoiceId: string | null = null;
         if (input.chargeDisposition === "no_charge") {
           if (invoice) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message: "Void or resolve the active visit invoice before marking no charge.",
+            const zeroDollarInvoiceReady =
+              invoice.itemCount > 0 &&
+              invoice.status === "draft" &&
+              moneyToCents(invoice.total) === 0 &&
+              moneyToCents(invoice.paidAmount ?? "0") === 0 &&
+              moneyToCents(invoice.adjustedAmount) === 0 &&
+              invoice.balanceDueCents === 0;
+            if (!zeroDollarInvoiceReady) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "No-charge checkout requires either no invoice or a draft invoice whose saved line items total $0.00.",
+              });
+            }
+
+            const [finalizedInvoice] = await tx
+              .update(invoices)
+              .set({ status: "paid", updatedAt: new Date() })
+              .where(
+                and(
+                  eq(invoices.id, invoice.id),
+                  eq(invoices.practiceId, ctx.practiceId),
+                  eq(invoices.appointmentId, input.appointmentId),
+                  eq(invoices.patientId, appointment.patientId),
+                  eq(invoices.clientId, appointment.clientId),
+                  eq(invoices.status, "draft"),
+                  eq(invoices.total, invoice.total),
+                  eq(invoices.paidAmount, invoice.paidAmount ?? "0"),
+                  eq(invoices.isEstimate, false),
+                  isNull(invoices.deletedAt),
+                  sql`not exists (
+                    select 1 from ${invoiceAdjustments}
+                    where ${invoiceAdjustments.invoiceId} = ${invoice.id}
+                      and ${invoiceAdjustments.deletedAt} is null
+                  )`,
+                ),
+              )
+              .returning({ id: invoices.id });
+            if (!finalizedInvoice) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message:
+                  "The $0.00 invoice changed while completing checkout. Refresh and try again.",
+              });
+            }
+            invoiceId = finalizedInvoice.id;
+            await tx.insert(auditLog).values({
+              practiceId: ctx.practiceId,
+              userId: ctx.user.id,
+              action: "invoice_finalized_no_charge",
+              entityType: "invoice",
+              entityId: invoice.id,
+              changes: {
+                appointmentId: input.appointmentId,
+                priorStatus: invoice.status,
+                nextStatus: "paid",
+                total: invoice.total,
+                itemCount: invoice.itemCount,
+                reason: input.noChargeReason,
+              },
             });
           }
         } else {

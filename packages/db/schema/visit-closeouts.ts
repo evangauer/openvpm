@@ -286,7 +286,6 @@ export const visitCloseouts = pgTable(
           and ${table.handoffMethod} is not null
           and (
             ${table.chargeDisposition} = 'no_charge'
-            and ${table.invoiceId} is null
             and length(btrim(coalesce(${table.noChargeReason}, ''))) > 0
             or ${table.chargeDisposition} in ('paid', 'accounts_receivable')
             and ${table.invoiceId} is not null
