@@ -173,6 +173,27 @@ describe("admin UI", () => {
     expect(source).toContain('"Needs attention"');
   });
 
+  it("shows the sequenced read-only hosted SMS pilot activation preflight", () => {
+    expect(source).toContain(
+      "trpc.admin.hostedSmsPilotActivationPreflight.useQuery",
+    );
+    expect(source).toContain("Hosted SMS pilot activation preflight");
+    expect(source).toContain('scope_prepared: "Scope prepared"');
+    expect(source).toContain('inbound_prepared: "Inbound prepared"');
+    expect(source).toContain('provider_ready: "Provider ready"');
+    expect(source).toContain("smsPilotPreflight.checks.launchFlagsValid");
+    expect(source).toContain("smsPilotPreflight.checks.providerEventsClear");
+    expect(source).toContain(
+      "smsPilotPreflight.checks.heartbeatDeliveryConfigured",
+    );
+    expect(compactSource).toContain(
+      "This check is read-only. It returns no secret, phone, clinic, or provider identifier",
+    );
+    expect(compactSource).toContain(
+      "Configured heartbeat delivery does not prove a fresh external receipt",
+    );
+  });
+
   it("shows bounded read-only redacted carrier lifecycle history", () => {
     expect(source).toContain(
       "trpc.admin.messagingRegistrationHistory.useQuery",
