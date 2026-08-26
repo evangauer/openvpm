@@ -18,7 +18,7 @@ describe("legal pages", () => {
 
   it("links the terms from signup and privacy from the portal", () => {
     const register = readFileSync("app/(auth)/register/page.tsx", "utf8");
-    const portal = readFileSync("app/portal/layout.tsx", "utf8");
+    const portal = readFileSync("components/portal/portal-shell.tsx", "utf8");
 
     expect(register).toContain('href="/legal/terms"');
     expect(register).toContain('href="/legal/privacy"');

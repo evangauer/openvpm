@@ -64,6 +64,22 @@ function certificateDb(recordRows: unknown[]) {
   ]);
 }
 
+function portalCaller(db: ReturnType<typeof certificateDb>) {
+  return portalRouter.createCaller({
+    db,
+    ip: "203.0.113.10",
+    portalSessionId: "00000000-0000-0000-0000-000000000004",
+    portalClient: {
+      id: CLIENT_ID,
+      practiceId: PRACTICE_ID,
+      firstName: "Alex",
+      lastName: "Rivera",
+      email: "alex@example.test",
+      phone: null,
+    },
+  } as never);
+}
+
 afterEach(() => vi.clearAllMocks());
 
 describe("portal vaccination certificate authorization", () => {
@@ -86,8 +102,7 @@ describe("portal vaccination certificate authorization", () => {
     ]);
 
     await expect(
-      portalRouter.createCaller({ db, ip: "203.0.113.10" } as never)
-        .getVaccinationCertificateData({
+      portalCaller(db).getVaccinationCertificateData({
           token: "portal-token",
           patientId: PATIENT_ID,
           vaccinationRecordId: VACCINATION_ID,
@@ -105,8 +120,7 @@ describe("portal vaccination certificate authorization", () => {
     const db = certificateDb([]);
 
     await expect(
-      portalRouter.createCaller({ db, ip: "203.0.113.10" } as never)
-        .getVaccinationCertificateData({
+      portalCaller(db).getVaccinationCertificateData({
           token: "portal-token",
           patientId: PATIENT_ID,
           vaccinationRecordId: VACCINATION_ID,

@@ -455,8 +455,9 @@ describe("public booking", () => {
       lastName: "Jones",
       email: "pat@example.com",
     });
-    expect(typeof clientValues!.accessToken).toBe("string");
-    expect((clientValues!.accessToken as string).length).toBeGreaterThan(30);
+    // Public booking creates the client record but never creates a portal
+    // credential. Staff must explicitly issue a short-lived one-time link.
+    expect(clientValues!.accessToken).toBeNull();
     expect(patientValues).toMatchObject({
       clientId: CLIENT_ID,
       name: "Milo",
