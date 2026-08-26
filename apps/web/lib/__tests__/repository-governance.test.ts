@@ -103,6 +103,14 @@ describe("repository promotion controls", () => {
   it("keeps backlog cleanup evidence-gated and migration collisions on hold", () => {
     const policy = repoFile("docs/repository-governance.md");
     const ledger = repoFile("docs/repository-recovery-ledger.md");
+    const currentCheckpoint = policy
+      .split("## Current transition checkpoint — 2026-08-26")[1]
+      ?.split("## Transition note — 2026-08-25")[0];
+    const authorityCheckpoint = ledger
+      .split("## Authority checkpoint — 2026-08-26")[1]
+      ?.split("## Decision vocabulary")[0];
+    const normalizedCurrentCheckpoint = currentCheckpoint?.replace(/\s+/g, " ");
+    const normalizedAuthorityCheckpoint = authorityCheckpoint?.replace(/\s+/g, " ");
 
     expect(policy).toContain("repository-recovery-ledger.md");
     expect(ledger).toContain("Only `close-approved` permits closing");
@@ -113,6 +121,12 @@ describe("repository promotion controls", () => {
     expect(ledger).toContain("The local `0094` and `0095` names collide");
     expect(ledger).toContain("No migration or snapshot from these worktrees");
     expect(ledger).toContain("Authority checkpoint — 2026-08-26");
+    expect(ledger).toContain(
+      "`46a7c0636e91e6f1d1ce58362daa3a4a9487c613`",
+    );
+    expect(ledger).toContain(
+      "tree `f98d82ee4ec57387dfa487e9d615bbf8d18ba2e0`",
+    );
     expect(ledger).toContain(
       "`cb22872741db3b9d6a30784ec0b70e41dde03ce1`",
     );
@@ -127,17 +141,74 @@ describe("repository promotion controls", () => {
       "[#268](https://github.com/evangauer/openvpm/issues/268)",
     );
     expect(ledger).toContain("`0098_shallow_jackpot`");
-    expect(ledger).toContain("158 local branches");
-    expect(ledger).toContain("105 registered worktrees");
-    expect(ledger).toContain("253 closed-state pull requests");
+    expect(authorityCheckpoint).toBeDefined();
+    expect(normalizedAuthorityCheckpoint).toContain(
+      "recorded 157 local branches, 151 `origin` remote heads excluding `origin/HEAD`, and 104 registered worktrees",
+    );
+    expect(normalizedAuthorityCheckpoint).toContain(
+      "Exactly 22 are PIMS worktrees registered below the frozen Orca workspace",
+    );
+    expect(normalizedAuthorityCheckpoint).toContain(
+      "zero open pull requests, 255 closed-state pull requests (233 merged and 22 closed without merge), and twelve open issues",
+    );
+    expect(normalizedAuthorityCheckpoint).toContain(
+      "The Vercel production aliases `app.openvpm.com` and `demo.openvpm.com` resolve to READY `openvpm-app` and `openvpm` deployments sourced from exact Main commit `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`",
+    );
+    expect(normalizedAuthorityCheckpoint).toContain(
+      "Development and pull-request candidates remain deliberately CANCELED by the preview quarantine",
+    );
+    expect(normalizedAuthorityCheckpoint).toContain(
+      "placeholder `openvpm-docs` Main deployment remains ERROR at old commit `676f0b09d30a0a6f8804736fc7475cbd1f408d1a`",
+    );
+    expect(normalizedAuthorityCheckpoint).toContain(
+      "GitHub Production deployment `6088849562` records exact Main `b2d07cd`",
+    );
+    expect(normalizedAuthorityCheckpoint).toContain(
+      "GitHub has no Development or Staging environment deployment record",
+    );
     expect(policy).toContain("the protected `staging` ref and");
     expect(policy).toContain(
       "This does not imply that Staging has a deployed artifact",
     );
-    expect(policy).toContain("No pull request remains");
+    expect(policy).toContain("No pull request remained");
     expect(policy).toContain("`past_due` versus");
     expect(policy).toContain("Current transition checkpoint — 2026-08-26");
-    expect(policy).toContain("Promotion remains **NO-GO**");
+    expect(currentCheckpoint).toBeDefined();
+    expect(normalizedCurrentCheckpoint).toContain("Promotion remains **NO-GO**");
+    expect(normalizedCurrentCheckpoint).toContain(
+      "protected refs were `development` at `46a7c0636e91e6f1d1ce58362daa3a4a9487c613`; the protected `staging` ref and deployed `main` remain at `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`",
+    );
+    expect(normalizedCurrentCheckpoint).toContain(
+      "PR #270 was the last completed Development merge at audit time",
+    );
+    expect(normalizedCurrentCheckpoint).toContain(
+      "PR #256 remains the latest product integration",
+    );
+    expect(normalizedCurrentCheckpoint).toContain("immutable audit observation");
+    expect(normalizedCurrentCheckpoint).toContain("must read the live protected refs");
+    expect(normalizedCurrentCheckpoint).toContain("The retirement grace clock has not started");
+    expect(normalizedCurrentCheckpoint).toContain(
+      "Repository ruleset `20625373` covers exactly `development`, `staging`, and `main`, has no bypass actors",
+    );
+    expect(normalizedCurrentCheckpoint).toContain("both CodeQL analyses");
+    expect(normalizedCurrentCheckpoint).toContain(
+      "All three environments allow administrator bypass",
+    );
+    expect(normalizedCurrentCheckpoint).toContain(
+      "Development candidates remain CANCELED by quarantine",
+    );
+    expect(normalizedCurrentCheckpoint).toContain(
+      "placeholder docs deployment remains ERROR on old Main `676f0b09d30a0a6f8804736fc7475cbd1f408d1a`",
+    );
+    expect(normalizedCurrentCheckpoint).toContain(
+      "GitHub Production deployment `6088849562` records Main `b2d07cd`",
+    );
+    expect(normalizedCurrentCheckpoint).toContain(
+      "no Development or Staging environment deployment record",
+    );
+    expect(normalizedCurrentCheckpoint).toContain(
+      "not evidence that an immutable artifact passed Staging and was promoted unchanged",
+    );
   });
 
   it("keeps repository retirement fail-closed behind preservation and grace", () => {

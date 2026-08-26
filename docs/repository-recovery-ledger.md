@@ -11,10 +11,10 @@ later dated checkpoints supersede current-state claims without rewriting the
 earlier evidence.
 
 The deployed baseline for this ledger is `staging` and `main` at
-`b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`. Protected `development` has
-advanced through reviewed recovery work to
-`824913647c67e01c88d2c8afd534a86c82b8f78a`; that work has not been promoted
-or deployed. The prior deployed baseline
+`b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`. At the completed live audit
+immediately before this amendment, protected `development` was
+`46a7c0636e91e6f1d1ce58362daa3a4a9487c613`; that work had not been promoted or
+deployed. The prior deployed baseline
 `cc6fd16cc8d414f181d278546e2a1213300732a0` and the prior `staging` tip
 `0f139422c331b1d57a7862a7d0aa7724055341db` remain in dedicated safety refs
 and the verified offline all-refs bundle. The cleanup owner also holds separate
@@ -24,8 +24,9 @@ pull request.
 
 ## Authority checkpoint — 2026-08-26
 
-The protected `development` branch is now
-`cb22872741db3b9d6a30784ec0b70e41dde03ce1`. The protected `staging` ref and
+At the completed live audit immediately before this amendment, the protected
+`development` branch was
+`46a7c0636e91e6f1d1ce58362daa3a4a9487c613`. The protected `staging` ref and
 deployed `main` remain at `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`;
 Development-only recovery work has not been promoted, and this checkpoint does
 not claim that Staging has a deployed artifact. The canonical Development
@@ -33,11 +34,17 @@ migration tail is now `0098_shallow_jackpot`; future schema work must generate
 from the then-current tail and must not reuse a stale branch's `0098` or later
 lineage.
 
+This is an immutable audit observation, not a branch pointer. Governance-only
+amendments advance Development after review; every release or cleanup operation
+must read the live protected refs rather than infer current state from this SHA.
+
 ### Current pull-request and recovery disposition
 
 | Item | Current evidence | Decision and boundary |
 | --- | --- | --- |
-| [#256](https://github.com/evangauer/openvpm/pull/256) | Merged into Development as `cb228727`; reviewed head `fba0103b157ff990462c813fa42a6e652d876de3` and merge commit have identical tree `30e498c3192c9bdc2a83c7c204e3c5dda73e2420` | `close-approved`; pre-merge CI `32928960416` and CodeQL `32928958177`, and post-merge CI `32929333501` and CodeQL `32929332825`, all passed on their exact SHAs |
+| [#270](https://github.com/evangauer/openvpm/pull/270) | Merged only into Development as `46a7c063`; reviewed head `90ff1af1aea5011b77e7ffa8244d8735470c9178` and merge commit have identical tree `f98d82ee4ec57387dfa487e9d615bbf8d18ba2e0` | `close-approved`; pre-merge CI `32933987144` and CodeQL `32933985461`, and post-merge CI `32934374286` and CodeQL `32934374194`, all passed on their exact SHAs. The register authorizes no retirement and the grace clock has not started |
+| [#269](https://github.com/evangauer/openvpm/pull/269) | Merged only into Development as `a5d4ead8`; reviewed head `544ee78fca3662648525e5fdf24eb38fcd630f07` and merge commit have identical tree `d3a5236331259394997f89d670541cb93cef5c04` | `close-approved`; the exact reviewed source remains in a safety ref and verified complete-history bundle. This records governance/recovery evidence, not a Staging or Production release |
+| [#256](https://github.com/evangauer/openvpm/pull/256) | Merged into Development as `cb22872741db3b9d6a30784ec0b70e41dde03ce1`; reviewed head `fba0103b157ff990462c813fa42a6e652d876de3` and merge commit have identical tree `30e498c3192c9bdc2a83c7c204e3c5dda73e2420` | `close-approved`; pre-merge CI `32928960416` and CodeQL `32928958177`, and post-merge CI `32929333501` and CodeQL `32929332825`, all passed on their exact SHAs |
 | [#202](https://github.com/evangauer/openvpm/pull/202) | [Closed unmerged as superseded/evidence-only](https://github.com/evangauer/openvpm/pull/202#issuecomment-5420726626) at retained remote head `bf2b16cc5f4e2a2c7d6e9941a27ed60879d2c3ea`; the draft remains conflicting against stale `main` | PR closure is `close-approved`; source code remains `evidence-only` and is not a merge, rebase, cherry-pick, file-copy, or migration source. #256 subsumes its near-expiry and exact Checkout/webhook identity behavior, current Development owns the authoritative `past_due` versus `unpaid` entitlement contract and recovery UI, and only the receipt/dunning rebuild remains through [#268](https://github.com/evangauer/openvpm/issues/268) |
 | [#203](https://github.com/evangauer/openvpm/pull/203) | Closed unmerged after exact-head audit of preserved `8ccd86c63794c858f07e6d91b967fa65b209ae34`; current successors preserve approved value | PR closure is `close-approved`; source code remains `evidence-only`. Residual work is decomposed into [#257](https://github.com/evangauer/openvpm/issues/257), [#258](https://github.com/evangauer/openvpm/issues/258), [#259](https://github.com/evangauer/openvpm/issues/259), [#260](https://github.com/evangauer/openvpm/issues/260), and [#261](https://github.com/evangauer/openvpm/issues/261); never replay its colliding `0086` lineage |
 | [#222](https://github.com/evangauer/openvpm/pull/222) | Closed unmerged after exact-head audit of preserved `bd82bbb2987a638776d3bf92dfe6809561cb8b19`; it remains conflicting and contains release-blocking provider, capability, MFA, and migration patterns | PR closure is `close-approved`; source code remains `evidence-only`. Residual work is decomposed into [#262](https://github.com/evangauer/openvpm/issues/262), [#263](https://github.com/evangauer/openvpm/issues/263), [#264](https://github.com/evangauer/openvpm/issues/264), [#265](https://github.com/evangauer/openvpm/issues/265), [#266](https://github.com/evangauer/openvpm/issues/266), and [#267](https://github.com/evangauer/openvpm/issues/267); never replay its colliding `0094`/`0095` lineage |
@@ -50,9 +57,11 @@ make their stale migrations reusable.
 
 ### Current inventory checkpoint
 
-Read-only Git and GitHub inventory recorded 158 local branches, 151 `origin`
-remote heads excluding `origin/HEAD`, and 105 registered worktrees. GitHub has
-zero open pull requests, 253 closed-state pull requests (231 merged and 22
+Read-only Git and GitHub inventory after the temporary #270 review cleanup
+recorded 157 local branches, 151 `origin` remote heads excluding `origin/HEAD`,
+and 104 registered worktrees. Exactly 22 are PIMS worktrees registered below
+the frozen Orca workspace. GitHub has zero open pull requests, 255 closed-state
+pull requests (233 merged and 22
 closed without merge), and twelve open issues. These 2026-08-26 counts
 supersede, but do not alter, the dated 2026-08-25 counts below.
 
@@ -67,16 +76,33 @@ branch, worktree, safety ref, or preserved source is approved for bulk deletion.
 Development-to-Staging promotion remains **NO-GO**. The active canonical-branch
 ruleset has no bypass actors and requires pull requests, strict build/migration/
 RLS checks, resolved threads, linear history, and deletion/non-fast-forward
-protection. It still requires zero approving reviews, no code-owner or last-push
-approval, and no stale-review dismissal. GitHub still reports one collaborator,
-who is the administrator. Staging and Production environment review names that
-same user, permits self-review, and Development has no environment reviewer.
+protection; classic protection additionally requires both CodeQL analyses and
+enforces administrators. It still requires zero approving reviews, no
+code-owner or last-push approval, and no stale-review dismissal. GitHub still
+reports one collaborator, who is the administrator; the bootstrap CODEOWNERS
+file still names only that user and is not enforced. Development, Staging, and
+Production environment branch policies name only `development`, `staging`, and
+`main`, respectively. Staging and Production environment review names that same
+user, permits self-review, and Development has no environment reviewer. All
+three environments allow administrator bypass.
 Development and Staging contain zero environment secrets and variables, so the
 manual nonproduction migration paths remain intentionally inert.
 
-The #256 exact-tree and green pre/post CI evidence approves that Development
-merge only; it is not an independent GitHub approval and does not approve a
-release. Before promotion, onboard an independent maintainer/release owner,
+The Vercel production aliases `app.openvpm.com` and `demo.openvpm.com` resolve
+to READY `openvpm-app` and `openvpm` deployments sourced from exact Main commit
+`b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`. Development and pull-request
+candidates remain deliberately CANCELED by the preview quarantine. The
+placeholder `openvpm-docs` Main deployment remains ERROR at old commit
+`676f0b09d30a0a6f8804736fc7475cbd1f408d1a` and is not a deployed product or
+Staging artifact. GitHub Production deployment `6088849562` records exact Main
+`b2d07cd`, but GitHub has no Development or Staging environment deployment
+record. No Vercel or GitHub evidence proves a Staging deployment, and a READY
+Production deployment is not build-once promotion proof.
+
+The #256, #269, and #270 exact-tree and green pre/post CI evidence approves
+those Development merges only; it is not an independent GitHub approval and
+does not approve a release. Before promotion, onboard an independent
+maintainer/release owner,
 atomically enable independent branch and environment approvals, provision and
 prove isolated Development credentials with a production-isolation canary,
 build and record an immutable Staging artifact, and complete acceptance and
