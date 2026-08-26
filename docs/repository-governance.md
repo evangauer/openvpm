@@ -394,6 +394,39 @@ Standard local clones and Git worktrees may still be used as working copies;
 the protected remote branches, reviewed pull requests, immutable artifacts, and
 release records remain authoritative.
 
+## Current transition checkpoint — 2026-08-26
+
+The transition note below is preserved as the historical 2026-08-25 starting
+state. The current protected refs are `development` at
+`cb22872741db3b9d6a30784ec0b70e41dde03ce1`; the protected `staging` ref and
+deployed `main` remain at `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`.
+This does not imply that Staging has a deployed artifact. PR #256 is the latest
+Development merge; its reviewed head and merge commit have identical tree
+`30e498c3192c9bdc2a83c7c204e3c5dda73e2420`, and exact-SHA CI and CodeQL
+passed before and after merge. This proves the Development integration, not a
+Staging or Production release.
+
+The canonical migration tail is `0098_shallow_jackpot`. No pull request remains
+open. PRs #202, #203, and #222 are closed with their exact source branches
+retained as evidence-only; issues #257 through #268 carry their unresolved
+current-base outcomes. #256 subsumes #202's near-expiry and exact Checkout
+identity behavior, current Development owns the authoritative `past_due` versus
+`unpaid` entitlement contract and recovery UI, and only the receipt/dunning
+rebuild remains from #202 through #268. The dated
+[repository recovery and cleanup ledger](repository-recovery-ledger.md)
+contains the exact heads, issue routing, branch/worktree counts, and recovery
+sequencing decisions.
+
+Promotion remains **NO-GO**. Canonical refs have active no-bypass mutation and
+strict core-check controls, but branch rules still require zero approvals and
+the repository still has only one collaborator. Staging and Production name
+that same user as environment reviewer and allow self-review; Development has
+no environment reviewer. Development and Staging have no environment secrets
+or variables, no isolated nonproduction credential canary has passed, and no
+build-once immutable artifact has completed the Development-to-Staging-to-Main
+path. Independent branch/environment approval, isolated resources, exact
+artifact acceptance, and a governed promotion remain prerequisites.
+
 ## Transition note — 2026-08-25
 
 This policy describes the target state, not controls that are already fully in
