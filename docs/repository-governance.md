@@ -402,17 +402,26 @@ release records remain authoritative.
 ## Current transition checkpoint — 2026-08-26
 
 The transition note below is preserved as the historical 2026-08-25 starting
-state. The current protected refs are `development` at
-`cb22872741db3b9d6a30784ec0b70e41dde03ce1`; the protected `staging` ref and
+state. In the completed live audit immediately before this amendment, the
+protected refs were `development` at
+`46a7c0636e91e6f1d1ce58362daa3a4a9487c613`; the protected `staging` ref and
 deployed `main` remain at `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`.
-This does not imply that Staging has a deployed artifact. PR #256 is the latest
-Development merge; its reviewed head and merge commit have identical tree
-`30e498c3192c9bdc2a83c7c204e3c5dda73e2420`, and exact-SHA CI and CodeQL
-passed before and after merge. This proves the Development integration, not a
-Staging or Production release.
+This does not imply that Staging has a deployed artifact. PR #270 was the last
+completed Development merge at audit time; its reviewed head and merge commit
+have identical tree
+`f98d82ee4ec57387dfa487e9d615bbf8d18ba2e0`, and exact-SHA CI and CodeQL
+passed before and after merge. This proves the Development integration and
+publishes a retirement proposal, not a Staging or Production release or
+deletion authorization. PR #256 remains the latest product integration.
+The retirement grace clock has not started.
 
-The canonical migration tail is `0098_shallow_jackpot`. No pull request remains
-open. PRs #202, #203, and #222 are closed with their exact source branches
+This checkpoint is an immutable audit observation, not a branch pointer.
+Governance-only amendments advance Development after review. Release and
+cleanup operations must read the live protected refs and may not infer current
+Development from the SHA recorded above.
+
+The canonical migration tail is `0098_shallow_jackpot`. No pull request remained
+open at audit time. PRs #202, #203, and #222 are closed with their exact source branches
 retained as evidence-only; issues #257 through #268 carry their unresolved
 current-base outcomes. #256 subsumes #202's near-expiry and exact Checkout
 identity behavior, current Development owns the authoritative `past_due` versus
@@ -423,14 +432,32 @@ contains the exact heads, issue routing, branch/worktree counts, and recovery
 sequencing decisions.
 
 Promotion remains **NO-GO**. Canonical refs have active no-bypass mutation and
-strict core-check controls, but branch rules still require zero approvals and
-the repository still has only one collaborator. Staging and Production name
+strict build, migration, RLS, and CodeQL controls, but branch rules still
+require zero approvals and the repository still has only one collaborator.
+Repository ruleset `20625373` covers exactly `development`, `staging`, and
+`main`, has no bypass actors, and requires pull requests, resolved threads,
+linear history, strict build/migration/RLS checks, and deletion/non-fast-forward
+protection. Classic protection enforces administrators and additionally requires
+both CodeQL analyses. The bootstrap `.github/CODEOWNERS` still names only
+`@evangauer`, and code-owner review, stale-review dismissal, and last-push
+approval are not enforced.
+Development, Staging, and Production environment branch policies name only
+`development`, `staging`, and `main`, respectively. Staging and Production name
 that same user as environment reviewer and allow self-review; Development has
-no environment reviewer. Development and Staging have no environment secrets
-or variables, no isolated nonproduction credential canary has passed, and no
-build-once immutable artifact has completed the Development-to-Staging-to-Main
-path. Independent branch/environment approval, isolated resources, exact
-artifact acceptance, and a governed promotion remain prerequisites.
+no environment reviewer. All three environments allow administrator bypass.
+Development and Staging have no environment secrets or variables, no isolated
+nonproduction credential canary has passed, and no build-once immutable artifact
+has completed the Development-to-Staging-to-Main path. Vercel confirms READY app
+and demo Production deployments sourced from
+Main `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`; Development candidates remain
+CANCELED by quarantine, the placeholder docs deployment remains ERROR on old
+Main `676f0b09d30a0a6f8804736fc7475cbd1f408d1a`, and no Staging artifact is
+proven. GitHub Production deployment `6088849562` records Main `b2d07cd`, but
+GitHub has no Development or Staging environment deployment record. A READY
+Production deployment is not evidence that an immutable artifact passed
+Staging and was promoted unchanged. Independent branch/environment approval,
+isolated resources, exact artifact acceptance, and a governed promotion remain
+prerequisites.
 
 ## Transition note — 2026-08-25
 
