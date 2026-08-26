@@ -212,7 +212,10 @@ describe("self-hosting operations docs", () => {
     expect(emailSection).toContain("RESEND_WEBHOOK_SECRET");
     expect(emailSection).toContain("EMAIL_SUPPORT_ADDRESS");
     expect(emailSection).toContain("EMAIL_COMPANY_ADDRESS");
-    expect(emailSection).toContain("production emails do not fall back");
+    expect(emailSection).toContain("operator-verified physical postal");
+    expect(emailSection).toContain("never use an email address or URL");
+    expect(emailSection).toContain("promotional lifecycle sends");
+    expect(emailSection).toContain("transactional/service email");
     expect(envExample).toContain("RESEND_WEBHOOK_SECRET=");
     expect(envExample).toContain("EMAIL_SUPPORT_ADDRESS=");
     expect(envExample).toContain("EMAIL_COMPANY_ADDRESS=");

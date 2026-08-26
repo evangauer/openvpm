@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
+import { isPlausiblePhysicalCompanyAddress } from "@openpims/email";
 import {
   describeDrift,
   driftIsClean,
@@ -187,10 +188,14 @@ async function hostedEmailCheck(): Promise<{ ok: boolean; detail: string }> {
   const invalidBaseUrl =
     configured("EMAIL_PREFERENCE_BASE_URL") &&
     preferenceBaseUrl !== CANONICAL_EMAIL_PREFERENCE_BASE_URL;
+  const invalidCompanyAddress =
+    configured("EMAIL_COMPANY_ADDRESS") &&
+    !isPlausiblePhysicalCompanyAddress(process.env.EMAIL_COMPANY_ADDRESS);
   const invalid =
     invalidSecrets.length +
     (invalidPreviousSecrets ? 1 : 0) +
-    (invalidBaseUrl ? 1 : 0);
+    (invalidBaseUrl ? 1 : 0) +
+    (invalidCompanyAddress ? 1 : 0);
   const issues = missing.length + invalid;
   const envResult = {
     ok: issues === 0,

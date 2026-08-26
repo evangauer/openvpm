@@ -450,8 +450,14 @@ For local or staging signup tests without real email delivery, set `OPENVPM_EXPO
 Resend sends transactional email and posts delivery lifecycle callbacks back to OpenVPM so bounces, spam complaints, and provider suppressions can fail closed before future client email sends.
 
 `EMAIL_SUPPORT_ADDRESS` is used as lifecycle email Reply-To and footer contact
-address. `EMAIL_COMPANY_ADDRESS` is rendered in hosted email footers. Both gate
-hosted readiness so production emails do not fall back to local/dev defaults.
+address. `EMAIL_COMPANY_ADDRESS` must be an operator-verified physical postal
+address, such as a current street address, registered PO box, or registered
+private mailbox; never use an email address or URL. It is rendered in
+promotional email footers. Hosted readiness and promotional lifecycle sends
+fail closed when it is missing or structurally invalid. Structural validation
+does not prove that the address exists or is deliverable, so verify it before
+deployment or campaign activation. Authentication, receipt, and other
+transactional/service email does not use this promotional-address gate.
 `EMAIL_PREFERENCE_IDENTITY_SECRET` is the stable HMAC identity key for PII-free
 recipient hashes. Never rotate it without a coordinated migration of persisted
 preference identities. `EMAIL_PREFERENCE_SIGNING_SECRET` signs new durable
