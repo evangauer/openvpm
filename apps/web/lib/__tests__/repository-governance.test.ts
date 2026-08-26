@@ -140,6 +140,37 @@ describe("repository promotion controls", () => {
     expect(policy).toContain("Promotion remains **NO-GO**");
   });
 
+  it("keeps repository retirement fail-closed behind preservation and grace", () => {
+    const register = repoFile("docs/repository-retirement-register.md");
+    const policy = repoFile("docs/repository-governance.md");
+    const orcaRows = register
+      .split("The independent persisted-state audit produced")[1]
+      ?.split("Execution order after the clock expires")[0]
+      ?.match(/^\| `/gm);
+
+    expect(register).toContain("The retirement grace clock has **not started**");
+    expect(register).toContain("fourteen full calendar days");
+    expect(register).toContain("No actual earliest deletion date exists");
+    expect(register).toContain("codex/activation-event-coverage");
+    expect(register).toContain("codex/activation-recovery");
+    expect(register).toContain("fix/lockfile-tiptap");
+    expect(register).toContain("chore/remove-apps-www");
+    expect(register).toContain("Every PIMS worktree registered under Orca remains on hold");
+    expect(orcaRows).toHaveLength(22);
+    expect(register).toContain("codex/openvpm-89-treatment-composer");
+    expect(register).toContain("fe5c91c2b64c772feb87c340318b026fc81d2e43");
+    expect(register).toContain("explicit WIP disposition");
+    expect(register).toContain("owner confirmation still required");
+    expect(register).toContain(
+      "the owner-confirmation item only after\nconfirmation",
+    );
+    expect(register).toContain("outside this repository's cleanup scope");
+    expect(register).toContain("No entry has been executed");
+    expect(register).not.toContain("/Users/");
+    expect(policy).toContain("repository-retirement-register.md");
+    expect(policy).toContain("a proposal, not deletion authorization");
+  });
+
   it("requires non-production credential isolation before lifting preview quarantine", () => {
     const policy = repoFile("docs/repository-governance.md");
 
