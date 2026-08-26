@@ -183,6 +183,24 @@ describe("encounter closeout database locking", () => {
     expect(source).toContain('.for("update", { of: appointments })');
   });
 
+  it("offers an audited no-charge outcome for saved zero-dollar invoices", () => {
+    const pageSource = readFileSync(
+      new URL(
+        "../../app/(dashboard)/encounters/[appointmentId]/page.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(pageSource).toContain("const zeroDollarInvoiceReady = Boolean(");
+    expect(pageSource).toContain('activeInvoice.status === "draft"');
+    expect(pageSource).toContain('moneyToCents(activeInvoice.total) === 0');
+    expect(pageSource).toContain('"No charge — $0 invoice"');
+    expect(pageSource).toContain(
+      "the $0 invoice will be finalized without recording a payment",
+    );
+  });
+
   it("preserves visit-work resolver attribution after staff deactivation", () => {
     const source = readFileSync(
       new URL("../routers/encounters.ts", import.meta.url),
@@ -345,6 +363,113 @@ describe("encounter closeout safety", () => {
       })
     );
     expect(updateSet).toHaveBeenNthCalledWith(2, { status: "checked_out" });
+  });
+
+  it("finalizes a saved zero-dollar invoice during no-charge checkout", async () => {
+    const completed = {
+      ...clinicalFinalized,
+      status: "completed",
+      revision: 3,
+      chargeDisposition: "no_charge",
+      invoiceId: INVOICE_ID,
+      noChargeReason: "Courtesy postoperative services",
+      handoffMethod: "verbal",
+    };
+    const checkedOut = { ...openAppointment, status: "checked_out" };
+    const { db, updateSet, insertValues } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [clinicalFinalized],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            total: "0.00",
+            paidAmount: "0.00",
+            dueDate: null,
+          },
+        ],
+        [{ itemCount: 3 }],
+        [{ adjustedAmount: "0" }],
+      ],
+      updateResults: [[{ id: INVOICE_ID }], [completed], [checkedOut]],
+    });
+
+    await expect(
+      callerWithDb(db).completeVisit({
+        appointmentId: APPOINTMENT_ID,
+        expectedRevision: 2,
+        chargeDisposition: "no_charge",
+        noChargeReason: "Courtesy postoperative services",
+        handoffMethod: "verbal",
+      }),
+    ).resolves.toEqual({ closeout: completed, appointment: checkedOut });
+
+    expect(updateSet).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ status: "paid", updatedAt: expect.any(Date) }),
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "invoice_finalized_no_charge",
+        entityType: "invoice",
+        entityId: INVOICE_ID,
+        changes: expect.objectContaining({
+          appointmentId: APPOINTMENT_ID,
+          priorStatus: "draft",
+          nextStatus: "paid",
+          total: "0.00",
+          itemCount: 3,
+          reason: "Courtesy postoperative services",
+        }),
+      }),
+    );
+    expect(updateSet).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        status: "completed",
+        chargeDisposition: "no_charge",
+        invoiceId: INVOICE_ID,
+      }),
+    );
+    expect(updateSet).toHaveBeenNthCalledWith(3, { status: "checked_out" });
+  });
+
+  it("rejects no-charge checkout when an invoice still has a balance", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [clinicalFinalized],
+        [
+          {
+            id: INVOICE_ID,
+            status: "draft",
+            total: "25.00",
+            paidAmount: "0.00",
+            dueDate: null,
+          },
+        ],
+        [{ itemCount: 1 }],
+        [{ adjustedAmount: "0" }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).completeVisit({
+        appointmentId: APPOINTMENT_ID,
+        expectedRevision: 2,
+        chargeDisposition: "no_charge",
+        noChargeReason: "Courtesy visit",
+        handoffMethod: "verbal",
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "No-charge checkout requires either no invoice or a draft invoice whose saved line items total $0.00.",
+    });
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("returns the stored result for an exact completion retry", async () => {
