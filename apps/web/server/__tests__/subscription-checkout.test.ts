@@ -124,6 +124,7 @@ function callerWithDb(db: Record<string, unknown>) {
 
 function createDb(selectResults: unknown[][]) {
   const results = [...selectResults];
+  const executeResults = [...selectResults];
   const select = vi.fn(() => {
     const result = results.shift() ?? [];
     const builder = {
@@ -141,7 +142,7 @@ function createDb(selectResults: unknown[][]) {
 
   return {
     select,
-    execute: vi.fn(async () => undefined),
+    execute: vi.fn(async () => executeResults.shift() ?? []),
     transaction: async (fn: (tx: unknown) => unknown) => fn({ select }),
   };
 }
@@ -151,8 +152,15 @@ function practice(overrides: Record<string, unknown> = {}) {
     tier: "free",
     billingStatus: "none",
     trialEndsAt: null,
+    timezone: "America/New_York",
     stripeCustomerId: null,
     stripeSubscriptionId: null,
+    recoveryHold: false,
+    databaseNow: new Date("2026-08-26T12:00:00.000Z"),
+    attemptState: null,
+    attemptFirstProviderAttemptAt: null,
+    attemptLeaseExpiresAt: null,
+    attemptProviderExpiresAt: null,
     email: "practice@example.com",
     ...overrides,
   };
@@ -184,13 +192,12 @@ describe("subscription checkout", () => {
     expect(source).toContain("throw practiceNotFound()");
     expect(source).toContain('tier: practice.tier ?? "free"');
     expect(source).toContain("customerId: practice.stripeCustomerId");
-    expect(source).toContain("if (!practice.stripeCustomerId)");
+    expect(source).toContain("practice.setup.billingSetupCompleted");
+    expect(source).toContain("practice.setup.checkoutAction === null");
     expect(source).toContain("reserveSubscriptionCheckoutAttempt(ctx.db");
     expect(source).toContain("ctx.postCommitEffect(async (rootDb)");
-    expect(source).toContain("const portalUrl = result?.url");
-    expect(source).toContain("if (!isSafeCheckoutRedirectUrl(portalUrl))");
-    expect(source).not.toContain("if (!result?.url)");
-    expect(source).not.toContain("if (!result)");
+    expect(source).toContain("withTenant(rootDb, ctx.practiceId");
+    expect(source).toContain("current?.setup.canManageBilling");
     expect(source).not.toContain("practice?.");
   });
 
@@ -233,8 +240,10 @@ describe("subscription checkout", () => {
 
     await expect(callerWithDb(db).get()).resolves.toMatchObject({
       billingEnforced: true,
-      hasBillingAccount: true,
+      hasStripeCustomer: true,
       hasSubscription: true,
+      billingSetupCompleted: true,
+      billingSetupState: "connected",
       locationCount: 2,
       billableSeatCount: 4,
       timezone: "America/Los_Angeles",
@@ -245,6 +254,8 @@ describe("subscription checkout", () => {
     });
     expect(mocks.syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
     expect(mocks.readBillingSyncState).toHaveBeenCalledWith(db, PRACTICE_ID);
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
+    expect(mocks.createBillingPortalSession).not.toHaveBeenCalled();
   });
 
   it("rejects a second Checkout when a Stripe subscription is already connected", async () => {
@@ -379,6 +390,16 @@ describe("subscription checkout", () => {
       ],
       [
         practice({
+          email: " Practice.Owner@Example.COM ",
+        }),
+      ],
+      [
+        practice({
+          email: "   ",
+        }),
+      ],
+      [
+        practice({
           email: "   ",
         }),
       ],
@@ -491,11 +512,58 @@ describe("subscription checkout", () => {
     mocks.createBillingPortalSession.mockResolvedValueOnce({
       url: "javascript:alert(1)",
     } as never);
-    const db = createDb([[practice({ stripeCustomerId: "cus_123" })]]);
-
-    await expect(callerWithDb(db).openBillingPortal()).rejects.toMatchObject({
-      code: "PRECONDITION_FAILED",
-      message: "Billing is not configured on this server.",
+    const connected = practice({
+      stripeCustomerId: "cus_123",
+      stripeSubscriptionId: "sub_123",
+      billingStatus: "active",
     });
+    const db = createDb([[connected], [connected]]);
+
+    await expect(callerWithDb(db).openBillingPortal()).resolves.toEqual({
+      url: null,
+    });
+  });
+
+  it("rechecks durable subscription evidence after commit before opening the portal", async () => {
+    const connected = practice({
+      stripeCustomerId: "cus_123",
+      stripeSubscriptionId: "sub_123",
+      billingStatus: "active",
+    });
+    const disconnected = practice({
+      stripeCustomerId: "cus_123",
+      billingStatus: "canceled",
+      attemptState: "completed",
+    });
+    const db = createDb([[connected], [disconnected]]);
+
+    await expect(callerWithDb(db).openBillingPortal()).resolves.toEqual({
+      url: null,
+    });
+    expect(mocks.createBillingPortalSession).not.toHaveBeenCalled();
+  });
+
+  it("returns a narrow provider-free setup status and rejects customer-only portal access", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    const customerOnly = practice({ stripeCustomerId: "cus_transport" });
+    const db = createDb([[customerOnly], [customerOnly]]);
+    const caller = callerWithDb(db);
+
+    await expect(caller.getSetupStatus()).resolves.toEqual({
+      hasStripeCustomer: true,
+      hasSubscription: false,
+      billingSetupCompleted: false,
+      billingSetupState: "not_started",
+      pollEligible: false,
+      checkoutAction: "start",
+      canManageBilling: false,
+    });
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
+    expect(mocks.createBillingPortalSession).not.toHaveBeenCalled();
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "false");
+    await expect(caller.openBillingPortal()).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    expect(mocks.createBillingPortalSession).not.toHaveBeenCalled();
   });
 });

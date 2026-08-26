@@ -1,8 +1,6 @@
 import { z } from "zod";
-import { and, eq, isNull } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
-import { practices } from "@openpims/db";
 import { createBillingPortalSession } from "@/lib/stripe";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import {
@@ -30,15 +28,13 @@ import { billingContactEmail } from "@/lib/billing/contact";
 import { RECOVERY_HOLD_BLOCK_MESSAGE } from "@/lib/recovery-hold";
 import {
   dispatchSubscriptionCheckoutAttempt,
+  readSubscriptionSetupSnapshot,
   reserveSubscriptionCheckoutAttempt,
   subscriptionCheckoutTrialTerms,
 } from "@/lib/billing/subscription-checkout-attempts";
+import { withTenant } from "@/lib/tenant-db";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
-
-function activePracticeWhere(practiceId: string) {
-  return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
-}
 
 function practiceNotFound(): TRPCError {
   return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
@@ -53,24 +49,16 @@ function purchasable(tier: keyof typeof PLANS): boolean {
 export const subscriptionRouter = createRouter({
   /** Current plan + status, plus the catalog for display. */
   get: adminProcedure.query(async ({ ctx }) => {
-    const [practice] = await ctx.db
-      .select({
-        tier: practices.subscriptionTier,
-        billingStatus: practices.billingStatus,
-        trialEndsAt: practices.trialEndsAt,
-        timezone: practices.timezone,
-        stripeCustomerId: practices.stripeCustomerId,
-        stripeSubscriptionId: practices.stripeSubscriptionId,
-      })
-      .from(practices)
-      .where(activePracticeWhere(ctx.practiceId))
-      .limit(1);
-
+    const enforced = billingEnforced();
+    const practice = await readSubscriptionSetupSnapshot(
+      ctx.db,
+      ctx.practiceId,
+      enforced,
+    );
     if (!practice) {
       throw practiceNotFound();
     }
 
-    const enforced = billingEnforced();
     let counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
     let billingSync: BillingSyncState | null = await readBillingSyncState(
       ctx.db,
@@ -89,8 +77,7 @@ export const subscriptionRouter = createRouter({
       billingStatus: practice.billingStatus ?? "none",
       trialEndsAt: practice.trialEndsAt ?? null,
       timezone: practice.timezone ?? null,
-      hasBillingAccount: !!practice.stripeCustomerId,
-      hasSubscription: !!practice.stripeSubscriptionId,
+      ...practice.setup,
       billingEnforced: enforced,
       hasFullAccess: hasHostedFullAccess(
         practice.tier,
@@ -149,6 +136,17 @@ export const subscriptionRouter = createRouter({
     };
   }),
 
+  /** Narrow, provider-free status used only for bounded Checkout-return polling. */
+  getSetupStatus: adminProcedure.query(async ({ ctx }) => {
+    const practice = await readSubscriptionSetupSnapshot(
+      ctx.db,
+      ctx.practiceId,
+      billingEnforced(),
+    );
+    if (!practice) throw practiceNotFound();
+    return practice.setup;
+  }),
+
   /** Start a Stripe Checkout for the self-serve Cloud plan. */
   createCheckout: adminProcedure
     .input(
@@ -170,24 +168,15 @@ export const subscriptionRouter = createRouter({
         });
       }
 
-      const [practice] = await ctx.db
-        .select({
-          stripeCustomerId: practices.stripeCustomerId,
-          stripeSubscriptionId: practices.stripeSubscriptionId,
-          email: practices.email,
-          billingStatus: practices.billingStatus,
-          trialEndsAt: practices.trialEndsAt,
-          recoveryHold: practices.recoveryHold,
-        })
-        .from(practices)
-        .where(activePracticeWhere(ctx.practiceId))
-        .limit(1)
-        .for("share", { of: practices });
-
+      const practice = await readSubscriptionSetupSnapshot(
+        ctx.db,
+        ctx.practiceId,
+        true,
+      );
       if (!practice) {
         throw practiceNotFound();
       }
-      if (practice.recoveryHold) {
+      if (practice.setup.billingSetupState === "blocked_recovery") {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: RECOVERY_HOLD_BLOCK_MESSAGE,
@@ -199,11 +188,20 @@ export const subscriptionRouter = createRouter({
       // subscription that charges alongside the first when its trial ends.
       // Terminal subscription webhooks clear this id, so any stored id is the
       // server-side signal to manage the existing subscription instead.
-      if (practice.stripeSubscriptionId) {
+      if (practice.setup.billingSetupCompleted) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message:
             "A subscription is already connected. Manage it from Plan & Billing.",
+        });
+      }
+      if (practice.setup.checkoutAction === null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            practice.setup.billingSetupState === "confirming"
+              ? "Billing setup is already being confirmed. Wait for the current attempt to finish."
+              : "Billing setup needs review before another Checkout can start.",
         });
       }
 
@@ -278,44 +276,49 @@ export const subscriptionRouter = createRouter({
 
   /** Open the Stripe Billing Portal to manage/cancel an existing subscription. */
   openBillingPortal: adminProcedure.mutation(async ({ ctx }) => {
-    const [practice] = await ctx.db
-      .select({
-        stripeCustomerId: practices.stripeCustomerId,
-        recoveryHold: practices.recoveryHold,
-      })
-      .from(practices)
-      .where(activePracticeWhere(ctx.practiceId))
-      .limit(1)
-      .for("share", { of: practices });
-
+    const practice = await readSubscriptionSetupSnapshot(
+      ctx.db,
+      ctx.practiceId,
+      true,
+    );
     if (!practice) {
       throw practiceNotFound();
     }
-    if (practice.recoveryHold) {
+    if (practice.setup.billingSetupState === "blocked_recovery") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: RECOVERY_HOLD_BLOCK_MESSAGE,
       });
     }
 
-    if (!practice.stripeCustomerId) {
+    if (!practice.setup.canManageBilling || !practice.stripeCustomerId) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "No billing account yet — start a plan first.",
+        message:
+          "No connected subscription is available to manage. Review billing setup first.",
       });
     }
 
-    const result = await createBillingPortalSession({
-      customerId: practice.stripeCustomerId,
-      returnUrl: `${appBaseUrl()}/settings?tab=billing`,
-    });
-    const portalUrl = result?.url;
-    if (!isSafeCheckoutRedirectUrl(portalUrl)) {
+    if (!ctx.postCommitEffect) {
       throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "Billing is not configured on this server.",
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Billing management could not be scheduled safely.",
       });
     }
-    return { url: portalUrl };
+    const response: { url: string | null } = { url: null };
+    ctx.postCommitEffect(async (rootDb) => {
+      const current = await withTenant(rootDb, ctx.practiceId, (tx) =>
+        readSubscriptionSetupSnapshot(tx, ctx.practiceId, true),
+      );
+      if (!current?.setup.canManageBilling || !current.stripeCustomerId) return;
+      const result = await createBillingPortalSession({
+        customerId: current.stripeCustomerId,
+        returnUrl: `${appBaseUrl()}/settings?tab=billing`,
+      });
+      response.url = isSafeCheckoutRedirectUrl(result?.url)
+        ? result!.url!
+        : null;
+    });
+    return response;
   }),
 });

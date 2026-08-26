@@ -16,9 +16,10 @@ vi.mock("@/lib/stripe", () => ({
 
 import {
   dispatchSubscriptionCheckoutAttempt,
+  readSubscriptionSetupSnapshot,
   reserveSubscriptionCheckoutAttempt,
 } from "../subscription-checkout-attempts";
-import { withSystem } from "@/lib/tenant-db";
+import { withSystem, withTenant } from "@/lib/tenant-db";
 
 const describeDatabase =
   process.env.SUBSCRIPTION_CHECKOUT_SERVICE_DB_INTEGRATION === "1"
@@ -54,6 +55,57 @@ async function reserve(practiceId: string) {
 }
 
 describeDatabase("subscription Checkout service PostgreSQL transitions", () => {
+  it("reads active setup and latest-attempt evidence from one tenant snapshot", async () => {
+    const practiceId = await practice();
+    await db
+      .update(practices)
+      .set({ stripeCustomerId: "cus_transport" })
+      .where(eq(practices.id, practiceId));
+
+    await expect(
+      withTenant(db, practiceId, (tx) =>
+        readSubscriptionSetupSnapshot(tx, practiceId, true),
+      ),
+    ).resolves.toMatchObject({
+      setup: {
+        hasStripeCustomer: true,
+        hasSubscription: false,
+        billingSetupCompleted: false,
+        billingSetupState: "not_started",
+        checkoutAction: "start",
+      },
+    });
+
+    await withSystem(db, (tx) =>
+      reserveSubscriptionCheckoutAttempt(tx, {
+        ...request(practiceId),
+        customerEmail: null,
+        customerId: "cus_transport",
+        customerIdentitySource: "stripe_customer",
+      }),
+    );
+    await expect(
+      withTenant(db, practiceId, (tx) =>
+        readSubscriptionSetupSnapshot(tx, practiceId, true),
+      ),
+    ).resolves.toMatchObject({
+      setup: {
+        billingSetupState: "retryable",
+        checkoutAction: "resume",
+      },
+    });
+
+    await db
+      .update(practices)
+      .set({ deletedAt: new Date() })
+      .where(eq(practices.id, practiceId));
+    await expect(
+      withTenant(db, practiceId, (tx) =>
+        readSubscriptionSetupSnapshot(tx, practiceId, true),
+      ),
+    ).resolves.toBeNull();
+  });
+
   it.each([
     [
       "soft deletion",
