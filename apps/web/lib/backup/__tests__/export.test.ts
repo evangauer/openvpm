@@ -2505,6 +2505,106 @@ describe("restorePracticeData", () => {
     );
   });
 
+  it("ignores historical void-invoice dispense lines but rejects two active lines", () => {
+    const backup = {
+      ...emptyBackup(),
+      users: [{ id: "user-1" }],
+      clients: [{ id: "client-1" }],
+      patients: [{ id: "patient-1", clientId: "client-1" }],
+      appointments: [
+        {
+          id: "appointment-1",
+          clientId: "client-1",
+          patientId: "patient-1",
+        },
+      ],
+      products: [{ id: "product-1" }],
+      prescriptions: [
+        {
+          id: "prescription-1",
+          patientId: "patient-1",
+          appointmentId: "appointment-1",
+          productId: "product-1",
+          quantity: 1,
+          prescribedBy: "user-1",
+        },
+      ],
+      prescriptionEvents: [
+        {
+          id: "event-1",
+          prescriptionId: "prescription-1",
+          patientId: "patient-1",
+          productId: "product-1",
+          quantity: 1,
+          eventType: "created",
+          actorId: "user-1",
+        },
+      ],
+      invoices: [
+        {
+          id: "void-invoice",
+          clientId: "client-1",
+          patientId: "patient-1",
+          appointmentId: "appointment-1",
+          status: "void",
+        },
+        {
+          id: "active-invoice",
+          clientId: "client-1",
+          patientId: "patient-1",
+          appointmentId: "appointment-1",
+          status: "draft",
+        },
+      ],
+      invoiceItems: [
+        {
+          id: "historical-item",
+          invoiceId: "void-invoice",
+          sourceDispenseChargeId: "dispense-1",
+        },
+        {
+          id: "active-item",
+          invoiceId: "active-invoice",
+          sourceDispenseChargeId: "dispense-1",
+        },
+      ],
+      dispenseChargeQueue: [
+        {
+          id: "dispense-1",
+          prescriptionEventId: "event-1",
+          prescriptionId: "prescription-1",
+          patientId: "patient-1",
+          clientId: "client-1",
+          appointmentId: "appointment-1",
+          productId: "product-1",
+          status: "invoiced",
+          invoiceId: "active-invoice",
+          invoiceItemId: "active-item",
+          resolvedBy: "user-1",
+          resolvedByName: "Test User",
+          resolvedAt: "2026-08-29T12:00:00.000Z",
+          resolutionReason: null,
+        },
+      ],
+    };
+
+    expect(validatePracticeExportRestore(backup).errors).not.toContain(
+      "dispenseChargeQueue[dispense-1] invoiced state must identify its exact sourced invoice line.",
+    );
+
+    const activeDuplicate = {
+      ...backup,
+      invoices: backup.invoices.map((invoice) =>
+        invoice.id === "void-invoice"
+          ? { ...invoice, status: "draft" }
+          : invoice,
+      ),
+    };
+    expect(validatePracticeExportRestore(activeDuplicate).errors).toContain(
+      "dispenseChargeQueue[dispense-1] invoiced state must identify its exact sourced invoice line.",
+    );
+  });
+
   it("rejects a present prescription ledger that omits a created event", () => {
     const backup = {
       ...emptyBackup(),

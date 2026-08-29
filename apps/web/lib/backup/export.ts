@@ -1565,9 +1565,30 @@ export function validatePracticeExportRestore(data: unknown): {
   }
 
   if (Array.isArray(record.dispenseChargeQueue)) {
+    const invoicesById = new Map(
+      rowsFor(data, "invoices")
+        .filter((invoice) => typeof invoice.id === "string")
+        .map((invoice) => [String(invoice.id), invoice]),
+    );
     const invoiceItemsByDispense = new Map<string, Row[]>();
     rowsFor(data, "invoiceItems").forEach((item) => {
       if (typeof item.sourceDispenseChargeId !== "string") return;
+      const invoice =
+        typeof item.invoiceId === "string"
+          ? invoicesById.get(item.invoiceId)
+          : undefined;
+      // Match the database protection trigger's definition of an active
+      // dispense line. A void/deleted/estimate invoice (or a deleted line)
+      // remains valid billing history but cannot resolve the current queue row.
+      if (
+        item.deletedAt != null ||
+        !invoice ||
+        invoice.deletedAt != null ||
+        invoice.status === "void" ||
+        invoice.isEstimate === true
+      ) {
+        return;
+      }
       const rows =
         invoiceItemsByDispense.get(item.sourceDispenseChargeId) ?? [];
       rows.push(item);
