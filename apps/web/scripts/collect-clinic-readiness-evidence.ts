@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { writeFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { collectClinicReadinessEvidence } from "../lib/clinic-readiness-evidence-collector";
 import { evaluateClinicReadinessRelease } from "../lib/clinic-readiness-release";
@@ -14,17 +15,19 @@ const VALUE_ARGS = new Set([
   "--staging-health-url",
   "--hosted-health-url",
   "--restore-evidence",
+  "--incident-evidence",
   "--output",
 ]);
 
 function argumentsMap(args: string[]): Map<string, string> {
+  const normalized = args[0] === "--" ? args.slice(1) : args;
   const values = new Map<string, string>();
-  for (let index = 0; index < args.length; index += 2) {
-    const name = args[index];
-    const value = args[index + 1]?.trim();
+  for (let index = 0; index < normalized.length; index += 2) {
+    const name = normalized[index];
+    const value = normalized[index + 1]?.trim();
     if (!name || !VALUE_ARGS.has(name) || !value || values.has(name)) {
       throw new Error(
-        "Usage: release:clinic-readiness:collect -- --release-sha <sha> --repository <owner/name> --ci-run-id <id> --staging-migration-run-id <id> --migration-run-id <id> --staging-health-url <https-url> --hosted-health-url <https-url> --restore-evidence <path> --output <path>",
+        "Usage: release:clinic-readiness:collect -- --release-sha <sha> --repository <owner/name> --ci-run-id <id> --staging-migration-run-id <id> --migration-run-id <id> --staging-health-url <https-url> --hosted-health-url <https-url> --restore-evidence <path> --incident-evidence <path> --output <path>",
       );
     }
     values.set(name, value);
@@ -33,6 +36,12 @@ function argumentsMap(args: string[]): Map<string, string> {
     throw new Error("Every clinic-readiness evidence argument is required.");
   }
   return values;
+}
+
+function operatorPath(value: string): string {
+  return isAbsolute(value)
+    ? value
+    : resolve(process.env.INIT_CWD ?? process.cwd(), value);
 }
 
 function positiveInteger(value: string, label: string): number {
@@ -61,21 +70,26 @@ export async function main(args = process.argv.slice(2)) {
     ),
     stagingHealthUrl: values.get("--staging-health-url")!,
     hostedHealthUrl: values.get("--hosted-health-url")!,
-    restoreEvidencePath: values.get("--restore-evidence")!,
+    restoreEvidencePath: operatorPath(values.get("--restore-evidence")!),
+    incidentEvidencePath: operatorPath(values.get("--incident-evidence")!),
     githubToken: process.env.GITHUB_TOKEN?.trim() || undefined,
   });
-  const outputPath = values.get("--output")!;
-  writeFileSync(outputPath, `${JSON.stringify(evidence, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
+  const outputPath = operatorPath(values.get("--output")!);
+  try {
+    writeFileSync(outputPath, `${JSON.stringify(evidence, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+  } catch {
+    throw new Error("Clinic-readiness evidence output could not be created.");
+  }
   const decision = evaluateClinicReadinessRelease(evidence);
   console.log(
     JSON.stringify(
       {
         ...decision,
-        evidencePath: outputPath,
+        evidenceWritten: true,
       },
       null,
       2,

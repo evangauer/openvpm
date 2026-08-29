@@ -4,6 +4,65 @@ import { evaluateClinicReadinessRelease } from "../clinic-readiness-release";
 const now = Date.parse("2026-08-29T21:00:00.000Z");
 const sha = "a".repeat(40);
 
+function healthyIncidentResponseEvidence() {
+  const scenario = {
+    status: "passed",
+    detection: true,
+    containment: true,
+    recovery: true,
+    evidenceHandling: true,
+    vendorCoordination: true,
+    clinicNotificationDecisionRecorded: true,
+    legalNotificationDecisionRecorded: true,
+  };
+  return {
+    evidenceFormatVersion: 1,
+    exerciseType: "tabletop",
+    exerciseId: "tabletop-2026-08-29-deadbeef",
+    startedAt: "2026-08-29T19:00:00.000Z",
+    completedAt: "2026-08-29T20:00:00.000Z",
+    roles: {
+      incidentCommander: "@incident-lead",
+      privacyLegalReviewer: "@privacy-reviewer",
+      notificationAuthority: "@notification-owner",
+    },
+    approvals: {
+      incidentCommander: {
+        approver: "@incident-lead",
+        approvedAt: "2026-08-29T20:01:00.000Z",
+      },
+      privacyLegalReviewer: {
+        approver: "@privacy-reviewer",
+        approvedAt: "2026-08-29T20:02:00.000Z",
+      },
+      notificationAuthority: {
+        approver: "@notification-owner",
+        approvedAt: "2026-08-29T20:03:00.000Z",
+      },
+    },
+    scenarios: Object.fromEntries(
+      [
+        "database",
+        "objectStore",
+        "stripe",
+        "emailProvider",
+        "credentialCompromise",
+      ].map((name) => [name, { ...scenario }]),
+    ),
+    evidenceSafety: {
+      phiFree: true,
+      secretsFree: true,
+      providerPayloadsFree: true,
+      localPathsFree: true,
+    },
+    findings: {
+      criticalCount: 0,
+      highCount: 0,
+      followUpIssueNumbers: [],
+    },
+  };
+}
+
 function healthyEvidence() {
   const checks: Record<string, { ok: boolean; advisory?: boolean }> =
     Object.fromEntries(
@@ -21,7 +80,7 @@ function healthyEvidence() {
       ].map((name) => [name, { ok: true }]),
     );
   return {
-    evidenceFormatVersion: 3,
+    evidenceFormatVersion: 4,
     releaseSha: sha,
     ci: {
       releaseSha: sha,
@@ -33,6 +92,7 @@ function healthyEvidence() {
         dependencyAudit: "passed",
       },
     },
+    incidentResponse: healthyIncidentResponseEvidence(),
     repositoryGovernance: {
       checkedAt: "2026-08-29T20:55:00.000Z",
       productionEnvironment: {
@@ -185,9 +245,31 @@ describe("clinic readiness release decision", () => {
 
   it("rejects an unknown evidence format", () => {
     const evidence = healthyEvidence();
-    evidence.evidenceFormatVersion = 4;
+    evidence.evidenceFormatVersion = 5;
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
-      "Clinic readiness evidence format version must be 3.",
+      "Clinic readiness evidence format version must be 4.",
+    );
+  });
+
+  it("rejects missing or incomplete incident-response exercise evidence", () => {
+    const evidence = healthyEvidence();
+    evidence.incidentResponse.scenarios.credentialCompromise.containment = false;
+    evidence.incidentResponse.roles.notificationAuthority = "@unassigned";
+    const reasons = evaluateClinicReadinessRelease(evidence, now).reasons;
+    expect(reasons).toEqual(
+      expect.arrayContaining([
+        "Incident-response role notificationAuthority is not assigned.",
+        "Incident-response scenario credentialCompromise is missing containment.",
+      ]),
+    );
+  });
+
+  it("rejects a packet with no incident-response evidence", () => {
+    const evidence = healthyEvidence();
+    delete (evidence as Partial<ReturnType<typeof healthyEvidence>>)
+      .incidentResponse;
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
+      "Incident-response evidence is missing.",
     );
   });
 

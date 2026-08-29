@@ -1,0 +1,89 @@
+{
+  "evidenceFormatVersion": 1,
+  "exerciseType": "tabletop",
+  "exerciseId": "replace-tabletop-id",
+  "startedAt": "2026-08-29T19:00:00.000Z",
+  "completedAt": "2026-08-29T20:00:00.000Z",
+  "roles": {
+    "incidentCommander": "@unassigned-incident-commander",
+    "privacyLegalReviewer": "@unassigned-privacy-reviewer",
+    "notificationAuthority": "@unassigned-notification-authority"
+  },
+  "approvals": {
+    "incidentCommander": {
+      "approver": "@unassigned-incident-commander",
+      "approvedAt": "2026-08-29T20:01:00.000Z"
+    },
+    "privacyLegalReviewer": {
+      "approver": "@unassigned-privacy-reviewer",
+      "approvedAt": "2026-08-29T20:02:00.000Z"
+    },
+    "notificationAuthority": {
+      "approver": "@unassigned-notification-authority",
+      "approvedAt": "2026-08-29T20:03:00.000Z"
+    }
+  },
+  "scenarios": {
+    "database": {
+      "status": "not_run",
+      "detection": false,
+      "containment": false,
+      "recovery": false,
+      "evidenceHandling": false,
+      "vendorCoordination": false,
+      "clinicNotificationDecisionRecorded": false,
+      "legalNotificationDecisionRecorded": false
+    },
+    "objectStore": {
+      "status": "not_run",
+      "detection": false,
+      "containment": false,
+      "recovery": false,
+      "evidenceHandling": false,
+      "vendorCoordination": false,
+      "clinicNotificationDecisionRecorded": false,
+      "legalNotificationDecisionRecorded": false
+    },
+    "stripe": {
+      "status": "not_run",
+      "detection": false,
+      "containment": false,
+      "recovery": false,
+      "evidenceHandling": false,
+      "vendorCoordination": false,
+      "clinicNotificationDecisionRecorded": false,
+      "legalNotificationDecisionRecorded": false
+    },
+    "emailProvider": {
+      "status": "not_run",
+      "detection": false,
+      "containment": false,
+      "recovery": false,
+      "evidenceHandling": false,
+      "vendorCoordination": false,
+      "clinicNotificationDecisionRecorded": false,
+      "legalNotificationDecisionRecorded": false
+    },
+    "credentialCompromise": {
+      "status": "not_run",
+      "detection": false,
+      "containment": false,
+      "recovery": false,
+      "evidenceHandling": false,
+      "vendorCoordination": false,
+      "clinicNotificationDecisionRecorded": false,
+      "legalNotificationDecisionRecorded": false
+    }
+  },
+  "evidenceSafety": {
+    "phiFree": false,
+    "secretsFree": false,
+    "providerPayloadsFree": false,
+    "localPathsFree": false
+  },
+  "findings": {
+    "criticalCount": 0,
+    "highCount": 0,
+    "followUpIssueNumbers": []
+  }
+}

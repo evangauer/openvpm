@@ -1,3 +1,5 @@
+import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
+
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const HEALTH_MAX_AGE_MS = 15 * 60 * 1000;
 const RESTORE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -132,8 +134,8 @@ export function evaluateClinicReadinessRelease(
 ): ClinicReadinessDecision {
   const reasons: string[] = [];
   const root = record(input);
-  if (root?.evidenceFormatVersion !== 3) {
-    reasons.push("Clinic readiness evidence format version must be 3.");
+  if (root?.evidenceFormatVersion !== 4) {
+    reasons.push("Clinic readiness evidence format version must be 4.");
   }
   const releaseSha =
     root &&
@@ -157,6 +159,17 @@ export function evaluateClinicReadinessRelease(
         reasons.push(`CI gate ${gate} has not passed.`);
       }
     }
+  }
+
+  const incidentResponse = record(root?.incidentResponse);
+  if (!incidentResponse) {
+    reasons.push("Incident-response evidence is missing.");
+  } else {
+    const incidentDecision = evaluateIncidentResponseEvidence(
+      incidentResponse,
+      nowMs,
+    );
+    reasons.push(...incidentDecision.reasons);
   }
 
   const governance = record(root?.repositoryGovernance);

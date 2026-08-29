@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const REPOSITORY_PATTERN = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i;
@@ -65,6 +66,7 @@ export type ClinicReadinessEvidenceCollectionOptions = {
   stagingHealthUrl: string;
   hostedHealthUrl: string;
   restoreEvidencePath: string;
+  incidentEvidencePath: string;
   githubToken?: string;
   now?: Date;
   fetchFn?: typeof fetch;
@@ -84,14 +86,22 @@ function runId(value: number, label: string): number {
   return value;
 }
 
-function regularBoundedJsonFile(path: string): unknown {
-  const stat = statSync(path);
-  if (!stat.isFile())
-    throw new Error("Restore evidence must be a regular file.");
-  if (stat.size > MAX_EVIDENCE_BYTES) {
-    throw new Error("Restore evidence exceeds the 1 MB safety limit.");
+function regularBoundedJsonFile(path: string, label: string): unknown {
+  let stat: ReturnType<typeof statSync>;
+  try {
+    stat = statSync(path);
+  } catch {
+    throw new Error(`${label} is unavailable or unreadable.`);
   }
-  return JSON.parse(readFileSync(path, "utf8"));
+  if (!stat.isFile()) throw new Error(`${label} must be a regular file.`);
+  if (stat.size > MAX_EVIDENCE_BYTES) {
+    throw new Error(`${label} exceeds the 1 MB safety limit.`);
+  }
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw new Error(`${label} must contain valid JSON.`);
+  }
 }
 
 async function boundedJsonResponse(response: Response, label: string) {
@@ -591,10 +601,25 @@ export async function collectClinicReadinessEvidence(
     healthResponse,
     "Production health",
   );
-  const restoreDrill = regularBoundedJsonFile(options.restoreEvidencePath);
+  const restoreDrill = regularBoundedJsonFile(
+    options.restoreEvidencePath,
+    "Restore evidence",
+  );
+  const incidentResponse = regularBoundedJsonFile(
+    options.incidentEvidencePath,
+    "Incident-response evidence",
+  );
+  if (
+    !evaluateIncidentResponseEvidence(incidentResponse, Date.parse(checkedAt))
+      .ready
+  ) {
+    throw new Error(
+      "Incident-response evidence is incomplete, stale, or unsafe.",
+    );
+  }
 
   return {
-    evidenceFormatVersion: 3,
+    evidenceFormatVersion: 4,
     releaseSha,
     ci: {
       releaseSha,
@@ -638,6 +663,7 @@ export async function collectClinicReadinessEvidence(
       statusCode: healthResponse.status,
       body: healthBody,
     },
+    incidentResponse,
     restoreDrill,
   };
 }

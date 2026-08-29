@@ -149,7 +149,7 @@ PLATFORM_ADMIN_EMAILS=...
 
 ### Transitional production release gate
 
-Before production approval, collect one PHI-free, format-version `3` JSON
+Before production approval, collect one PHI-free, format-version `4` JSON
 evidence packet from authoritative sources. Export a read-only `GITHUB_TOKEN`
 in the secure operator environment, then run:
 
@@ -163,6 +163,7 @@ pnpm --filter @openpims/web release:clinic-readiness:collect -- \
   --staging-health-url "$STAGING_HEALTH_URL" \
   --hosted-health-url https://app.openvpm.com/api/health \
   --restore-evidence /secure/path/provider-restore-evidence.json \
+  --incident-evidence /secure/path/incident-tabletop-evidence.json \
   --output /secure/path/clinic-readiness-evidence.json
 ```
 
@@ -178,8 +179,9 @@ can bypass either environment, the workflow actor can self-approve, environment
 branch scope is wrong, `staging` lacks independent approval, `main` needs fewer
 than two approvals, code-owner or last-push review is disabled, or any required
 clinic-readiness/security check is optional. It fetches the HTTPS health
-response itself and requires a bounded local provider-restore packet. It writes
-the combined packet with owner-only permissions and evaluates it immediately.
+response itself and requires bounded local provider-restore and incident-
+tabletop packets. It writes the combined packet with owner-only permissions and
+evaluates it immediately.
 To re-evaluate that immutable packet without new network calls, run:
 
 ```sh
@@ -195,12 +197,14 @@ deployment SHA; backup freshness and 100% independent file coverage are
 affirmative (not advisory) in both hosted environments;
 and a recent provider-backed, non-synthetic restore drill for the same SHA
 proves the hold/release workflow, exact object version, and authentication,
-tenant, scheduling, clinical, invoice, payment, and file smokes. Missing, stale,
-cross-SHA, synthetic-only, unhealthy, or weak-governance evidence returns
-`NO_GO` and a nonzero exit. The synthetic CI drill is necessary regression
-proof, but it cannot authorize production. Keep the packet access-controlled;
-it must contain bounded status evidence, never credentials, reviewer identities,
-object bytes, or patient data.
+tenant, scheduling, clinical, invoice, payment, and file smokes; and a fresh,
+approved incident tabletop covers all five required scenarios with three
+distinct named authorities. Missing, stale, cross-SHA, synthetic-only,
+unhealthy, incomplete-incident, or weak-governance evidence returns `NO_GO` and
+a nonzero exit. The synthetic CI drill is necessary regression proof, but it
+cannot authorize production. Keep the packet access-controlled; it contains
+only bounded status evidence and safe role handles, never credentials, private
+contact details, object bytes, provider payloads, local paths, or patient data.
 
 Until staging can promote one immutable artifact, every Vercel Production build
 fails closed unless `PRODUCTION_RELEASE_SHA` exactly matches

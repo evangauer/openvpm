@@ -178,8 +178,9 @@ Dashboard tRPC routers cover the product's clinic workflows, including patients,
 - **Headers:** CSP, HSTS, Permissions-Policy, X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy
 - **Audit:** Audit records for security-sensitive and high-risk clinical and financial workflows; coverage is expanded as workflows mature
 
-See the [secret-scanning and exception policy](docs/secret-scanning.md) for
-repository, build-artifact, and finding-response controls.
+See the [secret-scanning and exception policy](docs/secret-scanning.md) and the
+[security incident-response runbook](docs/security-incident-response.md) for
+repository, build-artifact, response, recovery, and tabletop controls.
 
 ## Quick Start
 

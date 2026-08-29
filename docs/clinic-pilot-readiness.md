@@ -110,6 +110,7 @@ The clinic owner and OpenVPM operator should record:
 - completed-visit and billing evidence using non-sensitive identifiers;
 - payment, booking, email, and SMS status;
 - backup/export confirmation;
+- a fresh, approved five-scenario security tabletop evidence packet;
 - known limitations and the rollback owner; and
 - the decision date and approvers.
 

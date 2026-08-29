@@ -68,9 +68,13 @@ const requiredPublicFiles = [
   "README.md",
   "SECURITY.md",
   "docker/docker-compose.yml",
+  "apps/web/lib/incident-response-evidence.ts",
+  "apps/web/scripts/verify-incident-response-evidence.ts",
   "docs/clinic-pilot-readiness.md",
+  "docs/security-incident-response.md",
   "docs/secret-scanning.md",
   "docs/security.md",
+  "docs/templates/incident-response-tabletop.example.json",
   "scripts/verify-secret-artifacts.mjs",
   "scripts/verify-secret-scan.mjs",
 ];

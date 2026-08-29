@@ -4,9 +4,9 @@
 
 OpenVPM is currently in early development. Security fixes are applied to the latest version on `main`.
 
-| Version | Supported |
-|---------|-----------|
-| latest (main) | ✅ |
+| Version       | Supported |
+| ------------- | --------- |
+| latest (main) | ✅        |
 
 ## Reporting a Vulnerability
 
@@ -15,11 +15,16 @@ OpenVPM is currently in early development. Security fixes are applied to the lat
 If you discover a security vulnerability, please report it by emailing **security@openvpm.com** with `[SECURITY]` in the subject line. We will acknowledge your report within 48 hours and provide a resolution timeline.
 
 When reporting, please include:
+
 - A description of the vulnerability and its potential impact
 - Steps to reproduce the issue
 - Any proof-of-concept code (if applicable)
 
 We follow a 90-day disclosure timeline: we ask that you give us 90 days to address the vulnerability before public disclosure. We will credit you in the fix unless you prefer to remain anonymous.
+
+## Operational Incidents
+
+If you operate OpenVPM and suspect an active compromise, data-integrity event, or provider outage, stop releases and follow the [security incident response runbook](docs/security-incident-response.md). Do not place patient data, credentials, raw provider payloads, or private evidence locations in a public issue.
 
 ## Security Considerations for Self-Hosters
 

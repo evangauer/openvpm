@@ -82,8 +82,8 @@ Every pull request into a canonical branch requires:
 - approval from an applicable code owner for owned paths;
 - all review conversations resolved and no outstanding change requests;
 - a current base branch with conflicts resolved before final approval;
-- successful `build`, `Migration history integrity`, and `RLS tenant
-  isolation` CI jobs; and
+- successful `build`, `Migration history integrity`, and `RLS tenant isolation`
+  CI jobs; and
 - the testing, security, migration, and release evidence appropriate to the
   change.
 
@@ -167,6 +167,13 @@ requires two. The required check set includes the full build, golden clinic
 workflow, migration-history and RLS isolation jobs, both CodeQL analyses, and
 the disposable restore drill. A drift in any of these settings makes the
 authoritative release packet `NO_GO` even when the application checks are green.
+
+Evidence format version 4 also requires a fresh security-incident tabletop
+covering database, object-store, Stripe, email-provider, and credential
+compromise. Three distinct named people must approve the incident commander,
+privacy/legal, and notification-authority roles. The bounded packet accepts no
+free-form notes and fails closed when any scenario, approval, safe-evidence
+attestation, or follow-up summary is missing.
 
 Each production release record contains:
 

@@ -65,6 +65,74 @@ function restoreEvidencePath() {
   return file;
 }
 
+function incidentEvidencePath() {
+  const directory = mkdtempSync(
+    path.join(tmpdir(), "openvpm-incident-evidence-"),
+  );
+  temporaryDirectories.push(directory);
+  const file = path.join(directory, "incident.json");
+  const scenario = {
+    status: "passed",
+    detection: true,
+    containment: true,
+    recovery: true,
+    evidenceHandling: true,
+    vendorCoordination: true,
+    clinicNotificationDecisionRecorded: true,
+    legalNotificationDecisionRecorded: true,
+  };
+  writeFileSync(
+    file,
+    JSON.stringify({
+      evidenceFormatVersion: 1,
+      exerciseType: "tabletop",
+      exerciseId: "tabletop-2026-08-29-deadbeef",
+      startedAt: "2026-08-29T19:00:00.000Z",
+      completedAt: "2026-08-29T20:00:00.000Z",
+      roles: {
+        incidentCommander: "@incident-lead",
+        privacyLegalReviewer: "@privacy-reviewer",
+        notificationAuthority: "@notification-owner",
+      },
+      approvals: {
+        incidentCommander: {
+          approver: "@incident-lead",
+          approvedAt: "2026-08-29T20:01:00.000Z",
+        },
+        privacyLegalReviewer: {
+          approver: "@privacy-reviewer",
+          approvedAt: "2026-08-29T20:02:00.000Z",
+        },
+        notificationAuthority: {
+          approver: "@notification-owner",
+          approvedAt: "2026-08-29T20:03:00.000Z",
+        },
+      },
+      scenarios: Object.fromEntries(
+        [
+          "database",
+          "objectStore",
+          "stripe",
+          "emailProvider",
+          "credentialCompromise",
+        ].map((name) => [name, { ...scenario }]),
+      ),
+      evidenceSafety: {
+        phiFree: true,
+        secretsFree: true,
+        providerPayloadsFree: true,
+        localPathsFree: true,
+      },
+      findings: {
+        criticalCount: 0,
+        highCount: 0,
+        followUpIssueNumbers: [],
+      },
+    }),
+  );
+  return file;
+}
+
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -281,6 +349,7 @@ function options(fetchFn: typeof fetch) {
     stagingHealthUrl: "https://staging.example/api/health",
     hostedHealthUrl: "https://production.example/api/health",
     restoreEvidencePath: restoreEvidencePath(),
+    incidentEvidencePath: incidentEvidencePath(),
     now: new Date("2026-08-29T21:00:00.000Z"),
     fetchFn,
   };
@@ -293,7 +362,7 @@ describe("clinic readiness evidence collector", () => {
     );
 
     expect(evidence).toMatchObject({
-      evidenceFormatVersion: 3,
+      evidenceFormatVersion: 4,
       releaseSha: sha,
       ci: {
         releaseSha: sha,
@@ -335,6 +404,9 @@ describe("clinic readiness evidence collector", () => {
         hostedHealth: { releaseSha: sha, statusCode: 200 },
       },
       hostedHealth: { releaseSha: sha, statusCode: 200 },
+      incidentResponse: {
+        exerciseId: "tabletop-2026-08-29-deadbeef",
+      },
       restoreDrill: { releaseSha: sha, synthetic: false },
     });
     expect(
@@ -375,6 +447,37 @@ describe("clinic readiness evidence collector", () => {
     ).rejects.toThrow(
       "GitHub job build must contain step Audit production dependencies.",
     );
+  });
+
+  it("rejects unsafe incident evidence before assembling a release packet", async () => {
+    const value = options(authoritativeResponses());
+    writeFileSync(
+      value.incidentEvidencePath,
+      JSON.stringify({ evidenceFormatVersion: 1, notes: "not permitted" }),
+    );
+    await expect(collectClinicReadinessEvidence(value)).rejects.toThrow(
+      "Incident-response evidence is incomplete, stale, or unsafe.",
+    );
+  });
+
+  it("does not disclose an unreadable incident evidence path", async () => {
+    const value = options(authoritativeResponses());
+    const privatePath = path.join(
+      tmpdir(),
+      "private-clinic-name",
+      "incident-evidence.json",
+    );
+    value.incidentEvidencePath = privatePath;
+
+    const error = await collectClinicReadinessEvidence(value).catch(
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "Incident-response evidence is unavailable or unreadable.",
+    );
+    expect((error as Error).message).not.toContain(privatePath);
+    expect((error as Error).message).not.toContain("private-clinic-name");
   });
 
   it("rejects staging migration evidence dispatched from main", async () => {
