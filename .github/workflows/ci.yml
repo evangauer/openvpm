@@ -33,12 +33,14 @@ jobs:
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level high
 
+      - name: Lint application correctness
+        run: pnpm lint
+
       - run: pnpm type-check
 
       - run: pnpm test
 
       - run: pnpm build
-        # Note: next build includes linting — no separate lint step needed
 
   clinic-readiness:
     name: Golden clinic workflow

@@ -63,7 +63,7 @@ export function foldIcsLine(line: string): string {
   let first = true;
   while (start < bytes.length) {
     // Continuation lines start with a space, costing one octet.
-    let width = first ? 75 : 74;
+    const width = first ? 75 : 74;
     let end = Math.min(start + width, bytes.length);
     // Never split inside a UTF-8 multi-byte sequence.
     while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;

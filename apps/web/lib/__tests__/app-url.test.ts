@@ -67,21 +67,21 @@ describe("app base URL helpers", () => {
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "");
     vi.stubEnv("NEXTAUTH_URL", "");
     vi.stubEnv("NODE_ENV", "production");
-    let module = await importAppUrl();
+    let appUrlModule = await importAppUrl();
 
-    expect(() => module.appBaseUrl()).toThrow(
+    expect(() => appUrlModule.appBaseUrl()).toThrow(
       "Set NEXT_PUBLIC_APP_URL or NEXTAUTH_URL to a valid HTTPS app origin."
     );
 
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "http://app.example.com");
-    module = await importAppUrl();
-    expect(() => module.appBaseUrl()).toThrow(
+    appUrlModule = await importAppUrl();
+    expect(() => appUrlModule.appBaseUrl()).toThrow(
       "Set NEXT_PUBLIC_APP_URL or NEXTAUTH_URL to a valid HTTPS app origin."
     );
 
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example.com/settings");
-    module = await importAppUrl();
-    expect(module.appBaseUrl()).toBe("https://app.example.com");
+    appUrlModule = await importAppUrl();
+    expect(appUrlModule.appBaseUrl()).toBe("https://app.example.com");
   });
 
   it("exposes auth links outside production by default", async () => {

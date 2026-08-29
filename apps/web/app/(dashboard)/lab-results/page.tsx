@@ -276,7 +276,7 @@ function LabResultsInboxContent() {
     onError: (error) => toast.error(error.message),
   });
 
-  const rows = inbox.data?.items ?? [];
+  const rows = useMemo(() => inbox.data?.items ?? [], [inbox.data?.items]);
   const actionCount = useMemo(
     () => isFrontDesk
       ? rows.length

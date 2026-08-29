@@ -273,7 +273,7 @@ export function adaptShepherdHistory(
   }
   const contactRows = table(bundle, "client_coowner");
   const clientContacts: ClientContactImportRecord[] = [];
-  let contactErrors = 0;
+  const contactErrors = 0;
   contactRows.forEach((row, rowIndex) => {
     const matched = !!row.clientid && activeClientIds.has(row.clientid);
     if (!matched) {

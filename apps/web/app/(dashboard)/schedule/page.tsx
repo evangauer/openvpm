@@ -1195,12 +1195,14 @@ function AppointmentDetailPopover({
   }, []);
 
   useEffect(() => {
+    const nextStart = new Date(appointment.startTime);
+    const nextEnd = new Date(appointment.endTime);
     setShowRescheduleForm(false);
     setShowConfirmationForm(false);
     setConfirmationContactMethod("");
-    setRescheduleDate(toISODate(start, timeZone));
-    setRescheduleTime(formatTimeInput(start, timeZone));
-    setRescheduleDuration(appointmentDurationMinutes(start, end));
+    setRescheduleDate(toISODate(nextStart, timeZone));
+    setRescheduleTime(formatTimeInput(nextStart, timeZone));
+    setRescheduleDuration(appointmentDurationMinutes(nextStart, nextEnd));
     setRescheduleLocationId(appointment.locationId ?? "");
     setRescheduleDoctorId(appointment.doctorId ?? "");
     setRescheduleRoomId(appointment.roomId ?? "");

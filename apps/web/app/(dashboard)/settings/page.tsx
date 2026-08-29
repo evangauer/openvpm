@@ -1,6 +1,13 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef, Suspense } from "react";
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  Suspense,
+} from "react";
 import { useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -4532,7 +4539,10 @@ function RoomsTab() {
   const isRoomNameValid = (name: string) =>
     name.trim().length > 0 && name.trim().length <= ROOM_NAME_MAX_LENGTH;
   const roomsMissing = !isLoading && !roomsError && !roomList;
-  const roomLocations = locationsQuery.data ?? [];
+  const roomLocations = useMemo(
+    () => locationsQuery.data ?? [],
+    [locationsQuery.data],
+  );
 
   useEffect(() => {
     if (!addForm.locationId && roomLocations.length > 0) {

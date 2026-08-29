@@ -70,8 +70,8 @@ export const subscriptionRouter = createRouter({
     }
 
     const enforced = billingEnforced();
-    let counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
-    let billingSync: BillingSyncState | null = await readBillingSyncState(
+    const counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
+    const billingSync: BillingSyncState | null = await readBillingSyncState(
       ctx.db,
       ctx.practiceId
     );

@@ -2727,7 +2727,7 @@ export const dataRouter = createRouter({
 
     // Fetch items for each invoice
     const invoiceIds = invoiceRows.map((r) => r.invoiceId);
-    let itemsByInvoice: Record<
+    const itemsByInvoice: Record<
       string,
       {
         description: string;

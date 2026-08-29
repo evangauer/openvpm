@@ -549,6 +549,9 @@ export function BringDataStep({ register, state, setState }: StepProps) {
         return false;
       },
     });
+    // runImport and finishStage intentionally capture the current mutation and
+    // onboarding state. Their inputs are represented individually below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     register,
     choice,

@@ -755,6 +755,9 @@ export default function PatientDetailPage() {
             <div className="space-y-1">
               <div className="group relative h-14 w-14">
                 {patient.photoUrl ? (
+                  // Patient photos can come from clinic-configured storage origins,
+                  // so Next Image cannot safely enumerate or optimize every host.
+                  // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={patient.photoUrl}
                     alt={patient.name}
