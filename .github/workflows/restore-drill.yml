@@ -1,0 +1,72 @@
+name: Clinic Restore Drill
+
+on:
+  pull_request:
+    branches: [development, staging, main]
+  schedule:
+    # Weekly Monday proof on the default branch. A failed or missed run remains
+    # visible in Actions and triggers the repository's workflow notifications.
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore-drill:
+    name: Disposable restore drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openpims
+          POSTGRES_PASSWORD: openpims
+          POSTGRES_DB: openpims_restore_source
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openpims"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://openpims:openpims@localhost:5432/openpims_restore_source
+      RESTORE_DRILL_SOURCE_DATABASE_URL: postgresql://openpims:openpims@localhost:5432/openpims_restore_source
+      RESTORE_DRILL_TARGET_DATABASE_URL: postgresql://openpims:openpims@localhost:5432/openpims_restore_target
+      RESTORE_DRILL_APP_DATABASE_URL: postgresql://openpims_app:openpims_app@localhost:5432/openpims_restore_target
+      RESTORE_DRILL_DB_INTEGRATION: "1"
+      RESTORE_DRILL_EVIDENCE_PATH: ${{ runner.temp }}/restore-drill-evidence.json
+      OPENPIMS_APP_DB_PASSWORD: openpims_app
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: "pnpm"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Create disposable source and restore databases
+        run: |
+          pnpm --filter @openpims/db db:migrate
+          pnpm --filter @openpims/db db:rls
+          pnpm --filter @openpims/web exec tsx -e 'import postgres from "postgres"; void (async () => { const sql = postgres(process.env.DATABASE_URL, { max: 1 }); await sql.unsafe("create database openpims_restore_target"); await sql.end(); })();'
+          DATABASE_URL="$RESTORE_DRILL_TARGET_DATABASE_URL" pnpm --filter @openpims/db db:migrate
+          DATABASE_URL="$RESTORE_DRILL_TARGET_DATABASE_URL" pnpm --filter @openpims/db db:rls
+
+      - name: Seed synthetic source clinic
+        run: pnpm --filter @openpims/db db:seed
+
+      - name: Restore, reconcile, release, and smoke test
+        run: pnpm --filter @openpims/web exec vitest run lib/backup/__tests__/restore-drill.integration.test.ts --reporter=verbose
+
+      - name: Record PHI-free drill evidence
+        run: node -e 'const fs = require("node:fs"); const evidencePath = process.env.RESTORE_DRILL_EVIDENCE_PATH; if (!evidencePath || !fs.statSync(evidencePath).isFile()) process.exit(1); console.log(fs.readFileSync(evidencePath, "utf8"));'

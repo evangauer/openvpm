@@ -263,6 +263,20 @@ account-closure policy; indefinite post-closure retention is not authorized.
 
 ## Repeatable drill
 
+The `Disposable restore drill` CI job is the required synthetic regression
+gate. It creates independent source and target databases, exports a seeded
+clinic, restores it through the guarded owner CLI, proves the recovery hold,
+verifies one managed object against an exact independent version/checksum/size,
+releases only after every reconciliation flag and the database backlog gate,
+and smoke-tests authentication reset behavior, tenant isolation, scheduling,
+clinical records, invoices, payments, and file access. It emits a PHI-free
+evidence record with the source backup identity, operator, RPO, RTO, object
+version, verification results, and failure behavior. The job uses synthetic
+data only and does not replace the required hosted drill against independently
+retained provider objects.
+
+The older browser drill remains available for an operator-approved backup:
+
 `e2e/restore-drill.spec.ts` automates the whole runbook against a scratch
 database and is skipped unless `RESTORE_DRILL_BACKUP` is set:
 

@@ -16,6 +16,7 @@ import {
   soapNotes,
   vaccinationRecords,
   prescriptions,
+  prescriptionEvents,
   labResults,
   labResultEvents,
   clinicalRecordCorrections,
@@ -679,8 +680,61 @@ async function seed() {
     });
   }
 
-  await db.insert(prescriptions).values(prescriptionValues);
+  const insertedPrescriptions = await db
+    .insert(prescriptions)
+    .values(prescriptionValues)
+    .returning();
+  const prescriberNameById = new Map(
+    insertedUsers.map((user) => [user.id, user.name]),
+  );
+  const prescriptionEventValues = insertedPrescriptions.flatMap(
+    (prescription) => {
+      const actorName =
+        prescriberNameById.get(prescription.prescribedBy) ?? "Seed clinician";
+      const created = {
+        practiceId,
+        prescriptionId: prescription.id,
+        patientId: prescription.patientId,
+        productId: prescription.productId,
+        quantity: prescription.quantity,
+        eventType: "created" as const,
+        statusBefore: null,
+        statusAfter: "active" as const,
+        refillsBefore: null,
+        refillsAfter: prescription.refillsRemaining,
+        reason: null,
+        actorId: prescription.prescribedBy,
+        actorName,
+        createdAt: prescription.createdAt,
+      };
+      if (prescription.status !== "completed") return [created];
+      return [
+        created,
+        {
+          practiceId,
+          prescriptionId: prescription.id,
+          patientId: prescription.patientId,
+          productId: prescription.productId,
+          quantity: prescription.quantity,
+          eventType: "completed" as const,
+          statusBefore: "active" as const,
+          statusAfter: "completed" as const,
+          refillsBefore: prescription.refillsRemaining,
+          refillsAfter: prescription.refillsRemaining,
+          reason: "Synthetic prescription course completed.",
+          actorId: prescription.prescribedBy,
+          actorName,
+          operationId: crypto.randomUUID(),
+          createdAt: new Date(prescription.createdAt.getTime() + 1),
+        },
+      ];
+    },
+  );
+  await db.insert(prescriptionEvents).values(prescriptionEventValues);
   console.log(`Prescriptions: ${prescriptionValues.length} created`);
+  console.log(
+    `Prescription lifecycle events: ${prescriptionEventValues.length} created`,
+  );
 
   // =========================================================================
   // 11b. Lab Results
