@@ -2128,4 +2128,27 @@ describe("committed Drizzle migrations", () => {
       "GRANT SELECT, INSERT ON messaging_registration_events TO openpims_app",
     );
   });
+
+  it("safely adopts compatible pre-existing MFA columns", () => {
+    const sql = readRepoFile("packages/db/drizzle/0100_yielding_pyro.sql");
+    const columns = [
+      "mfa_secret_encrypted",
+      "mfa_enabled_at",
+      "mfa_last_used_totp_counter",
+      "mfa_recovery_code_hashes",
+      "mfa_pending_secret_encrypted",
+      "mfa_pending_expires_at",
+    ];
+
+    for (const column of columns) {
+      expect(sql).toContain(`ADD COLUMN IF NOT EXISTS "${column}"`);
+      expect(sql).toContain(`('${column}',`);
+    }
+
+    expect(sql.match(/ADD COLUMN IF NOT EXISTS/g)).toHaveLength(columns.length);
+    expect(sql).toContain("information_schema.columns");
+    expect(sql).toContain("actual.is_nullable <> 'YES'");
+    expect(sql).toContain("actual.column_default IS NOT NULL");
+    expect(sql).toContain("OpenVPM MFA column adoption preflight failed");
+  });
 });
