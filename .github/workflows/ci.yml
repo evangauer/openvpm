@@ -40,6 +40,65 @@ jobs:
       - run: pnpm build
         # Note: next build includes linting — no separate lint step needed
 
+  clinic-readiness:
+    name: Golden clinic workflow
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openpims
+          POSTGRES_PASSWORD: openpims
+          POSTGRES_DB: openpims
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openpims"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # The Playwright runner uses the owner only to create synthetic fixtures
+      # and verify postconditions. Its web server command below overrides
+      # DATABASE_URL so every product request runs as the RLS-constrained role.
+      DATABASE_URL: postgresql://openpims:openpims@localhost:5432/openpims
+      OPENPIMS_APP_DB_PASSWORD: openpims_app
+      HOSTED_BILLING_ENABLED: "true"
+      ENFORCE_RLS_BOOT_ASSERTION: "true"
+      NEXT_PUBLIC_DEMO_MODE: "false"
+      NEXTAUTH_SECRET: ci-only-synthetic-nextauth-secret-not-for-deployment
+      NEXTAUTH_URL: http://127.0.0.1:3000
+      EMAIL_PREFERENCE_IDENTITY_SECRET: ci-only-synthetic-identity-secret-not-for-deployment
+      EMAIL_PREFERENCE_SIGNING_SECRET: ci-only-synthetic-signing-secret-not-for-deployment
+      PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
+      PLAYWRIGHT_WEB_SERVER_COMMAND: DATABASE_URL=postgresql://openpims_app:openpims_app@localhost:5432/openpims pnpm --filter @openpims/web dev
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: "pnpm"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install isolated browser runtime
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Apply migrations and least-privilege RLS
+        run: |
+          pnpm --filter @openpims/db db:migrate
+          pnpm --filter @openpims/db db:rls
+
+      - name: Prove the multi-clinic golden workflow
+        run: pnpm exec playwright test e2e/multi-clinic-launch-readiness.spec.ts --workers=1 --reporter=line
+
   migration-integrity:
     name: Migration history integrity
     runs-on: ubuntu-latest

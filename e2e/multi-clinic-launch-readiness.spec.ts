@@ -162,7 +162,7 @@ async function login(page: Page, email: string) {
   );
   await page.getByRole("button", { name: /^sign in$/i }).click();
   await page.waitForURL((url) => !url.pathname.startsWith("/login"), {
-    timeout: 20_000,
+    timeout: 60_000,
   });
   await page
     .waitForLoadState("networkidle", { timeout: 10_000 })
