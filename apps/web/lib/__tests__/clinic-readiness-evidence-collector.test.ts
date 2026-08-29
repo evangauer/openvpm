@@ -116,6 +116,30 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
       ]),
     ],
   };
+  const stagingMigrationRun = {
+    name: "Apply migrations",
+    event: "workflow_dispatch",
+    status: "completed",
+    conclusion: "success",
+    head_sha: sha,
+    head_branch: "staging",
+    html_url: "https://github.example/staging-migration",
+  };
+  const stagingMigrationJobs = {
+    total_count: 2,
+    jobs: [
+      successfulJob("validate staging request", [
+        "Require exact revision confirmation",
+      ]),
+      successfulJob("staging", [
+        "Require isolated staging database credentials",
+        "Reject protected or mismatched staging project",
+        "Apply migrations",
+        "Re-apply row-level security",
+        "Verify schema matches the code",
+      ]),
+    ],
+  };
   const migrationRun = {
     name: "Apply migrations",
     event: "workflow_dispatch",
@@ -165,6 +189,14 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
     total_count: 1,
     branch_policies: [{ name: "main", type: "branch" }],
   };
+  const stagingEnvironment = {
+    ...productionEnvironment,
+    name: "Staging",
+  };
+  const stagingBranchPolicies = {
+    total_count: 1,
+    branch_policies: [{ name: "staging", type: "branch" }],
+  };
   const mainProtection = {
     required_status_checks: {
       strict: true,
@@ -190,12 +222,25 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
     allow_force_pushes: { enabled: false },
     allow_deletions: { enabled: false },
   };
+  const stagingProtection = {
+    ...mainProtection,
+    required_pull_request_reviews: {
+      ...mainProtection.required_pull_request_reviews,
+      required_approving_review_count: 1,
+    },
+  };
 
   return vi.fn(async (input: string | URL | Request) => {
     const url = String(input);
     if (url.endsWith("/actions/runs/101")) return response(ciRun);
     if (url.endsWith("/actions/runs/101/jobs?per_page=100")) {
       return response(ciJobs);
+    }
+    if (url.endsWith("/actions/runs/151")) {
+      return response(stagingMigrationRun);
+    }
+    if (url.endsWith("/actions/runs/151/jobs?per_page=100")) {
+      return response(stagingMigrationJobs);
     }
     if (url.endsWith("/actions/runs/202")) return response(migrationRun);
     if (url.endsWith("/actions/runs/202/jobs?per_page=100")) {
@@ -210,7 +255,18 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
     if (url.endsWith("/branches/main/protection")) {
       return response(mainProtection);
     }
+    if (url.endsWith("/environments/Staging")) {
+      return response(stagingEnvironment);
+    }
+    if (url.endsWith("/environments/Staging/deployment-branch-policies")) {
+      return response(stagingBranchPolicies);
+    }
+    if (url.endsWith("/branches/staging/protection")) {
+      return response(stagingProtection);
+    }
     if (url === "https://staging.example/api/health") return response(health);
+    if (url === "https://production.example/api/health")
+      return response(health);
     return response({ error: "unexpected URL" }, 404);
   }) as unknown as typeof fetch;
 }
@@ -220,8 +276,10 @@ function options(fetchFn: typeof fetch) {
     releaseSha: sha,
     repository: "openvpm/openvpm",
     ciRunId: 101,
+    stagingMigrationRunId: 151,
     migrationRunId: 202,
-    hostedHealthUrl: "https://staging.example/api/health",
+    stagingHealthUrl: "https://staging.example/api/health",
+    hostedHealthUrl: "https://production.example/api/health",
     restoreEvidencePath: restoreEvidencePath(),
     now: new Date("2026-08-29T21:00:00.000Z"),
     fetchFn,
@@ -229,13 +287,13 @@ function options(fetchFn: typeof fetch) {
 }
 
 describe("clinic readiness evidence collector", () => {
-  it("derives a GO packet only from exact-main authoritative evidence", async () => {
+  it("derives a GO packet only from exact staging and production evidence", async () => {
     const evidence = await collectClinicReadinessEvidence(
       options(authoritativeResponses()),
     );
 
     expect(evidence).toMatchObject({
-      evidenceFormatVersion: 2,
+      evidenceFormatVersion: 3,
       releaseSha: sha,
       ci: {
         releaseSha: sha,
@@ -260,6 +318,21 @@ describe("clinic readiness evidence collector", () => {
           requiredApprovalCount: 2,
           requireCodeOwnerReviews: true,
         },
+        stagingEnvironment: {
+          canAdminsBypass: false,
+          preventSelfReview: true,
+          requiredReviewerCount: 1,
+          stagingOnlyBranchPolicy: true,
+        },
+        stagingBranch: {
+          requiredApprovalCount: 1,
+          requireCodeOwnerReviews: true,
+        },
+      },
+      staging: {
+        releaseSha: sha,
+        migrationRunId: 151,
+        hostedHealth: { releaseSha: sha, statusCode: 200 },
       },
       hostedHealth: { releaseSha: sha, statusCode: 200 },
       restoreDrill: { releaseSha: sha, synthetic: false },
@@ -302,6 +375,64 @@ describe("clinic readiness evidence collector", () => {
     ).rejects.toThrow(
       "GitHub job build must contain step Audit production dependencies.",
     );
+  });
+
+  it("rejects staging migration evidence dispatched from main", async () => {
+    const fetchFn = authoritativeResponses();
+    const wrapped = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const result = await fetchFn(input, init);
+        if (String(input).endsWith("/actions/runs/151")) {
+          const body = await result.json();
+          return response({ ...body, head_branch: "main" });
+        }
+        return result;
+      },
+    ) as unknown as typeof fetch;
+
+    await expect(
+      collectClinicReadinessEvidence(options(wrapped)),
+    ).rejects.toThrow(
+      "Staging migration must be a successful exact-SHA Apply migrations run from staging.",
+    );
+  });
+
+  it("fails closed when GitHub omits permissive governance booleans", async () => {
+    const fetchFn = authoritativeResponses();
+    const wrapped = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const result = await fetchFn(input, init);
+        const url = String(input);
+        if (url.endsWith("/environments/Staging")) {
+          const { can_admins_bypass: _omitted, ...body } = await result.json();
+          return response(body);
+        }
+        if (url.endsWith("/branches/staging/protection")) {
+          const {
+            allow_force_pushes: _omittedForcePushes,
+            allow_deletions: _omittedDeletions,
+            ...body
+          } = await result.json();
+          return response(body);
+        }
+        return result;
+      },
+    ) as unknown as typeof fetch;
+
+    const evidence = await collectClinicReadinessEvidence(options(wrapped));
+    expect(evidence.repositoryGovernance.stagingEnvironment).toMatchObject({
+      canAdminsBypass: true,
+    });
+    expect(evidence.repositoryGovernance.stagingBranch).toMatchObject({
+      allowForcePushes: true,
+      allowDeletions: true,
+    });
+    expect(
+      evaluateClinicReadinessRelease(
+        evidence,
+        Date.parse(evidence.repositoryGovernance.checkedAt),
+      ),
+    ).toMatchObject({ decision: "NO_GO" });
   });
 
   it("rejects an incomplete GitHub job listing", async () => {

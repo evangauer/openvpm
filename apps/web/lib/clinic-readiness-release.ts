@@ -72,14 +72,68 @@ function requireFreshTimestamp(
   }
 }
 
+function evaluateHostedHealthEvidence(
+  reasons: string[],
+  label: "Hosted" | "Staging hosted",
+  value: unknown,
+  releaseSha: string | null,
+  nowMs: number,
+) {
+  const hosted = record(value);
+  if (!hosted) {
+    reasons.push(`${label} health evidence is missing.`);
+    return;
+  }
+  if (releaseSha && hosted.releaseSha !== releaseSha) {
+    reasons.push(`${label} health does not match the release SHA.`);
+  }
+  requireFreshTimestamp(
+    reasons,
+    `${label} health`,
+    hosted.checkedAt,
+    nowMs,
+    HEALTH_MAX_AGE_MS,
+  );
+  if (hosted.statusCode !== 200) {
+    reasons.push(`${label} health did not return HTTP 200.`);
+  }
+  const body = record(hosted.body);
+  if (body?.ok !== true || body?.mode !== "hosted") {
+    reasons.push(
+      `${label} health is not an affirmative hosted readiness result.`,
+    );
+  }
+  if (releaseSha && body?.releaseSha !== releaseSha) {
+    reasons.push(`${label} health body does not identify the release SHA.`);
+  }
+  const checks = record(body?.checks);
+  for (const checkName of REQUIRED_HOSTED_CHECKS) {
+    const check = record(checks?.[checkName]);
+    if (check?.ok !== true) {
+      reasons.push(`${label} check ${checkName} is missing or unhealthy.`);
+    }
+    if (check?.advisory === true) {
+      reasons.push(`${label} check ${checkName} is still advisory.`);
+    }
+  }
+  if (checks) {
+    for (const [name, checkValue] of Object.entries(checks)) {
+      const check = record(checkValue);
+      if (check && check.advisory !== true && check.ok !== true) {
+        reasons.push(`${label} release-blocking check ${name} is unhealthy.`);
+      }
+    }
+  }
+}
+
 export function evaluateClinicReadinessRelease(
   input: unknown,
   nowMs = Date.now(),
 ): ClinicReadinessDecision {
   const reasons: string[] = [];
   const root = record(input);
-  if (root?.evidenceFormatVersion !== 2) {
-    reasons.push("Clinic readiness evidence format version must be 2.");
+  if (root?.evidenceFormatVersion !== 3) {
+    reasons.push("Clinic readiness evidence format version must be 3.");
   }
   const releaseSha =
     root &&
@@ -143,6 +197,33 @@ export function evaluateClinicReadinessRelease(
       }
     }
 
+    const stagingEnvironment = record(governance.stagingEnvironment);
+    if (!stagingEnvironment) {
+      reasons.push("Staging environment governance is missing.");
+    } else {
+      if (stagingEnvironment.exists !== true) {
+        reasons.push("Staging environment is missing.");
+      }
+      if (stagingEnvironment.canAdminsBypass !== false) {
+        reasons.push("Staging environment allows administrator bypass.");
+      }
+      if (stagingEnvironment.preventSelfReview !== true) {
+        reasons.push("Staging environment does not prevent self-review.");
+      }
+      if (
+        typeof stagingEnvironment.requiredReviewerCount !== "number" ||
+        stagingEnvironment.requiredReviewerCount < 1
+      ) {
+        reasons.push("Staging environment has no required reviewer.");
+      }
+      if (
+        stagingEnvironment.usesCustomBranchPolicies !== true ||
+        stagingEnvironment.stagingOnlyBranchPolicy !== true
+      ) {
+        reasons.push("Staging environment is not restricted to staging.");
+      }
+    }
+
     const main = record(governance.mainBranch);
     if (!main) {
       reasons.push("Main branch governance is missing.");
@@ -192,53 +273,94 @@ export function evaluateClinicReadinessRelease(
         reasons.push("Main branch allows deletion.");
       }
     }
-  }
 
-  const hosted = record(root?.hostedHealth);
-  if (!hosted) {
-    reasons.push("Hosted health evidence is missing.");
-  } else {
-    if (releaseSha && hosted.releaseSha !== releaseSha) {
-      reasons.push("Hosted health does not match the release SHA.");
-    }
-    requireFreshTimestamp(
-      reasons,
-      "Hosted health",
-      hosted.checkedAt,
-      nowMs,
-      HEALTH_MAX_AGE_MS,
-    );
-    if (hosted.statusCode !== 200) {
-      reasons.push("Hosted health did not return HTTP 200.");
-    }
-    const body = record(hosted.body);
-    if (body?.ok !== true || body?.mode !== "hosted") {
-      reasons.push(
-        "Hosted health is not an affirmative hosted readiness result.",
-      );
-    }
-    if (releaseSha && body?.releaseSha !== releaseSha) {
-      reasons.push("Hosted health body does not identify the release SHA.");
-    }
-    const checks = record(body?.checks);
-    for (const checkName of REQUIRED_HOSTED_CHECKS) {
-      const check = record(checks?.[checkName]);
-      if (check?.ok !== true) {
-        reasons.push(`Hosted check ${checkName} is missing or unhealthy.`);
+    const stagingBranch = record(governance.stagingBranch);
+    if (!stagingBranch) {
+      reasons.push("Staging branch governance is missing.");
+    } else {
+      if (stagingBranch.enforceAdmins !== true) {
+        reasons.push(
+          "Staging branch protection does not apply to administrators.",
+        );
       }
-      if (check?.advisory === true) {
-        reasons.push(`Hosted check ${checkName} is still advisory.`);
+      if (stagingBranch.strictStatusChecks !== true) {
+        reasons.push("Staging branch does not require strict status checks.");
       }
-    }
-    if (checks) {
-      for (const [name, value] of Object.entries(checks)) {
-        const check = record(value);
-        if (check && check.advisory !== true && check.ok !== true) {
-          reasons.push(`Release-blocking hosted check ${name} is unhealthy.`);
+      const stagingChecks = Array.isArray(stagingBranch.requiredChecks)
+        ? new Set(
+            stagingBranch.requiredChecks.filter(
+              (item) => typeof item === "string",
+            ),
+          )
+        : new Set<string>();
+      for (const check of REQUIRED_MAIN_CHECKS) {
+        if (!stagingChecks.has(check)) {
+          reasons.push(`Staging branch does not require ${check}.`);
         }
       }
+      if (
+        typeof stagingBranch.requiredApprovalCount !== "number" ||
+        stagingBranch.requiredApprovalCount < 1
+      ) {
+        reasons.push("Staging branch requires no approval.");
+      }
+      if (stagingBranch.dismissStaleReviews !== true) {
+        reasons.push("Staging branch does not dismiss stale approvals.");
+      }
+      if (stagingBranch.requireCodeOwnerReviews !== true) {
+        reasons.push("Staging branch does not require code-owner review.");
+      }
+      if (stagingBranch.requireLastPushApproval !== true) {
+        reasons.push(
+          "Staging branch does not require approval after the last push.",
+        );
+      }
+      if (stagingBranch.requireConversationResolution !== true) {
+        reasons.push(
+          "Staging branch does not require conversation resolution.",
+        );
+      }
+      if (stagingBranch.allowForcePushes !== false) {
+        reasons.push("Staging branch allows force pushes.");
+      }
+      if (stagingBranch.allowDeletions !== false) {
+        reasons.push("Staging branch allows deletion.");
+      }
     }
   }
+
+  const staging = record(root?.staging);
+  if (!staging) {
+    reasons.push("Isolated staging evidence is missing.");
+  } else {
+    if (releaseSha && staging.releaseSha !== releaseSha) {
+      reasons.push(
+        "Isolated staging migration does not match the release SHA.",
+      );
+    }
+    if (
+      typeof staging.migrationRunId !== "number" ||
+      !Number.isSafeInteger(staging.migrationRunId) ||
+      staging.migrationRunId <= 0
+    ) {
+      reasons.push("Isolated staging migration run ID is missing or invalid.");
+    }
+    evaluateHostedHealthEvidence(
+      reasons,
+      "Staging hosted",
+      staging.hostedHealth,
+      releaseSha,
+      nowMs,
+    );
+  }
+
+  evaluateHostedHealthEvidence(
+    reasons,
+    "Hosted",
+    root?.hostedHealth,
+    releaseSha,
+    nowMs,
+  );
 
   const restore = record(root?.restoreDrill);
   if (!restore) {

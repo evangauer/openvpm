@@ -149,7 +149,7 @@ PLATFORM_ADMIN_EMAILS=...
 
 ### Transitional production release gate
 
-Before production approval, collect one PHI-free, format-version `2` JSON
+Before production approval, collect one PHI-free, format-version `3` JSON
 evidence packet from authoritative sources. Export a read-only `GITHUB_TOKEN`
 in the secure operator environment, then run:
 
@@ -158,18 +158,24 @@ pnpm --filter @openpims/web release:clinic-readiness:collect -- \
   --release-sha "$RELEASE_SHA" \
   --repository evangauer/openvpm \
   --ci-run-id "$CI_RUN_ID" \
+  --staging-migration-run-id "$STAGING_MIGRATION_RUN_ID" \
   --migration-run-id "$PRODUCTION_MIGRATION_RUN_ID" \
+  --staging-health-url "$STAGING_HEALTH_URL" \
   --hosted-health-url https://app.openvpm.com/api/health \
   --restore-evidence /secure/path/provider-restore-evidence.json \
   --output /secure/path/clinic-readiness-evidence.json
 ```
 
-The collector refuses to overwrite an existing packet. It verifies exact-SHA
-successful `main` runs directly through GitHub: the full CI job/step set and the
-manually confirmed production migration, RLS, and drift steps. It also reads the
-live `Production` environment and `main` branch protections. A release remains
-`NO_GO` while administrators can bypass the environment, the workflow actor can
-self-approve, Production is not restricted to `main`, the branch needs fewer
+The collector refuses to overwrite an existing packet. It verifies the
+successful exact-SHA `main` CI run, an exact-SHA migration from the canonical
+`staging` branch, and the manually confirmed exact-SHA production migration,
+RLS, and drift steps directly through GitHub. It fetches both isolated staging
+and production HTTPS health, requires both deployments to identify the same
+release SHA, and rejects any required dependency that is unhealthy or advisory.
+It also reads the live `Staging` and `Production` environments plus their
+canonical branch protections. A release remains `NO_GO` while administrators
+can bypass either environment, the workflow actor can self-approve, environment
+branch scope is wrong, `staging` lacks independent approval, `main` needs fewer
 than two approvals, code-owner or last-push review is disabled, or any required
 clinic-readiness/security check is optional. It fetches the HTTPS health
 response itself and requires a bounded local provider-restore packet. It writes
@@ -182,9 +188,11 @@ pnpm --filter @openpims/web release:clinic-readiness -- \
 ```
 
 The command returns `GO` only when migrations, RLS, tests, build, and the
-production dependency audit passed for that exact SHA; hosted health is a fresh
-HTTP 200 hosted result whose response reports that same deployment SHA; backup
-freshness and 100% independent file coverage are affirmative (not advisory);
+production dependency audit passed for that exact SHA; isolated staging
+migration and health passed for the same SHA before production; production
+health is a fresh HTTP 200 hosted result whose response reports that same
+deployment SHA; backup freshness and 100% independent file coverage are
+affirmative (not advisory) in both hosted environments;
 and a recent provider-backed, non-synthetic restore drill for the same SHA
 proves the hold/release workflow, exact object version, and authentication,
 tenant, scheduling, clinical, invoice, payment, and file smokes. Missing, stale,

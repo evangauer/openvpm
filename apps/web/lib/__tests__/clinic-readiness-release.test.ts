@@ -21,7 +21,7 @@ function healthyEvidence() {
       ].map((name) => [name, { ok: true }]),
     );
   return {
-    evidenceFormatVersion: 2,
+    evidenceFormatVersion: 3,
     releaseSha: sha,
     ci: {
       releaseSha: sha,
@@ -43,6 +43,14 @@ function healthyEvidence() {
         usesCustomBranchPolicies: true,
         mainOnlyBranchPolicy: true,
       },
+      stagingEnvironment: {
+        exists: true,
+        canAdminsBypass: false,
+        preventSelfReview: true,
+        requiredReviewerCount: 1,
+        usesCustomBranchPolicies: true,
+        stagingOnlyBranchPolicy: true,
+      },
       mainBranch: {
         enforceAdmins: true,
         strictStatusChecks: true,
@@ -62,6 +70,41 @@ function healthyEvidence() {
         requireConversationResolution: true,
         allowForcePushes: false,
         allowDeletions: false,
+      },
+      stagingBranch: {
+        enforceAdmins: true,
+        strictStatusChecks: true,
+        requiredChecks: [
+          "build",
+          "Golden clinic workflow",
+          "Migration history integrity",
+          "RLS tenant isolation",
+          "Analyze (actions)",
+          "Analyze (javascript-typescript)",
+          "Disposable restore drill",
+        ],
+        requiredApprovalCount: 1,
+        dismissStaleReviews: true,
+        requireCodeOwnerReviews: true,
+        requireLastPushApproval: true,
+        requireConversationResolution: true,
+        allowForcePushes: false,
+        allowDeletions: false,
+      },
+    },
+    staging: {
+      releaseSha: sha,
+      migrationRunId: 151,
+      hostedHealth: {
+        releaseSha: sha,
+        checkedAt: "2026-08-29T20:55:00.000Z",
+        statusCode: 200,
+        body: {
+          ok: true,
+          mode: "hosted",
+          releaseSha: sha,
+          checks: structuredClone(checks),
+        },
       },
     },
     hostedHealth: {
@@ -142,9 +185,38 @@ describe("clinic readiness release decision", () => {
 
   it("rejects an unknown evidence format", () => {
     const evidence = healthyEvidence();
-    evidence.evidenceFormatVersion = 3;
+    evidence.evidenceFormatVersion = 4;
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
-      "Clinic readiness evidence format version must be 2.",
+      "Clinic readiness evidence format version must be 3.",
+    );
+  });
+
+  it("requires fresh exact-SHA isolated staging acceptance", () => {
+    const evidence = healthyEvidence();
+    evidence.staging.releaseSha = "c".repeat(40);
+    evidence.staging.hostedHealth.checkedAt = "2026-08-29T20:00:00.000Z";
+    evidence.staging.hostedHealth.body.releaseSha = "d".repeat(40);
+    const decision = evaluateClinicReadinessRelease(evidence, now);
+    expect(decision.decision).toBe("NO_GO");
+    expect(decision.reasons).toEqual(
+      expect.arrayContaining([
+        "Isolated staging migration does not match the release SHA.",
+        "Staging hosted health evidence is stale.",
+        "Staging hosted health body does not identify the release SHA.",
+      ]),
+    );
+  });
+
+  it("rejects advisory or unhealthy isolated staging dependencies", () => {
+    const evidence = healthyEvidence();
+    evidence.staging.hostedHealth.body.checks.hostedFileReplica.advisory = true;
+    evidence.staging.hostedHealth.body.checks.hostedBackupFreshness.ok = false;
+    const reasons = evaluateClinicReadinessRelease(evidence, now).reasons;
+    expect(reasons).toEqual(
+      expect.arrayContaining([
+        "Staging hosted check hostedFileReplica is still advisory.",
+        "Staging hosted check hostedBackupFreshness is missing or unhealthy.",
+      ]),
     );
   });
 
@@ -163,6 +235,25 @@ describe("clinic readiness release decision", () => {
         "Main branch requires fewer than two approvals.",
         "Main branch does not require Golden clinic workflow.",
         "Main branch does not require Disposable restore drill.",
+      ]),
+    );
+  });
+
+  it("rejects unsafe staging environment and branch governance", () => {
+    const evidence = healthyEvidence();
+    evidence.repositoryGovernance.stagingEnvironment.canAdminsBypass = true;
+    evidence.repositoryGovernance.stagingEnvironment.preventSelfReview = false;
+    evidence.repositoryGovernance.stagingBranch.requiredApprovalCount = 0;
+    evidence.repositoryGovernance.stagingBranch.requiredChecks = ["build"];
+    const decision = evaluateClinicReadinessRelease(evidence, now);
+    expect(decision.decision).toBe("NO_GO");
+    expect(decision.reasons).toEqual(
+      expect.arrayContaining([
+        "Staging environment allows administrator bypass.",
+        "Staging environment does not prevent self-review.",
+        "Staging branch requires no approval.",
+        "Staging branch does not require Golden clinic workflow.",
+        "Staging branch does not require Disposable restore drill.",
       ]),
     );
   });

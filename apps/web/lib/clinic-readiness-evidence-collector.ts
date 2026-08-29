@@ -60,7 +60,9 @@ export type ClinicReadinessEvidenceCollectionOptions = {
   releaseSha: string;
   repository: string;
   ciRunId: number;
+  stagingMigrationRunId: number;
   migrationRunId: number;
+  stagingHealthUrl: string;
   hostedHealthUrl: string;
   restoreEvidencePath: string;
   githubToken?: string;
@@ -178,6 +180,7 @@ function verifyRun(
     name: string;
     event: string;
     releaseSha: string;
+    branch: "main" | "staging";
   },
 ) {
   if (
@@ -185,12 +188,12 @@ function verifyRun(
     run.event !== expected.event ||
     run.status !== "completed" ||
     run.conclusion !== "success" ||
-    run.head_branch !== "main" ||
+    run.head_branch !== expected.branch ||
     typeof run.head_sha !== "string" ||
     run.head_sha.toLowerCase() !== expected.releaseSha
   ) {
     throw new Error(
-      `${expected.label} must be a successful exact-SHA ${expected.name} run from main.`,
+      `${expected.label} must be a successful exact-SHA ${expected.name} run from ${expected.branch}.`,
     );
   }
 }
@@ -271,6 +274,71 @@ function requiredCheckNames(value: unknown): string[] {
   return [...new Set([...contexts, ...appChecks])].sort();
 }
 
+function environmentGovernance(
+  rawEnvironment: unknown,
+  rawPolicies: unknown,
+  expectedEnvironment: "Production" | "Staging",
+  expectedBranch: "main" | "staging",
+) {
+  const environment = record(rawEnvironment) as EnvironmentResponse | null;
+  const policies = record(rawPolicies) as BranchPoliciesResponse | null;
+  if (!environment || !policies) {
+    throw new Error(`${expectedEnvironment} governance response is invalid.`);
+  }
+  const protectionRules = Array.isArray(environment.protection_rules)
+    ? environment.protection_rules
+        .map(record)
+        .filter((item): item is ProtectionRule => item !== null)
+    : [];
+  const reviewerRules = protectionRules.filter(
+    (rule) => rule.type === "required_reviewers",
+  );
+  const reviewerRule = reviewerRules.length === 1 ? reviewerRules[0] : null;
+  const deploymentPolicy = record(environment.deployment_branch_policy);
+  const branchPolicies = Array.isArray(policies.branch_policies)
+    ? policies.branch_policies.map(record).filter((item) => item !== null)
+    : [];
+  return {
+    exists: environment.name === expectedEnvironment,
+    canAdminsBypass: environment.can_admins_bypass !== false,
+    preventSelfReview: reviewerRule?.prevent_self_review === true,
+    requiredReviewerCount: Array.isArray(reviewerRule?.reviewers)
+      ? reviewerRule.reviewers.length
+      : 0,
+    usesCustomBranchPolicies:
+      deploymentPolicy?.protected_branches === false &&
+      deploymentPolicy?.custom_branch_policies === true,
+    onlyExpectedBranchPolicy:
+      policies.total_count === 1 &&
+      branchPolicies.length === 1 &&
+      branchPolicies[0]?.name === expectedBranch &&
+      branchPolicies[0]?.type === "branch",
+  };
+}
+
+function branchGovernance(rawProtection: unknown, label: string) {
+  const protection = record(rawProtection) as BranchProtectionResponse | null;
+  if (!protection) throw new Error(`${label} protection response is invalid.`);
+  const reviews = record(protection.required_pull_request_reviews);
+  return {
+    enforceAdmins: record(protection.enforce_admins)?.enabled === true,
+    strictStatusChecks:
+      record(protection.required_status_checks)?.strict === true,
+    requiredChecks: requiredCheckNames(protection.required_status_checks),
+    requiredApprovalCount:
+      typeof reviews?.required_approving_review_count === "number"
+        ? reviews.required_approving_review_count
+        : 0,
+    dismissStaleReviews: reviews?.dismiss_stale_reviews === true,
+    requireCodeOwnerReviews: reviews?.require_code_owner_reviews === true,
+    requireLastPushApproval: reviews?.require_last_push_approval === true,
+    requireConversationResolution:
+      record(protection.required_conversation_resolution)?.enabled === true,
+    allowForcePushes: record(protection.allow_force_pushes)?.enabled !== false,
+    allowDeletions: record(protection.allow_deletions)?.enabled !== false,
+  };
+}
+
 async function repositoryGovernanceEvidence(
   fetchFn: typeof fetch,
   repository: string,
@@ -278,7 +346,14 @@ async function repositoryGovernanceEvidence(
   checkedAt: string,
 ) {
   const root = `https://api.github.com/repos/${repository}`;
-  const [rawEnvironment, rawPolicies, rawProtection] = await Promise.all([
+  const [
+    rawProductionEnvironment,
+    rawProductionPolicies,
+    rawMainProtection,
+    rawStagingEnvironment,
+    rawStagingPolicies,
+    rawStagingProtection,
+  ] = await Promise.all([
     githubJson(
       fetchFn,
       `${root}/environments/Production`,
@@ -297,67 +372,57 @@ async function repositoryGovernanceEvidence(
       token,
       "Main branch protection",
     ),
+    githubJson(
+      fetchFn,
+      `${root}/environments/Staging`,
+      token,
+      "Staging environment",
+    ),
+    githubJson(
+      fetchFn,
+      `${root}/environments/Staging/deployment-branch-policies`,
+      token,
+      "Staging deployment branch policies",
+    ),
+    githubJson(
+      fetchFn,
+      `${root}/branches/staging/protection`,
+      token,
+      "Staging branch protection",
+    ),
   ]);
-  const environment = record(rawEnvironment) as EnvironmentResponse | null;
-  const policies = record(rawPolicies) as BranchPoliciesResponse | null;
-  const protection = record(rawProtection) as BranchProtectionResponse | null;
-  if (!environment || !policies || !protection) {
-    throw new Error("GitHub repository governance response is invalid.");
-  }
-
-  const protectionRules = Array.isArray(environment.protection_rules)
-    ? environment.protection_rules
-        .map(record)
-        .filter((item): item is ProtectionRule => item !== null)
-    : [];
-  const reviewerRules = protectionRules.filter(
-    (rule) => rule.type === "required_reviewers",
+  const productionEnvironment = environmentGovernance(
+    rawProductionEnvironment,
+    rawProductionPolicies,
+    "Production",
+    "main",
   );
-  const reviewerRule = reviewerRules.length === 1 ? reviewerRules[0] : null;
-  const reviewerCount = Array.isArray(reviewerRule?.reviewers)
-    ? reviewerRule.reviewers.length
-    : 0;
-
-  const deploymentPolicy = record(environment.deployment_branch_policy);
-  const rawBranchPolicies = Array.isArray(policies.branch_policies)
-    ? policies.branch_policies.map(record).filter((item) => item !== null)
-    : [];
-  const mainOnlyBranchPolicy =
-    policies.total_count === 1 &&
-    rawBranchPolicies.length === 1 &&
-    rawBranchPolicies[0]?.name === "main" &&
-    rawBranchPolicies[0]?.type === "branch";
-
-  const reviews = record(protection.required_pull_request_reviews);
+  const stagingEnvironment = environmentGovernance(
+    rawStagingEnvironment,
+    rawStagingPolicies,
+    "Staging",
+    "staging",
+  );
+  const {
+    onlyExpectedBranchPolicy: mainOnlyBranchPolicy,
+    ...productionEnvironmentEvidence
+  } = productionEnvironment;
+  const {
+    onlyExpectedBranchPolicy: stagingOnlyBranchPolicy,
+    ...stagingEnvironmentEvidence
+  } = stagingEnvironment;
   return {
     checkedAt,
     productionEnvironment: {
-      exists: environment.name === "Production",
-      canAdminsBypass: environment.can_admins_bypass === true,
-      preventSelfReview: reviewerRule?.prevent_self_review === true,
-      requiredReviewerCount: reviewerCount,
-      usesCustomBranchPolicies:
-        deploymentPolicy?.protected_branches === false &&
-        deploymentPolicy?.custom_branch_policies === true,
+      ...productionEnvironmentEvidence,
       mainOnlyBranchPolicy,
     },
-    mainBranch: {
-      enforceAdmins: record(protection.enforce_admins)?.enabled === true,
-      strictStatusChecks:
-        record(protection.required_status_checks)?.strict === true,
-      requiredChecks: requiredCheckNames(protection.required_status_checks),
-      requiredApprovalCount:
-        typeof reviews?.required_approving_review_count === "number"
-          ? reviews.required_approving_review_count
-          : 0,
-      dismissStaleReviews: reviews?.dismiss_stale_reviews === true,
-      requireCodeOwnerReviews: reviews?.require_code_owner_reviews === true,
-      requireLastPushApproval: reviews?.require_last_push_approval === true,
-      requireConversationResolution:
-        record(protection.required_conversation_resolution)?.enabled === true,
-      allowForcePushes: record(protection.allow_force_pushes)?.enabled === true,
-      allowDeletions: record(protection.allow_deletions)?.enabled === true,
+    stagingEnvironment: {
+      ...stagingEnvironmentEvidence,
+      stagingOnlyBranchPolicy,
     },
+    mainBranch: branchGovernance(rawMainProtection, "Main branch"),
+    stagingBranch: branchGovernance(rawStagingProtection, "Staging branch"),
   };
 }
 
@@ -386,51 +451,86 @@ export async function collectClinicReadinessEvidence(
     throw new Error("GitHub repository must use the owner/name form.");
   }
   const ciRunId = runId(options.ciRunId, "CI run ID");
-  const migrationRunId = runId(options.migrationRunId, "Migration run ID");
+  const stagingMigrationRunId = runId(
+    options.stagingMigrationRunId,
+    "Staging migration run ID",
+  );
+  const migrationRunId = runId(
+    options.migrationRunId,
+    "Production migration run ID",
+  );
+  const stagingHealthUrl = hostedHealthEndpoint(options.stagingHealthUrl);
   const healthUrl = hostedHealthEndpoint(options.hostedHealthUrl);
   const fetchFn = options.fetchFn ?? fetch;
   const checkedAt = (options.now ?? new Date()).toISOString();
 
-  const [ci, migration, healthResponse, repositoryGovernance] =
-    await Promise.all([
-      githubRunAndJobs(
-        fetchFn,
-        options.repository,
-        ciRunId,
-        options.githubToken,
-        "CI",
-      ),
-      githubRunAndJobs(
-        fetchFn,
-        options.repository,
-        migrationRunId,
-        options.githubToken,
-        "Production migration",
-      ),
-      fetchFn(healthUrl, {
-        headers: { Accept: "application/json" },
-        redirect: "error",
-        signal: AbortSignal.timeout(15_000),
-      }),
-      repositoryGovernanceEvidence(
-        fetchFn,
-        options.repository,
-        options.githubToken,
-        checkedAt,
-      ),
-    ]);
+  const [
+    ci,
+    stagingMigration,
+    migration,
+    stagingHealthResponse,
+    healthResponse,
+    repositoryGovernance,
+  ] = await Promise.all([
+    githubRunAndJobs(
+      fetchFn,
+      options.repository,
+      ciRunId,
+      options.githubToken,
+      "CI",
+    ),
+    githubRunAndJobs(
+      fetchFn,
+      options.repository,
+      stagingMigrationRunId,
+      options.githubToken,
+      "Staging migration",
+    ),
+    githubRunAndJobs(
+      fetchFn,
+      options.repository,
+      migrationRunId,
+      options.githubToken,
+      "Production migration",
+    ),
+    fetchFn(stagingHealthUrl, {
+      headers: { Accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    }),
+    fetchFn(healthUrl, {
+      headers: { Accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    }),
+    repositoryGovernanceEvidence(
+      fetchFn,
+      options.repository,
+      options.githubToken,
+      checkedAt,
+    ),
+  ]);
 
   verifyRun(ci.run, {
     label: "CI",
     name: "CI",
     event: "push",
     releaseSha,
+    branch: "main",
+  });
+  verifyRun(stagingMigration.run, {
+    label: "Staging migration",
+    name: "Apply migrations",
+    event: "workflow_dispatch",
+    releaseSha,
+    branch: "staging",
   });
   verifyRun(migration.run, {
     label: "Production migration",
     name: "Apply migrations",
     event: "workflow_dispatch",
     releaseSha,
+    branch: "main",
   });
 
   const buildJob = successfulJob(ci.jobs, "build");
@@ -440,6 +540,11 @@ export async function collectClinicReadinessEvidence(
     "Migration history integrity",
   );
   const rlsJob = successfulJob(ci.jobs, "RLS tenant isolation");
+  const stagingValidationJob = successfulJob(
+    stagingMigration.jobs,
+    "validate staging request",
+  );
+  const stagingMigrationJob = successfulJob(stagingMigration.jobs, "staging");
   const validationJob = successfulJob(
     migration.jobs,
     "validate production request",
@@ -455,6 +560,21 @@ export async function collectClinicReadinessEvidence(
     "Verify append-only migration history",
   );
   requireSuccessfulStep(rlsJob, "Prove tenant/RLS pool-reuse isolation");
+  requireSuccessfulStep(
+    stagingValidationJob,
+    "Require exact revision confirmation",
+  );
+  requireSuccessfulStep(
+    stagingMigrationJob,
+    "Require isolated staging database credentials",
+  );
+  requireSuccessfulStep(
+    stagingMigrationJob,
+    "Reject protected or mismatched staging project",
+  );
+  requireSuccessfulStep(stagingMigrationJob, "Apply migrations");
+  requireSuccessfulStep(stagingMigrationJob, "Re-apply row-level security");
+  requireSuccessfulStep(stagingMigrationJob, "Verify schema matches the code");
   requireSuccessfulStep(validationJob, "Require exact revision confirmation");
   requireSuccessfulStep(productionMigrationJob, "Apply migrations");
   requireSuccessfulStep(productionMigrationJob, "Re-apply row-level security");
@@ -463,11 +583,18 @@ export async function collectClinicReadinessEvidence(
     "Verify schema matches the code",
   );
 
-  const healthBody = await boundedJsonResponse(healthResponse, "Hosted health");
+  const stagingHealthBody = await boundedJsonResponse(
+    stagingHealthResponse,
+    "Staging health",
+  );
+  const healthBody = await boundedJsonResponse(
+    healthResponse,
+    "Production health",
+  );
   const restoreDrill = regularBoundedJsonFile(options.restoreEvidencePath);
 
   return {
-    evidenceFormatVersion: 2,
+    evidenceFormatVersion: 3,
     releaseSha,
     ci: {
       releaseSha,
@@ -489,6 +616,21 @@ export async function collectClinicReadinessEvidence(
       },
     },
     repositoryGovernance,
+    staging: {
+      releaseSha,
+      migrationRunId: stagingMigrationRunId,
+      migrationRunUrl:
+        typeof stagingMigration.run.html_url === "string"
+          ? stagingMigration.run.html_url
+          : undefined,
+      hostedHealth: {
+        releaseSha,
+        checkedAt,
+        url: stagingHealthUrl.toString(),
+        statusCode: stagingHealthResponse.status,
+        body: stagingHealthBody,
+      },
+    },
     hostedHealth: {
       releaseSha,
       checkedAt,
