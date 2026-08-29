@@ -247,6 +247,7 @@ describe("backup cron", () => {
       expect.any(Buffer),
       "application/json",
       "a".repeat(64),
+      { allowOverwrite: true },
     );
     const uploadedPayload = mocks.uploadManagedFile.mock.calls[0]?.[1];
     expect(uploadedPayload).toBeInstanceOf(Buffer);
@@ -339,6 +340,7 @@ describe("backup cron", () => {
       expect.any(Buffer),
       "application/json",
       "a".repeat(64),
+      { allowOverwrite: true },
     );
     expect(mocks.uploadManagedFile).toHaveBeenNthCalledWith(
       2,
@@ -346,6 +348,7 @@ describe("backup cron", () => {
       expect.any(Buffer),
       "application/json",
       "a".repeat(64),
+      { allowOverwrite: true },
     );
   });
 
@@ -531,6 +534,7 @@ describe("backup cron", () => {
       expect.any(Buffer),
       "application/json",
       "a".repeat(64),
+      { allowOverwrite: true },
     );
     expect(mocks.alertOps).toHaveBeenCalledWith(
       "Practice backup failed",

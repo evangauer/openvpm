@@ -137,6 +137,7 @@ export async function GET(request: Request) {
             body,
             "application/json",
             checksumSha256,
+            { allowOverwrite: true },
           );
         } catch (error) {
           // A timed-out PUT may still have committed. Read the deterministic

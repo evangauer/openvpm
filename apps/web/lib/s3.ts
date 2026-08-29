@@ -321,6 +321,7 @@ async function putObject(
   body: Buffer,
   contentType: string,
   checksumSha256?: string,
+  options: { allowOverwrite?: boolean } = {},
 ): Promise<StoredObjectWrite> {
   const controller = new AbortController();
   const timeout = setTimeout(
@@ -335,15 +336,16 @@ async function putObject(
         token: config.token,
         contentType,
         addRandomSuffix: false,
-        allowOverwrite: false,
+        allowOverwrite: options.allowOverwrite ?? false,
         maximumSizeInBytes: body.byteLength,
         abortSignal: controller.signal,
       });
       return {
         url: result.url,
         etag: result.etag,
-        // Private Blob pathnames are immutable because overwrite is disabled.
-        // The provider ETag is therefore the exact immutable version evidence.
+        // The ETag is exact evidence for the bytes returned by this write. Most
+        // managed-file keys remain immutable; deterministic daily backup keys
+        // opt into overwrite so a verified retry can converge.
         versionId: normalizeBlobVersionId(result.etag),
       };
     }
@@ -396,6 +398,7 @@ export async function uploadManagedFile(
   body: Buffer,
   contentType: string,
   checksumSha256: string,
+  options: { allowOverwrite?: boolean } = {},
 ): Promise<StoredObjectWrite> {
   return putObject(
     primaryStorageConfig(),
@@ -403,6 +406,7 @@ export async function uploadManagedFile(
     body,
     contentType,
     checksumSha256,
+    options,
   );
 }
 

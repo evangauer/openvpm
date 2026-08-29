@@ -420,6 +420,32 @@ describe("private Blob storage", () => {
     );
   });
 
+  it("allows deterministic managed primary keys to opt into overwrite", async () => {
+    vi.stubEnv("FILE_STORAGE_PROVIDER", "vercel_blob");
+    vi.stubEnv("BLOB_READ_WRITE_TOKEN", "primary-blob-token");
+    mocks.blobPut.mockResolvedValueOnce({
+      url: "https://primary.private.blob.vercel-storage.com/backups/daily.json",
+      etag: "primary-etag-2",
+    });
+
+    await uploadManagedFile(
+      "backups/daily.json",
+      Buffer.from("daily backup"),
+      "application/json",
+      "b".repeat(64),
+      { allowOverwrite: true },
+    );
+
+    expect(mocks.blobPut).toHaveBeenCalledWith(
+      "backups/daily.json",
+      Buffer.from("daily backup"),
+      expect.objectContaining({
+        addRandomSuffix: false,
+        allowOverwrite: true,
+      }),
+    );
+  });
+
   it("reads private Blob objects from origin and verifies the requested ETag", async () => {
     vi.stubEnv("FILE_REPLICA_PROVIDER", "vercel_blob");
     vi.stubEnv("FILE_REPLICA_BLOB_READ_WRITE_TOKEN", "replica-blob-token");
