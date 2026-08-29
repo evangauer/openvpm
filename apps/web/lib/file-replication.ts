@@ -358,6 +358,10 @@ async function claimReplicaRows(input: {
   staleBefore: Date;
   scope: string[] | null;
 }): Promise<ClaimedReplica[]> {
+  // Raw Drizzle SQL parameters do not run the timestamp column encoder. Some
+  // hosted postgres drivers reject Date objects at the wire boundary, so bind
+  // an unambiguous ISO string and cast it explicitly in PostgreSQL.
+  const staleBeforeIso = input.staleBefore.toISOString();
   return withSystem(db, async (tx) => {
     const result = await tx.execute(sql`
       with candidates as (
@@ -374,10 +378,10 @@ async function claimReplicaRows(input: {
           and (
             r.status <> 'available'
             or r.verified_at is null
-            or r.verified_at < ${input.staleBefore}
+            or r.verified_at < ${staleBeforeIso}::timestamptz
             or f.storage_status <> 'available'
             or f.storage_verified_at is null
-            or f.storage_verified_at < ${input.staleBefore}
+            or f.storage_verified_at < ${staleBeforeIso}::timestamptz
           )
           and (r.next_attempt_at is null or r.next_attempt_at <= now())
           and (r.lease_token is null or r.lease_expires_at < now())
@@ -1306,18 +1310,19 @@ export async function getFileReplicaCoverage(
   activeFiles: number;
   coveragePct: number;
 }> {
-  const freshAfter = new Date(Date.now() - VERIFY_AFTER_MS);
+  const freshAfterIso = new Date(Date.now() - VERIFY_AFTER_MS).toISOString();
   return withSystem(db, async (tx) => {
     const result = await tx.execute(sql`
       select
         count(*) filter (
-          where r.status = 'available' and r.verified_at >= ${freshAfter}
+          where r.status = 'available'
+            and r.verified_at >= ${freshAfterIso}::timestamptz
         )::int as "available",
         count(*) filter (
           where r.status is null
              or r.status <> 'available'
              or r.verified_at is null
-             or r.verified_at < ${freshAfter}
+             or r.verified_at < ${freshAfterIso}::timestamptz
         )::int as "backlog",
         count(*)::int as "activeFiles"
       from files f
@@ -1327,6 +1332,7 @@ export async function getFileReplicaCoverage(
        and r.replica_target = ${FILE_REPLICA_TARGET}
        and r.deleted_at is null
       where f.deleted_at is null
+        and f.storage_status not in ('pending_upload', 'cleanup_pending')
         and ${replicaPracticeScopeSql(scope)}
     `);
     const coverage = rowsFromExecute<{

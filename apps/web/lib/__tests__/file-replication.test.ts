@@ -224,6 +224,27 @@ describe("file replica identity", () => {
     expect(renewer).toContain("claimedReplicaGeneration(item)");
     expect(renewer).toContain("claimedPrimaryGenerationExists(item)");
   });
+
+  it("binds raw SQL freshness cutoffs as hosted-driver-safe timestamps", () => {
+    expect(FILE_REPLICATION_SOURCE).toContain(
+      "const staleBeforeIso = input.staleBefore.toISOString()",
+    );
+    expect(FILE_REPLICATION_SOURCE).toContain(
+      "const freshAfterIso = new Date(Date.now() - VERIFY_AFTER_MS).toISOString()",
+    );
+    expect(FILE_REPLICATION_SOURCE).not.toContain("${input.staleBefore}");
+    expect(FILE_REPLICATION_SOURCE).not.toContain("${freshAfter}");
+  });
+
+  it("excludes incomplete uploads from replica coverage", () => {
+    const coverageQuery = FILE_REPLICATION_SOURCE.match(
+      /export async function getFileReplicaCoverage[\s\S]*?\n}\n\nexport async function reconcileFileReplicas/,
+    )?.[0];
+
+    expect(coverageQuery).toContain(
+      "f.storage_status not in ('pending_upload', 'cleanup_pending')",
+    );
+  });
 });
 
 describe("file replica queue", () => {
