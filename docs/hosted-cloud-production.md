@@ -149,8 +149,28 @@ PLATFORM_ADMIN_EMAILS=...
 
 ### Transitional production release gate
 
-Before production approval, assemble one PHI-free, format-version `1` JSON
-evidence packet for the exact candidate SHA and run:
+Before production approval, collect one PHI-free, format-version `1` JSON
+evidence packet from authoritative sources. Export a read-only `GITHUB_TOKEN`
+in the secure operator environment, then run:
+
+```sh
+pnpm --filter @openpims/web release:clinic-readiness:collect -- \
+  --release-sha "$RELEASE_SHA" \
+  --repository evangauer/openvpm \
+  --ci-run-id "$CI_RUN_ID" \
+  --migration-run-id "$PRODUCTION_MIGRATION_RUN_ID" \
+  --hosted-health-url https://app.openvpm.com/api/health \
+  --restore-evidence /secure/path/provider-restore-evidence.json \
+  --output /secure/path/clinic-readiness-evidence.json
+```
+
+The collector refuses to overwrite an existing packet. It verifies exact-SHA
+successful `main` runs directly through GitHub: the full CI job/step set and the
+manually confirmed production migration, RLS, and drift steps. It fetches the
+HTTPS health response itself and requires a bounded local provider-restore
+packet. It writes the combined packet with owner-only permissions and evaluates
+it immediately. To re-evaluate that immutable packet without new network calls,
+run:
 
 ```sh
 pnpm --filter @openpims/web release:clinic-readiness -- \
