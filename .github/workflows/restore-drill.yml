@@ -38,11 +38,14 @@ jobs:
       RESTORE_DRILL_APP_DATABASE_URL: postgresql://openpims_app:openpims_app@localhost:5432/openpims_restore_target
       RESTORE_DRILL_DB_INTEGRATION: "1"
       RESTORE_DRILL_EVIDENCE_PATH: /tmp/openvpm-restore-drill-evidence.json
+      RESTORE_DRILL_RELEASE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       OPENPIMS_APP_DB_PASSWORD: openpims_app
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Test the same immutable commit recorded in the evidence packet.
+          ref: ${{ env.RESTORE_DRILL_RELEASE_SHA }}
           persist-credentials: false
 
       - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6

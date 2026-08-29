@@ -319,7 +319,10 @@ describe.skipIf(!enabled)("disposable clinic restore drill", () => {
       evidenceFormatVersion: 1,
       status: "passed",
       synthetic: true,
-      releaseSha: process.env.GITHUB_SHA ?? "local-uncommitted",
+      releaseSha:
+        process.env.RESTORE_DRILL_RELEASE_SHA ??
+        process.env.GITHUB_SHA ??
+        "local-uncommitted",
       completedAt: new Date(releasedAt).toISOString(),
       operator: process.env.GITHUB_ACTOR
         ? `github:${process.env.GITHUB_ACTOR}`
