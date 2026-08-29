@@ -37,7 +37,7 @@ jobs:
       RESTORE_DRILL_TARGET_DATABASE_URL: postgresql://openpims:openpims@localhost:5432/openpims_restore_target
       RESTORE_DRILL_APP_DATABASE_URL: postgresql://openpims_app:openpims_app@localhost:5432/openpims_restore_target
       RESTORE_DRILL_DB_INTEGRATION: "1"
-      RESTORE_DRILL_EVIDENCE_PATH: ${{ runner.temp }}/restore-drill-evidence.json
+      RESTORE_DRILL_EVIDENCE_PATH: /tmp/openvpm-restore-drill-evidence.json
       OPENPIMS_APP_DB_PASSWORD: openpims_app
 
     steps:
