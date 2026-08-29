@@ -8,6 +8,7 @@ function healthyEvidence() {
   const checks: Record<string, { ok: boolean; advisory?: boolean }> =
     Object.fromEntries(
       [
+        "hostedRelease",
         "database",
         "schema",
         "hostedRlsRole",
@@ -36,7 +37,7 @@ function healthyEvidence() {
       releaseSha: sha,
       checkedAt: "2026-08-29T20:55:00.000Z",
       statusCode: 200,
-      body: { ok: true, mode: "hosted", checks },
+      body: { ok: true, mode: "hosted", releaseSha: sha, checks },
     },
     restoreDrill: {
       releaseSha: sha,
@@ -133,6 +134,14 @@ describe("clinic readiness release decision", () => {
     evidence.restoreDrill.releaseSha = "c".repeat(40);
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
       "Restore drill does not match the release SHA.",
+    );
+  });
+
+  it("rejects a hosted response from another deployed commit", () => {
+    const evidence = healthyEvidence();
+    evidence.hostedHealth.body.releaseSha = "d".repeat(40);
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
+      "Hosted health body does not identify the release SHA.",
     );
   });
 });

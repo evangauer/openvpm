@@ -159,15 +159,15 @@ pnpm --filter @openpims/web release:clinic-readiness -- \
 
 The command returns `GO` only when migrations, RLS, tests, build, and the
 production dependency audit passed for that exact SHA; hosted health is a fresh
-HTTP 200 hosted result; backup freshness and 100% independent file coverage are
-affirmative (not advisory); and a recent provider-backed, non-synthetic restore
-drill for the same SHA proves the hold/release workflow, exact object version,
-and authentication, tenant, scheduling, clinical, invoice, payment, and file
-smokes. Missing, stale, cross-SHA, synthetic-only, or unhealthy evidence returns
-`NO_GO` and a nonzero exit. The synthetic CI drill is necessary regression
-proof, but it cannot authorize production. Keep the packet access-controlled;
-it must contain bounded status evidence, never credentials, object bytes, or
-patient data.
+HTTP 200 hosted result whose response reports that same deployment SHA; backup
+freshness and 100% independent file coverage are affirmative (not advisory);
+and a recent provider-backed, non-synthetic restore drill for the same SHA
+proves the hold/release workflow, exact object version, and authentication,
+tenant, scheduling, clinical, invoice, payment, and file smokes. Missing, stale,
+cross-SHA, synthetic-only, or unhealthy evidence returns `NO_GO` and a nonzero
+exit. The synthetic CI drill is necessary regression proof, but it cannot
+authorize production. Keep the packet access-controlled; it must contain
+bounded status evidence, never credentials, object bytes, or patient data.
 
 Until staging can promote one immutable artifact, every Vercel Production build
 fails closed unless `PRODUCTION_RELEASE_SHA` exactly matches

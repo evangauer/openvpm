@@ -131,6 +131,7 @@ vi.mock("@/lib/backup/run-evidence", () => ({
 const { GET } = await import("./route");
 
 function stubHostedRequiredEnvs() {
+  vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "a".repeat(40));
   vi.stubEnv("NEXTAUTH_URL", "https://app.example");
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example");
   vi.stubEnv("NEXTAUTH_SECRET", "secret");
@@ -264,6 +265,39 @@ describe("health route schema drift", () => {
     expect(json.checks.schema).toEqual({
       ok: true,
       detail: "Database schema matches the deployed code",
+    });
+    expect(json.releaseSha).toBeNull();
+  });
+
+  it("fails hosted readiness without an immutable deployment SHA", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "not-a-commit");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.releaseSha).toBeNull();
+    expect(json.checks.hostedRelease).toEqual({
+      ok: false,
+      detail: "Hosted deployment release SHA is missing or invalid",
+    });
+  });
+
+  it("reports the normalized immutable hosted deployment SHA", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "A".repeat(40));
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.releaseSha).toBe("a".repeat(40));
+    expect(json.checks.hostedRelease).toEqual({
+      ok: true,
+      detail: "Hosted deployment release SHA is available",
     });
   });
 

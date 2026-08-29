@@ -44,6 +44,8 @@ import { mfaEncryptionConfigured } from "@/lib/mfa";
 
 export const dynamic = "force-dynamic";
 
+const RELEASE_SHA_PATTERN = /^[0-9a-f]{40}$/i;
+
 function configured(name: string): boolean {
   return (process.env[name]?.trim().length ?? 0) > 0;
 }
@@ -51,6 +53,11 @@ function configured(name: string): boolean {
 function envValue(name: string): string | undefined {
   const trimmed = process.env[name]?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function deploymentReleaseSha(): string | null {
+  const value = envValue("VERCEL_GIT_COMMIT_SHA");
+  return value && RELEASE_SHA_PATTERN.test(value) ? value.toLowerCase() : null;
 }
 
 // Overage price envs (STRIPE_PRICE_SMS_OVERAGE / STRIPE_PRICE_AI_OVERAGE) drive
@@ -472,6 +479,8 @@ async function hostedSmsRolloutCheck(): Promise<{
 
 export async function GET() {
   const startedAt = Date.now();
+  const releaseSha = deploymentReleaseSha();
+  const hostedMode = billingEnforced();
   const checks: Record<
     string,
     { ok: boolean; detail?: string; advisory?: boolean }
@@ -507,7 +516,13 @@ export async function GET() {
     }
   }
 
-  if (billingEnforced()) {
+  if (hostedMode) {
+    checks.hostedRelease = {
+      ok: releaseSha !== null,
+      detail: releaseSha
+        ? "Hosted deployment release SHA is available"
+        : "Hosted deployment release SHA is missing or invalid",
+    };
     if (shouldAssertHostedRlsRole()) {
       try {
         const role = await inspectHostedRlsRole();
@@ -641,7 +656,8 @@ export async function GET() {
     {
       ok,
       service: "openvpm-web",
-      mode: billingEnforced() ? "hosted" : "self-host",
+      mode: hostedMode ? "hosted" : "self-host",
+      releaseSha,
       checks,
       latencyMs: Date.now() - startedAt,
     },

@@ -11,6 +11,7 @@ export const REQUIRED_RELEASE_CI_GATES = [
 ] as const;
 
 const REQUIRED_HOSTED_CHECKS = [
+  "hostedRelease",
   "database",
   "schema",
   "hostedRlsRole",
@@ -112,6 +113,9 @@ export function evaluateClinicReadinessRelease(
     const body = record(hosted.body);
     if (body?.ok !== true || body?.mode !== "hosted") {
       reasons.push("Hosted health is not an affirmative hosted readiness result.");
+    }
+    if (releaseSha && body?.releaseSha !== releaseSha) {
+      reasons.push("Hosted health body does not identify the release SHA.");
     }
     const checks = record(body?.checks);
     for (const checkName of REQUIRED_HOSTED_CHECKS) {
