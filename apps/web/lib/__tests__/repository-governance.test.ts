@@ -88,4 +88,16 @@ describe("repository promotion controls", () => {
     expect(policy).toContain("test ! -f .vercel-deploy-enabled");
     expect(policy).toContain("Do not protect `development` or `staging`");
   });
+
+  it("keeps live clinic launch explicitly gated by authoritative recovery evidence", () => {
+    const readiness = repoFile("docs/clinic-pilot-readiness.md");
+
+    expect(readiness).toContain(
+      "NO_GO for a new live clinic cutover",
+    );
+    expect(readiness).toContain("authoritative exact-SHA release");
+    expect(readiness).toContain("provider-backed restore drill");
+    expect(readiness).toContain("patient-linked object exception");
+    expect(readiness).toContain("existing PIMS authoritative");
+  });
 });

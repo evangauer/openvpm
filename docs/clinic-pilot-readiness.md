@@ -4,10 +4,32 @@ Platform operators should use the
 [controlled clinic pilot operations runbook](clinic-pilot-operations.md) to
 qualify, validate, support, and graduate each clinic consistently.
 
-OpenVPM is ready for a controlled, connected-mode clinic pilot. It should not
-yet be sold as a universal replacement for every veterinary workflow. This
-page defines the boundary so a clinic can make a clear decision before moving
-live work.
+OpenVPM has a defined product boundary for a controlled, connected-mode clinic
+pilot. That capability boundary is not launch authorization, and OpenVPM should
+not be sold as a universal replacement for every veterinary workflow. This
+page lets a clinic make a clear fit decision before any live-work approval.
+
+## Current launch decision
+
+The current audited decision is **NO_GO for a new live clinic cutover**. Before
+any hosted or self-managed deployment becomes authoritative for real clinic
+work, its operator must:
+
+1. for OpenVPM Cloud, obtain `GO` from the authoritative exact-SHA release
+   evidence process in the
+   [hosted operations runbook](hosted-cloud-production.md), or document
+   equivalent exact-SHA controls for a self-managed deployment;
+2. prove the same release in an isolated, synthetic-only staging environment;
+3. complete a provider-backed restore drill and verify independent managed-file
+   recovery rather than relying only on synthetic CI;
+4. reconcile every known patient-linked object exception with the data owner,
+   leaving no unexplained missing clinical file; and
+5. complete the clinic-specific fit, migration, rollback, golden-day, and signoff
+   evidence below.
+
+Until those gates pass, use synthetic data or a parallel evaluation and keep the
+existing PIMS authoritative. A green build, a working demo, or observed account
+activity does not override this decision.
 
 ## Best fit today
 
