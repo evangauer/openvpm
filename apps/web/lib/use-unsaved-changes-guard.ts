@@ -8,7 +8,8 @@ let listenersAttached = false;
 let originalPushState: History["pushState"] | null = null;
 let sentinelActive = false;
 let bypassBeforeUnload = false;
-let pendingPopAction: "leave" | "restore" | "cleanup" | null = null;
+export type UnsavedPendingAction = "leave" | "restore" | "cleanup" | null;
+let pendingPopAction: UnsavedPendingAction = null;
 
 export type UnsavedPopEffect =
   | "allow"
@@ -18,6 +19,27 @@ export type UnsavedPopEffect =
   | "leave-page"
   | "go-back"
   | "go-forward";
+
+export type UnsavedCleanupEffect =
+  | "wait"
+  | "remove-listeners"
+  | "start-cleanup";
+
+export function resolveUnsavedCleanupEffect(input: {
+  listenersAttached: boolean;
+  guardActive: boolean;
+  sentinelActive: boolean;
+  pendingAction: UnsavedPendingAction;
+}): UnsavedCleanupEffect {
+  if (
+    !input.listenersAttached ||
+    input.guardActive ||
+    input.pendingAction !== null
+  ) {
+    return "wait";
+  }
+  return input.sentinelActive ? "start-cleanup" : "remove-listeners";
+}
 
 export function resolveUnsavedPopEffect(input: {
   pendingAction: "leave" | "restore" | "cleanup" | null;
@@ -237,8 +259,14 @@ function attachListeners() {
 }
 
 function detachListenersIfIdle() {
-  if (!listenersAttached || activeGuards.size > 0) return;
-  if (sentinelActive) {
+  const effect = resolveUnsavedCleanupEffect({
+    listenersAttached,
+    guardActive: activeGuards.size > 0,
+    sentinelActive,
+    pendingAction: pendingPopAction,
+  });
+  if (effect === "wait") return;
+  if (effect === "start-cleanup") {
     pendingPopAction = "cleanup";
     window.history.back();
     return;

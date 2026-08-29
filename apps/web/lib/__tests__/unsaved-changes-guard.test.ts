@@ -1,11 +1,31 @@
 import { describe, expect, it } from "vitest";
 import {
   isSameDocumentHashNavigation,
+  resolveUnsavedCleanupEffect,
   resolveUnsavedPopEffect,
   shouldReplaceGuardedHashNavigation,
 } from "../use-unsaved-changes-guard";
 
 describe("unsaved changes history guard", () => {
+  it("schedules sentinel cleanup only once while a save settles", () => {
+    expect(
+      resolveUnsavedCleanupEffect({
+        listenersAttached: true,
+        guardActive: false,
+        sentinelActive: true,
+        pendingAction: null,
+      }),
+    ).toBe("start-cleanup");
+    expect(
+      resolveUnsavedCleanupEffect({
+        listenersAttached: true,
+        guardActive: false,
+        sentinelActive: true,
+        pendingAction: "cleanup",
+      }),
+    ).toBe("wait");
+  });
+
   it("uses the same-URL sentinel as the decision point", () => {
     expect(
       resolveUnsavedPopEffect({
@@ -72,22 +92,18 @@ describe("unsaved changes history guard", () => {
   });
 
   it("replaces the active sentinel for same-document hashes instead of pushing above it", () => {
-    const current = "https://app.openvpm.com/encounters/visit-1?payment=success";
-    expect(
-      isSameDocumentHashNavigation(
-        "#visit-closeout",
-        current,
-      ),
-    ).toBe(true);
+    const current =
+      "https://app.openvpm.com/encounters/visit-1?payment=success";
+    expect(isSameDocumentHashNavigation("#visit-closeout", current)).toBe(true);
     expect(
       isSameDocumentHashNavigation(
         "https://app.openvpm.com/encounters/visit-2#visit-closeout",
         current,
       ),
     ).toBe(false);
-    expect(
-      isSameDocumentHashNavigation("/billing#invoice", current),
-    ).toBe(false);
+    expect(isSameDocumentHashNavigation("/billing#invoice", current)).toBe(
+      false,
+    );
     expect(
       shouldReplaceGuardedHashNavigation({
         guardActive: true,

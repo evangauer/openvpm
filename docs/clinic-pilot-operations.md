@@ -57,6 +57,21 @@ fallback while texting is unavailable.
 
 ## 3. Validate one golden clinic day
 
+Before involving a clinic, run the synthetic multi-clinic preflight against an
+isolated, disposable database:
+
+```bash
+pnpm exec playwright test e2e/multi-clinic-launch-readiness.spec.ts --workers=1
+```
+
+The test runner and local web server must both have `DATABASE_URL` pointed at
+the same disposable database and `HOSTED_BILLING_ENABLED=true`. Never point
+this seeded test at production or a clinic-owned database. A live Stripe key is
+not required: without one, the test verifies that setup fails closed with the
+provider marked missing; with one, it verifies that setup is offered. The
+preflight proves tenant isolation and a synthetic appointment-to-checkout path,
+but it does not replace the operator-observed real visit below.
+
 Run one real visit through the complete supported handoff:
 
 1. Create or verify the client and patient.
