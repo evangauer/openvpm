@@ -28,6 +28,8 @@ Rollback or recovery plan:
 - [ ] Tested manually in a local dev environment
 - [ ] Added/updated E2E tests (if applicable)
 - [ ] Preview or staging smoke test completed (for promotions)
+- [ ] `/api/health` confirms fresh, complete backup-run evidence (for promotions)
+- [ ] Authentication changes include login, revocation, MFA/recovery, and step-up tests as applicable
 
 ## Screenshots
 
@@ -42,3 +44,4 @@ If this affects the UI, include before/after screenshots.
 - [ ] Existing migration SQL and snapshots were not edited
 - [ ] New API endpoints include Zod validation and role-based access checks
 - [ ] Deployment, workflow, auth, billing, and migration changes have an explicit owner review
+- [ ] New hosted secrets were configured before code that makes them release-blocking

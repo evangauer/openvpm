@@ -40,18 +40,26 @@ function LoginPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const visitorId = useFunnelVisitorId();
-  const nextPath = safeAuthNextPath(
-    searchParams.get("next"),
-    "/post-login",
-  );
+  const nextPath = safeAuthNextPath(searchParams.get("next"), "/post-login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaRequired, setMfaRequired] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const passwordMeetsPolicy =
     password.length > 0 && password.length <= AUTH_PASSWORD_MAX_LENGTH;
   const emailIsValid = isAuthEmailLengthValid(email) && isValidEmail(email);
-  const canSubmit = emailIsValid && (DEMO_MODE || passwordMeetsPolicy);
+  const normalizedRecoveryCode = mfaCode
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z2-7]/g, "");
+  const mfaCodeIsValid =
+    /^\d{6}$/.test(mfaCode.trim()) || normalizedRecoveryCode.length === 16;
+  const canSubmit =
+    emailIsValid &&
+    (DEMO_MODE || passwordMeetsPolicy) &&
+    (!mfaRequired || mfaCodeIsValid);
 
   useEffect(() => {
     if (!DEMO_MODE) return;
@@ -59,7 +67,11 @@ function LoginPageInner() {
     trackFunnelEvent(FUNNEL_EVENTS.demoGateViewed);
   }, []);
 
-  async function signInWith(emailValue: string, passwordValue: string) {
+  async function signInWith(
+    emailValue: string,
+    passwordValue: string,
+    authenticationCode?: string,
+  ) {
     setError("");
     setLoading(true);
     setEmail(emailValue);
@@ -68,13 +80,40 @@ function LoginPageInner() {
     const result = await signIn("credentials", {
       email: emailValue,
       password: passwordValue,
+      mfaCode: authenticationCode,
       redirect: false,
     });
 
     setLoading(false);
 
-    if (result?.error) {
-      setError("Invalid email or password");
+    let challengeRequired = result?.error?.includes("MFA_REQUIRED") ?? false;
+    if (result?.error && !mfaRequired && !challengeRequired) {
+      try {
+        const challengeResponse = await fetch("/api/auth/mfa-required", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: emailValue, password: passwordValue }),
+        });
+        const challenge = (await challengeResponse.json()) as {
+          mfaRequired?: boolean;
+        };
+        challengeRequired =
+          challengeResponse.ok && challenge.mfaRequired === true;
+      } catch {
+        challengeRequired = false;
+      }
+    }
+
+    if (challengeRequired) {
+      setMfaRequired(true);
+      setMfaCode("");
+      setError("");
+    } else if (result?.error) {
+      setError(
+        mfaRequired
+          ? "That authentication or recovery code was not accepted."
+          : "Invalid email or password",
+      );
     } else {
       router.push(nextPath);
       router.refresh();
@@ -126,7 +165,11 @@ function LoginPageInner() {
       return;
     }
 
-    await signInWith(email.trim().toLowerCase(), password);
+    await signInWith(
+      email.trim().toLowerCase(),
+      password,
+      mfaRequired ? mfaCode.trim() : undefined,
+    );
   }
 
   return (
@@ -207,6 +250,45 @@ function LoginPageInner() {
             </div>
           )}
 
+          {!DEMO_MODE && mfaRequired && (
+            <div>
+              <label
+                htmlFor="mfa-code"
+                className="mb-1.5 block text-sm font-medium text-foreground"
+              >
+                Authentication code
+              </label>
+              <input
+                id="mfa-code"
+                value={mfaCode}
+                onChange={(event) => setMfaCode(event.target.value)}
+                required
+                maxLength={32}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                autoFocus
+                className="min-h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-sm tracking-widest ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                placeholder="6-digit code or recovery code"
+              />
+              <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
+                Open your authenticator app, or enter one of your single-use
+                recovery codes.
+              </p>
+              <button
+                type="button"
+                className="mt-2 text-xs font-medium text-primary hover:underline"
+                onClick={() => {
+                  setMfaRequired(false);
+                  setMfaCode("");
+                  setPassword("");
+                  setError("");
+                }}
+              >
+                Use a different account
+              </button>
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={!canSubmit || loading}
@@ -215,10 +297,14 @@ function LoginPageInner() {
             {loading
               ? DEMO_MODE
                 ? "Opening demo..."
-                : "Signing in..."
+                : mfaRequired
+                  ? "Verifying..."
+                  : "Signing in..."
               : DEMO_MODE
                 ? "Open the live demo"
-                : "Sign in"}
+                : mfaRequired
+                  ? "Verify and sign in"
+                  : "Sign in"}
           </button>
         </form>
 

@@ -66,6 +66,10 @@ const mocks = vi.hoisted(() => ({
     ready: true,
     initialized: true,
   })),
+  checkBackupRunFreshness: vi.fn(async () => ({
+    ok: true,
+    detail: "2/2 primary backups verified in the latest run",
+  })),
 }));
 
 vi.mock("@openpims/db/client", () => ({
@@ -120,12 +124,17 @@ vi.mock("@/lib/platform-email-preferences", () => ({
     mocks.platformEmailIdentityConfigurationReady,
 }));
 
+vi.mock("@/lib/backup/run-evidence", () => ({
+  checkBackupRunFreshness: mocks.checkBackupRunFreshness,
+}));
+
 const { GET } = await import("./route");
 
 function stubHostedRequiredEnvs() {
   vi.stubEnv("NEXTAUTH_URL", "https://app.example");
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example");
   vi.stubEnv("NEXTAUTH_SECRET", "secret");
+  vi.stubEnv("MFA_ENCRYPTION_KEY", Buffer.alloc(32, 9).toString("base64"));
   vi.stubEnv("DATABASE_URL", "postgres://app@db.example/openvpm");
   vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_123");
   vi.stubEnv("STRIPE_WEBHOOK_SECRET", "whsec_invoice");
@@ -239,6 +248,10 @@ afterEach(() => {
   mocks.platformEmailIdentityConfigurationReady.mockResolvedValue({
     ready: true,
     initialized: true,
+  });
+  mocks.checkBackupRunFreshness.mockResolvedValue({
+    ok: true,
+    detail: "2/2 primary backups verified in the latest run",
   });
 });
 
@@ -1004,6 +1017,7 @@ describe("health route", () => {
 
     expect(response.status).toBe(503);
     expect(mocks.checkObjectStorageHealth).toHaveBeenCalledTimes(1);
+    expect(mocks.checkBackupRunFreshness).not.toHaveBeenCalled();
     expect(json.checks.hostedStorage).toEqual({
       ok: false,
       detail: "Object storage check failed",
@@ -1011,6 +1025,24 @@ describe("health route", () => {
     const body = JSON.stringify(json);
     expect(body).not.toContain("storage.example");
     expect(body).not.toContain("clinic-private-bucket");
+  });
+
+  it("fails hosted readiness when durable backup evidence is stale", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    mocks.checkBackupRunFreshness.mockResolvedValueOnce({
+      ok: false,
+      detail: "Latest backup run evidence is stale",
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedBackupFreshness).toEqual({
+      ok: false,
+      detail: "Latest backup run evidence is stale",
+    });
   });
 
   it("accepts a private Blob primary without requiring S3 credentials", async () => {

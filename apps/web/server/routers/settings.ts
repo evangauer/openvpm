@@ -2601,7 +2601,12 @@ export const settingsRouter = createRouter({
 
           const [updated] = await tx
             .update(users)
-            .set(data)
+            .set({
+              ...data,
+              ...(data.role !== undefined
+                ? { sessionVersion: sql`${users.sessionVersion} + 1` }
+                : {}),
+            })
             .where(
               and(
                 eq(users.id, id),
@@ -2626,7 +2631,12 @@ export const settingsRouter = createRouter({
 
       const [updated] = await ctx.db
         .update(users)
-        .set(data)
+        .set({
+          ...data,
+          ...(data.role !== undefined
+            ? { sessionVersion: sql`${users.sessionVersion} + 1` }
+            : {}),
+        })
         .where(
           and(
             eq(users.id, id),
@@ -2744,7 +2754,10 @@ export const settingsRouter = createRouter({
 
         const [updated] = await tx
           .update(users)
-          .set({ deletedAt: new Date() })
+          .set({
+            deletedAt: new Date(),
+            sessionVersion: sql`${users.sessionVersion} + 1`,
+          })
           .where(
             and(
               eq(users.id, input.id),
@@ -2776,7 +2789,10 @@ export const settingsRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       const [updated] = await ctx.db
         .update(users)
-        .set({ deletedAt: null })
+        .set({
+          deletedAt: null,
+          sessionVersion: sql`${users.sessionVersion} + 1`,
+        })
         .where(
           and(
             eq(users.id, input.id),

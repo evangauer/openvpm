@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => {
       }),
     ),
     reportCronHeartbeat: vi.fn(async () => undefined),
+    recordBackupRunEvidence: vi.fn(async () => undefined),
     uploadManagedFile: vi.fn(
       async (
         _key: string,
@@ -78,6 +79,7 @@ const mocks = vi.hoisted(() => {
       detail: "Independent object replica is not configured",
     })),
     replicaStorageRolloutEnabled: vi.fn(() => false),
+    replicaStorageRequired: vi.fn(() => false),
     replicaStorageIncludesPractice: vi.fn(() => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn({
@@ -133,7 +135,12 @@ vi.mock("@/lib/s3", () => ({
   readReplicaObject: mocks.readReplicaObject,
   replicaStorageIncludesPractice: mocks.replicaStorageIncludesPractice,
   replicaStorageReadiness: mocks.replicaStorageReadiness,
+  replicaStorageRequired: mocks.replicaStorageRequired,
   replicaStorageRolloutEnabled: mocks.replicaStorageRolloutEnabled,
+}));
+
+vi.mock("@/lib/backup/run-evidence", () => ({
+  recordBackupRunEvidence: mocks.recordBackupRunEvidence,
 }));
 
 vi.mock("@/lib/file-replication", () => ({
@@ -160,6 +167,7 @@ beforeEach(() => {
     detail: "Independent object replica is not configured",
   });
   mocks.replicaStorageRolloutEnabled.mockReturnValue(false);
+  mocks.replicaStorageRequired.mockReturnValue(false);
   mocks.replicaStorageIncludesPractice.mockReturnValue(true);
   mocks.readPrimaryObject.mockImplementation(async () => ({
     status: "available" as const,
@@ -265,6 +273,22 @@ describe("backup cron", () => {
         replicaOk: 0,
         replicaFailed: 0,
       },
+    });
+    expect(mocks.recordBackupRunEvidence).toHaveBeenCalledWith({
+      startedAt: new Date("2026-06-28T14:05:06.789Z"),
+      completedAt: new Date("2026-06-28T14:05:06.789Z"),
+      runDateUtc: "2026-06-28",
+      status: "ok",
+      practices: 2,
+      primaryVerified: 2,
+      primaryFailed: 0,
+      oversized: 0,
+      nearLimit: 0,
+      maxExportBytes: expect.any(Number),
+      replicaEnabled: false,
+      replicaRequired: false,
+      replicaVerified: 0,
+      replicaFailed: 0,
     });
   });
 

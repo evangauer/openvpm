@@ -43,6 +43,22 @@ describe("redactSecrets", () => {
     expect(out.secret).toBe("[redacted]");
     expect(out.authToken).toBe("[redacted]");
   });
+  it("redacts authentication and recovery codes without hiding clinical codes", () => {
+    const out = redactSecrets({
+      code: "123456",
+      mfaCode: "654321",
+      recoveryCode: "ABCD-EFGH-IJKL-MNOP",
+      oneTimePassword: "789012",
+      diagnosisCode: "E11.9",
+    });
+    expect(out).toEqual({
+      code: "[redacted]",
+      mfaCode: "[redacted]",
+      recoveryCode: "[redacted]",
+      oneTimePassword: "[redacted]",
+      diagnosisCode: "E11.9",
+    });
+  });
   it("redacts government tax identifiers used for carrier registration", () => {
     const out = redactSecrets({
       taxId: "12-3456789",

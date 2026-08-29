@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { hash } from "bcryptjs";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, publicProcedure, protectedProcedure } from "../trpc";
 import { users, practices, locations } from "@openpims/db";
@@ -769,7 +769,10 @@ export const authRouter = createRouter({
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
       const [updated] = await ctx.db
         .update(users)
-        .set({ passwordHash })
+        .set({
+          passwordHash,
+          sessionVersion: sql`${users.sessionVersion} + 1`,
+        })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
         .returning({ id: users.id });
       if (!updated) {
@@ -802,7 +805,11 @@ export const authRouter = createRouter({
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
       const [updated] = await ctx.db
         .update(users)
-        .set({ passwordHash, emailVerifiedAt: new Date() })
+        .set({
+          passwordHash,
+          emailVerifiedAt: new Date(),
+          sessionVersion: sql`${users.sessionVersion} + 1`,
+        })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
         .returning({ id: users.id });
       if (!updated) {
@@ -813,6 +820,23 @@ export const authRouter = createRouter({
       }
       return { ok: true };
     }),
+
+  /** Revoke this identity's JWTs across every browser and device. */
+  revokeAllSessions: protectedProcedure.mutation(async ({ ctx }) => {
+    const [updated] = await ctx.db
+      .update(users)
+      .set({ sessionVersion: sql`${users.sessionVersion} + 1` })
+      .where(
+        and(
+          eq(users.id, ctx.user.id),
+          eq(users.practiceId, ctx.practiceId),
+          isNull(users.deletedAt),
+        ),
+      )
+      .returning({ id: users.id });
+    if (!updated) throw new TRPCError({ code: "UNAUTHORIZED" });
+    return { ok: true };
+  }),
 
   me: protectedProcedure.query(async ({ ctx }) => {
     const [user] = await ctx.db

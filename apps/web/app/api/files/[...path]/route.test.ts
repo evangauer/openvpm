@@ -10,6 +10,7 @@ const ROUTE_SOURCE = readFileSync(
 const mocks = vi.hoisted(() => {
   const practiceId = "00000000-0000-0000-0000-000000000001";
   const userId = "00000000-0000-0000-0000-000000000002";
+  const sessionVersion = 3;
   const fileMetadata = (overrides: Record<string, unknown> = {}) => ({
     id: "file_123",
     fileName: "logo.png",
@@ -41,10 +42,11 @@ const mocks = vi.hoisted(() => {
   return {
     practiceId,
     userId,
+    sessionVersion,
     fileMetadata,
     selectResults,
     getServerSession: vi.fn(async () => ({
-      user: { id: userId, practiceId },
+      user: { id: userId, practiceId, sessionVersion },
     })),
     readPrimaryObject: vi.fn(),
     readReplicaObject: vi.fn(),
@@ -105,7 +107,11 @@ afterEach(() => {
   vi.unstubAllEnvs();
   mocks.selectResults.length = 0;
   mocks.getServerSession.mockResolvedValue({
-    user: { id: mocks.userId, practiceId: mocks.practiceId },
+    user: {
+      id: mocks.userId,
+      practiceId: mocks.practiceId,
+      sessionVersion: mocks.sessionVersion,
+    },
   });
 });
 
@@ -257,7 +263,7 @@ describe("file proxy response headers", () => {
 
   it("serves private document files as attachments with nosniff", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: mocks.sessionVersion }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -290,7 +296,7 @@ describe("file proxy response headers", () => {
   it("serves a checksum-verified replica when the primary provider fails", async () => {
     const replicaBody = new Uint8Array([1, 2, 3]);
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: mocks.sessionVersion }],
       [
         mocks.fileMetadata({
           fileName: "lab report.pdf",
@@ -343,7 +349,7 @@ describe("file proxy response headers", () => {
 
   it("does not serve a replica whose stored version is provider-null", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: mocks.sessionVersion }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -372,7 +378,7 @@ describe("file proxy response headers", () => {
 
   it("does not report a missing primary as definitive when replica verification fails", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: mocks.sessionVersion }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -404,7 +410,7 @@ describe("file proxy response headers", () => {
 
   it("treats oversized storage objects as missing", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: mocks.sessionVersion }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -430,7 +436,10 @@ describe("file proxy response headers", () => {
   });
 
   it("does not fetch private objects without active file metadata", async () => {
-    mocks.selectResults.push([{ id: mocks.userId }], []);
+    mocks.selectResults.push(
+      [{ id: mocks.userId, sessionVersion: mocks.sessionVersion }],
+      [],
+    );
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
@@ -458,11 +467,26 @@ describe("file proxy response headers", () => {
     expect(mocks.readPrimaryObject).not.toHaveBeenCalled();
   });
 
+  it("does not fetch private objects after session revocation", async () => {
+    mocks.selectResults.push([
+      { id: mocks.userId, sessionVersion: mocks.sessionVersion + 1 },
+    ]);
+
+    const response = await GET(
+      fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
+      routeContext([mocks.practiceId, "documents", "lab.pdf"]),
+    );
+
+    expect(response.status).toBe(403);
+    expect(mocks.readPrimaryObject).not.toHaveBeenCalled();
+  });
+
   it("does not fetch private objects for another practice", async () => {
     mocks.getServerSession.mockResolvedValue({
       user: {
         id: mocks.userId,
         practiceId: "00000000-0000-0000-0000-000000000099",
+        sessionVersion: mocks.sessionVersion,
       },
     });
 
@@ -487,5 +511,8 @@ describe("file proxy response headers", () => {
     expect(ROUTE_SOURCE).toContain("eq(users.id, session.user.id)");
     expect(ROUTE_SOURCE).toContain("eq(users.practiceId, practiceId)");
     expect(ROUTE_SOURCE).toContain("isNull(users.deletedAt)");
+    expect(ROUTE_SOURCE).toContain(
+      "activeUser.sessionVersion !== session.user.sessionVersion",
+    );
   });
 });

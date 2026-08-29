@@ -10,7 +10,7 @@ import { auditLog } from "@openpims/db";
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SECRET_KEY_RE =
-  /pass(word)?|secret|token|keyhash|^key$|apikey|tax.?id|\bein\b|ssn/i;
+  /pass(word)?|secret|token|keyhash|^key$|apikey|^code$|mfa|otp|recovery.?code|tax.?id|\bein\b|ssn/i;
 // Bulk import/restore payloads (raw CSV, full backup JSON) can be megabytes of
 // medical records + client PII. The audit trail records who ran the import and
 // when, not a second copy of the data, so these are replaced with a marker.

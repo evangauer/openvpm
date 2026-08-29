@@ -12,10 +12,12 @@ const mocks = vi.hoisted(() => {
   const userId = "00000000-0000-4000-8000-000000000002";
   const patientId = "00000000-0000-4000-8000-000000000003";
   const fileId = "00000000-0000-4000-8000-000000000004";
+  const sessionVersion = 3;
   class ManagedUploadConflictError extends Error {}
   class ManagedUploadStateError extends ManagedUploadConflictError {}
   const activeAccount = (overrides: Record<string, unknown> = {}) => ({
     userId,
+    sessionVersion,
     role: "admin",
     tier: "free",
     billingStatus: "trialing",
@@ -75,6 +77,7 @@ const mocks = vi.hoisted(() => {
     tx,
     practiceId,
     userId,
+    sessionVersion,
     patientId,
     ManagedUploadConflictError,
     ManagedUploadStateError,
@@ -84,7 +87,7 @@ const mocks = vi.hoisted(() => {
     updateSets,
     updateReturningResults,
     getServerSession: vi.fn(async () => ({
-      user: { id: userId, practiceId },
+      user: { id: userId, practiceId, sessionVersion },
     })),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(tx),
@@ -146,8 +149,7 @@ vi.mock("@/lib/managed-file-upload", () => ({
 }));
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "Practice recovery is in progress.",
-  lockPracticeForExternalSideEffects:
-    mocks.lockPracticeForExternalSideEffects,
+  lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
 }));
 
 const { POST } = await import("./route");
@@ -199,7 +201,11 @@ afterEach(() => {
   mocks.billingEnforced.mockReturnValue(false);
   mocks.hasHostedFullAccess.mockReturnValue(true);
   mocks.getServerSession.mockResolvedValue({
-    user: { id: mocks.userId, practiceId: mocks.practiceId },
+    user: {
+      id: mocks.userId,
+      practiceId: mocks.practiceId,
+      sessionVersion: mocks.sessionVersion,
+    },
   });
   mocks.rateLimit.mockResolvedValue({
     success: true,
@@ -238,6 +244,11 @@ describe("managed dashboard upload route", () => {
 
   it("rejects stale sessions and viewer mutations", async () => {
     mocks.selectResults.push([]);
+    expect((await POST(uploadRequest())).status).toBe(401);
+
+    mocks.selectResults.push([
+      mocks.activeAccount({ sessionVersion: mocks.sessionVersion + 1 }),
+    ]);
     expect((await POST(uploadRequest())).status).toBe(401);
 
     mocks.selectResults.push([mocks.activeAccount({ role: "viewer" })]);

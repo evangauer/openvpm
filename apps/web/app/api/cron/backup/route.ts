@@ -9,6 +9,7 @@ import {
   normalizeS3VersionId,
   replicaStorageIncludesPractice,
   replicaStorageReadiness,
+  replicaStorageRequired,
   replicaStorageRolloutEnabled,
   uploadManagedFile,
   uploadReplicaFile,
@@ -24,6 +25,7 @@ import {
   databaseBackupReplicaCatalog,
   databaseBackupReplicaKey,
 } from "@/lib/backup/replica";
+import { recordBackupRunEvidence } from "@/lib/backup/run-evidence";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -219,9 +221,28 @@ export async function GET(request: Request) {
       );
     }
 
+    const completedAt = new Date();
+    const status = failed > 0 || replicaFailed > 0 ? "degraded" : "ok";
+    await recordBackupRunEvidence({
+      startedAt,
+      completedAt,
+      runDateUtc,
+      status,
+      practices: allPractices.length,
+      primaryVerified: ok,
+      primaryFailed: failed,
+      oversized,
+      nearLimit,
+      maxExportBytes,
+      replicaEnabled: replicaStorageRolloutEnabled(),
+      replicaRequired: replicaStorageRequired(),
+      replicaVerified: replicaOk,
+      replicaFailed,
+    });
+
     await reportCronHeartbeat({
       job: "backup",
-      status: failed > 0 || replicaFailed > 0 ? "degraded" : "ok",
+      status,
       detail: `${ok} primary backups succeeded, ${replicaOk} independent copies verified, ${failed + replicaFailed} failed`,
       metrics: {
         practices: allPractices.length,
@@ -253,6 +274,27 @@ export async function GET(request: Request) {
     const message = error instanceof Error ? error.message : String(error);
     void alertOps("Backup cron job crashed", message);
     console.error("Cron backup job failed:", error);
+    try {
+      await recordBackupRunEvidence({
+        startedAt,
+        completedAt: new Date(),
+        runDateUtc,
+        status: "failed",
+        practices: 0,
+        primaryVerified: 0,
+        primaryFailed: 0,
+        oversized: 0,
+        nearLimit: 0,
+        maxExportBytes: 0,
+        replicaEnabled: replicaStorageRolloutEnabled(),
+        replicaRequired: replicaStorageRequired(),
+        replicaVerified: 0,
+        replicaFailed: 0,
+      });
+    } catch {
+      // The original crash remains authoritative; evidence persistence can
+      // fail when the database itself is the unavailable dependency.
+    }
     await reportCronHeartbeat({
       job: "backup",
       status: "failed",

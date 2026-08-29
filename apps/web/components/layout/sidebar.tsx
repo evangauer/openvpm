@@ -20,6 +20,7 @@ import {
   ClipboardList,
   BarChart3,
   Settings,
+  ShieldCheck,
   ShieldAlert,
   Bot,
   FlaskConical,
@@ -29,6 +30,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { PawMark } from "@/components/brand/paw-mark";
+import { ActionConfirmationDialog } from "@/components/common/action-confirmation-dialog";
 
 type UserRole =
   | "admin"
@@ -111,6 +113,12 @@ const navItems: {
     icon: BarChart3,
     roles: ["admin", "veterinarian"],
   },
+  {
+    href: "/account/security",
+    label: "Account Security",
+    icon: ShieldCheck,
+    roles: allRoles,
+  },
   { href: "/settings", label: "Settings", icon: Settings, roles: ["admin"] },
 ];
 
@@ -128,8 +136,15 @@ export function Sidebar({
   width = "fixed",
 }: SidebarProps = {}) {
   const [collapsed, setCollapsed] = useState(false);
+  const [revokeDialogOpen, setRevokeDialogOpen] = useState(false);
   const pathname = usePathname();
   const { data: session, status } = useSession();
+  const revokeAllSessions = trpc.auth.revokeAllSessions.useMutation({
+    onSuccess: async () => {
+      setRevokeDialogOpen(false);
+      await signOut({ callbackUrl: "/login" });
+    },
+  });
   const role = isUserRole(session?.user?.role) ? session.user.role : undefined;
   const { data: branding } = trpc.settings.getBranding.useQuery();
   const isCollapsed = collapsible && collapsed;
@@ -256,6 +271,14 @@ export function Sidebar({
               </p>
             </div>
             <button
+              onClick={() => setRevokeDialogOpen(true)}
+              aria-label="Sign out everywhere"
+              title="Sign out everywhere"
+              className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <ShieldAlert className="h-4 w-4" />
+            </button>
+            <button
               onClick={() => signOut({ callbackUrl: "/login" })}
               aria-label="Sign out"
               className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -278,6 +301,22 @@ export function Sidebar({
           </button>
         )}
       </div>
+      <ActionConfirmationDialog
+        open={revokeDialogOpen}
+        title="Sign out everywhere?"
+        description="This immediately ends every OpenVPM session for your account on all browsers and devices, including this one."
+        confirmLabel="Sign out everywhere"
+        confirmVariant="destructive"
+        isPending={revokeAllSessions.isPending}
+        onCancel={() => setRevokeDialogOpen(false)}
+        onConfirm={() => revokeAllSessions.mutate()}
+      >
+        {revokeAllSessions.error ? (
+          <p className="text-sm text-destructive" role="alert">
+            {revokeAllSessions.error.message}
+          </p>
+        ) : null}
+      </ActionConfirmationDialog>
     </aside>
   );
 }

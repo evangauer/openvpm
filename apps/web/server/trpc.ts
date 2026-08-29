@@ -23,6 +23,11 @@ import {
 } from "@/lib/billing/plans";
 import { readHostedAiAccess } from "@/lib/billing/ai-access";
 import {
+  cookieValue,
+  PRIVILEGED_ACTION_COOKIE,
+  verifyPrivilegedActionProof,
+} from "@/lib/privileged-action-proof";
+import {
   portalSessionTokenFromCookie,
   resolvePortalSession,
   type PortalSessionClient,
@@ -42,6 +47,7 @@ interface AppSession extends Session {
     name: string;
     role: UserRole;
     practiceId: string;
+    sessionVersion: number;
     recoveryHold?: boolean;
     emailVerifiedAt?: Date | string | null;
     practiceCreatedAt?: Date | string | null;
@@ -52,6 +58,7 @@ export type TRPCContext = {
   db: Database;
   session: AppSession | null;
   ip?: string | null;
+  privilegedActionProof?: string | null;
   portalSessionToken?: string | null;
   requestOrigin?: string | null;
   requestUrlOrigin?: string | null;
@@ -106,6 +113,7 @@ async function activeSessionOrNull(
       tx
         .select({
           id: users.id,
+          sessionVersion: users.sessionVersion,
           emailVerifiedAt: users.emailVerifiedAt,
           practiceCreatedAt: practices.createdAt,
           recoveryHold: practices.recoveryHold,
@@ -125,7 +133,9 @@ async function activeSessionOrNull(
         .limit(1),
   );
 
-  return activeUser
+  return activeUser &&
+    Number.isInteger(session.user.sessionVersion) &&
+    activeUser.sessionVersion === session.user.sessionVersion
     ? {
         ...session,
         user: {
@@ -150,6 +160,10 @@ export async function createTRPCContext(opts?: {
     db,
     session,
     ip: clientIp(opts?.req),
+    privilegedActionProof: cookieValue(
+      opts?.req?.headers.get("cookie"),
+      PRIVILEGED_ACTION_COOKIE,
+    ),
     portalSessionToken: portalSessionTokenFromCookie(
       opts?.req?.headers.get("cookie"),
     ),
@@ -198,6 +212,39 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "admin.reconcileSmsSendAttempt",
   "admin.resendSmsSendAttempt",
   "admin.reconcileSmsDeliveryEvent",
+]);
+
+// Hosted actions that can move money, expose bulk clinic data, change access,
+// or rotate external credentials require a short-lived proof from password +
+// MFA reconfirmation. The proof is HttpOnly and bound to the session version.
+const HOSTED_PRIVILEGED_ACTION_PATHS = new Set([
+  "billing.createPaymentAccountOnboarding",
+  "billing.openPaymentAccountDashboard",
+  "billing.refundPayment",
+  "billing.applyInvoiceAdjustment",
+  "billing.voidInvoice",
+  "subscription.createCheckout",
+  "subscription.scheduleAnnualAtRenewal",
+  "subscription.openBillingPortal",
+  "settings.requestAccountDeletion",
+  "settings.clearDemoData",
+  "settings.reseedDemoData",
+  "settings.createUser",
+  "settings.inviteStaff",
+  "settings.updateUser",
+  "settings.deactivateUser",
+  "settings.restoreUser",
+  "data.exportFullBackup",
+  "data.exportClients",
+  "data.exportPatients",
+  "data.exportAppointments",
+  "data.exportInvoices",
+  "data.restoreBackup",
+  "apiKeys.create",
+  "apiKeys.revoke",
+  "webhooks.create",
+  "webhooks.toggle",
+  "webhooks.delete",
 ]);
 
 function practiceNotFound(): TRPCError {
@@ -345,7 +392,10 @@ export const portalProcedure = publicProcedure.use(
       ctx.requestUrlOrigin &&
       ctx.requestOrigin !== ctx.requestUrlOrigin
     ) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "Invalid request origin" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "Invalid request origin",
+      });
     }
     return next({
       ctx: {
@@ -379,6 +429,21 @@ export const protectedProcedure = t.procedure.use(
       });
     }
     const user = ctx.session.user;
+    if (
+      billingEnforced() &&
+      HOSTED_PRIVILEGED_ACTION_PATHS.has(path) &&
+      !verifyPrivilegedActionProof(ctx.privilegedActionProof, {
+        userId: user.id,
+        practiceId: user.practiceId,
+        sessionVersion: user.sessionVersion,
+      })
+    ) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "Confirm your password and authentication code in Account Security, then retry this sensitive action within 10 minutes.",
+      });
+    }
     // Run the whole request in a tenant DB context so Postgres RLS scopes every
     // query to this practice (defense-in-depth behind the app-layer filters).
     const effects: PostCommitEffect[] = [];

@@ -755,7 +755,12 @@ describe("settings admin stale target safety", () => {
     ).resolves.toMatchObject({ id: STAFF_ID, role: "viewer" });
 
     expect(db.execute).toHaveBeenCalled();
-    expect(updateSet).toHaveBeenCalledWith({ role: "viewer" });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "viewer",
+        sessionVersion: expect.anything(),
+      }),
+    );
   });
 
   it("rejects stale staff role demotions", async () => {
@@ -769,7 +774,12 @@ describe("settings admin stale target safety", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(db.execute).toHaveBeenCalled();
-    expect(updateSet).toHaveBeenCalledWith({ role: "viewer" });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "viewer",
+        sessionVersion: expect.anything(),
+      }),
+    );
   });
 
   it("rejects self-deactivation before DB work", async () => {
@@ -851,7 +861,12 @@ describe("settings admin stale target safety", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(db.execute).toHaveBeenCalled();
-    expect(updateSet).toHaveBeenCalledWith({ deletedAt: expect.any(Date) });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deletedAt: expect.any(Date),
+        sessionVersion: expect.anything(),
+      }),
+    );
     expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
   });
 
@@ -877,7 +892,12 @@ describe("settings admin stale target safety", () => {
       callerWithDb(db).restoreUser({ id: STAFF_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
-    expect(updateSet).toHaveBeenCalledWith({ deletedAt: null });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deletedAt: null,
+        sessionVersion: expect.anything(),
+      }),
+    );
     expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
   });
 

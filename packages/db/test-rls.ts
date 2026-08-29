@@ -213,6 +213,7 @@ const conversionEvidenceKey = `practice:${aId}`;
 const clinicPilotId = randomUUID();
 const clinicPilotEventId = randomUUID();
 const clinicPilotOperationId = randomUUID();
+const backupRunId = randomUUID();
 const aSoapCorrectionReason =
   "Original note was documented on the wrong encounter.";
 const bSoapCorrectionReason =
@@ -3604,6 +3605,33 @@ try {
     "tenant context cannot read system-only clinic pilot state",
     hiddenClinicPilots.length === 0,
   );
+  const hiddenBackupRuns = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id from backup_runs`;
+  });
+  check(
+    "tenant context cannot read system-only backup run evidence",
+    hiddenBackupRuns.length === 0,
+  );
+  let tenantCannotForgeBackupRun = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into backup_runs
+        (started_at, completed_at, run_date_utc, status, practices,
+         primary_verified, primary_failed, oversized, near_limit,
+         max_export_bytes, replica_enabled, replica_required,
+         replica_verified, replica_failed)
+        values (now(), now(), current_date, 'ok', 0, 0, 0, 0, 0, 0,
+          false, false, 0, 0)`;
+    });
+  } catch {
+    tenantCannotForgeBackupRun = true;
+  }
+  check(
+    "tenant context cannot forge backup run evidence",
+    tenantCannotForgeBackupRun,
+  );
   const hiddenFileReplicas = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${aId}, true)`;
     return tx`select id from file_object_replicas where id = ${aReplica}`;
@@ -3765,6 +3793,44 @@ try {
   check(
     "system bypass can read clinic pilot audit events",
     systemClinicPilotEvents.length === 1,
+  );
+  const systemBackupRuns = await appTransaction(async (tx) => {
+    await tx`select set_config('app.rls_bypass', 'on', true)`;
+    await tx`insert into backup_runs
+      (id, started_at, completed_at, run_date_utc, status, practices,
+       primary_verified, primary_failed, oversized, near_limit,
+       max_export_bytes, replica_enabled, replica_required,
+       replica_verified, replica_failed)
+      values (${backupRunId}, now(), now(), current_date, 'ok', 1, 1, 0,
+        0, 0, 128, false, false, 0, 0)`;
+    return tx`select id from backup_runs where id = ${backupRunId}`;
+  });
+  check(
+    "system bypass can append and read backup run evidence",
+    systemBackupRuns.length === 1,
+  );
+  let backupRunUpdateBlocked = false;
+  let backupRunDeleteBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`update backup_runs set max_export_bytes = 256
+        where id = ${backupRunId}`;
+    });
+  } catch {
+    backupRunUpdateBlocked = true;
+  }
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`delete from backup_runs where id = ${backupRunId}`;
+    });
+  } catch {
+    backupRunDeleteBlocked = true;
+  }
+  check(
+    "backup run evidence is append-only for the application role",
+    backupRunUpdateBlocked && backupRunDeleteBlocked,
   );
   const systemFileReplicas = await appTransaction(async (tx) => {
     await tx`select set_config('app.rls_bypass', 'on', true)`;
@@ -4517,6 +4583,7 @@ try {
     await cleanup`delete from practice_conversion_milestones where practice_id = ${aId}`;
     await cleanup`delete from clinic_pilot_events where id = ${clinicPilotEventId}`;
     await cleanup`delete from clinic_pilots where id = ${clinicPilotId}`;
+    await cleanup`delete from backup_runs where id = ${backupRunId}`;
     await cleanup`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
     await cleanup`delete from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
     await cleanup`delete from appointments where id in (${aAppointment}, ${bAppointment}, ${aSoapLegalAppointment}, ${bSoapLegalAppointment}, ${aSoapDraftFinalAppointment}, ${aSoapDoubleFinalAppointment}, ${aSoapDiscardAppointment})`;

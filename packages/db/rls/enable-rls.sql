@@ -492,6 +492,17 @@ CREATE POLICY system_only ON rate_limit_buckets
   USING (app_rls_bypass())
   WITH CHECK (app_rls_bypass());
 
+-- Backup sweep evidence is global operational state. The app role may append
+-- and inspect evidence only while an explicit system transaction is active;
+-- completed evidence is immutable to that role.
+ALTER TABLE backup_runs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON backup_runs;
+CREATE POLICY system_only ON backup_runs
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+REVOKE ALL ON backup_runs FROM openpims_app;
+GRANT SELECT, INSERT ON backup_runs TO openpims_app;
+
 -- Demo lead capture is global pre-tenant state. Only the email-gate route,
 -- running in explicit system context, may read or write it.
 ALTER TABLE demo_accesses ENABLE ROW LEVEL SECURITY;
@@ -553,7 +564,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, file_storage_events, financial_closes, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, payment_disputes, payment_processor_payouts, payment_processor_refunds, payment_processor_settlements, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_provider_event_conflict_reviews, sms_provider_event_conflicts, sms_provider_event_resolutions, sms_provider_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, backup_runs, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, file_storage_events, financial_closes, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, payment_disputes, payment_processor_payouts, payment_processor_refunds, payment_processor_settlements, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, sessions, sms_delivery_event_history, sms_delivery_events, sms_provider_event_conflict_reviews, sms_provider_event_conflicts, sms_provider_event_resolutions, sms_provider_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
       EXECUTE format(
         'REVOKE ALL ON FUNCTION public.validate_payment_processor_refund_tenant() FROM %I', r

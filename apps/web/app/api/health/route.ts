@@ -39,6 +39,8 @@ import {
 } from "@/lib/email-preferences";
 import { platformEmailIdentityConfigurationReady } from "@/lib/platform-email-preferences";
 import { hostedSmsCredentialIssueCount } from "@/lib/messaging/hosted-sms-readiness";
+import { checkBackupRunFreshness } from "@/lib/backup/run-evidence";
+import { mfaEncryptionConfigured } from "@/lib/mfa";
 
 export const dynamic = "force-dynamic";
 
@@ -90,7 +92,10 @@ function hostedStorageEnvCheck(): { ok: boolean; detail: string } {
     );
   }
 
-  return hostedEnvCheck(HOSTED_STORAGE_ENV_NAMES, "Hosted storage envs present");
+  return hostedEnvCheck(
+    HOSTED_STORAGE_ENV_NAMES,
+    "Hosted storage envs present",
+  );
 }
 
 const HOSTED_EMAIL_ENV_NAMES = [
@@ -533,6 +538,12 @@ export async function GET() {
       HOSTED_CORE_ENV_NAMES,
       "Hosted core envs present",
     );
+    checks.hostedMfa = {
+      ok: mfaEncryptionConfigured(),
+      detail: mfaEncryptionConfigured()
+        ? "Hosted MFA encryption is configured"
+        : "Hosted MFA encryption is missing or invalid",
+    };
     checks.hostedAppUrls = hostedAppUrlCheck();
     checks.hostedBilling = hostedEnvCheck(
       HOSTED_BILLING_ENV_NAMES,
@@ -543,6 +554,16 @@ export async function GET() {
     checks.hostedStorage = hostedStorageEnv.ok
       ? await checkObjectStorageHealth()
       : hostedStorageEnv;
+    if (checks.hostedStorage.ok) {
+      try {
+        checks.hostedBackupFreshness = await checkBackupRunFreshness();
+      } catch {
+        checks.hostedBackupFreshness = {
+          ok: false,
+          detail: "Backup freshness check failed",
+        };
+      }
+    }
     const replicaReadiness = replicaStorageReadiness();
     const replicaRequired = replicaStorageRequired();
     const replicaEnabled = replicaStorageRolloutEnabled();

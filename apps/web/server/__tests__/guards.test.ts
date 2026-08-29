@@ -9,12 +9,17 @@ vi.mock("@/lib/audit", () => ({
 }));
 
 import { appRouter } from "../routers/_app";
+import { issuePrivilegedActionProof } from "@/lib/privileged-action-proof";
 
 // Build a tRPC caller with a fake session. The db is a throwing proxy: any
 // resolver that reaches the database fails loudly — so a passing query proves
 // the guard let it through to a db-free path, and a FORBIDDEN proves the guard
 // short-circuited before the resolver.
-function callerFor(role: string, dbOverride?: Record<string, unknown>) {
+function callerFor(
+  role: string,
+  dbOverride?: Record<string, unknown>,
+  privilegedActionProof?: string,
+) {
   const session = {
     user: {
       id: "00000000-0000-0000-0000-000000000001",
@@ -22,6 +27,7 @@ function callerFor(role: string, dbOverride?: Record<string, unknown>) {
       name: "U",
       role,
       practiceId: "00000000-0000-0000-0000-0000000000aa",
+      sessionVersion: 1,
     },
   };
   // Minimal db mock: transaction() runs its callback with the same object and
@@ -32,7 +38,11 @@ function callerFor(role: string, dbOverride?: Record<string, unknown>) {
     transaction: async (fn: (tx: unknown) => unknown) => fn(db),
     execute: async () => undefined,
   };
-  return appRouter.createCaller({ db, session } as never);
+  return appRouter.createCaller({
+    db,
+    session,
+    privilegedActionProof,
+  } as never);
 }
 
 afterEach(() => {
@@ -117,8 +127,9 @@ describe("viewer read-only guard", () => {
     });
   });
 
-  it("allows hosted lapsed admins to request account deletion review", async () => {
+  it("requires recent step-up before a hosted lapsed admin requests account deletion review", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("MFA_ENCRYPTION_KEY", Buffer.alloc(32, 7).toString("base64"));
 
     const selectResults = [
       [
@@ -161,7 +172,21 @@ describe("viewer read-only guard", () => {
       execute: async () => undefined,
     };
 
-    const caller = callerFor("admin", db);
+    const unconfirmedCaller = callerFor("admin", db);
+    await expect(
+      unconfirmedCaller.settings.requestAccountDeletion({
+        contactEmail: "owner@example.com",
+        confirmExportDownloaded: true,
+        confirmManualReview: true,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const proof = issuePrivilegedActionProof({
+      userId: "00000000-0000-0000-0000-000000000001",
+      practiceId: "00000000-0000-0000-0000-0000000000aa",
+      sessionVersion: 1,
+    });
+    const caller = callerFor("admin", db, proof);
 
     await expect(
       caller.settings.requestAccountDeletion({

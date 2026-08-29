@@ -101,6 +101,7 @@ export async function POST(req: NextRequest) {
     tx
       .select({
         userId: users.id,
+        sessionVersion: users.sessionVersion,
         role: users.role,
         tier: practices.subscriptionTier,
         billingStatus: practices.billingStatus,
@@ -120,7 +121,11 @@ export async function POST(req: NextRequest) {
       )
       .limit(1),
   );
-  if (!activeAccount) {
+  if (
+    !activeAccount ||
+    !Number.isInteger(session.user.sessionVersion) ||
+    activeAccount.sessionVersion !== session.user.sessionVersion
+  ) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (activeAccount.role === "viewer") {

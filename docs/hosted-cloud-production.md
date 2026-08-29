@@ -76,6 +76,7 @@ FIRST_CLINIC_WIN_ROLLOUT_AT=
 NEXTAUTH_URL=https://app.openvpm.com
 NEXT_PUBLIC_APP_URL=https://app.openvpm.com
 NEXTAUTH_SECRET=...
+MFA_ENCRYPTION_KEY=... # dedicated `openssl rand -base64 32`; never reuse NEXTAUTH_SECRET
 DATABASE_URL=...
 # Transitional production release lock. Set only to the exact approved
 # 40-character commit, redeploy that revision, then clear or rotate it.
@@ -164,13 +165,28 @@ the gate evaluates it only in a newly created or redeployed build.
    drift check to pass.
 3. Set `PRODUCTION_RELEASE_SHA` to that same commit in the app and demo Vercel
    projects, then redeploy the exact candidate in each project.
-4. Verify `/api/health` and the release smoke path before recording success.
-5. Clear or rotate the value so the approval cannot apply to a later commit.
+4. From the secure operator environment, invoke the authenticated
+   `/api/cron/backup` endpoint once with the production cron credential. Verify
+   the response reports every primary backup successful; do not print or paste
+   the credential into release notes. A new deployment intentionally remains
+   unhealthy until this first durable `backup_runs` row exists.
+5. Verify `/api/health` and the release smoke path before recording success.
+6. Clear or rotate the value so the approval cannot apply to a later commit.
 
 The GitHub `Production` environment must have an independent required reviewer
 before this is treated as two-person approval. See
 [`repository-governance.md`](repository-governance.md) for the target promotion
 model.
+
+Authentication deployments require `MFA_ENCRYPTION_KEY` before migration/code
+promotion. Hosted health rejects a missing or malformed key. Existing JWTs
+issued before session-generation enforcement are intentionally invalidated;
+operators and clinic staff sign in again. Exercise password sign-in, MFA
+enrollment, recovery-code sign-in, sign-out-everywhere, and one privileged
+step-up action in staging before production promotion. Treat the MFA key as
+durable encryption material: rotating or losing it invalidates every enrolled
+authenticator and recovery-code hash. Do not rotate it without a reviewed
+reenrollment/recovery plan and a retained, access-controlled prior key.
 
 `STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only. They must not be used for new checkout or required hosted readiness.
 
@@ -567,7 +583,11 @@ Use:
 GET https://app.openvpm.com/api/health
 ```
 
-It checks database connectivity and required hosted configuration for auth, Stripe billing, storage, email, AI, and ops hooks. It never returns secret values. SMS provider setup is reported as advisory until the active provider is provisioned.
+It checks database connectivity and required hosted configuration for auth,
+MFA, Stripe billing, storage, fresh complete backup-run evidence, email, AI, and
+ops hooks. It never returns secret values. A reachable object store is not
+treated as proof that backups ran. SMS provider setup is reported as advisory
+until the active provider is provisioned.
 
 Cron heartbeat/dead-man monitoring gates hosted readiness in `/api/health`: set
 one global `CRON_HEARTBEAT_URL` to receive every cron completion as POST JSON, or

@@ -64,6 +64,15 @@ drill pass.
   Backup heartbeat metrics distinguish `oversized` exports from
   `otherFailed`, count exports at or above 80% of the cap as `nearLimit`, and
   report `maxExportBytes` against `backupMaxBytes` for capacity planning.
+- **Durable run evidence:** after every sweep, the cron writes a PHI-free,
+  system-only `backup_runs` row with start/completion time and aggregate
+  primary/replica verification counts. Hosted `/api/health` returns `503` when
+  no evidence exists, the latest completed run is older than 36 hours, any
+  primary copy failed, or a required independent copy is incomplete. A
+  heartbeat or reachable bucket alone is not acceptable backup proof. After
+  first deploying the evidence migration and code, an operator must run the
+  authenticated backup cron once and verify its aggregate response before the
+  deployment can become healthy.
 
 Admins can also download the identical payload on demand:
 **Settings → Data → Export Database Backup**.

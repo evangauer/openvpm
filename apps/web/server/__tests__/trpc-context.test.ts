@@ -7,12 +7,12 @@ const mocks = vi.hoisted(() => ({
     async (
       database: unknown,
       _practiceId: string,
-      fn: (tx: unknown) => Promise<unknown>
-    ) => fn(database)
+      fn: (tx: unknown) => Promise<unknown>,
+    ) => fn(database),
   ),
   withSystem: vi.fn(
     async (database: unknown, fn: (tx: unknown) => Promise<unknown>) =>
-      fn(database)
+      fn(database),
   ),
   db: {
     select: vi.fn(),
@@ -59,6 +59,7 @@ function session() {
       name: "Front Desk",
       role: "front_desk",
       practiceId: PRACTICE_ID,
+      sessionVersion: 3,
     },
   };
 }
@@ -66,7 +67,7 @@ function session() {
 function sqlIncludesColumn(
   value: unknown,
   column: unknown,
-  seen = new WeakSet<object>()
+  seen = new WeakSet<object>(),
 ): boolean {
   if (Object.is(value, column)) {
     return true;
@@ -88,19 +89,21 @@ function sqlIncludesColumn(
   const candidate = value as { queryChunks?: unknown[] };
   if (Array.isArray(candidate.queryChunks)) {
     return candidate.queryChunks.some((item) =>
-      sqlIncludesColumn(item, column, seen)
+      sqlIncludesColumn(item, column, seen),
     );
   }
 
   return Object.values(value as Record<string, unknown>).some((item) =>
-    sqlIncludesColumn(item, column, seen)
+    sqlIncludesColumn(item, column, seen),
   );
 }
 
 function mockActiveUserLookup(rows: unknown[]) {
   const limit = vi.fn(async () => rows);
   const where = vi.fn((_condition: unknown) => ({ limit }));
-  const innerJoin = vi.fn((_table: unknown, _condition: unknown) => ({ where }));
+  const innerJoin = vi.fn((_table: unknown, _condition: unknown) => ({
+    where,
+  }));
   const from = vi.fn((_table: unknown) => ({ innerJoin }));
   mocks.db.select.mockImplementationOnce((_selection: unknown) => ({ from }));
   return { from, innerJoin, where, limit };
@@ -142,7 +145,7 @@ describe("createTRPCContext session hardening", () => {
 
   it("keeps active sessions and verifies the user and practice inside the tenant", async () => {
     mocks.getServerSession.mockResolvedValueOnce(session());
-    const lookup = mockActiveUserLookup([{ id: USER_ID }]);
+    const lookup = mockActiveUserLookup([{ id: USER_ID, sessionVersion: 3 }]);
 
     const ctx = await createTRPCContext({
       req: new Request("https://app.example.test/api/trpc", {
@@ -157,7 +160,7 @@ describe("createTRPCContext session hardening", () => {
     expect(mocks.withTenant).toHaveBeenCalledWith(
       mocks.db,
       PRACTICE_ID,
-      expect.any(Function)
+      expect.any(Function),
     );
     expect(lookup.from).toHaveBeenCalledWith(users);
     expect(lookup.innerJoin).toHaveBeenCalledWith(practices, expect.anything());
@@ -183,7 +186,16 @@ describe("createTRPCContext session hardening", () => {
     expect(mocks.withTenant).toHaveBeenCalledWith(
       mocks.db,
       PRACTICE_ID,
-      expect.any(Function)
+      expect.any(Function),
     );
+  });
+
+  it("drops a JWT after its server-side session generation changes", async () => {
+    mocks.getServerSession.mockResolvedValueOnce(session());
+    mockActiveUserLookup([{ id: USER_ID, sessionVersion: 4 }]);
+
+    const ctx = await createTRPCContext();
+
+    expect(ctx.session).toBeNull();
   });
 });

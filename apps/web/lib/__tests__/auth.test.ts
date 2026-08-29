@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AUTH_SESSION_MAX_AGE_SECONDS,
   LOGIN_EMAIL_MAX_LENGTH,
+  authOptions,
   clientIpFromAuthRequest,
   loginRateLimitKeys,
   parseLoginCredentials,
@@ -110,17 +112,37 @@ describe("parseLoginCredentials", () => {
 });
 
 describe("credentials auth active-user lookup", () => {
+  it("caps encrypted clinic sessions at one long shift", () => {
+    expect(AUTH_SESSION_MAX_AGE_SECONDS).toBe(12 * 60 * 60);
+    expect(authOptions.session).toMatchObject({
+      strategy: "jwt",
+      maxAge: AUTH_SESSION_MAX_AGE_SECONDS,
+    });
+    expect(authOptions.jwt).toMatchObject({
+      maxAge: AUTH_SESSION_MAX_AGE_SECONDS,
+    });
+  });
+
   it("parses credentials before rate-limit, lookup, or bcrypt work", () => {
     const source = readFileSync("lib/auth.ts", "utf8");
+    const authorizeSource = source.slice(
+      source.indexOf("async authorize(credentials, req)"),
+    );
 
-    expect(source.indexOf("parseLoginCredentials(credentials)")).toBeLessThan(
-      source.indexOf("rateLimit({")
+    expect(
+      authorizeSource.indexOf("parseLoginCredentials(credentials)"),
+    ).toBeLessThan(
+      authorizeSource.indexOf("rateLimit({"),
     );
-    expect(source.indexOf("parseLoginCredentials(credentials)")).toBeLessThan(
-      source.indexOf("withSystem(db")
+    expect(
+      authorizeSource.indexOf("parseLoginCredentials(credentials)"),
+    ).toBeLessThan(
+      authorizeSource.indexOf("withSystem(db"),
     );
-    expect(source.indexOf("parseLoginCredentials(credentials)")).toBeLessThan(
-      source.indexOf("compare(password")
+    expect(
+      authorizeSource.indexOf("parseLoginCredentials(credentials)"),
+    ).toBeLessThan(
+      authorizeSource.indexOf("compare(password"),
     );
   });
 
