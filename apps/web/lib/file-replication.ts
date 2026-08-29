@@ -234,6 +234,179 @@ export async function registerFileForReplication(input: {
 }
 
 /**
+ * Atomically attach verified legacy-provider bytes to the current primary
+ * manifest and seed the independently verified replica generation. Provider
+ * writes happen before this compare-and-set transaction; deterministic keys
+ * make a partial run safely retryable.
+ */
+export async function finalizeLegacyFileRecovery(input: {
+  practiceId: string;
+  fileId: string;
+  fileKey: string;
+  previousStorageStatus: "missing";
+  previousChecksumSha256: string | null;
+  previousFileSizeBytes: number | null;
+  checksumSha256: string;
+  fileSizeBytes: number;
+  primaryObjectEtag?: string;
+  primaryObjectVersionId?: string;
+  replicaObjectEtag?: string;
+  replicaObjectVersionId: string;
+}): Promise<boolean> {
+  const operationId = randomUUID();
+  const now = new Date();
+  const objectKey = replicaObjectKey(input);
+
+  return withSystem(db, async (tx) => {
+    const [updated] = await tx
+      .update(files)
+      .set({
+        checksumSha256: input.checksumSha256,
+        fileSizeBytes: input.fileSizeBytes,
+        objectEtag: input.primaryObjectEtag ?? null,
+        objectVersionId: input.primaryObjectVersionId ?? null,
+        storageStatus: "available",
+        storageVerifiedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(files.id, input.fileId),
+          eq(files.practiceId, input.practiceId),
+          eq(files.fileKey, input.fileKey),
+          eq(files.storageStatus, input.previousStorageStatus),
+          sql`${files.checksumSha256} is not distinct from ${input.previousChecksumSha256}`,
+          sql`${files.fileSizeBytes} is not distinct from ${input.previousFileSizeBytes}`,
+          isNull(files.deletedAt),
+        ),
+      )
+      .returning({ id: files.id });
+
+    if (!updated) {
+      const [alreadyRecovered] = await tx
+        .select({ id: files.id })
+        .from(files)
+        .where(
+          and(
+            eq(files.id, input.fileId),
+            eq(files.practiceId, input.practiceId),
+            eq(files.fileKey, input.fileKey),
+            eq(files.storageStatus, "available"),
+            eq(files.checksumSha256, input.checksumSha256),
+            eq(files.fileSizeBytes, input.fileSizeBytes),
+            isNull(files.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!alreadyRecovered) return false;
+    }
+
+    await appendStorageEvent(tx, {
+      practiceId: input.practiceId,
+      fileId: input.fileId,
+      storageTarget: "primary",
+      eventKey: `legacy-recovery:${input.fileId}:${input.checksumSha256}:primary`,
+      operationId,
+      eventKind: "primary_restored_from_legacy",
+      previousStatus: input.previousStorageStatus,
+      nextStatus: "available",
+      expectedChecksumSha256: input.previousChecksumSha256,
+      observedChecksumSha256: input.checksumSha256,
+      expectedFileSizeBytes: input.previousFileSizeBytes,
+      observedFileSizeBytes: input.fileSizeBytes,
+      objectEtag: input.primaryObjectEtag,
+      objectVersionId: input.primaryObjectVersionId,
+    });
+
+    await tx
+      .insert(fileObjectReplicas)
+      .values({
+        practiceId: input.practiceId,
+        fileId: input.fileId,
+        replicaTarget: FILE_REPLICA_TARGET,
+        objectKey,
+        objectEtag: input.replicaObjectEtag ?? null,
+        objectVersionId: input.replicaObjectVersionId,
+        checksumSha256: input.checksumSha256,
+        fileSizeBytes: input.fileSizeBytes,
+        status: "pending",
+        replicatedAt: now,
+        verifiedAt: null,
+        failureCode: null,
+        nextAttemptAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [fileObjectReplicas.fileId, fileObjectReplicas.replicaTarget],
+        set: {
+          objectKey,
+          objectEtag: sql`case
+            when ${fileObjectReplicas.status} = 'available'
+              and ${fileObjectReplicas.checksumSha256} = ${input.checksumSha256}
+            then ${fileObjectReplicas.objectEtag}
+            else ${input.replicaObjectEtag ?? null}
+          end`,
+          objectVersionId: sql`case
+            when ${fileObjectReplicas.status} = 'available'
+              and ${fileObjectReplicas.checksumSha256} = ${input.checksumSha256}
+            then ${fileObjectReplicas.objectVersionId}
+            else ${input.replicaObjectVersionId}
+          end`,
+          checksumSha256: input.checksumSha256,
+          fileSizeBytes: input.fileSizeBytes,
+          status: sql`case
+            when ${fileObjectReplicas.status} = 'available'
+              and ${fileObjectReplicas.checksumSha256} = ${input.checksumSha256}
+            then ${fileObjectReplicas.status}
+            else 'pending'::file_replica_status
+          end`,
+          replicatedAt: sql`case
+            when ${fileObjectReplicas.status} = 'available'
+              and ${fileObjectReplicas.checksumSha256} = ${input.checksumSha256}
+            then ${fileObjectReplicas.replicatedAt}
+            else ${now.toISOString()}::timestamptz
+          end`,
+          verifiedAt: sql`case
+            when ${fileObjectReplicas.status} = 'available'
+              and ${fileObjectReplicas.checksumSha256} = ${input.checksumSha256}
+            then ${fileObjectReplicas.verifiedAt}
+            else null
+          end`,
+          failureCode: null,
+          lastErrorClass: null,
+          nextAttemptAt: sql`case
+            when ${fileObjectReplicas.status} = 'available'
+              and ${fileObjectReplicas.checksumSha256} = ${input.checksumSha256}
+            then ${fileObjectReplicas.nextAttemptAt}
+            else ${now.toISOString()}::timestamptz
+          end`,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          deletedAt: null,
+          updatedAt: now,
+        },
+      });
+
+    await appendStorageEvent(tx, {
+      practiceId: input.practiceId,
+      fileId: input.fileId,
+      storageTarget: FILE_REPLICA_TARGET,
+      eventKey: `legacy-recovery:${input.fileId}:${input.checksumSha256}:replica`,
+      operationId,
+      eventKind: "replica_seeded_from_legacy",
+      previousStatus: null,
+      nextStatus: "pending",
+      expectedChecksumSha256: input.checksumSha256,
+      observedChecksumSha256: input.checksumSha256,
+      expectedFileSizeBytes: input.fileSizeBytes,
+      observedFileSizeBytes: input.fileSizeBytes,
+      objectEtag: input.replicaObjectEtag,
+      objectVersionId: input.replicaObjectVersionId,
+    });
+    return true;
+  });
+}
+
+/**
  * Make a verified replica fallback actionable without paging once per read.
  * The manifest transition and queue wake-up are durable; the reconciler owns
  * provider repair, lease coordination, and alerting.

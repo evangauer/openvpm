@@ -124,6 +124,40 @@ primary is unavailable; it never serves an unverified or corrupt copy.
 After an automatic repair, verify the file through the clinic UI and confirm a
 `primary_restored_from_replica` storage event exists. Do not delete the replica.
 
+### Legacy primary store removed during a provider migration
+
+Do not temporarily swap the application back to the legacy provider and do not
+copy objects by hand in a provider dashboard. Configure time-limited,
+read-only legacy credentials only in the operator shell using the
+`LEGACY_FILE_S3_*` variables. Keep current primary and independent-replica
+credentials in their normal environment variables.
+
+Audit one exact missing manifest first; output is PHI-safe and the default is
+read-only:
+
+```bash
+pnpm --filter @openpims/web files:recover-legacy -- \
+  audit --file-id <file-uuid>
+```
+
+An executed restore requires the owner database URL and an exact, per-file
+confirmation:
+
+```bash
+pnpm --filter @openpims/web files:recover-legacy -- \
+  restore --file-id <file-uuid> --execute \
+  --confirmation RESTORE-LEGACY-FILE:<file-uuid>
+```
+
+The command reads only that manifest key, checks the recorded length and any
+existing checksum, computes SHA-256 in memory, and refuses conflicting bytes.
+It writes and reads back the independent replica first, then writes and reads
+back the primary key, performs a compare-and-set manifest transition, and
+queues append-only recovery evidence. A retry converges on already-written
+exact bytes. After every restore, run the normal replica reconciler so it writes
+the immutable recovery catalog and require the release-gate metrics to return
+to 100% coverage with no missing, corrupt, failed, or backlog rows.
+
 ### Database healthy, primary provider unavailable
 
 Leave the primary configuration unchanged while provider status is uncertain.

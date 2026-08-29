@@ -121,6 +121,7 @@ vi.mock("@/lib/tenant-db", () => ({ withSystem: mocks.withSystem }));
 
 const {
   checksumSha256Hex,
+  finalizeLegacyFileRecovery,
   recoveryCatalogKey,
   registerFileForReplication,
   reconcileFileReplicas,
@@ -248,6 +249,56 @@ describe("file replica identity", () => {
 });
 
 describe("file replica queue", () => {
+  it("atomically records a replica-first legacy recovery generation", async () => {
+    await expect(
+      finalizeLegacyFileRecovery({
+        practiceId: "practice-1",
+        fileId: "file-1",
+        fileKey: "practice-1/consents/opaque",
+        previousStorageStatus: "missing",
+        previousChecksumSha256: null,
+        previousFileSizeBytes: 3,
+        checksumSha256: checksum,
+        fileSizeBytes: 3,
+        primaryObjectEtag: "primary-etag",
+        primaryObjectVersionId: "primary-version",
+        replicaObjectEtag: "replica-etag",
+        replicaObjectVersionId: "replica-version",
+      }),
+    ).resolves.toBe(true);
+
+    expect(mocks.updateSets).toContainEqual(
+      expect.objectContaining({
+        storageStatus: "available",
+        checksumSha256: checksum,
+        fileSizeBytes: 3,
+      }),
+    );
+    expect(mocks.insertedValues).toContainEqual(
+      expect.objectContaining({
+        storageTarget: "primary",
+        eventKind: "primary_restored_from_legacy",
+        previousStatus: "missing",
+        nextStatus: "available",
+      }),
+    );
+    expect(mocks.insertedValues).toContainEqual(
+      expect.objectContaining({
+        replicaTarget: "independent-v1",
+        status: "pending",
+        checksumSha256: checksum,
+        objectVersionId: "replica-version",
+      }),
+    );
+    expect(mocks.insertedValues).toContainEqual(
+      expect.objectContaining({
+        storageTarget: "independent-v1",
+        eventKind: "replica_seeded_from_legacy",
+        observedChecksumSha256: checksum,
+      }),
+    );
+  });
+
   it("records primary evidence and durably queues an idempotent replica", async () => {
     await expect(
       registerFileForReplication({
