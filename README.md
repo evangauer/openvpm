@@ -69,6 +69,12 @@ That's the bar we're building to.
 
 Short, plain-language guides live in [docs/help](docs/help/README.md): getting started, the day sheet, the AI helper, client portals, calendar sync, and owning your data. Before evaluating OpenVPM for live clinic use, read the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md) for the current supported, configuration-dependent, and not-yet-supported boundaries. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
 
+Evaluating, adapting, or operating OpenVPM downstream? Read the
+[adoption evidence standard](docs/downstream-adoption.md) and use the
+**Downstream adoption report** issue template to opt in. Reports are public and
+must never contain patient, client, staff, credential, private-domain, or raw-log
+data.
+
 ## Features
 
 ### Phase 1 — Foundation (Implemented)
