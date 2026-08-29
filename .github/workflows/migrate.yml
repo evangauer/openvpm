@@ -16,7 +16,12 @@ on:
         default: demo
         options:
           - demo
+          - staging
           - production
+      staging_confirmation:
+        description: Type MIGRATE_STAGING for an isolated staging run
+        required: false
+        type: string
       production_confirmation:
         description: Type MIGRATE_PRODUCTION for a production run
         required: false
@@ -62,6 +67,88 @@ jobs:
             echo "::error::Production migration release SHA must match the exact dispatched main commit."
             exit 1
           fi
+
+  validate-staging-request:
+    name: validate staging request
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.target == 'staging'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require exact revision confirmation
+        env:
+          STAGING_CONFIRMATION: ${{ inputs.staging_confirmation }}
+          REQUESTED_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          if [ "$STAGING_CONFIRMATION" != "MIGRATE_STAGING" ]; then
+            echo "::error::Staging migration confirmation did not match MIGRATE_STAGING."
+            exit 1
+          fi
+          if [[ ! "$REQUESTED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || [ "$REQUESTED_RELEASE_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::Staging migration release SHA must match the exact dispatched main commit."
+            exit 1
+          fi
+
+  staging:
+    name: staging
+    needs: validate-staging-request
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.target == 'staging'
+    environment: Staging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+
+      - name: Require isolated staging database credentials
+        id: configured
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+        run: |
+          if [[ -z "$DATABASE_URL" || "$DATABASE_URL" =~ ^[[:space:]]*$ ]]; then
+            echo "::error::STAGING_DATABASE_URL is not configured."
+            exit 1
+          fi
+          if [[ -z "$APP_DB_PASSWORD" || "$APP_DB_PASSWORD" =~ ^[[:space:]]*$ ]]; then
+            echo "::error::OPENPIMS_APP_DB_PASSWORD is not configured in the Staging environment."
+            exit 1
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Schema state before
+        if: steps.configured.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: pnpm db:drift
+
+      - name: Verify RLS deployment ownership
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: pnpm db:rls:preflight
+
+      - name: Apply migrations
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: pnpm db:migrate
+
+      - name: Re-apply row-level security
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          OPENPIMS_APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+        run: pnpm db:rls
+
+      - name: Verify schema matches the code
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: pnpm db:drift
 
   production:
     name: production

@@ -178,6 +178,32 @@ before this is treated as two-person approval. See
 [`repository-governance.md`](repository-governance.md) for the target promotion
 model.
 
+### Isolated staging migration gate
+
+The GitHub **Apply migrations** workflow has a separate `staging` target. It is
+manual, main-only during the repository transition, bound to the exact
+40-character dispatched commit, and requires the typed confirmation
+`MIGRATE_STAGING`. The job runs in the GitHub `Staging` environment and reads
+only its environment-scoped `STAGING_DATABASE_URL` and
+`OPENPIMS_APP_DB_PASSWORD` secrets. Missing or blank credentials fail the job;
+staging is never silently skipped.
+
+Before the first run, create a new Supabase project that contains no copied
+clinic/demo rows, configure a least-privilege app role and an owner/migration
+connection, and place only the isolated credentials in the GitHub `Staging`
+environment. The job performs drift inspection, the RLS ownership preflight,
+all committed migrations, full RLS reapplication, and a final exact-schema
+check. Run `pnpm db:seed` only with the documented synthetic seed and route all
+email/SMS/payment destinations to non-delivering or allowlisted sandbox
+providers.
+
+After migration, point only the Vercel `clinic-readiness-staging` custom
+environment at this database, deploy the same SHA, and require `/api/health` to
+return HTTP 200 before recording acceptance. Never copy the current
+`openvpm-staging` project into this environment: it contains active demo and
+patient-linked data and remains a protected recovery source until separately
+classified.
+
 Authentication deployments require `MFA_ENCRYPTION_KEY` before migration/code
 promotion. Hosted health rejects a missing or malformed key. Existing JWTs
 issued before session-generation enforcement are intentionally invalidated;

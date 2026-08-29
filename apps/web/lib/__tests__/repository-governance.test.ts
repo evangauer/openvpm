@@ -9,9 +9,9 @@ describe("repository promotion controls", () => {
     const workflow = repoFile(".github/workflows/ci.yml");
 
     expect(workflow).toContain("branches: [development, staging, main]");
-    expect(workflow.match(/branches: \[development, staging, main\]/g)).toHaveLength(
-      2,
-    );
+    expect(
+      workflow.match(/branches: \[development, staging, main\]/g),
+    ).toHaveLength(2);
   });
 
   it("keeps production migrations manual, main-only, and exact-revision bound", () => {
@@ -25,17 +25,39 @@ describe("repository promotion controls", () => {
     expect(production).toContain("environment: Production");
     expect(production).toContain("MIGRATE_PRODUCTION");
     expect(production).toContain("^[0-9a-f]{40}$");
-    expect(production).toContain('[ "$REQUESTED_RELEASE_SHA" != "$GITHUB_SHA" ]');
+    expect(production).toContain(
+      '[ "$REQUESTED_RELEASE_SHA" != "$GITHUB_SHA" ]',
+    );
     expect(workflow).toContain("reject-non-main-dispatch:");
     expect(workflow).toContain("validate-production-request:");
     expect(workflow).toContain("needs: validate-production-request");
-    expect(workflow).toContain("group: apply-migrations-${{ inputs.target || 'demo' }}");
+    expect(workflow).toContain(
+      "group: apply-migrations-${{ inputs.target || 'demo' }}",
+    );
     expect(workflow).toContain("queue: max");
     expect(production).toContain("PRODUCTION_DATABASE_URL is not configured");
     expect(production).toContain("OPENPIMS_APP_DB_PASSWORD is not configured");
     expect(production).toContain("^[[:space:]]*$");
     expect(production).not.toContain("skipping production");
     expect(demo).toContain("github.event_name == 'push'");
+  });
+
+  it("gives isolated staging its own exact-revision migration gate", () => {
+    const workflow = repoFile(".github/workflows/migrate.yml");
+    const staging = workflow.split("  staging:")[1]?.split("  production:")[0];
+
+    expect(staging).toBeDefined();
+    expect(staging).toContain("needs: validate-staging-request");
+    expect(staging).toContain("inputs.target == 'staging'");
+    expect(staging).toContain("environment: Staging");
+    expect(staging).toContain("secrets.STAGING_DATABASE_URL");
+    expect(staging).toContain("run: pnpm db:rls:preflight");
+    expect(staging).toContain("run: pnpm db:migrate");
+    expect(staging).toContain("run: pnpm db:rls");
+    expect(workflow).toContain("MIGRATE_STAGING");
+    expect(workflow).toContain(
+      "Staging migration release SHA must match the exact dispatched main commit.",
+    );
   });
 
   it("keeps backlog cleanup evidence-gated and migration collisions on hold", () => {
@@ -56,9 +78,13 @@ describe("repository promotion controls", () => {
     const policy = repoFile("docs/repository-governance.md");
 
     expect(policy).toContain("Preview and non-production credential isolation");
-    expect(policy).toContain("must never receive a credential that can mutate Production");
+    expect(policy).toContain(
+      "must never receive a credential that can mutate Production",
+    );
     expect(policy).toContain("rotate any");
-    expect(policy).toContain("Production credential that was previously available");
+    expect(policy).toContain(
+      "Production credential that was previously available",
+    );
     expect(policy).toContain("test ! -f .vercel-deploy-enabled");
     expect(policy).toContain("Do not protect `development` or `staging`");
   });
