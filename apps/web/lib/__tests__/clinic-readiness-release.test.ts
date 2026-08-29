@@ -21,7 +21,7 @@ function healthyEvidence() {
       ].map((name) => [name, { ok: true }]),
     );
   return {
-    evidenceFormatVersion: 1,
+    evidenceFormatVersion: 2,
     releaseSha: sha,
     ci: {
       releaseSha: sha,
@@ -31,6 +31,37 @@ function healthyEvidence() {
         tests: "passed",
         build: "passed",
         dependencyAudit: "passed",
+      },
+    },
+    repositoryGovernance: {
+      checkedAt: "2026-08-29T20:55:00.000Z",
+      productionEnvironment: {
+        exists: true,
+        canAdminsBypass: false,
+        preventSelfReview: true,
+        requiredReviewerCount: 1,
+        usesCustomBranchPolicies: true,
+        mainOnlyBranchPolicy: true,
+      },
+      mainBranch: {
+        enforceAdmins: true,
+        strictStatusChecks: true,
+        requiredChecks: [
+          "build",
+          "Golden clinic workflow",
+          "Migration history integrity",
+          "RLS tenant isolation",
+          "Analyze (actions)",
+          "Analyze (javascript-typescript)",
+          "Disposable restore drill",
+        ],
+        requiredApprovalCount: 2,
+        dismissStaleReviews: true,
+        requireCodeOwnerReviews: true,
+        requireLastPushApproval: true,
+        requireConversationResolution: true,
+        allowForcePushes: false,
+        allowDeletions: false,
       },
     },
     hostedHealth: {
@@ -69,7 +100,9 @@ function healthyEvidence() {
 
 describe("clinic readiness release decision", () => {
   it("returns GO only for complete, fresh, exact-SHA evidence", () => {
-    expect(evaluateClinicReadinessRelease(healthyEvidence(), now)).toMatchObject({
+    expect(
+      evaluateClinicReadinessRelease(healthyEvidence(), now),
+    ).toMatchObject({
       decision: "GO",
       releaseSha: sha,
       reasons: [],
@@ -109,9 +142,28 @@ describe("clinic readiness release decision", () => {
 
   it("rejects an unknown evidence format", () => {
     const evidence = healthyEvidence();
-    evidence.evidenceFormatVersion = 2;
+    evidence.evidenceFormatVersion = 3;
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
-      "Clinic readiness evidence format version must be 1.",
+      "Clinic readiness evidence format version must be 2.",
+    );
+  });
+
+  it("rejects unsafe production review and branch governance", () => {
+    const evidence = healthyEvidence();
+    evidence.repositoryGovernance.productionEnvironment.canAdminsBypass = true;
+    evidence.repositoryGovernance.productionEnvironment.preventSelfReview = false;
+    evidence.repositoryGovernance.mainBranch.requiredApprovalCount = 0;
+    evidence.repositoryGovernance.mainBranch.requiredChecks = ["build"];
+    const decision = evaluateClinicReadinessRelease(evidence, now);
+    expect(decision.decision).toBe("NO_GO");
+    expect(decision.reasons).toEqual(
+      expect.arrayContaining([
+        "Production environment allows administrator bypass.",
+        "Production environment does not prevent self-review.",
+        "Main branch requires fewer than two approvals.",
+        "Main branch does not require Golden clinic workflow.",
+        "Main branch does not require Disposable restore drill.",
+      ]),
     );
   });
 

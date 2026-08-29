@@ -155,6 +155,18 @@ The production environment must require an explicit approval from a release
 owner who did not author the release. Environment credentials are scoped to the
 environment and unavailable to pull-request code.
 
+The clinic-readiness evidence collector verifies this configuration directly
+through GitHub immediately before a release decision. `Production` must disable
+administrator bypass, prevent self-review, name at least one required reviewer,
+and accept deployments from `main` only. `main` must enforce protection for
+administrators, require two approvals plus code-owner and last-push review,
+dismiss stale approvals, require conversation resolution and strict current-head
+checks, and prohibit force pushes and deletion. The required check set includes
+the full build, golden clinic workflow, migration-history and RLS isolation
+jobs, both CodeQL analyses, and the disposable restore drill. A drift in any of
+these settings makes the authoritative release packet `NO_GO` even when the
+application checks are green.
+
 Each production release record contains:
 
 - the `main` commit, staging source commit, and immutable artifact digest;

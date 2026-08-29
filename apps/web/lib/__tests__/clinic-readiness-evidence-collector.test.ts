@@ -1,8 +1,4 @@
-import {
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -32,7 +28,9 @@ function successfulJob(name: string, steps: string[] = []) {
 }
 
 function restoreEvidencePath() {
-  const directory = mkdtempSync(path.join(tmpdir(), "openvpm-release-evidence-"));
+  const directory = mkdtempSync(
+    path.join(tmpdir(), "openvpm-release-evidence-"),
+  );
   temporaryDirectories.push(directory);
   const file = path.join(directory, "restore.json");
   writeFileSync(
@@ -147,6 +145,51 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
     releaseSha: sha,
     checks,
   };
+  const productionEnvironment = {
+    name: "Production",
+    can_admins_bypass: false,
+    protection_rules: [
+      {
+        type: "required_reviewers",
+        prevent_self_review: true,
+        reviewers: [{ type: "User" }],
+      },
+      { type: "branch_policy" },
+    ],
+    deployment_branch_policy: {
+      protected_branches: false,
+      custom_branch_policies: true,
+    },
+  };
+  const productionBranchPolicies = {
+    total_count: 1,
+    branch_policies: [{ name: "main", type: "branch" }],
+  };
+  const mainProtection = {
+    required_status_checks: {
+      strict: true,
+      contexts: [
+        "build",
+        "Golden clinic workflow",
+        "Migration history integrity",
+        "RLS tenant isolation",
+        "Analyze (actions)",
+        "Analyze (javascript-typescript)",
+        "Disposable restore drill",
+      ],
+      checks: [],
+    },
+    required_pull_request_reviews: {
+      dismiss_stale_reviews: true,
+      require_code_owner_reviews: true,
+      require_last_push_approval: true,
+      required_approving_review_count: 2,
+    },
+    enforce_admins: { enabled: true },
+    required_conversation_resolution: { enabled: true },
+    allow_force_pushes: { enabled: false },
+    allow_deletions: { enabled: false },
+  };
 
   return vi.fn(async (input: string | URL | Request) => {
     const url = String(input);
@@ -157,6 +200,15 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
     if (url.endsWith("/actions/runs/202")) return response(migrationRun);
     if (url.endsWith("/actions/runs/202/jobs?per_page=100")) {
       return response(migrationJobs);
+    }
+    if (url.endsWith("/environments/Production")) {
+      return response(productionEnvironment);
+    }
+    if (url.endsWith("/environments/Production/deployment-branch-policies")) {
+      return response(productionBranchPolicies);
+    }
+    if (url.endsWith("/branches/main/protection")) {
+      return response(mainProtection);
     }
     if (url === "https://staging.example/api/health") return response(health);
     return response({ error: "unexpected URL" }, 404);
@@ -183,7 +235,7 @@ describe("clinic readiness evidence collector", () => {
     );
 
     expect(evidence).toMatchObject({
-      evidenceFormatVersion: 1,
+      evidenceFormatVersion: 2,
       releaseSha: sha,
       ci: {
         releaseSha: sha,
@@ -195,6 +247,18 @@ describe("clinic readiness evidence collector", () => {
           tests: "passed",
           build: "passed",
           dependencyAudit: "passed",
+        },
+      },
+      repositoryGovernance: {
+        productionEnvironment: {
+          canAdminsBypass: false,
+          preventSelfReview: true,
+          requiredReviewerCount: 1,
+          mainOnlyBranchPolicy: true,
+        },
+        mainBranch: {
+          requiredApprovalCount: 2,
+          requireCodeOwnerReviews: true,
         },
       },
       hostedHealth: { releaseSha: sha, statusCode: 200 },
@@ -210,18 +274,20 @@ describe("clinic readiness evidence collector", () => {
 
   it("rejects a successful CI run from another commit", async () => {
     const fetchFn = authoritativeResponses();
-    const wrapped = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const result = await fetchFn(input, init);
-      if (String(input).endsWith("/actions/runs/101")) {
-        const body = await result.json();
-        return response({ ...body, head_sha: "c".repeat(40) });
-      }
-      return result;
-    }) as unknown as typeof fetch;
+    const wrapped = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const result = await fetchFn(input, init);
+        if (String(input).endsWith("/actions/runs/101")) {
+          const body = await result.json();
+          return response({ ...body, head_sha: "c".repeat(40) });
+        }
+        return result;
+      },
+    ) as unknown as typeof fetch;
 
-    await expect(collectClinicReadinessEvidence(options(wrapped))).rejects.toThrow(
-      "CI must be a successful exact-SHA CI run from main.",
-    );
+    await expect(
+      collectClinicReadinessEvidence(options(wrapped)),
+    ).rejects.toThrow("CI must be a successful exact-SHA CI run from main.");
   });
 
   it("rejects a green job whose required dependency audit step is absent", async () => {
@@ -240,18 +306,42 @@ describe("clinic readiness evidence collector", () => {
 
   it("rejects an incomplete GitHub job listing", async () => {
     const fetchFn = authoritativeResponses();
-    const wrapped = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const result = await fetchFn(input, init);
-      if (String(input).endsWith("/actions/runs/101/jobs?per_page=100")) {
-        const body = await result.json();
-        return response({ ...(body as object), total_count: 101 });
-      }
-      return result;
-    }) as unknown as typeof fetch;
+    const wrapped = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const result = await fetchFn(input, init);
+        if (String(input).endsWith("/actions/runs/101/jobs?per_page=100")) {
+          const body = await result.json();
+          return response({ ...(body as object), total_count: 101 });
+        }
+        return result;
+      },
+    ) as unknown as typeof fetch;
 
-    await expect(collectClinicReadinessEvidence(options(wrapped))).rejects.toThrow(
-      "CI jobs response is incomplete.",
-    );
+    await expect(
+      collectClinicReadinessEvidence(options(wrapped)),
+    ).rejects.toThrow("CI jobs response is incomplete.");
+  });
+
+  it("collects unsafe governance as explicit NO_GO evidence", async () => {
+    const fetchFn = authoritativeResponses();
+    const wrapped = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const result = await fetchFn(input, init);
+        if (String(input).endsWith("/environments/Production")) {
+          const body = (await result.json()) as Record<string, unknown>;
+          return response({ ...body, can_admins_bypass: true });
+        }
+        return result;
+      },
+    ) as unknown as typeof fetch;
+
+    const evidence = await collectClinicReadinessEvidence(options(wrapped));
+    expect(
+      evaluateClinicReadinessRelease(
+        evidence,
+        Date.parse("2026-08-29T21:00:00.000Z"),
+      ).reasons,
+    ).toContain("Production environment allows administrator bypass.");
   });
 
   it("rejects a non-HTTPS or decorated health endpoint before fetching", async () => {

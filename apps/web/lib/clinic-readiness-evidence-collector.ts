@@ -29,6 +29,33 @@ type WorkflowRun = {
 
 type JobsResponse = { jobs?: unknown; total_count?: unknown };
 
+type ProtectionRule = {
+  type?: unknown;
+  prevent_self_review?: unknown;
+  reviewers?: unknown;
+};
+
+type EnvironmentResponse = {
+  name?: unknown;
+  can_admins_bypass?: unknown;
+  protection_rules?: unknown;
+  deployment_branch_policy?: unknown;
+};
+
+type BranchPoliciesResponse = {
+  total_count?: unknown;
+  branch_policies?: unknown;
+};
+
+type BranchProtectionResponse = {
+  required_status_checks?: unknown;
+  required_pull_request_reviews?: unknown;
+  enforce_admins?: unknown;
+  required_conversation_resolution?: unknown;
+  allow_force_pushes?: unknown;
+  allow_deletions?: unknown;
+};
+
 export type ClinicReadinessEvidenceCollectionOptions = {
   releaseSha: string;
   repository: string;
@@ -57,7 +84,8 @@ function runId(value: number, label: string): number {
 
 function regularBoundedJsonFile(path: string): unknown {
   const stat = statSync(path);
-  if (!stat.isFile()) throw new Error("Restore evidence must be a regular file.");
+  if (!stat.isFile())
+    throw new Error("Restore evidence must be a regular file.");
   if (stat.size > MAX_EVIDENCE_BYTES) {
     throw new Error("Restore evidence exceeds the 1 MB safety limit.");
   }
@@ -103,6 +131,12 @@ function workflowJob(value: unknown): WorkflowJob | null {
     : null;
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 function successfulJob(jobs: WorkflowJob[], name: string): WorkflowJob {
   const matches = jobs.filter((job) => job.name === name);
   if (matches.length !== 1) {
@@ -117,17 +151,23 @@ function successfulJob(jobs: WorkflowJob[], name: string): WorkflowJob {
 
 function requireSuccessfulStep(job: WorkflowJob, name: string) {
   const steps = Array.isArray(job.steps)
-    ? job.steps.filter(
-        (value): value is WorkflowStep =>
-          Boolean(value && typeof value === "object" && !Array.isArray(value)),
+    ? job.steps.filter((value): value is WorkflowStep =>
+        Boolean(value && typeof value === "object" && !Array.isArray(value)),
       )
     : [];
   const matches = steps.filter((step) => step.name === name);
   if (matches.length !== 1) {
-    throw new Error(`GitHub job ${String(job.name)} must contain step ${name}.`);
+    throw new Error(
+      `GitHub job ${String(job.name)} must contain step ${name}.`,
+    );
   }
-  if (matches[0].status !== "completed" || matches[0].conclusion !== "success") {
-    throw new Error(`GitHub step ${String(job.name)} / ${name} has not passed.`);
+  if (
+    matches[0].status !== "completed" ||
+    matches[0].conclusion !== "success"
+  ) {
+    throw new Error(
+      `GitHub step ${String(job.name)} / ${name} has not passed.`,
+    );
   }
 }
 
@@ -196,7 +236,11 @@ async function githubRunAndJobs(
   if (!run || typeof run !== "object" || Array.isArray(run)) {
     throw new Error(`${label} run response is invalid.`);
   }
-  if (!jobsResponse || typeof jobsResponse !== "object" || Array.isArray(jobsResponse)) {
+  if (
+    !jobsResponse ||
+    typeof jobsResponse !== "object" ||
+    Array.isArray(jobsResponse)
+  ) {
     throw new Error(`${label} jobs response is invalid.`);
   }
   const jobsPayload = jobsResponse as JobsResponse;
@@ -211,6 +255,110 @@ async function githubRunAndJobs(
     throw new Error(`${label} jobs response is incomplete.`);
   }
   return { run: run as WorkflowRun, jobs };
+}
+
+function requiredCheckNames(value: unknown): string[] {
+  const checks = record(value);
+  const contexts = Array.isArray(checks?.contexts)
+    ? checks.contexts.filter((item): item is string => typeof item === "string")
+    : [];
+  const appChecks = Array.isArray(checks?.checks)
+    ? checks.checks
+        .map(record)
+        .map((item) => item?.context)
+        .filter((item): item is string => typeof item === "string")
+    : [];
+  return [...new Set([...contexts, ...appChecks])].sort();
+}
+
+async function repositoryGovernanceEvidence(
+  fetchFn: typeof fetch,
+  repository: string,
+  token: string | undefined,
+  checkedAt: string,
+) {
+  const root = `https://api.github.com/repos/${repository}`;
+  const [rawEnvironment, rawPolicies, rawProtection] = await Promise.all([
+    githubJson(
+      fetchFn,
+      `${root}/environments/Production`,
+      token,
+      "Production environment",
+    ),
+    githubJson(
+      fetchFn,
+      `${root}/environments/Production/deployment-branch-policies`,
+      token,
+      "Production deployment branch policies",
+    ),
+    githubJson(
+      fetchFn,
+      `${root}/branches/main/protection`,
+      token,
+      "Main branch protection",
+    ),
+  ]);
+  const environment = record(rawEnvironment) as EnvironmentResponse | null;
+  const policies = record(rawPolicies) as BranchPoliciesResponse | null;
+  const protection = record(rawProtection) as BranchProtectionResponse | null;
+  if (!environment || !policies || !protection) {
+    throw new Error("GitHub repository governance response is invalid.");
+  }
+
+  const protectionRules = Array.isArray(environment.protection_rules)
+    ? environment.protection_rules
+        .map(record)
+        .filter((item): item is ProtectionRule => item !== null)
+    : [];
+  const reviewerRules = protectionRules.filter(
+    (rule) => rule.type === "required_reviewers",
+  );
+  const reviewerRule = reviewerRules.length === 1 ? reviewerRules[0] : null;
+  const reviewerCount = Array.isArray(reviewerRule?.reviewers)
+    ? reviewerRule.reviewers.length
+    : 0;
+
+  const deploymentPolicy = record(environment.deployment_branch_policy);
+  const rawBranchPolicies = Array.isArray(policies.branch_policies)
+    ? policies.branch_policies.map(record).filter((item) => item !== null)
+    : [];
+  const mainOnlyBranchPolicy =
+    policies.total_count === 1 &&
+    rawBranchPolicies.length === 1 &&
+    rawBranchPolicies[0]?.name === "main" &&
+    rawBranchPolicies[0]?.type === "branch";
+
+  const reviews = record(protection.required_pull_request_reviews);
+  return {
+    checkedAt,
+    productionEnvironment: {
+      exists: environment.name === "Production",
+      canAdminsBypass: environment.can_admins_bypass === true,
+      preventSelfReview: reviewerRule?.prevent_self_review === true,
+      requiredReviewerCount: reviewerCount,
+      usesCustomBranchPolicies:
+        deploymentPolicy?.protected_branches === false &&
+        deploymentPolicy?.custom_branch_policies === true,
+      mainOnlyBranchPolicy,
+    },
+    mainBranch: {
+      enforceAdmins: record(protection.enforce_admins)?.enabled === true,
+      strictStatusChecks:
+        record(protection.required_status_checks)?.strict === true,
+      requiredChecks: requiredCheckNames(protection.required_status_checks),
+      requiredApprovalCount:
+        typeof reviews?.required_approving_review_count === "number"
+          ? reviews.required_approving_review_count
+          : 0,
+      dismissStaleReviews: reviews?.dismiss_stale_reviews === true,
+      requireCodeOwnerReviews: reviews?.require_code_owner_reviews === true,
+      requireLastPushApproval: reviews?.require_last_push_approval === true,
+      requireConversationResolution:
+        record(protection.required_conversation_resolution)?.enabled === true,
+      allowForcePushes: record(protection.allow_force_pushes)?.enabled === true,
+      allowDeletions: record(protection.allow_deletions)?.enabled === true,
+    },
+  };
 }
 
 function hostedHealthEndpoint(value: string): URL {
@@ -241,28 +389,36 @@ export async function collectClinicReadinessEvidence(
   const migrationRunId = runId(options.migrationRunId, "Migration run ID");
   const healthUrl = hostedHealthEndpoint(options.hostedHealthUrl);
   const fetchFn = options.fetchFn ?? fetch;
+  const checkedAt = (options.now ?? new Date()).toISOString();
 
-  const [ci, migration, healthResponse] = await Promise.all([
-    githubRunAndJobs(
-      fetchFn,
-      options.repository,
-      ciRunId,
-      options.githubToken,
-      "CI",
-    ),
-    githubRunAndJobs(
-      fetchFn,
-      options.repository,
-      migrationRunId,
-      options.githubToken,
-      "Production migration",
-    ),
-    fetchFn(healthUrl, {
-      headers: { Accept: "application/json" },
-      redirect: "error",
-      signal: AbortSignal.timeout(15_000),
-    }),
-  ]);
+  const [ci, migration, healthResponse, repositoryGovernance] =
+    await Promise.all([
+      githubRunAndJobs(
+        fetchFn,
+        options.repository,
+        ciRunId,
+        options.githubToken,
+        "CI",
+      ),
+      githubRunAndJobs(
+        fetchFn,
+        options.repository,
+        migrationRunId,
+        options.githubToken,
+        "Production migration",
+      ),
+      fetchFn(healthUrl, {
+        headers: { Accept: "application/json" },
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+      }),
+      repositoryGovernanceEvidence(
+        fetchFn,
+        options.repository,
+        options.githubToken,
+        checkedAt,
+      ),
+    ]);
 
   verifyRun(ci.run, {
     label: "CI",
@@ -302,14 +458,16 @@ export async function collectClinicReadinessEvidence(
   requireSuccessfulStep(validationJob, "Require exact revision confirmation");
   requireSuccessfulStep(productionMigrationJob, "Apply migrations");
   requireSuccessfulStep(productionMigrationJob, "Re-apply row-level security");
-  requireSuccessfulStep(productionMigrationJob, "Verify schema matches the code");
+  requireSuccessfulStep(
+    productionMigrationJob,
+    "Verify schema matches the code",
+  );
 
   const healthBody = await boundedJsonResponse(healthResponse, "Hosted health");
   const restoreDrill = regularBoundedJsonFile(options.restoreEvidencePath);
-  const checkedAt = (options.now ?? new Date()).toISOString();
 
   return {
-    evidenceFormatVersion: 1,
+    evidenceFormatVersion: 2,
     releaseSha,
     ci: {
       releaseSha,
@@ -330,6 +488,7 @@ export async function collectClinicReadinessEvidence(
         dependencyAudit: "passed",
       },
     },
+    repositoryGovernance,
     hostedHealth: {
       releaseSha,
       checkedAt,
