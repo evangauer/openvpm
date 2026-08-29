@@ -226,8 +226,8 @@ model.
 ### Isolated staging migration gate
 
 The GitHub **Apply migrations** workflow has a separate `staging` target. It is
-manual, main-only during the repository transition, bound to the exact
-40-character dispatched commit, and requires the typed confirmation
+manual, restricted to the canonical `staging` branch, bound to the exact
+40-character dispatched staging commit, and requires the typed confirmation
 `MIGRATE_STAGING`. The job runs in the GitHub `Staging` environment and reads
 only its environment-scoped `STAGING_DATABASE_URL` and
 `OPENPIMS_APP_DB_PASSWORD` secrets. Missing or blank credentials fail the job;

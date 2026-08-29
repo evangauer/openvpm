@@ -27,7 +27,7 @@ on:
         required: false
         type: string
       release_sha:
-        description: Exact 40-character main commit to migrate
+        description: Exact 40-character canonical branch commit to migrate
         required: false
         type: string
 
@@ -40,13 +40,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  reject-non-main-dispatch:
-    name: reject non-main dispatch
-    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+  reject-invalid-dispatch-branch:
+    name: reject invalid dispatch branch
+    if: github.event_name == 'workflow_dispatch' && ((inputs.target == 'staging' && github.ref != 'refs/heads/staging') || (inputs.target != 'staging' && github.ref != 'refs/heads/main'))
     runs-on: ubuntu-latest
     steps:
       - run: |
-          echo "::error::Migration dispatches must run from the main branch."
+          echo "::error::Staging migrations must run from staging; demo and production migrations must run from main."
           exit 1
 
   validate-production-request:
@@ -70,7 +70,7 @@ jobs:
 
   validate-staging-request:
     name: validate staging request
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.target == 'staging'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/staging' && inputs.target == 'staging'
     runs-on: ubuntu-latest
     steps:
       - name: Require exact revision confirmation
@@ -83,14 +83,14 @@ jobs:
             exit 1
           fi
           if [[ ! "$REQUESTED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || [ "$REQUESTED_RELEASE_SHA" != "$GITHUB_SHA" ]; then
-            echo "::error::Staging migration release SHA must match the exact dispatched main commit."
+            echo "::error::Staging migration release SHA must match the exact dispatched staging commit."
             exit 1
           fi
 
   staging:
     name: staging
     needs: validate-staging-request
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.target == 'staging'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/staging' && inputs.target == 'staging'
     environment: Staging
     runs-on: ubuntu-latest
     steps:

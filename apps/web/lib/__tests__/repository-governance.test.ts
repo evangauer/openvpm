@@ -28,7 +28,7 @@ describe("repository promotion controls", () => {
     expect(production).toContain(
       '[ "$REQUESTED_RELEASE_SHA" != "$GITHUB_SHA" ]',
     );
-    expect(workflow).toContain("reject-non-main-dispatch:");
+    expect(workflow).toContain("reject-invalid-dispatch-branch:");
     expect(workflow).toContain("validate-production-request:");
     expect(workflow).toContain("needs: validate-production-request");
     expect(workflow).toContain(
@@ -48,6 +48,7 @@ describe("repository promotion controls", () => {
 
     expect(staging).toBeDefined();
     expect(staging).toContain("needs: validate-staging-request");
+    expect(staging).toContain("github.ref == 'refs/heads/staging'");
     expect(staging).toContain("inputs.target == 'staging'");
     expect(staging).toContain("environment: Staging");
     expect(staging).toContain("secrets.STAGING_DATABASE_URL");
@@ -59,7 +60,10 @@ describe("repository promotion controls", () => {
     expect(staging).toContain("run: pnpm db:rls");
     expect(workflow).toContain("MIGRATE_STAGING");
     expect(workflow).toContain(
-      "Staging migration release SHA must match the exact dispatched main commit.",
+      "Staging migration release SHA must match the exact dispatched staging commit.",
+    );
+    expect(workflow).toContain(
+      "Staging migrations must run from staging; demo and production migrations must run from main.",
     );
     expect(staging.indexOf("staging:verify-database-target")).toBeLessThan(
       staging.indexOf("name: Schema state before"),
@@ -98,9 +102,7 @@ describe("repository promotion controls", () => {
   it("keeps live clinic launch explicitly gated by authoritative recovery evidence", () => {
     const readiness = repoFile("docs/clinic-pilot-readiness.md");
 
-    expect(readiness).toContain(
-      "NO_GO for a new live clinic cutover",
-    );
+    expect(readiness).toContain("NO_GO for a new live clinic cutover");
     expect(readiness).toContain("authoritative exact-SHA release");
     expect(readiness).toContain("provider-backed restore drill");
     expect(readiness).toContain("patient-linked object exception");
