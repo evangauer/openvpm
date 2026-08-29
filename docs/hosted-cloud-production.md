@@ -237,6 +237,14 @@ check. Run `pnpm db:seed` only with the documented synthetic seed and route all
 email/SMS/payment destinations to non-delivering or allowlisted sandbox
 providers.
 
+Set the GitHub `Staging` environment variable `STAGING_PROJECT_REF` to the new
+project's exact 20-character Supabase ref. Before any database command, the
+workflow proves that `STAGING_DATABASE_URL` resolves to that same project and
+rejects the opaque identities of both existing data-bearing OpenVPM projects.
+This guard emits only a SHA-256 identity and connection mode; it never prints
+the database URL or credentials. A renamed old project remains rejected because
+the immutable project ref, not its display name, is the security boundary.
+
 After migration, point only the Vercel `clinic-readiness-staging` custom
 environment at this database, deploy the same SHA, and require `/api/health` to
 return HTTP 200 before recording acceptance. Never copy the current

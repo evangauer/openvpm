@@ -16,6 +16,7 @@
     "backup:recover-practice": "tsx scripts/recover-practice.ts",
     "release:clinic-readiness:collect": "tsx scripts/collect-clinic-readiness-evidence.ts",
     "release:clinic-readiness": "tsx scripts/clinic-readiness-release.ts",
+    "staging:verify-database-target": "tsx scripts/verify-staging-database-target.ts",
     "files:recover-legacy": "tsx scripts/recover-legacy-file.ts"
   },
   "dependencies": {

@@ -51,12 +51,18 @@ describe("repository promotion controls", () => {
     expect(staging).toContain("inputs.target == 'staging'");
     expect(staging).toContain("environment: Staging");
     expect(staging).toContain("secrets.STAGING_DATABASE_URL");
+    expect(staging).toContain("vars.STAGING_PROJECT_REF");
+    expect(staging).toContain("STAGING_PROJECT_REF is missing or invalid");
+    expect(staging).toContain("staging:verify-database-target");
     expect(staging).toContain("run: pnpm db:rls:preflight");
     expect(staging).toContain("run: pnpm db:migrate");
     expect(staging).toContain("run: pnpm db:rls");
     expect(workflow).toContain("MIGRATE_STAGING");
     expect(workflow).toContain(
       "Staging migration release SHA must match the exact dispatched main commit.",
+    );
+    expect(staging.indexOf("staging:verify-database-target")).toBeLessThan(
+      staging.indexOf("name: Schema state before"),
     );
   });
 

@@ -107,6 +107,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+          STAGING_PROJECT_REF: ${{ vars.STAGING_PROJECT_REF }}
         run: |
           if [[ -z "$DATABASE_URL" || "$DATABASE_URL" =~ ^[[:space:]]*$ ]]; then
             echo "::error::STAGING_DATABASE_URL is not configured."
@@ -116,7 +117,18 @@ jobs:
             echo "::error::OPENPIMS_APP_DB_PASSWORD is not configured in the Staging environment."
             exit 1
           fi
+          if [[ ! "$STAGING_PROJECT_REF" =~ ^[a-z0-9]{20}$ ]]; then
+            echo "::error::STAGING_PROJECT_REF is missing or invalid in the Staging environment."
+            exit 1
+          fi
           echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Reject protected or mismatched staging project
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          STAGING_PROJECT_REF: ${{ vars.STAGING_PROJECT_REF }}
+        run: pnpm --filter @openpims/web staging:verify-database-target
 
       - name: Schema state before
         if: steps.configured.outputs.ready == 'true'
