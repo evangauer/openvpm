@@ -1,0 +1,14 @@
+title = "OpenVPM deployable artifact secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Next build caches, type output, traces, and the standalone duplicate are not primary deployable application bundles."
+paths = [
+  '''(^|/)\.next/cache/''',
+  '''(^|/)\.next/diagnostics/''',
+  '''(^|/)\.next/standalone/''',
+  '''(^|/)\.next/types/''',
+  '''(^|/)\.next/trace$''',
+]

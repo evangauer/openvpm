@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "exceptions": [
+    {
+      "fingerprint": "apps/web/app/api/portal/checkout/route.test.ts:generic-api-key:125",
+      "owner": "@evangauer",
+      "reason": "Synthetic portal rate-limit bucket hash used only by a route test.",
+      "addedOn": "2026-08-29",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "fingerprint": "apps/web/lib/__tests__/api-auth-authenticate.test.ts:generic-api-key:109",
+      "owner": "@evangauer",
+      "reason": "Deliberately well-shaped fake API key used to exercise authentication rejection and lookup behavior.",
+      "addedOn": "2026-08-29",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "fingerprint": "apps/web/lib/__tests__/mfa.test.ts:generic-api-key:38",
+      "owner": "@evangauer",
+      "reason": "Public deterministic TOTP test vector used only by unit tests.",
+      "addedOn": "2026-08-29",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "fingerprint": "apps/web/server/__tests__/mfa-router.test.ts:generic-api-key:115",
+      "owner": "@evangauer",
+      "reason": "Synthetic MFA secret paired with a stubbed test-only encryption key.",
+      "addedOn": "2026-08-29",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "fingerprint": "apps/web/server/__tests__/portal-booking-inputs.test.ts:generic-api-key:50",
+      "owner": "@evangauer",
+      "reason": "Synthetic portal slot rate-limit bucket hash used only by router tests.",
+      "addedOn": "2026-08-29",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "fingerprint": "apps/web/server/__tests__/portal-booking-inputs.test.ts:generic-api-key:52",
+      "owner": "@evangauer",
+      "reason": "Synthetic portal booking rate-limit bucket hash used only by router tests.",
+      "addedOn": "2026-08-29",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "fingerprint": "apps/web/server/__tests__/portal-messages.test.ts:generic-api-key:34",
+      "owner": "@evangauer",
+      "reason": "Synthetic portal message rate-limit bucket hash used only by router tests.",
+      "addedOn": "2026-08-29",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "fingerprint": "apps/web/server/__tests__/portal-messages.test.ts:generic-api-key:36",
+      "owner": "@evangauer",
+      "reason": "Synthetic portal read rate-limit bucket hash used only by router tests.",
+      "addedOn": "2026-08-29",
+      "expiresOn": "2026-11-30"
+    },
+    {
+      "fingerprint": "apps/web/server/__tests__/portal-read-rate-limits.test.ts:generic-api-key:30",
+      "owner": "@evangauer",
+      "reason": "Synthetic portal read rate-limit bucket hash used only by router tests.",
+      "addedOn": "2026-08-29",
+      "expiresOn": "2026-11-30"
+    }
+  ]
+}

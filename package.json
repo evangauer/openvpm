@@ -21,7 +21,9 @@
     "clean": "turbo clean",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "verify:oss-release": "node scripts/verify-oss-release.mjs"
+    "verify:oss-release": "node scripts/verify-oss-release.mjs",
+    "verify:secrets": "node --test scripts/verify-secret-scan.test.mjs && node scripts/verify-secret-scan.mjs",
+    "verify:secret-artifacts": "node --test scripts/verify-secret-artifacts.test.mjs && node scripts/verify-secret-artifacts.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

@@ -59,17 +59,25 @@ for (const file of tracked) {
 
 const requiredPublicFiles = [
   ".env.example",
+  ".gitleaks-artifacts.toml",
+  ".gitleaks-exceptions.json",
+  ".gitleaks.toml",
+  ".gitleaksignore",
   "CONTRIBUTING.md",
   "LICENSE",
   "README.md",
   "SECURITY.md",
   "docker/docker-compose.yml",
   "docs/clinic-pilot-readiness.md",
+  "docs/secret-scanning.md",
   "docs/security.md",
+  "scripts/verify-secret-artifacts.mjs",
+  "scripts/verify-secret-scan.mjs",
 ];
 const trackedSet = new Set(tracked);
 for (const file of requiredPublicFiles) {
-  if (!trackedSet.has(file)) findings.push({ file, rule: "required release file missing" });
+  if (!trackedSet.has(file))
+    findings.push({ file, rule: "required release file missing" });
 }
 
 if (findings.length > 0) {

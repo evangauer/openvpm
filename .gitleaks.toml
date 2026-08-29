@@ -1,0 +1,16 @@
+title = "OpenVPM secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Installed dependencies and generated local caches are not tracked source. Deployable build output is scanned separately."
+paths = [
+  '''(^|/)\.git/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)\.next/''',
+  '''(^|/)\.turbo/''',
+  '''(^|/)coverage/''',
+  '''(^|/)playwright-report/''',
+  '''(^|/)test-results/''',
+]
