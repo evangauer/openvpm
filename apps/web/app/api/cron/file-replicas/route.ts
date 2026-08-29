@@ -60,6 +60,7 @@ export async function GET(request: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await alertOps("File replica reconciliation crashed", message);
+    console.error("Cron file replica job failed:", error);
     await reportCronHeartbeat({
       job: "file-replicas",
       status: "failed",
