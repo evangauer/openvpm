@@ -12,6 +12,12 @@ the feature behind the normal release, staging, and hosted-billing gates.
 - Never retry a Stripe mutation with a new idempotency key. The automatic
   billing-lifecycle worker reuses the operation's committed create/configure
   keys and performs provider calls outside database transactions.
+- The monthly subscription must already use Stripe flexible billing mode.
+  OpenVPM stops in `manual_review` for classic mode instead of performing the
+  irreversible provider migration implicitly.
+- The annual phase must preserve every explicitly allowlisted metered AI/SMS
+  companion item. Missing, duplicated, or changed companion billing evidence
+  is a provider mismatch; do not repair it by deleting the usage price.
 - Never supersede `manual_review` until the exact Stripe subscription, attached
   schedule, and location quantity have all been independently reviewed.
 - Superseding changes local workflow state only. It does not modify Stripe. If

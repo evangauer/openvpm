@@ -21,6 +21,11 @@ function subscription(
     } as Stripe.Customer,
     metadata: { practiceId: "practice_a" },
     status: "active",
+    billing_mode: {
+      type: "flexible",
+      flexible: { proration_discounts: "included" },
+      updated_at: PERIOD_START,
+    },
     cancel_at: null,
     cancel_at_period_end: false,
     pending_update: null,
@@ -203,6 +208,11 @@ describe("subscription cadence provider authorization", () => {
       { pause_collection: {} },
       "provider_collection_paused",
     ],
+    [
+      "classic billing mode",
+      { billing_mode: { type: "classic", flexible: null } },
+      "provider_billing_mode_ineligible",
+    ],
   ] as const)("contains %s", (_label, overrides, code) => {
     expect(
       inspectCadenceSubscription(
@@ -337,6 +347,7 @@ describe("subscription cadence schedule construction", () => {
           quantity: 2,
           tax_rates: ["txr_location"],
         },
+        { price: "price_metered" },
       ],
       metadata: {
         practiceId: "practice_a",
@@ -361,6 +372,14 @@ describe("subscription cadence schedule construction", () => {
           price: "price_annual",
           quantity: 2,
           tax_rates: [{ id: "txr_location" } as Stripe.TaxRate],
+        },
+        {
+          billing_thresholds: null,
+          discounts: [],
+          metadata: null,
+          plan: "plan_metered" as never,
+          price: "price_metered",
+          tax_rates: [],
         },
       ],
     });
@@ -391,6 +410,7 @@ describe("subscription cadence schedule construction", () => {
     ]);
     expect(params.phases?.[1]?.items).toEqual([
       expect.objectContaining({ price: "price_annual", quantity: 4 }),
+      expect.objectContaining({ price: "price_metered" }),
     ]);
   });
 
@@ -451,6 +471,14 @@ describe("subscription cadence schedule construction", () => {
           quantity: 2,
           tax_rates: [{ id: "txr_location" } as Stripe.TaxRate],
         },
+        {
+          billing_thresholds: null,
+          discounts: [],
+          metadata: null,
+          plan: "plan_metered" as never,
+          price: "price_metered",
+          tax_rates: [],
+        },
       ],
       metadata: {
         practiceId: "practice_a",
@@ -470,6 +498,23 @@ describe("subscription cadence schedule construction", () => {
       params: {},
       effectiveAt: new Date(PERIOD_END * 1000),
     });
+    expect(() =>
+      buildAnnualScheduleUpdate(
+        {
+          ...owned,
+          phases: [
+            phase(),
+            {
+              ...annual,
+              items: annual.items.filter(
+                (item) => item.price !== "price_metered",
+              ),
+            },
+          ],
+        },
+        buildInput,
+      ),
+    ).toThrow("another or mismatched operation");
     expect(() =>
       buildAnnualScheduleUpdate(
         {

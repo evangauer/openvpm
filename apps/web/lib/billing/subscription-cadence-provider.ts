@@ -25,6 +25,7 @@ export type CadenceProviderInspection =
         | "provider_renewal_canceled"
         | "provider_pending_update"
         | "provider_collection_paused"
+        | "provider_billing_mode_ineligible"
         | "provider_billing_custom"
         | "provider_schedule_attached";
       observedScheduleId?: string;
@@ -250,6 +251,12 @@ export function inspectCadenceSubscription(
   }
   if (subscription.pause_collection !== null) {
     return { outcome: "manual_review", code: "provider_collection_paused" };
+  }
+  if (subscription.billing_mode?.type !== "flexible") {
+    return {
+      outcome: "manual_review",
+      code: "provider_billing_mode_ineligible",
+    };
   }
   if (
     subscription.application_fee_percent != null ||
@@ -597,10 +604,47 @@ function configuredAnnualPhase(
     (phase) =>
       phase.start_date === expectedStart &&
       phase.proration_behavior === "none" &&
-      phase.items.length === 1 &&
-      resourceId(phase.items[0]?.price) === input.annualPriceId &&
-      phase.items[0]?.quantity === input.locationQuantity,
+      phase.items.filter(
+        (item) => resourceId(item.price) === input.annualPriceId,
+      ).length === 1 &&
+      phase.items.filter(
+        (item) => resourceId(item.price) === input.monthlyPriceId,
+      ).length === 0 &&
+      phase.items.find(
+        (item) => resourceId(item.price) === input.annualPriceId,
+      )?.quantity === input.locationQuantity,
   );
+  const normalizedAnnualFingerprint = annual[0]
+    ? phaseFingerprint(
+        expectedCurrentStart,
+        expectedStart,
+        annual[0].items.map((item) => {
+          const priceId = resourceId(item.price);
+          if (!priceId) {
+            throw new CadenceProviderError(
+              "provider_response_invalid",
+              "The annual phase contains an item without a price identity.",
+            );
+          }
+          return {
+            priceId:
+              priceId === input.annualPriceId
+                ? input.monthlyPriceId
+                : priceId,
+            quantity: item.quantity ?? null,
+            taxRateIds: canonicalResourceIds(item.tax_rates),
+          };
+        }),
+        {
+          defaultTaxRateIds: canonicalResourceIds(
+            annual[0].default_tax_rates,
+          ),
+          automaticTax: automaticTaxEvidence(
+            annual[0].automatic_tax ?? schedule.default_settings.automatic_tax,
+          ),
+        },
+      )
+    : null;
   if (
     schedule.status !== "active" ||
     schedule.end_behavior !== "release" ||
@@ -609,10 +653,12 @@ function configuredAnnualPhase(
     schedule.current_phase?.end_date !== expectedStart ||
     current.length !== 1 ||
     annual.length !== 1 ||
+    annual[0]!.items.length !== current[0]!.items.length ||
     schedulePhaseFingerprint(
       current[0]!,
       schedule.default_settings.automatic_tax,
     ) !== input.providerSnapshotFingerprintSha256 ||
+    normalizedAnnualFingerprint !== input.providerSnapshotFingerprintSha256 ||
     schedulePhaseTaxFingerprint(
       current[0]!,
       input.monthlyPriceId,
@@ -703,13 +749,15 @@ export function buildAnnualScheduleUpdate(
     currentLocationItem;
   const futureParams: Stripe.SubscriptionScheduleUpdateParams.Phase = {
     ...currentParams,
-    items: [
-      {
-        ...currentLocationConfiguration,
-        price: input.annualPriceId,
-        quantity: input.locationQuantity,
-      },
-    ],
+    items: currentParams.items.map((item) =>
+      item.price === input.monthlyPriceId
+        ? {
+            ...currentLocationConfiguration,
+            price: input.annualPriceId,
+            quantity: input.locationQuantity,
+          }
+        : item,
+    ),
     start_date: expectedEnd,
     end_date: undefined,
     duration: { interval: "year", interval_count: 1 },
