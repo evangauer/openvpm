@@ -18,6 +18,7 @@ import {
   runDurablePracticeSubscriptionQuantitySyncBatch,
   runDurableSubscriptionQuantitySyncBatch,
 } from "@/lib/billing/stripe-subscription-quantity-sync";
+import { runDurableCadenceOperationRecoveryBatch } from "@/lib/billing/subscription-cadence-operations";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -58,6 +59,7 @@ export async function GET(request: Request) {
   try {
     // Provider calls happen in the durable workers after their short claim
     // transactions have committed. The cron is only a retry driver.
+    const cadenceRecovery = await runDurableCadenceOperationRecoveryBatch(db);
     await runDurableSubscriptionQuantitySyncBatch();
     await runDurablePracticeSubscriptionQuantitySyncBatch();
     const now = new Date();
@@ -174,8 +176,14 @@ export async function GET(request: Request) {
 
     await reportCronHeartbeat({
       job: "billing-lifecycle",
-      status: failed > 0 ? "degraded" : "ok",
-      detail: `${sent} sent, ${deduped} deduped, ${suppressed} suppressed, ${failed} failed, ${skipped} skipped`,
+      status:
+        failed > 0 ||
+        cadenceRecovery.manualReview > 0 ||
+        cadenceRecovery.deferred > 0 ||
+        cadenceRecovery.failed > 0
+          ? "degraded"
+          : "ok",
+      detail: `${sent} sent, ${deduped} deduped, ${suppressed} suppressed, ${failed} failed, ${skipped} skipped; cadence ${cadenceRecovery.scheduled} scheduled, ${cadenceRecovery.manualReview} manual, ${cadenceRecovery.deferred} deferred, ${cadenceRecovery.failed} failed`,
       metrics: {
         candidates: trialingPractices.length,
         sent,
@@ -183,6 +191,11 @@ export async function GET(request: Request) {
         suppressed,
         failed,
         skipped,
+        cadenceCandidates: cadenceRecovery.candidates,
+        cadenceScheduled: cadenceRecovery.scheduled,
+        cadenceManualReview: cadenceRecovery.manualReview,
+        cadenceDeferred: cadenceRecovery.deferred,
+        cadenceFailed: cadenceRecovery.failed,
       },
     });
 

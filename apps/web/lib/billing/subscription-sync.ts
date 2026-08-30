@@ -16,6 +16,8 @@ import {
   stripePriceIdFromEnv,
 } from "./plans";
 import type { BillingCadence } from "./catalog";
+import { syncOwnedAnnualScheduleLocationQuantity } from "./subscription-cadence-provider";
+import { markCadenceScheduleQuantityConflict } from "./subscription-cadence-operations";
 
 export type BillingSyncStatus = "ok" | "skipped" | "legacy" | "error";
 
@@ -171,7 +173,9 @@ export async function syncPracticeSubscriptionQuantities(opts: {
   const subscriptionId = opts.subscriptionId;
 
   const locationPrices = cloudLocationPriceIds();
-  const { seatPriceId } = cloudCheckoutPriceIds();
+  const { locationPriceId: monthlyPriceId, seatPriceId } =
+    cloudCheckoutPriceIds("month");
+  const { locationPriceId: annualPriceId } = cloudCheckoutPriceIds("year");
   if (locationPrices.length === 0) {
     const state = buildState(
       "error",
@@ -192,6 +196,7 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     return state;
   }
 
+  let cadenceScheduleId: string | null = null;
   try {
     const subscription = await stripe.subscriptions.retrieve(
       subscriptionId,
@@ -205,6 +210,10 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     const billingCadence = billingCadenceForStripePrice(
       locationItem?.price?.id,
     );
+    cadenceScheduleId =
+      typeof subscription.schedule === "string"
+        ? subscription.schedule
+        : (subscription.schedule?.id ?? null);
     // Flat model bills locations only; legacy subscriptions may also carry a
     // per-seat item, which we keep in sync for back-compat when present.
     const seatItem = seatPriceId
@@ -229,6 +238,39 @@ export async function syncPracticeSubscriptionQuantities(opts: {
           `${state.message} practice=${practiceId} subscription=${subscriptionId}`,
         );
       }
+      return state;
+    }
+
+    if (cadenceScheduleId) {
+      if (!monthlyPriceId || !annualPriceId) {
+        throw new Error(
+          "Monthly and annual Stripe prices are required for managed schedule quantity sync.",
+        );
+      }
+      await syncOwnedAnnualScheduleLocationQuantity({
+        subscription,
+        practiceId,
+        monthlyPriceId,
+        annualPriceId,
+        locationQuantity: counts.locationCount,
+        idempotencyKey: quantityIdempotencyKey(
+          opts.idempotencyKeyPrefix,
+          "schedule",
+          cadenceScheduleId,
+          counts.locationCount,
+        ),
+      });
+      const estimatedBase = `${estimatedCloudBaseMonthlyUsd(
+        counts.locationCount,
+        counts.billableSeatCount,
+      )} USD/mo until annual renewal`;
+      const state = buildState(
+        "ok",
+        `Synced ${counts.locationCount} location(s) across the current and scheduled annual phases, unlimited staff. Estimated current base ${estimatedBase}.`,
+        counts,
+        billingCadence ?? undefined,
+      );
+      await writeBillingSyncState(db, practiceId, state);
       return state;
     }
 
@@ -314,6 +356,12 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     await writeBillingSyncState(db, practiceId, state);
     return state;
   } catch (err) {
+    if (cadenceScheduleId) {
+      await markCadenceScheduleQuantityConflict(db, {
+        practiceId,
+        scheduleId: cadenceScheduleId,
+      });
+    }
     const message = err instanceof Error ? err.message : String(err);
     const state = buildState("error", message, counts);
     await writeBillingSyncState(db, practiceId, state);
@@ -334,7 +382,7 @@ const STRIPE_QUANTITY_REQUEST_OPTIONS = {
 
 function quantityIdempotencyKey(
   prefix: string,
-  operation: "create" | "update",
+  operation: "create" | "update" | "schedule",
   identity: string,
   quantity?: number,
 ): string {

@@ -48,6 +48,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState } from "@/components/common/empty-state";
+import { ActionConfirmationDialog } from "@/components/common/action-confirmation-dialog";
 import { AccentColorPicker } from "@/components/brand/accent-color-picker";
 import { MessagingTab } from "@/components/settings/messaging-tab";
 import { BookingTab } from "@/components/settings/booking-tab";
@@ -1406,6 +1407,7 @@ function BillingTab() {
   const checkoutStatus = searchParams.get("checkout");
   const [checkoutReturnStartedAt] = useState(() => Date.now());
   const [checkoutPollingTimedOut, setCheckoutPollingTimedOut] = useState(false);
+  const [annualConfirmationOpen, setAnnualConfirmationOpen] = useState(false);
   const billingConfirmationInvalidated = useRef(false);
   const [selectedCadence, setSelectedCadence] = useState<BillingCadence>(() =>
     billingCadenceFromQuery(searchParams.get("plan")),
@@ -1501,6 +1503,26 @@ function BillingTab() {
       redirectToHostedBillingUrl(r.url);
     },
     onError: (e) => toast.error(e.message),
+  });
+  const scheduleAnnual = trpc.subscription.scheduleAnnualAtRenewal.useMutation({
+    onSuccess: (result) => {
+      setAnnualConfirmationOpen(false);
+      void utils.subscription.get.invalidate();
+      if (result.state === "scheduled") {
+        toast.success("Annual billing is scheduled for your next renewal.");
+      } else if (result.state === "manual_review") {
+        toast.error(
+          "The billing change was paused for review before any further automatic action.",
+        );
+      } else {
+        toast.info("The annual billing request is still being confirmed.");
+      }
+    },
+    onError: (e) => {
+      setAnnualConfirmationOpen(false);
+      void utils.subscription.get.invalidate();
+      toast.error(e.message);
+    },
   });
 
   if (billingError) {
@@ -1769,33 +1791,47 @@ function BillingTab() {
               </div>
             </>
           ) : (
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-medium">
-                  {data.currentBillingCadence === "year"
-                    ? `$${data.estimatedAnnualBase} per year`
-                    : `$${data.estimatedMonthlyBase} per month`}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Update payment details, invoices, or cancellation securely in
-                  Stripe.
-                </p>
+            <>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-medium">
+                    {data.currentBillingCadence === "year"
+                      ? `$${data.estimatedAnnualBase} per year`
+                      : `$${data.estimatedMonthlyBase} per month`}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Update payment details, invoices, or cancellation securely
+                    in Stripe.
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  disabled={
+                    portal.isPending || !authoritativeSetup.canManageBilling
+                  }
+                  onClick={() => portal.mutate()}
+                >
+                  {portal.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <CreditCard className="mr-2 h-4 w-4" />
+                  )}
+                  Manage billing
+                </Button>
               </div>
-              <Button
-                variant="outline"
-                disabled={
-                  portal.isPending || !authoritativeSetup.canManageBilling
-                }
-                onClick={() => portal.mutate()}
-              >
-                {portal.isPending ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <CreditCard className="mr-2 h-4 w-4" />
+              <AnnualCadenceControl
+                currentCadence={data.currentBillingCadence}
+                operation={data.cadenceOperation}
+                effectiveAtLabel={formatSettingsDateTime(
+                  data.cadenceOperation.effectiveAt,
+                  data.timezone,
                 )}
-                Manage billing
-              </Button>
-            </div>
+                estimatedAnnualBase={data.estimatedAnnualBase}
+                locationCount={data.locationCount}
+                requestPending={scheduleAnnual.isPending}
+                onRequest={() => setAnnualConfirmationOpen(true)}
+              />
+            </>
           )}
 
           <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground">
@@ -1849,6 +1885,141 @@ function BillingTab() {
         onRefresh={() => refreshPaymentAccount.mutate()}
         onDashboard={() => openPaymentAccountDashboard.mutate()}
       />
+
+      <ActionConfirmationDialog
+        open={annualConfirmationOpen}
+        title="Switch to annual billing at renewal?"
+        description={`OpenVPM will schedule $${data.estimatedAnnualBase} per year for ${data.locationCount} active location${data.locationCount === 1 ? "" : "s"}. Your monthly plan continues until its exact renewal; there is no immediate charge or proration.`}
+        confirmLabel="Schedule annual billing"
+        isPending={scheduleAnnual.isPending}
+        onCancel={() => setAnnualConfirmationOpen(false)}
+        onConfirm={() => scheduleAnnual.mutate()}
+      >
+        <p className="text-xs text-muted-foreground">
+          The final renewal date is confirmed from Stripe before the schedule is
+          saved. If the subscription has custom pricing or another schedule,
+          OpenVPM pauses for review without replacing it.
+        </p>
+      </ActionConfirmationDialog>
+    </div>
+  );
+}
+
+function AnnualCadenceControl({
+  currentCadence,
+  operation,
+  effectiveAtLabel,
+  estimatedAnnualBase,
+  locationCount,
+  requestPending,
+  onRequest,
+}: {
+  currentCadence: BillingCadence | null;
+  operation: {
+    state:
+      | "none"
+      | "processing"
+      | "scheduled"
+      | "applied"
+      | "failed"
+      | "manual_review"
+      | "superseded";
+  };
+  effectiveAtLabel: string;
+  estimatedAnnualBase: number;
+  locationCount: number;
+  requestPending: boolean;
+  onRequest: () => void;
+}) {
+  const canRequest =
+    currentCadence === "month" &&
+    (operation.state === "none" ||
+      operation.state === "failed" ||
+      operation.state === "superseded");
+  const stateCopy =
+    operation.state === "processing"
+      ? {
+          title: "Confirming annual billing",
+          body: "OpenVPM is checking the exact subscription and renewal boundary. Another request cannot start while this check is active.",
+          tone: "border-blue-200 bg-blue-50 text-blue-900",
+        }
+      : operation.state === "scheduled"
+        ? {
+            title: "Annual billing scheduled",
+            body: effectiveAtLabel
+              ? `Monthly billing continues until ${effectiveAtLabel}. The annual plan begins at that renewal without immediate proration.`
+              : "Monthly billing continues until Stripe confirms the exact renewal. No immediate proration is applied.",
+            tone: "border-emerald-200 bg-emerald-50 text-emerald-900",
+          }
+        : operation.state === "applied"
+          ? {
+              title: "Annual billing confirmed",
+              body: "A signed Stripe subscription snapshot confirmed the annual plan is active.",
+              tone: "border-emerald-200 bg-emerald-50 text-emerald-900",
+            }
+          : operation.state === "manual_review"
+            ? {
+                title: "Annual billing change paused",
+                body: "OpenVPM found subscription evidence that needs review. It will not make another automatic schedule change. Contact support before changing the schedule in Stripe.",
+                tone: "border-amber-200 bg-amber-50 text-amber-900",
+              }
+            : operation.state === "failed"
+              ? {
+                  title: "Annual billing was not scheduled",
+                  body: "No annual change is active. Review the current subscription, then try again or contact support.",
+                  tone: "border-red-200 bg-red-50 text-red-800",
+                }
+              : operation.state === "superseded"
+                ? {
+                    title: "Previous annual request no longer applies",
+                    body: "The subscription changed before the request could finish. Confirm the current monthly plan before requesting a new change.",
+                    tone: "border-amber-200 bg-amber-50 text-amber-900",
+                  }
+                : null;
+
+  if (currentCadence === "year" && operation.state === "none") return null;
+
+  return (
+    <div className="mt-5 border-t border-border pt-5">
+      {stateCopy ? (
+        <div
+          role={operation.state === "manual_review" ? "alert" : "status"}
+          className={cn("rounded-md border p-4 text-sm", stateCopy.tone)}
+        >
+          <p className="font-medium">{stateCopy.title}</p>
+          <p className="mt-1">{stateCopy.body}</p>
+        </div>
+      ) : currentCadence === null ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-medium">Billing schedule is still syncing</p>
+          <p className="mt-1">
+            OpenVPM will enable cadence changes only after the current Stripe
+            price is confirmed.
+          </p>
+        </div>
+      ) : null}
+
+      {canRequest ? (
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium">Annual at next renewal</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              ${estimatedAnnualBase} per year for {locationCount} active
+              location{locationCount === 1 ? "" : "s"}; no charge today.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            disabled={requestPending}
+            onClick={onRequest}
+          >
+            {requestPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : null}
+            Switch at renewal
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }

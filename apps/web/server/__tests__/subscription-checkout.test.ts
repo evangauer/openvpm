@@ -18,6 +18,24 @@ const mocks = vi.hoisted(() => ({
   syncPracticeSubscriptionQuantities: vi.fn(),
   usageForPractice: vi.fn(async () => 0),
   recordAuditLog: vi.fn(async () => undefined),
+  readCadenceOperationStatus: vi.fn(async () => ({
+    operationId: null,
+    state: "none",
+    requestedCadence: null,
+    effectiveAt: null,
+    errorCode: null,
+  })),
+  reserveAnnualCadenceOperation: vi.fn(async () => ({
+    operationId: "cadence_1",
+    reused: false,
+  })),
+  dispatchAnnualCadenceOperation: vi.fn(async () => ({
+    operationId: "cadence_1",
+    state: "scheduled",
+    requestedCadence: "year",
+    effectiveAt: new Date("2026-09-01T00:00:00.000Z"),
+    errorCode: null,
+  })),
   checkoutRequests: new Map<string, Record<string, unknown>>(),
 }));
 
@@ -87,6 +105,13 @@ vi.mock("@/lib/billing/subscription-sync", () => ({
 vi.mock("@/lib/billing/usage", () => ({
   usageForPractice: mocks.usageForPractice,
   currentPeriodMonth: () => "2026-06",
+}));
+
+vi.mock("@/lib/billing/subscription-cadence-operations", () => ({
+  CadenceOperationError: class CadenceOperationError extends Error {},
+  readCadenceOperationStatus: mocks.readCadenceOperationStatus,
+  reserveAnnualCadenceOperation: mocks.reserveAnnualCadenceOperation,
+  dispatchAnnualCadenceOperation: mocks.dispatchAnnualCadenceOperation,
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -183,6 +208,24 @@ afterEach(() => {
   });
   mocks.readBillingSyncState.mockResolvedValue(null);
   mocks.usageForPractice.mockResolvedValue(0);
+  mocks.readCadenceOperationStatus.mockResolvedValue({
+    operationId: null,
+    state: "none",
+    requestedCadence: null,
+    effectiveAt: null,
+    errorCode: null,
+  });
+  mocks.reserveAnnualCadenceOperation.mockResolvedValue({
+    operationId: "cadence_1",
+    reused: false,
+  });
+  mocks.dispatchAnnualCadenceOperation.mockResolvedValue({
+    operationId: "cadence_1",
+    state: "scheduled",
+    requestedCadence: "year",
+    effectiveAt: new Date("2026-09-01T00:00:00.000Z"),
+    errorCode: null,
+  });
 });
 
 describe("subscription checkout", () => {
@@ -256,6 +299,39 @@ describe("subscription checkout", () => {
     expect(mocks.readBillingSyncState).toHaveBeenCalledWith(db, PRACTICE_ID);
     expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
     expect(mocks.createBillingPortalSession).not.toHaveBeenCalled();
+  });
+
+  it("reserves locally and dispatches the annual renewal only post-commit", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_monthly");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_annual");
+    const db = createDb([
+      [practice({ tier: "cloud", billingStatus: "active" })],
+    ]);
+
+    await expect(callerWithDb(db).scheduleAnnualAtRenewal()).resolves.toEqual({
+      operationId: "cadence_1",
+      state: "scheduled",
+      requestedCadence: "year",
+      effectiveAt: new Date("2026-09-01T00:00:00.000Z"),
+      errorCode: null,
+      reused: false,
+    });
+    expect(mocks.reserveAnnualCadenceOperation).toHaveBeenCalledWith(db, {
+      practiceId: PRACTICE_ID,
+      requestedBy: USER_ID,
+      monthlyPriceId: "price_monthly",
+      annualPriceId: "price_annual",
+    });
+    expect(mocks.dispatchAnnualCadenceOperation).toHaveBeenCalledWith(
+      db,
+      "cadence_1",
+      { monthlyPriceId: "price_monthly", allowedCompanionPriceIds: [] },
+    );
+    const source = readFileSync("server/routers/subscription.ts", "utf8");
+    expect(source).toMatch(
+      /ctx\.postCommitEffect\(async \(rootDb\) => \{[\s\S]+dispatchAnnualCadenceOperation\([\s\S]+rootDb/,
+    );
   });
 
   it("rejects a second Checkout when a Stripe subscription is already connected", async () => {

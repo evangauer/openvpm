@@ -62,6 +62,9 @@ const mocks = vi.hoisted(() => {
         | { outcome: "mismatch"; reason: "provider_session_mismatch" }
       > => ({ outcome: "reconciled" }),
     ),
+    reconcileCadenceOperationFromSignedSubscriptionSnapshot: vi.fn(
+      async () => "none" as const,
+    ),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db),
     ),
@@ -130,6 +133,11 @@ vi.mock("@/lib/conversion-milestones", () => ({
 vi.mock("@/lib/billing/subscription-checkout-attempts", () => ({
   reconcileSubscriptionCheckoutWebhook:
     mocks.reconcileSubscriptionCheckoutWebhook,
+}));
+
+vi.mock("@/lib/billing/subscription-cadence-operations", () => ({
+  reconcileCadenceOperationFromSignedSubscriptionSnapshot:
+    mocks.reconcileCadenceOperationFromSignedSubscriptionSnapshot,
 }));
 
 const { POST } = await import("./route");
@@ -665,6 +673,19 @@ describe("Stripe subscription webhook", () => {
     expect(
       mocks.projectStripeConversionMilestonesForEvent,
     ).not.toHaveBeenCalled();
+    expect(
+      mocks.reconcileCadenceOperationFromSignedSubscriptionSnapshot,
+    ).toHaveBeenCalledWith(mocks.db, {
+      practiceId: PRACTICE_ID,
+      subscriptionId: SUBSCRIPTION_ID,
+      billingStatus: "active",
+      providerScheduleId: null,
+      itemPriceIds: [PRICE_ID],
+    });
+    expect(
+      mocks.reconcileCadenceOperationFromSignedSubscriptionSnapshot.mock
+        .invocationCallOrder[0],
+    ).toBeGreaterThan(mocks.updateSet.mock.invocationCallOrder[0]!);
   });
 
   it("transactionally queues a cancellation notice only after the stored subscription is cleared", async () => {
@@ -705,6 +726,15 @@ describe("Stripe subscription webhook", () => {
       },
     );
     expect(mocks.sendSubscriptionCanceledEmail).not.toHaveBeenCalled();
+    expect(
+      mocks.reconcileCadenceOperationFromSignedSubscriptionSnapshot,
+    ).toHaveBeenCalledWith(mocks.db, {
+      practiceId: PRACTICE_ID,
+      subscriptionId: SUBSCRIPTION_ID,
+      billingStatus: "canceled",
+      providerScheduleId: null,
+      itemPriceIds: [PRICE_ID],
+    });
   });
 
   it("captures the cancellation recipient for worker-side stale-contact suppression", async () => {

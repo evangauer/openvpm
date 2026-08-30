@@ -201,6 +201,7 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "settings.setMarketingEmailPreference",
   "subscription.createCheckout",
   "subscription.openBillingPortal",
+  "subscription.scheduleAnnualAtRenewal",
   // Platform-operator tooling must keep working even when the operator's own
   // practice trial has lapsed; the procedure itself gates on the
   // PLATFORM_ADMIN_EMAILS allowlist.

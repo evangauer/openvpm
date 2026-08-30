@@ -9,6 +9,7 @@ import {
   billingEnforced,
   cloudCheckoutPriceIds,
   cloudLocationPriceIds,
+  cloudMeteredPriceIds,
   estimatedCloudBaseAnnualUsd,
   estimatedCloudBaseMonthlyUsd,
   CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD,
@@ -33,6 +34,13 @@ import {
   subscriptionCheckoutTrialTerms,
 } from "@/lib/billing/subscription-checkout-attempts";
 import { withTenant } from "@/lib/tenant-db";
+import {
+  CadenceOperationError,
+  dispatchAnnualCadenceOperation,
+  readCadenceOperationStatus,
+  reserveAnnualCadenceOperation,
+  type CadenceOperationStatus,
+} from "@/lib/billing/subscription-cadence-operations";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -61,6 +69,10 @@ export const subscriptionRouter = createRouter({
 
     const counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
     const billingSync: BillingSyncState | null = await readBillingSyncState(
+      ctx.db,
+      ctx.practiceId,
+    );
+    const cadenceOperation = await readCadenceOperationStatus(
       ctx.db,
       ctx.practiceId,
     );
@@ -98,6 +110,7 @@ export const subscriptionRouter = createRouter({
       ),
       annualLocationUnitPriceUsd: CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD,
       currentBillingCadence: billingSync?.billingCadence ?? null,
+      cadenceOperation,
       billingOptions: CLOUD_BILLING_OPTIONS.map((option) => ({
         ...option,
         totalUsd:
@@ -318,6 +331,71 @@ export const subscriptionRouter = createRouter({
       response.url = isSafeCheckoutRedirectUrl(result?.url)
         ? result!.url!
         : null;
+    });
+    return response;
+  }),
+
+  /** Schedule a monthly subscription to become annual at its exact renewal. */
+  scheduleAnnualAtRenewal: adminProcedure.mutation(async ({ ctx }) => {
+    if (!billingEnforced()) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "Hosted billing is not enabled for this deployment.",
+      });
+    }
+    const monthlyPriceId = cloudCheckoutPriceIds("month").locationPriceId;
+    const annualPriceId = cloudCheckoutPriceIds("year").locationPriceId;
+    const { aiOveragePriceId, smsOveragePriceId } = cloudMeteredPriceIds();
+    const allowedCompanionPriceIds = [
+      aiOveragePriceId,
+      smsOveragePriceId,
+    ].filter((priceId): priceId is string => Boolean(priceId));
+    if (!monthlyPriceId || !annualPriceId) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "Monthly and annual hosted billing are not both configured.",
+      });
+    }
+    if (!ctx.postCommitEffect) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "The billing change could not be scheduled safely.",
+      });
+    }
+
+    let reservation: { operationId: string; reused: boolean };
+    try {
+      reservation = await reserveAnnualCadenceOperation(ctx.db, {
+        practiceId: ctx.practiceId,
+        requestedBy: ctx.session.user.id,
+        monthlyPriceId,
+        annualPriceId,
+      });
+    } catch (error) {
+      if (error instanceof CadenceOperationError) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: error.message,
+        });
+      }
+      throw error;
+    }
+
+    const response: CadenceOperationStatus & { reused: boolean } = {
+      operationId: reservation.operationId,
+      state: "processing",
+      requestedCadence: "year",
+      effectiveAt: null,
+      errorCode: null,
+      reused: reservation.reused,
+    };
+    ctx.postCommitEffect(async (rootDb) => {
+      const dispatched = await dispatchAnnualCadenceOperation(
+        rootDb,
+        reservation.operationId,
+        { monthlyPriceId, allowedCompanionPriceIds },
+      );
+      Object.assign(response, dispatched);
     });
     return response;
   }),
