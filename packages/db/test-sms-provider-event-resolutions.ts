@@ -162,11 +162,16 @@ for (const contract of [
 ]) {
   requireText(rls, contract, `RLS ${contract}`);
 }
-requireText(
-  reset,
-  '"sms_provider_event_resolutions"',
-  "reset deletes resolution children before evidence parents",
-);
+for (const contract of [
+  "declaredSchema().keys()",
+  "TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE",
+]) {
+  requireText(
+    reset,
+    contract,
+    `schema-derived reset includes SMS resolution evidence: ${contract}`,
+  );
+}
 for (const contract of [
   "sms_provider_event_resolutions_shape_check",
   "sms_provider_event_resolutions_validate_insert",
