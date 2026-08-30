@@ -294,6 +294,14 @@ check. Run `pnpm db:seed` only with the documented synthetic seed and route all
 email/SMS/payment destinations to non-delivering or allowlisted sandbox
 providers.
 
+If Resend is configured in Development or Staging, set
+`NONPRODUCTION_EMAIL_RECIPIENT_HASHES` to 1-20 comma-separated SHA-256 hashes of
+the exact lowercased sandbox recipient addresses. Deployment validation fails
+without a valid list, and the runtime rejects every non-matching recipient
+before calling Resend. Do not use domain wildcards or real clinic/client
+addresses. An environment with no Resend key remains non-delivering and hosted
+email operations fail closed.
+
 Set the GitHub `Staging` environment variable `STAGING_PROJECT_REF` to the new
 project's exact 20-character Supabase ref. Before any database command, the
 workflow proves that `STAGING_DATABASE_URL` resolves to that same project and

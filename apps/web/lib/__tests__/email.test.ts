@@ -167,6 +167,52 @@ describe("sendEmail", () => {
     expect(EMAIL_SEND_TIMEOUT_MS).toBe(10_000);
   });
 
+  it("blocks non-allowlisted staging recipients before calling Resend", async () => {
+    vi.stubEnv("OPENVPM_ENVIRONMENT", "staging");
+    vi.stubEnv("RESEND_API_KEY", "re_sandbox");
+    vi.stubEnv("NONPRODUCTION_EMAIL_RECIPIENT_HASHES", "a".repeat(64));
+    mocks.billingEnforced.mockReturnValue(true);
+    const { dispatchPreparedEmailWithProviderEvidence } = await loadEmail();
+
+    await expect(
+      dispatchPreparedEmailWithProviderEvidence({
+        to: "client@example.com",
+        subject: "Reminder",
+        html: "<p>Hello</p>",
+      }),
+    ).resolves.toEqual({
+      success: false,
+      provider: "resend",
+      error: "Recipient is not approved for nonproduction email delivery.",
+      outcome: "definite_failure",
+      failureCode: "nonproduction_recipient_blocked",
+    });
+
+    expect(mocks.resendSend).not.toHaveBeenCalled();
+  });
+
+  it("allows only the exact normalized staging recipient hash", async () => {
+    vi.stubEnv("OPENVPM_ENVIRONMENT", "staging");
+    vi.stubEnv("RESEND_API_KEY", "re_sandbox");
+    vi.stubEnv(
+      "NONPRODUCTION_EMAIL_RECIPIENT_HASHES",
+      "bcfc20648a6c9cfde57c8355191f48af699658f7729aea11b81b09ed21a71936",
+    );
+    mocks.billingEnforced.mockReturnValue(true);
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-staging-1" } });
+    const { sendEmail } = await loadEmail();
+
+    await expect(
+      sendEmail({
+        to: " Sandbox@Example.com ",
+        subject: "Reminder",
+        html: "<p>Hello</p>",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-staging-1" });
+
+    expect(mocks.resendSend).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back from blank from/reply-to values before sending", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv("EMAIL_FROM", "   ");
@@ -417,7 +463,11 @@ describe("sendEmail", () => {
         .mockImplementation(() => undefined);
       mocks.resendSend.mockResolvedValue({
         data: null,
-        error: { message: "Provider outcome is not provable", name, statusCode },
+        error: {
+          message: "Provider outcome is not provable",
+          name,
+          statusCode,
+        },
       });
       const { dispatchPreparedEmailWithProviderEvidence } = await loadEmail();
 
@@ -879,10 +929,8 @@ describe("lifecycle email branding", () => {
     mocks.resendSend
       .mockResolvedValueOnce({ data: { id: "email-confirmed" } })
       .mockResolvedValueOnce({ data: { id: "email-canceled" } });
-    const {
-      sendSubscriptionConfirmedEmail,
-      sendSubscriptionCanceledEmail,
-    } = await loadEmail();
+    const { sendSubscriptionConfirmedEmail, sendSubscriptionCanceledEmail } =
+      await loadEmail();
 
     await expect(
       sendSubscriptionConfirmedEmail({

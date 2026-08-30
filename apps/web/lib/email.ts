@@ -20,6 +20,7 @@ import {
   defaultEmailFrom,
   emailDemoMode,
   emailEnv,
+  nonproductionEmailRecipientAllowed,
   nonBlankEmailValue,
 } from "@/lib/email-env";
 
@@ -64,6 +65,7 @@ export interface EmailProviderEvidence {
     | "send_timeout"
     | "provider_exception"
     | "missing_provider_id"
+    | "nonproduction_recipient_blocked"
     | "invalid_company_address";
 }
 
@@ -217,6 +219,16 @@ async function dispatchEmail(
         ? `dev-console:${options.idempotencyKey}`.slice(0, 128)
         : "dev-console",
       outcome: "accepted",
+    };
+  }
+
+  if (!nonproductionEmailRecipientAllowed(options.to)) {
+    return {
+      success: false,
+      provider,
+      error: "Recipient is not approved for nonproduction email delivery.",
+      outcome: "definite_failure",
+      failureCode: "nonproduction_recipient_blocked",
     };
   }
 
@@ -1014,8 +1026,7 @@ export async function prepareSubscriptionCanceledEmail(data: {
   const { subject, html } = await renderSubscriptionCanceledEmail({
     brand,
     practiceName: data.practiceName,
-    reactivateUrl:
-      data.reactivateUrl ?? `${brand.appUrl}/settings?tab=billing`,
+    reactivateUrl: data.reactivateUrl ?? `${brand.appUrl}/settings?tab=billing`,
   });
   return {
     to: data.to,

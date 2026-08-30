@@ -1,3 +1,5 @@
+import { nonproductionEmailPolicyIssues } from "@/lib/email-env";
+
 export const OPENVPM_ENVIRONMENTS = [
   "development",
   "staging",
@@ -74,7 +76,9 @@ function parseEnvironment(
     : undefined;
 }
 
-function usesTestStripeCredential(env: DeploymentEnvironmentVariables): boolean {
+function usesTestStripeCredential(
+  env: DeploymentEnvironmentVariables,
+): boolean {
   const key = nonBlank(env.STRIPE_SECRET_KEY);
   return !key || key.startsWith("sk_test_") || key.startsWith("rk_test_");
 }
@@ -159,6 +163,7 @@ export function inspectDeploymentEnvironment(
     if (!usesTestStripeCredential(env)) {
       issues.push("Nonproduction Stripe credentials must use test mode");
     }
+    issues.push(...nonproductionEmailPolicyIssues(env));
   }
 
   return {

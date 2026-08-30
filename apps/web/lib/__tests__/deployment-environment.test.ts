@@ -42,7 +42,8 @@ describe("deployment environment contract", () => {
 
   it("rejects unknown or case-drifted environment names", () => {
     expect(
-      inspectDeploymentEnvironment({ OPENVPM_ENVIRONMENT: "Production" }).issues,
+      inspectDeploymentEnvironment({ OPENVPM_ENVIRONMENT: "Production" })
+        .issues,
     ).toEqual(["OPENVPM_ENVIRONMENT is invalid"]);
   });
 
@@ -102,6 +103,36 @@ describe("deployment environment contract", () => {
         managed("development", {
           STRIPE_CONNECT_APPLICATION_FEE_BPS: "0",
           STRIPE_SECRET_KEY: "rk_test_redacted",
+        }),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("requires an exact hashed recipient allowlist for nonproduction Resend", () => {
+    expect(
+      inspectDeploymentEnvironment(
+        managed("staging", { RESEND_API_KEY: "re_sandbox" }),
+      ).issues,
+    ).toContain(
+      "Nonproduction Resend requires NONPRODUCTION_EMAIL_RECIPIENT_HASHES",
+    );
+
+    expect(
+      inspectDeploymentEnvironment(
+        managed("staging", {
+          RESEND_API_KEY: "re_sandbox",
+          NONPRODUCTION_EMAIL_RECIPIENT_HASHES: "not-a-hash",
+        }),
+      ).issues,
+    ).toContain(
+      "NONPRODUCTION_EMAIL_RECIPIENT_HASHES must contain 1-20 unique SHA-256 values",
+    );
+
+    expect(
+      inspectDeploymentEnvironment(
+        managed("staging", {
+          RESEND_API_KEY: "re_sandbox",
+          NONPRODUCTION_EMAIL_RECIPIENT_HASHES: "a".repeat(64),
         }),
       ).ok,
     ).toBe(true);
