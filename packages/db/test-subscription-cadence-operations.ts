@@ -136,14 +136,14 @@ try {
   owner = postgres(ownerUrl.toString(), { max: 4 });
   const [ownerIdentity] = await owner<{ currentUser: string }[]>`
     select current_user as "currentUser"`;
-  check(ownerIdentity?.currentUser === ownerRole, "owner test role was not active");
+  check(
+    ownerIdentity?.currentUser === ownerRole,
+    "owner test role was not active",
+  );
   await owner`set client_min_messages to warning`;
   await owner
     .unsafe(
-      readFileSync(
-        resolve(repoRoot, "packages/db/rls/enable-rls.sql"),
-        "utf8",
-      ),
+      readFileSync(resolve(repoRoot, "packages/db/rls/enable-rls.sql"), "utf8"),
     )
     .simple();
 
@@ -309,6 +309,13 @@ try {
     last_error_code = 'stripe.timeout', updated_at = clock_timestamp()
     where id = ${ids.operationA}`;
   await expectSqlState(
+    "practice identity mutation during unknown provider outcome",
+    () =>
+      owner!`update practices set stripe_subscription_id = 'sub_unknown_race'
+        where id = ${ids.practiceA}`,
+    "55000",
+  );
+  await expectSqlState(
     "unknown create outcome skipping to configure",
     () =>
       owner!`update subscription_cadence_operations set
@@ -359,7 +366,8 @@ try {
   );
   await expectSqlState(
     "operation deletion",
-    () => owner!`delete from subscription_cadence_operations where id = ${ids.operationA}`,
+    () =>
+      owner!`delete from subscription_cadence_operations where id = ${ids.operationA}`,
     "55000",
   );
 
@@ -400,7 +408,9 @@ try {
     ["23514", "55000"],
   );
 
-  await owner.unsafe(`grant connect on database "${databaseName}" to "${appRole}"`);
+  await owner.unsafe(
+    `grant connect on database "${databaseName}" to "${appRole}"`,
+  );
   await owner.unsafe(`grant usage on schema public to "${appRole}"`);
   await owner.unsafe(
     `grant select, insert, update on subscription_cadence_operations to "${appRole}"`,
@@ -408,11 +418,15 @@ try {
   app = postgres(appUrl.toString(), { max: 1 });
   const [appIdentity] = await app<{ currentUser: string }[]>`
     select current_user as "currentUser"`;
-  check(appIdentity?.currentUser === appRole, "application test role was not active");
+  check(
+    appIdentity?.currentUser === appRole,
+    "application test role was not active",
+  );
   const visible = await app.begin(async (tx) => {
     const scoped = tx as unknown as SqlClient;
     await scoped`select set_config('app.current_practice_id', ${ids.practiceA}, true)`;
-    const rows = await scoped`select id from subscription_cadence_operations order by id`;
+    const rows =
+      await scoped`select id from subscription_cadence_operations order by id`;
     return rows;
   });
   check(
@@ -442,7 +456,10 @@ try {
     left join pg_catalog.pg_policy p on p.polrelid = c.oid
     where c.oid = 'public.subscription_cadence_operations'::regclass
     group by c.relrowsecurity`;
-  check(policy?.enabled && policy.policyCount === 1, "cadence RLS policy missing");
+  check(
+    policy?.enabled && policy.policyCount === 1,
+    "cadence RLS policy missing",
+  );
   const drift = await findSchemaDrift(drizzle(owner));
   check(
     driftIsClean(drift),
