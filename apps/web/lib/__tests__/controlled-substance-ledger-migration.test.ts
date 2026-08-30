@@ -47,6 +47,20 @@ describe("controlled-substance ledger database contract", () => {
     expect(migration).toContain("witnessed_by <> performed_by");
   });
 
+  it("serializes every insert and rejects negative inventory in PostgreSQL", () => {
+    expect(migration).toContain(
+      "CREATE OR REPLACE FUNCTION public.enforce_controlled_substance_log_balance()",
+    );
+    expect(migration).toContain("pg_catalog.pg_advisory_xact_lock");
+    expect(migration).toContain(
+      "BEFORE INSERT ON public.controlled_substance_log",
+    );
+    expect(migration).toContain("NEW.quantity > available_quantity");
+    expect(rls).toContain(
+      "REVOKE ALL ON FUNCTION enforce_controlled_substance_log_balance()",
+    );
+  });
+
   it("keeps the regulatory ledger append-only after migrations and RLS refresh", () => {
     expect(migration).toContain(
       "BEFORE UPDATE OR DELETE ON public.controlled_substance_log",

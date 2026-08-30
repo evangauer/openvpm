@@ -169,6 +169,8 @@ REVOKE ALL ON controlled_substance_log FROM openpims_app;
 GRANT SELECT, INSERT ON controlled_substance_log TO openpims_app;
 REVOKE ALL ON FUNCTION guard_controlled_substance_log_immutability()
   FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION enforce_controlled_substance_log_balance()
+  FROM PUBLIC, openpims_app;
 
 -- Lab result lifecycle events are immutable clinical safety evidence. The app
 -- may append completion, review, and follow-up events but never rewrite them.

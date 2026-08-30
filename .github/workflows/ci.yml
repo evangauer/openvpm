@@ -273,7 +273,8 @@ jobs:
 
       # Controlled-drug inventory is append-only regulatory evidence. Prove
       # retry identity, row-shape constraints, tenant-bound attribution, RLS,
-      # and update/delete denial in real PostgreSQL as the restricted app role.
+      # serialized non-negative inventory, and update/delete denial in real
+      # PostgreSQL as the restricted app role.
       - name: Execute controlled-substance ledger database contract
         run: pnpm --filter @openpims/db db:controlled-substance-ledger:test
 
