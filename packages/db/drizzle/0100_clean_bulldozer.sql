@@ -391,7 +391,7 @@ BEGIN
   IF EXISTS (
     SELECT 1 FROM public.subscription_cadence_operations
     WHERE practice_id = OLD.id
-      AND state IN ('inspecting', 'creating_schedule', 'configuring_schedule')
+      AND state IN ('inspecting', 'creating_schedule', 'schedule_created', 'configuring_schedule', 'outcome_unknown')
   ) AND (
     TG_OP = 'DELETE'
     OR NEW.deleted_at IS DISTINCT FROM OLD.deleted_at
@@ -431,7 +431,7 @@ BEGIN
   IF EXISTS (
     SELECT 1 FROM public.subscription_cadence_operations
     WHERE practice_id = affected_practice_id
-      AND state IN ('inspecting', 'creating_schedule', 'configuring_schedule')
+      AND state IN ('inspecting', 'creating_schedule', 'schedule_created', 'configuring_schedule', 'outcome_unknown')
   ) AND (
     TG_OP IN ('INSERT', 'DELETE')
     OR NEW.practice_id IS DISTINCT FROM OLD.practice_id

@@ -65,22 +65,17 @@ export const subscriptionCadenceOperations = pgTable(
       length: 64,
     }).notNull(),
     subscriptionGeneration: integer("subscription_generation").notNull(),
-    subscriptionSyncRevision: integer(
-      "subscription_sync_revision",
-    ).notNull(),
+    subscriptionSyncRevision: integer("subscription_sync_revision").notNull(),
     targetLocationPriceId: varchar("target_location_price_id", {
       length: 255,
     }).notNull(),
-    requestedLocationQuantity: integer(
-      "requested_location_quantity",
-    ).notNull(),
+    requestedLocationQuantity: integer("requested_location_quantity").notNull(),
     requestFingerprintSha256: varchar("request_fingerprint_sha256", {
       length: 64,
     }).notNull(),
-    scheduleCreateIdempotencyKey: varchar(
-      "schedule_create_idempotency_key",
-      { length: 200 },
-    ).notNull(),
+    scheduleCreateIdempotencyKey: varchar("schedule_create_idempotency_key", {
+      length: 200,
+    }).notNull(),
     scheduleConfigureIdempotencyKey: varchar(
       "schedule_configure_idempotency_key",
       { length: 200 },
@@ -150,9 +145,7 @@ export const subscriptionCadenceOperations = pgTable(
     )
       .on(table.providerScheduleId)
       .where(sql`${table.providerScheduleId} is not null`),
-    oneActiveUq: uniqueIndex(
-      "subscription_cadence_operations_one_active_uq",
-    )
+    oneActiveUq: uniqueIndex("subscription_cadence_operations_one_active_uq")
       .on(table.practiceId)
       .where(
         sql`${table.state} in ('reserved', 'inspecting', 'authorized', 'creating_schedule', 'schedule_created', 'configuring_schedule', 'outcome_unknown', 'scheduled', 'manual_review')`,
