@@ -22,6 +22,10 @@ on:
         description: Type MIGRATE_PRODUCTION for a production run
         required: false
         type: string
+      staging_confirmation:
+        description: Type MIGRATE_STAGING for a staging run
+        required: false
+        type: string
       release_sha:
         description: Exact 40-character commit on the target canonical branch
         required: true
@@ -49,6 +53,7 @@ jobs:
         env:
           TARGET: ${{ inputs.target }}
           REQUESTED_RELEASE_SHA: ${{ inputs.release_sha }}
+          STAGING_CONFIRMATION: ${{ inputs.staging_confirmation }}
         run: |
           case "$TARGET" in
             development) expected_ref="refs/heads/development" ;;
@@ -65,6 +70,10 @@ jobs:
           fi
           if [[ ! "$REQUESTED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || [ "$REQUESTED_RELEASE_SHA" != "$GITHUB_SHA" ]; then
             echo "::error::Migration release SHA must match the exact dispatched commit."
+            exit 1
+          fi
+          if [ "$TARGET" = "staging" ] && [ "$STAGING_CONFIRMATION" != "MIGRATE_STAGING" ]; then
+            echo "::error::Staging migration confirmation did not match MIGRATE_STAGING."
             exit 1
           fi
 
@@ -264,12 +273,13 @@ jobs:
         run: pnpm --filter @openpims/db db:migrations:check
       - name: Require environment-scoped database controls
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+          STAGING_PROJECT_REF: ${{ vars.STAGING_PROJECT_REF }}
           TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
           FORBIDDEN_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
         run: |
-          for value in "$DATABASE_URL" "$APP_DB_PASSWORD" "$TARGET_FINGERPRINT" "$FORBIDDEN_FINGERPRINTS"; do
+          for value in "$DATABASE_URL" "$APP_DB_PASSWORD" "$STAGING_PROJECT_REF" "$TARGET_FINGERPRINT" "$FORBIDDEN_FINGERPRINTS"; do
             if [[ -z "$value" || "$value" =~ ^[[:space:]]*$ ]]; then
               echo "::error::Staging database controls are not configured."
               exit 1
@@ -280,43 +290,48 @@ jobs:
           OPENVPM_ENVIRONMENT: staging
           HOSTED_BILLING_ENABLED: "true"
         run: pnpm --filter @openpims/web environment:validate
+      - name: Reject protected or mismatched staging project
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          STAGING_PROJECT_REF: ${{ vars.STAGING_PROJECT_REF }}
+        run: pnpm --filter @openpims/web staging:verify-database-target
       - name: Verify database target identity
         env:
           OPENVPM_ENVIRONMENT: staging
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           DATABASE_TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
           FORBIDDEN_DATABASE_TARGET_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
         run: pnpm db:target:check
       - name: Verify applied history is a committed prefix
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           MIGRATION_CONFORMANCE_MODE: prefix
         run: pnpm db:migrations:conformance
       - name: Schema state before
         continue-on-error: true
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: pnpm db:drift
       - name: Verify RLS deployment ownership
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: pnpm db:rls:preflight
       - name: Apply migrations
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: pnpm db:migrate
       - name: Re-apply row-level security
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           OPENPIMS_APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
         run: pnpm db:rls
       - name: Verify schema matches the code
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
         run: pnpm db:drift
       - name: Verify exact applied migration history
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           MIGRATION_CONFORMANCE_MODE: exact
         run: pnpm db:migrations:conformance
 

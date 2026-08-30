@@ -95,7 +95,8 @@ describe("repository promotion controls", () => {
     expect(workflow.match(/environment: Development/g)).toHaveLength(1);
     expect(workflow.match(/environment: Staging/g)).toHaveLength(1);
     expect(workflow.match(/environment: Demo/g)).toHaveLength(1);
-    expect(workflow.match(/secrets\.DATABASE_URL/g)).toHaveLength(27);
+    expect(workflow.match(/secrets\.DATABASE_URL/g)).toHaveLength(18);
+    expect(workflow.match(/secrets\.STAGING_DATABASE_URL/g)).toHaveLength(10);
     expect(
       workflow.match(/group: apply-migrations-(development|staging|demo)/g),
     ).toHaveLength(3);
@@ -119,8 +120,16 @@ describe("repository promotion controls", () => {
     expect(staging).toContain("needs: validate-nonproduction-request");
     expect(staging).toContain("if: inputs.target == 'staging'");
     expect(staging).toContain("environment: Staging");
+    expect(workflow).toContain("staging_confirmation:");
+    expect(workflow).toContain("MIGRATE_STAGING");
+    expect(staging).toContain("secrets.STAGING_DATABASE_URL");
+    expect(staging).not.toContain("secrets.DATABASE_URL");
+    expect(staging).toContain("vars.STAGING_PROJECT_REF");
     expect(staging).toContain("DATABASE_TARGET_FINGERPRINT");
     expect(staging).toContain("FORBIDDEN_DATABASE_TARGET_FINGERPRINTS");
+    expect(staging).toContain(
+      "run: pnpm --filter @openpims/web staging:verify-database-target",
+    );
     expect(staging).toContain("run: pnpm db:target:check");
     expect(staging).toContain("run: pnpm db:rls:preflight");
     expect(staging).toContain("run: pnpm db:migrate");
@@ -131,6 +140,9 @@ describe("repository promotion controls", () => {
     expect(
       staging.indexOf("MIGRATION_CONFORMANCE_MODE: exact"),
     ).toBeGreaterThan(staging.indexOf("run: pnpm db:migrate"));
+    expect(staging.indexOf("staging:verify-database-target")).toBeLessThan(
+      staging.indexOf("run: pnpm db:migrate"),
+    );
   });
 
   it("keeps backlog cleanup evidence-gated and migration collisions on hold", () => {
