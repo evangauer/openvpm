@@ -7,7 +7,7 @@ CREATE OR REPLACE FUNCTION public.validate_financial_close_insert()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog
 AS $$
 DECLARE
   practice_timezone text;
@@ -224,7 +224,7 @@ CREATE OR REPLACE FUNCTION public.guard_financial_close_immutability()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog
 AS $$
 BEGIN
   RAISE EXCEPTION 'Financial close snapshots are immutable.'
@@ -237,7 +237,7 @@ CREATE OR REPLACE FUNCTION public.guard_closed_financial_payment_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog
 AS $$
 DECLARE
   old_practice_id uuid;
@@ -331,7 +331,7 @@ CREATE OR REPLACE FUNCTION public.guard_closed_financial_invoice_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog
 AS $$
 BEGIN
   IF TG_OP = 'UPDATE'
