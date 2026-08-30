@@ -89,11 +89,15 @@ jobs:
       ENFORCE_RLS_BOOT_ASSERTION: "true"
       NEXT_PUBLIC_DEMO_MODE: "false"
       NEXTAUTH_SECRET: ci-only-synthetic-nextauth-secret-not-for-deployment
-      NEXTAUTH_URL: http://127.0.0.1:3000
+      NEXTAUTH_URL: http://localhost:3000
       EMAIL_PREFERENCE_IDENTITY_SECRET: ci-only-synthetic-identity-secret-not-for-deployment
       EMAIL_PREFERENCE_SIGNING_SECRET: ci-only-synthetic-signing-secret-not-for-deployment
-      PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
+      PLAYWRIGHT_BASE_URL: http://localhost:3000
       PLAYWRIGHT_WEB_SERVER_COMMAND: DATABASE_URL=postgresql://openpims_app:openpims_app@localhost:5432/openpims pnpm --filter @openpims/web dev
+      WEBAUTHN_RP_ID: localhost
+      WEBAUTHN_RP_NAME: OpenVPM CI
+      WEBAUTHN_ORIGINS: http://localhost:3000
+      WEBAUTHN_ADMIN_POLICY: migration
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -117,8 +121,8 @@ jobs:
           pnpm --filter @openpims/db db:migrate
           pnpm --filter @openpims/db db:rls
 
-      - name: Prove the multi-clinic golden workflow
-        run: pnpm exec playwright test e2e/multi-clinic-launch-readiness.spec.ts --workers=1 --reporter=line
+      - name: Prove the golden clinic workflow and real WebAuthn ceremonies
+        run: pnpm exec playwright test e2e/multi-clinic-launch-readiness.spec.ts e2e/passkey-cryptographic.spec.ts --workers=1 --reporter=line
 
   migration-integrity:
     name: Migration history integrity

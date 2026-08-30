@@ -95,7 +95,7 @@ describe("WebAuthn ceremony binding", () => {
   it("stores a domain-separated digest and an exact five-minute action challenge", async () => {
     mocks.generateAuthenticationOptions.mockImplementationOnce(
       async (options) => ({
-        challenge: options.challenge,
+        challenge: Buffer.from(options.challenge).toString("base64url"),
         rpId: options.rpID,
         timeout: options.timeout,
         userVerification: options.userVerification,
@@ -134,6 +134,9 @@ describe("WebAuthn ceremony binding", () => {
       challengeHash: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(persisted.challengeHash).not.toBe(issued.options.challenge);
+    expect(persisted.challengeHash).toBe(
+      webauthnChallengeHash(issued.options.challenge),
+    );
     expect(persisted.expiresAt.getTime() - persisted.issuedAt.getTime()).toBe(
       WEBAUTHN_CHALLENGE_TTL_MS,
     );

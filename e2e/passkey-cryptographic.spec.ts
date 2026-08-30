@@ -1,0 +1,316 @@
+import { expect, test, type Page } from "@playwright/test";
+import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import {
+  practices,
+  users,
+  webauthnChallenges,
+  webauthnCredentials,
+} from "@openpims/db";
+import { db } from "@openpims/db/client";
+import {
+  beginWebAuthnAuthentication,
+  beginWebAuthnRegistration,
+  finishWebAuthnAuthentication,
+  finishWebAuthnRegistration,
+} from "../apps/web/lib/webauthn-ceremony";
+import { withSystem } from "../apps/web/lib/tenant-db";
+
+const configured =
+  Boolean(process.env.DATABASE_URL?.trim()) &&
+  Boolean(process.env.WEBAUTHN_RP_ID?.trim()) &&
+  Boolean(process.env.WEBAUTHN_ORIGINS?.trim());
+
+test.skip(
+  !configured,
+  "DATABASE_URL and exact WebAuthn RP/origin configuration are required",
+);
+
+test("verifies a real user-verified passkey ceremony and rejects wrong-origin replay", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(90_000);
+
+  const practiceId = randomUUID();
+  const userId = randomUUID();
+  const email = `passkey-crypto-${userId}@example.test`;
+  const identity = {
+    email,
+    name: "Passkey Cryptographic Contract",
+    practiceId,
+    sessionVersion: 1,
+    userId,
+  };
+  const originalOrigins = process.env.WEBAUTHN_ORIGINS;
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("WebAuthn.enable");
+  const { authenticatorId } = (await cdp.send(
+    "WebAuthn.addVirtualAuthenticator",
+    {
+      options: {
+        protocol: "ctap2",
+        transport: "internal",
+        hasResidentKey: true,
+        hasUserVerification: true,
+        isUserVerified: true,
+        automaticPresenceSimulation: true,
+      },
+    },
+  )) as { authenticatorId: string };
+
+  try {
+    await db.insert(practices).values({
+      id: practiceId,
+      name: "Passkey Cryptographic Contract",
+    });
+    await db.insert(users).values({
+      id: userId,
+      email,
+      name: identity.name,
+      passwordHash: "not-a-real-password-hash",
+      practiceId,
+      role: "admin",
+    });
+
+    await page.goto("/login", { waitUntil: "domcontentloaded" });
+
+    const registration = await withSystem(db, (tx) =>
+      beginWebAuthnRegistration({ database: tx, identity }),
+    );
+    const registrationResponse = await createCredential(
+      page,
+      registration.options,
+    );
+    await withSystem(db, (tx) =>
+      finishWebAuthnRegistration({
+        challengeId: registration.challengeId,
+        database: tx,
+        identity,
+        name: "CI virtual authenticator",
+        response: registrationResponse,
+      }),
+    );
+
+    const [registered] = await db
+      .select({
+        counter: webauthnCredentials.counter,
+        publicKey: webauthnCredentials.publicKey,
+      })
+      .from(webauthnCredentials)
+      .where(
+        and(
+          eq(webauthnCredentials.practiceId, practiceId),
+          eq(webauthnCredentials.userId, userId),
+        ),
+      );
+    expect(registered?.publicKey.byteLength).toBeGreaterThanOrEqual(32);
+
+    const authentication = await withSystem(db, (tx) =>
+      beginWebAuthnAuthentication({
+        database: tx,
+        identity,
+        purpose: "login",
+      }),
+    );
+    const authenticationResponse = await getCredential(
+      page,
+      authentication.options,
+    );
+
+    // The assertion is genuinely signed for the browser page origin. A
+    // different exact allowlist must fail before any counter/challenge update.
+    process.env.WEBAUTHN_ORIGINS = "https://wrong.localhost";
+    await expect(
+      withSystem(db, (tx) =>
+        finishWebAuthnAuthentication({
+          challengeId: authentication.challengeId,
+          database: tx,
+          identity,
+          purpose: "login",
+          response: authenticationResponse,
+        }),
+      ),
+    ).rejects.toThrow();
+    process.env.WEBAUTHN_ORIGINS = originalOrigins;
+
+    await withSystem(db, (tx) =>
+      finishWebAuthnAuthentication({
+        challengeId: authentication.challengeId,
+        database: tx,
+        identity,
+        purpose: "login",
+        response: authenticationResponse,
+      }),
+    );
+
+    const [authenticated] = await db
+      .select({
+        counter: webauthnCredentials.counter,
+        lastUsedAt: webauthnCredentials.lastUsedAt,
+      })
+      .from(webauthnCredentials)
+      .where(
+        and(
+          eq(webauthnCredentials.practiceId, practiceId),
+          eq(webauthnCredentials.userId, userId),
+        ),
+      );
+    expect(authenticated?.counter).toBeGreaterThan(registered?.counter ?? -1);
+    expect(authenticated?.lastUsedAt).toBeInstanceOf(Date);
+
+    await expect(
+      withSystem(db, (tx) =>
+        finishWebAuthnAuthentication({
+          challengeId: authentication.challengeId,
+          database: tx,
+          identity,
+          purpose: "login",
+          response: authenticationResponse,
+        }),
+      ),
+    ).rejects.toThrow(/challenge is invalid/i);
+  } finally {
+    process.env.WEBAUTHN_ORIGINS = originalOrigins;
+    await cdp
+      .send("WebAuthn.removeVirtualAuthenticator", { authenticatorId })
+      .catch(() => undefined);
+    await cdp.send("WebAuthn.disable").catch(() => undefined);
+    await db
+      .delete(webauthnChallenges)
+      .where(eq(webauthnChallenges.practiceId, practiceId))
+      .catch(() => undefined);
+    await db
+      .delete(webauthnCredentials)
+      .where(eq(webauthnCredentials.practiceId, practiceId))
+      .catch(() => undefined);
+    await db
+      .delete(users)
+      .where(eq(users.id, userId))
+      .catch(() => undefined);
+    await db
+      .delete(practices)
+      .where(eq(practices.id, practiceId))
+      .catch(() => undefined);
+  }
+});
+
+async function createCredential(page: Page, options: unknown) {
+  return page.evaluate(async (jsonOptions) => {
+    const publicKey = registrationOptions(jsonOptions);
+    const credential = (await navigator.credentials.create({
+      publicKey,
+    })) as PublicKeyCredential | null;
+    if (!credential) throw new Error("Virtual registration returned no key.");
+    const response = credential.response as AuthenticatorAttestationResponse;
+    return {
+      id: credential.id,
+      rawId: encodeBase64url(credential.rawId),
+      response: {
+        clientDataJSON: encodeBase64url(response.clientDataJSON),
+        attestationObject: encodeBase64url(response.attestationObject),
+        transports: response.getTransports?.() ?? [],
+      },
+      ...(credential.authenticatorAttachment
+        ? { authenticatorAttachment: credential.authenticatorAttachment }
+        : {}),
+      clientExtensionResults: credential.getClientExtensionResults(),
+      type: "public-key" as const,
+    };
+
+    function registrationOptions(
+      value: unknown,
+    ): PublicKeyCredentialCreationOptions {
+      const input = value as PublicKeyCredentialCreationOptionsJSON;
+      return {
+        ...input,
+        challenge: decodeBase64url(input.challenge),
+        user: { ...input.user, id: decodeBase64url(input.user.id) },
+        excludeCredentials: input.excludeCredentials?.map((descriptor) => ({
+          ...descriptor,
+          id: decodeBase64url(descriptor.id),
+        })),
+      };
+    }
+
+    function decodeBase64url(value: string): ArrayBuffer {
+      const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+      const padded = normalized.padEnd(
+        normalized.length + ((4 - (normalized.length % 4)) % 4),
+        "=",
+      );
+      const binary = atob(padded);
+      return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+        .buffer;
+    }
+
+    function encodeBase64url(value: ArrayBuffer): string {
+      const binary = String.fromCharCode(...new Uint8Array(value));
+      return btoa(binary)
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/g, "");
+    }
+  }, options);
+}
+
+async function getCredential(page: Page, options: unknown) {
+  return page.evaluate(async (jsonOptions) => {
+    const publicKey = authenticationOptions(jsonOptions);
+    const credential = (await navigator.credentials.get({
+      publicKey,
+    })) as PublicKeyCredential | null;
+    if (!credential) throw new Error("Virtual authentication returned no key.");
+    const response = credential.response as AuthenticatorAssertionResponse;
+    return {
+      id: credential.id,
+      rawId: encodeBase64url(credential.rawId),
+      response: {
+        clientDataJSON: encodeBase64url(response.clientDataJSON),
+        authenticatorData: encodeBase64url(response.authenticatorData),
+        signature: encodeBase64url(response.signature),
+        ...(response.userHandle
+          ? { userHandle: encodeBase64url(response.userHandle) }
+          : {}),
+      },
+      ...(credential.authenticatorAttachment
+        ? { authenticatorAttachment: credential.authenticatorAttachment }
+        : {}),
+      clientExtensionResults: credential.getClientExtensionResults(),
+      type: "public-key" as const,
+    };
+
+    function authenticationOptions(
+      value: unknown,
+    ): PublicKeyCredentialRequestOptions {
+      const input = value as PublicKeyCredentialRequestOptionsJSON;
+      return {
+        ...input,
+        challenge: decodeBase64url(input.challenge),
+        allowCredentials: input.allowCredentials?.map((descriptor) => ({
+          ...descriptor,
+          id: decodeBase64url(descriptor.id),
+        })),
+      };
+    }
+
+    function decodeBase64url(value: string): ArrayBuffer {
+      const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+      const padded = normalized.padEnd(
+        normalized.length + ((4 - (normalized.length % 4)) % 4),
+        "=",
+      );
+      const binary = atob(padded);
+      return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+        .buffer;
+    }
+
+    function encodeBase64url(value: ArrayBuffer): string {
+      const binary = String.fromCharCode(...new Uint8Array(value));
+      return btoa(binary)
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/g, "");
+    }
+  }, options);
+}

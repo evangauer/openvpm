@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomFillSync, timingSafeEqual } from "node:crypto";
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
@@ -90,8 +90,12 @@ type CeremonyIdentity = {
 
 type StoredCredential = typeof webauthnCredentials.$inferSelect;
 
-function newChallenge(): string {
-  return randomBytes(32).toString("base64url");
+function newChallenge(): {
+  bytes: Uint8Array<ArrayBuffer>;
+  encoded: string;
+} {
+  const bytes = randomFillSync(new Uint8Array(32));
+  return { bytes, encoded: Buffer.from(bytes).toString("base64url") };
 }
 
 export function webauthnChallengeHash(challenge: string): string {
@@ -195,7 +199,7 @@ export async function beginWebAuthnRegistration(input: {
       residentKey: "required",
       userVerification: "required",
     },
-    challenge,
+    challenge: challenge.bytes,
     excludeCredentials: existing.map((credential) => ({
       id: credential.credentialId,
       transports: transports(credential.transports),
@@ -208,7 +212,7 @@ export async function beginWebAuthnRegistration(input: {
     userName: input.identity.email,
   });
   const stored = await persistChallenge({
-    challenge,
+    challenge: challenge.encoded,
     database: input.database,
     identity: input.identity,
     purpose: "registration",
@@ -239,14 +243,14 @@ export async function beginWebAuthnAuthentication(input: {
       id: credential.credentialId,
       transports: transports(credential.transports),
     })),
-    challenge,
+    challenge: challenge.bytes,
     rpID: config.rpID,
     timeout: CEREMONY_TIMEOUT_MS,
     userVerification: "required",
   });
   const stored = await persistChallenge({
     action: input.action,
-    challenge,
+    challenge: challenge.encoded,
     database: input.database,
     identity: input.identity,
     purpose: input.purpose,
