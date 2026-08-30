@@ -14,9 +14,14 @@ const mocks = vi.hoisted(() => {
     mfaSecretEncrypted: null,
   };
   const selectLimit = vi.fn(async (): Promise<unknown[]> => [activeUser]);
-  const selectWhere = vi.fn(() => ({ limit: selectLimit }));
-  const selectFrom = vi.fn(() => ({ where: selectWhere }));
-  const select = vi.fn(() => ({ from: selectFrom }));
+  const recoveryLimit = vi.fn(async (): Promise<unknown[]> => []);
+  const select = vi.fn((fields?: Record<string, unknown>) => ({
+    from: () => ({
+      where: () => ({
+        limit: fields && "status" in fields ? recoveryLimit : selectLimit,
+      }),
+    }),
+  }));
 
   return {
     db: {},
@@ -38,6 +43,7 @@ const mocks = vi.hoisted(() => {
       remaining: 4,
       resetAt: new Date("2026-06-28T12:00:00Z"),
     })),
+    recoveryLimit,
     selectLimit,
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn({ select }),
@@ -120,6 +126,7 @@ afterEach(() => {
   restoreEnv("NEXTAUTH_SECRET", ORIGINAL_NEXTAUTH_SECRET);
   vi.clearAllMocks();
   mocks.selectLimit.mockResolvedValue([mocks.activeUser]);
+  mocks.recoveryLimit.mockResolvedValue([]);
   mocks.bcryptCompare.mockResolvedValue(true);
   mocks.activeWebAuthnCredentials.mockResolvedValue([]);
   mocks.finishWebAuthnAuthentication.mockResolvedValue({
@@ -139,6 +146,21 @@ afterEach(() => {
 });
 
 describe("credentials login rate-limit cleanup", () => {
+  it("fails closed while an approved recovery is unfinished", async () => {
+    mocks.recoveryLimit.mockResolvedValueOnce([
+      { id: "recovery-case", status: "approved" },
+    ]);
+
+    await expect(
+      credentialsProvider().authorize(
+        { email: "admin@example.com", password: "password123" },
+        { headers: { "x-forwarded-for": "203.0.113.10" } },
+      ),
+    ).resolves.toBeNull();
+    expect(mocks.activeWebAuthnCredentials).not.toHaveBeenCalled();
+    expect(mocks.clearRateLimit).not.toHaveBeenCalled();
+  });
+
   it("keeps trial access open while the user's email is unverified", async () => {
     const user = await credentialsProvider().authorize(
       { email: "admin@example.com", password: "password123" },

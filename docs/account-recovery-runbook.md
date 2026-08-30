@@ -24,13 +24,19 @@ The bounded `expire_due_auth_recovery_cases` primitive uses row locks with
 expiry event in the same transaction; no scheduler or public route calls it
 yet.
 
-Migration `0105_rich_mandroid.sql` and the dormant server lifecycle bind an
-already approved 32-byte one-time grant to a system-only
-`recovery_registration` challenge. PostgreSQL refuses to consume the grant
-unless the same transaction has consumed that exact recovery challenge,
-persisted an active replacement passkey after approval, and appended the
-`grant_consumed` event. A real Chromium CTAP2 ceremony exercises this path and
-rejects replay. No HTTP or tRPC route imports the lifecycle module.
+Migrations `0105_rich_mandroid.sql` and
+`0106_recovery_two_passkey_closure.sql`, together with the dormant server
+lifecycle, bind an already approved 32-byte grant to system-only
+`recovery_registration` challenges. The first verified registration appends
+immutable `reenrollment_started` evidence while the approved case continues to
+block ordinary login. The next challenge is issued only after that credential
+exists, so WebAuthn excludes it and requires another authenticator. PostgreSQL
+refuses closure unless exactly two sequential recovery challenges and two
+active replacement credentials exist. Grant expiry retires a partial
+credential before releasing the recovery lock. A real Chromium CTAP2 ceremony
+uses separate platform and roaming virtual authenticators, rejects a preissued
+second challenge, closes after the second passkey, and rejects replay. No HTTP
+or tRPC route imports the lifecycle module.
 
 These migrations do **not** activate account recovery. There is no route that
 can create a request, approve it, receive a raw grant, or invoke replacement
@@ -64,10 +70,11 @@ approved version in the deployment.
 
 The database and dormant server foundation are not an approved end-user
 implementation. They currently prove request/approval separation, locking,
-revocation, append-only evidence, concurrency, expiry, replay, and atomic
-first-passkey enrollment from an already approved grant. Authority policy,
-identity proofing, grant issuance/delivery, second-passkey restoration, and
-closure remain unimplemented. Activation must prove the complete flow:
+revocation, append-only evidence, concurrency, expiry, replay, sequential
+two-passkey reenrollment, and closure from an already approved grant. Authority
+policy, identity proofing, and grant issuance/delivery remain unimplemented.
+The two-passkey core remains dormant and still requires an approved entry point
+and operator drill before activation. Activation must prove the complete flow:
 
 - the request exists before approval and the requester differs from approver;
 - both operators are named recovery authorities with current passkey sessions;

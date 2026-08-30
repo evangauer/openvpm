@@ -2,8 +2,8 @@ import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { compare } from "bcryptjs";
 import { z } from "zod";
-import { db } from "@openpims/db/client";
-import { practices, users } from "@openpims/db";
+import { db, type Database } from "@openpims/db/client";
+import { authRecoveryCases, practices, users } from "@openpims/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { withSystem } from "@/lib/tenant-db";
 import { clearRateLimit, rateLimit } from "@/lib/rate-limit";
@@ -140,6 +140,14 @@ export async function validCredentialsSecondFactor(input: {
   if (!valid) return { factor: "none" };
   try {
     return await withSystem(db, async (tx) => {
+      if (
+        await authRecoveryLocksLogin(tx, {
+          practiceId: user.practiceId,
+          userId: user.id,
+        })
+      ) {
+        return { factor: "unavailable" };
+      }
       const credentials = await activeWebAuthnCredentials(tx, {
         practiceId: user.practiceId,
         userId: user.id,
@@ -189,6 +197,25 @@ export async function validCredentialsRequireMfa(input: {
 }
 
 export const clientIpFromAuthRequest = clientIpFromRequest;
+
+/** An approved recovery keeps ordinary login closed until reenrollment ends. */
+export async function authRecoveryLocksLogin(
+  database: Database,
+  identity: { practiceId: string; userId: string },
+): Promise<boolean> {
+  const [recovery] = await database
+    .select({ id: authRecoveryCases.id, status: authRecoveryCases.status })
+    .from(authRecoveryCases)
+    .where(
+      and(
+        eq(authRecoveryCases.practiceId, identity.practiceId),
+        eq(authRecoveryCases.userId, identity.userId),
+        eq(authRecoveryCases.status, "approved"),
+      ),
+    )
+    .limit(1);
+  return Boolean(recovery);
+}
 
 export function loginRateLimitKeys(
   email: string,
@@ -305,6 +332,19 @@ export const authOptions: NextAuthOptions = {
 
         const isValid = await compare(password, user.passwordHash);
         if (!isValid) return null;
+
+        try {
+          const recoveryLocked = await withSystem(db, (tx) =>
+            authRecoveryLocksLogin(tx, {
+              practiceId: user.practiceId,
+              userId: user.id,
+            }),
+          );
+          if (recoveryLocked) return null;
+        } catch (err) {
+          console.error("[auth] recovery login gate failed:", err);
+          return null;
+        }
 
         const mfaResult = await verifyLoginMfa(user, {
           mfaCode,

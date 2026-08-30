@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, isNull, sql } from "drizzle-orm";
 import type { RegistrationResponseJSON } from "@simplewebauthn/server";
-import { authRecoveryCases, authRecoveryEvents, users } from "@openpims/db";
+import {
+  authRecoveryCases,
+  authRecoveryEvents,
+  users,
+  webauthnChallenges,
+  webauthnCredentials,
+} from "@openpims/db";
 import { db, type Database } from "@openpims/db/client";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
 import { withSystem } from "@/lib/tenant-db";
@@ -23,10 +29,7 @@ function validatedGrant(grant: string): string {
     throw new Error(INVALID_GRANT_MESSAGE);
   }
   const decoded = Buffer.from(grant, "base64url");
-  if (
-    decoded.byteLength !== 32 ||
-    decoded.toString("base64url") !== grant
-  ) {
+  if (decoded.byteLength !== 32 || decoded.toString("base64url") !== grant) {
     throw new Error(INVALID_GRANT_MESSAGE);
   }
   return grant;
@@ -46,6 +49,7 @@ async function lockApprovedRecoveryCase(
   const [recovery] = await database
     .select({
       caseId: authRecoveryCases.id,
+      approvedAt: authRecoveryCases.approvedAt,
       email: users.email,
       name: users.name,
       practiceId: authRecoveryCases.practiceId,
@@ -83,8 +87,10 @@ async function lockApprovedRecoveryCase(
 }
 
 /**
- * Start the first replacement-passkey ceremony from an already approved grant.
- * No route calls this dormant server-only primitive.
+ * Start the next replacement-passkey ceremony from an already approved grant.
+ * Once the first credential is committed, the registration options exclude it,
+ * forcing the second ceremony onto another authenticator. No route calls this
+ * dormant server-only primitive.
  */
 export async function beginAuthRecoveryRegistration(input: {
   database?: Database;
@@ -109,8 +115,10 @@ export async function beginAuthRecoveryRegistration(input: {
 }
 
 /**
- * Verify and persist the first replacement passkey, consume its challenge,
- * consume the one-time grant, and append immutable evidence atomically.
+ * Verify and persist one replacement passkey. The first credential leaves the
+ * account recovery-locked and appends immutable reenrollment evidence. A
+ * separately issued second ceremony must exclude that credential; only its
+ * successful completion consumes the grant and closes the case atomically.
  */
 export async function finishAuthRecoveryRegistration(input: {
   challengeId: string;
@@ -118,10 +126,53 @@ export async function finishAuthRecoveryRegistration(input: {
   database?: Database;
   grant: string;
   response: RegistrationResponseJSON;
-}): Promise<{ credentialId: string }> {
+}): Promise<{ complete: boolean; credentialId: string }> {
   const recoveryGrantHash = authRecoveryGrantHash(input.grant);
   return withSystem(input.database ?? db, async (tx) => {
     const recovery = await lockApprovedRecoveryCase(tx, recoveryGrantHash);
+    const approvedAt = recovery.approvedAt;
+    if (!approvedAt) throw new Error(INVALID_GRANT_MESSAGE);
+
+    const existing = await tx
+      .select({
+        createdAt: webauthnCredentials.createdAt,
+        id: webauthnCredentials.id,
+      })
+      .from(webauthnCredentials)
+      .where(
+        and(
+          eq(webauthnCredentials.practiceId, recovery.practiceId),
+          eq(webauthnCredentials.userId, recovery.userId),
+          isNull(webauthnCredentials.deletedAt),
+          gte(webauthnCredentials.createdAt, approvedAt),
+        ),
+      )
+      .orderBy(asc(webauthnCredentials.createdAt), asc(webauthnCredentials.id))
+      .for("update");
+    if (existing.length > 1) throw new Error(INVALID_GRANT_MESSAGE);
+
+    const [challenge] = await tx
+      .select({ issuedAt: webauthnChallenges.issuedAt })
+      .from(webauthnChallenges)
+      .where(
+        and(
+          eq(webauthnChallenges.id, input.challengeId),
+          eq(webauthnChallenges.practiceId, recovery.practiceId),
+          eq(webauthnChallenges.userId, recovery.userId),
+          eq(webauthnChallenges.sessionVersion, recovery.revokedSessionVersion),
+          eq(webauthnChallenges.purpose, "recovery_registration"),
+          eq(webauthnChallenges.recoveryCaseId, recovery.caseId),
+          isNull(webauthnChallenges.consumedAt),
+        ),
+      )
+      .limit(1);
+    if (
+      !challenge ||
+      (existing[0] && challenge.issuedAt <= existing[0].createdAt)
+    ) {
+      throw new Error(INVALID_GRANT_MESSAGE);
+    }
+
     const registered = await finishWebAuthnRegistration({
       challengeId: input.challengeId,
       database: tx,
@@ -137,6 +188,19 @@ export async function finishAuthRecoveryRegistration(input: {
       recoveryCaseId: recovery.caseId,
       response: input.response,
     });
+
+    if (existing.length === 0) {
+      const startedAt = new Date();
+      await tx.insert(authRecoveryEvents).values({
+        actorUserId: recovery.userId,
+        caseId: recovery.caseId,
+        eventType: "reenrollment_started",
+        occurredAt: startedAt,
+        practiceId: recovery.practiceId,
+        userId: recovery.userId,
+      });
+      return { complete: false, credentialId: registered.credentialId };
+    }
 
     const consumedAt = new Date();
     const [consumed] = await tx
@@ -165,7 +229,7 @@ export async function finishAuthRecoveryRegistration(input: {
       practiceId: recovery.practiceId,
       userId: recovery.userId,
     });
-    return { credentialId: registered.credentialId };
+    return { complete: true, credentialId: registered.credentialId };
   });
 }
 

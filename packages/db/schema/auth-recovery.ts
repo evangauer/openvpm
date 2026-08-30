@@ -214,7 +214,7 @@ export const authRecoveryEvents = pgTable(
     ),
     eventTypeCheck: check(
       "auth_recovery_events_type_check",
-      sql`${table.eventType} in ('requested', 'approved', 'grant_consumed', 'cancelled', 'expired')`,
+      sql`${table.eventType} in ('requested', 'approved', 'reenrollment_started', 'grant_consumed', 'cancelled', 'expired')`,
     ),
   }),
 );

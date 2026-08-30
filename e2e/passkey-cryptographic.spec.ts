@@ -67,6 +67,7 @@ test("verifies a real user-verified passkey ceremony and rejects wrong-origin re
       },
     },
   )) as { authenticatorId: string };
+  let secondAuthenticatorId: string | undefined;
 
   try {
     await db.insert(practices).values({
@@ -251,9 +252,7 @@ test("verifies a real user-verified passkey ceremony and rejects wrong-origin re
         .set({
           approvedAt,
           approverUserId,
-          grantExpiresAt: new Date(
-            approvedAt.getTime() + 15 * 60 * 1_000,
-          ),
+          grantExpiresAt: new Date(approvedAt.getTime() + 15 * 60 * 1_000),
           recoveryGrantHash: authRecoveryGrantHash(rawRecoveryGrant),
           revokedSessionVersion: 2,
           status: "approved",
@@ -274,6 +273,10 @@ test("verifies a real user-verified passkey ceremony and rejects wrong-origin re
       database: db,
       grant: rawRecoveryGrant,
     });
+    const staleSecondRegistration = await beginAuthRecoveryRegistration({
+      database: db,
+      grant: rawRecoveryGrant,
+    });
     const recoveryResponse = await createCredential(
       page,
       recoveryRegistration.options,
@@ -286,6 +289,65 @@ test("verifies a real user-verified passkey ceremony and rejects wrong-origin re
       response: recoveryResponse,
     });
     expect(recovered.credentialId).toBe(recoveryResponse.id);
+    expect(recovered.complete).toBe(false);
+
+    const [midRecoveryState] = await withSystem(db, (tx) =>
+      tx
+        .select({ status: authRecoveryCases.status })
+        .from(authRecoveryCases)
+        .where(eq(authRecoveryCases.id, recoveryCaseId)),
+    );
+    expect(midRecoveryState?.status).toBe("approved");
+
+    await cdp.send("WebAuthn.setAutomaticPresenceSimulation", {
+      authenticatorId,
+      enabled: false,
+    });
+    ({ authenticatorId: secondAuthenticatorId } = (await cdp.send(
+      "WebAuthn.addVirtualAuthenticator",
+      {
+        options: {
+          protocol: "ctap2",
+          transport: "usb",
+          hasResidentKey: true,
+          hasUserVerification: true,
+          isUserVerified: true,
+          automaticPresenceSimulation: true,
+        },
+      },
+    )) as { authenticatorId: string });
+
+    const staleSecondResponse = await createCredential(
+      page,
+      staleSecondRegistration.options,
+    );
+    await expect(
+      finishAuthRecoveryRegistration({
+        challengeId: staleSecondRegistration.challengeId,
+        credentialName: "Preissued second authenticator",
+        database: db,
+        grant: rawRecoveryGrant,
+        response: staleSecondResponse,
+      }),
+    ).rejects.toThrow(/invalid or expired/i);
+
+    const secondRegistration = await beginAuthRecoveryRegistration({
+      database: db,
+      grant: rawRecoveryGrant,
+    });
+    const secondResponse = await createCredential(
+      page,
+      secondRegistration.options,
+    );
+    const secondRecovered = await finishAuthRecoveryRegistration({
+      challengeId: secondRegistration.challengeId,
+      credentialName: "Second recovered CI virtual authenticator",
+      database: db,
+      grant: rawRecoveryGrant,
+      response: secondResponse,
+    });
+    expect(secondRecovered.credentialId).toBe(secondResponse.id);
+    expect(secondRecovered.complete).toBe(true);
 
     const [recoveryState] = await withSystem(db, (tx) =>
       tx
@@ -304,14 +366,14 @@ test("verifies a real user-verified passkey ceremony and rejects wrong-origin re
         ),
       );
     expect(recoveryState?.status).toBe("consumed");
-    expect(activeRecoveredCredentials).toHaveLength(1);
+    expect(activeRecoveredCredentials).toHaveLength(2);
     await expect(
       finishAuthRecoveryRegistration({
-        challengeId: recoveryRegistration.challengeId,
+        challengeId: secondRegistration.challengeId,
         credentialName: "Replay must fail",
         database: db,
         grant: rawRecoveryGrant,
-        response: recoveryResponse,
+        response: secondResponse,
       }),
     ).rejects.toThrow(/invalid or expired/i);
   } finally {
@@ -319,6 +381,13 @@ test("verifies a real user-verified passkey ceremony and rejects wrong-origin re
     await cdp
       .send("WebAuthn.removeVirtualAuthenticator", { authenticatorId })
       .catch(() => undefined);
+    if (secondAuthenticatorId) {
+      await cdp
+        .send("WebAuthn.removeVirtualAuthenticator", {
+          authenticatorId: secondAuthenticatorId,
+        })
+        .catch(() => undefined);
+    }
     await cdp.send("WebAuthn.disable").catch(() => undefined);
     await db
       .transaction(async (tx) => {

@@ -743,6 +743,13 @@
       "when": 1788060652516,
       "tag": "0105_rich_mandroid",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1788062315660,
+      "tag": "0106_recovery_two_passkey_closure",
+      "breakpoints": true
     }
   ]
 }

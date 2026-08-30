@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AUTH_SESSION_MAX_AGE_SECONDS,
   LOGIN_EMAIL_MAX_LENGTH,
+  authRecoveryLocksLogin,
   authOptions,
   clientIpFromAuthRequest,
   loginRateLimitKeys,
@@ -60,14 +61,14 @@ describe("clientIpFromAuthRequest", () => {
     expect(
       clientIpFromAuthRequest({
         headers: { "x-forwarded-for": "203.0.113.10, 198.51.100.5" },
-      })
+      }),
     ).toBe("203.0.113.10");
   });
 
   it("falls back to x-real-ip and then unknown", () => {
-    expect(clientIpFromAuthRequest({ headers: { "x-real-ip": "198.51.100.5" } })).toBe(
-      "198.51.100.5"
-    );
+    expect(
+      clientIpFromAuthRequest({ headers: { "x-real-ip": "198.51.100.5" } }),
+    ).toBe("198.51.100.5");
     expect(clientIpFromAuthRequest({ headers: {} })).toBe("unknown");
   });
 });
@@ -78,7 +79,7 @@ describe("parseLoginCredentials", () => {
       parseLoginCredentials({
         email: " Admin@Example.COM ",
         password: "password123",
-      })
+      }),
     ).toEqual({
       email: "admin@example.com",
       password: "password123",
@@ -90,7 +91,7 @@ describe("parseLoginCredentials", () => {
       parseLoginCredentials({
         email: "admin@example.com",
         password: "secret",
-      })
+      }),
     ).toMatchObject({ email: "admin@example.com", password: "secret" });
   });
 
@@ -99,19 +100,46 @@ describe("parseLoginCredentials", () => {
       parseLoginCredentials({
         email: `${"a".repeat(LOGIN_EMAIL_MAX_LENGTH)}@example.com`,
         password: "password123",
-      })
+      }),
     ).toBeNull();
 
     expect(
       parseLoginCredentials({
         email: "admin@example.com",
         password: "p".repeat(AUTH_PASSWORD_MAX_LENGTH + 1),
-      })
+      }),
     ).toBeNull();
   });
 });
 
 describe("credentials auth active-user lookup", () => {
+  it("keeps ordinary login closed while an approved recovery is unfinished", async () => {
+    const limit = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: "recovery-case" }])
+      .mockResolvedValueOnce([]);
+    const database = {
+      select: vi.fn(() => ({
+        from: () => ({
+          where: () => ({ limit }),
+        }),
+      })),
+    } as never;
+
+    await expect(
+      authRecoveryLocksLogin(database, {
+        practiceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        userId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      authRecoveryLocksLogin(database, {
+        practiceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        userId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      }),
+    ).resolves.toBe(false);
+  });
+
   it("caps encrypted clinic sessions at one long shift", () => {
     expect(AUTH_SESSION_MAX_AGE_SECONDS).toBe(12 * 60 * 60);
     expect(authOptions.session).toMatchObject({
@@ -131,19 +159,13 @@ describe("credentials auth active-user lookup", () => {
 
     expect(
       authorizeSource.indexOf("parseLoginCredentials(credentials)"),
-    ).toBeLessThan(
-      authorizeSource.indexOf("rateLimit({"),
-    );
+    ).toBeLessThan(authorizeSource.indexOf("rateLimit({"));
     expect(
       authorizeSource.indexOf("parseLoginCredentials(credentials)"),
-    ).toBeLessThan(
-      authorizeSource.indexOf("withSystem(db"),
-    );
+    ).toBeLessThan(authorizeSource.indexOf("withSystem(db"));
     expect(
       authorizeSource.indexOf("parseLoginCredentials(credentials)"),
-    ).toBeLessThan(
-      authorizeSource.indexOf("compare(password"),
-    );
+    ).toBeLessThan(authorizeSource.indexOf("compare(password"));
   });
 
   it("does not select soft-deleted users for password sign-in", () => {
@@ -151,7 +173,7 @@ describe("credentials auth active-user lookup", () => {
 
     expect(source).toContain("isNull(users.deletedAt)");
     expect(source).toMatch(
-      /where\(\s*and\(\s*eq\(users\.email, email\),\s*isNull\(users\.deletedAt\)\s*\)\s*\)/s
+      /where\(\s*and\(\s*eq\(users\.email, email\),\s*isNull\(users\.deletedAt\)\s*\)\s*\)/s,
     );
   });
 });

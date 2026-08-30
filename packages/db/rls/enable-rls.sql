@@ -396,7 +396,9 @@ GRANT SELECT, INSERT, UPDATE ON auth_recovery_cases TO openpims_app;
 GRANT SELECT, INSERT ON auth_recovery_events TO openpims_app;
 REVOKE ALL ON FUNCTION protect_auth_recovery_case_transition(),
   protect_auth_recovery_event(), require_auth_recovery_transition_event(),
-  require_auth_recovery_passkey_on_consume()
+  require_auth_recovery_passkey_on_consume(),
+  validate_auth_recovery_reenrollment_event(),
+  retire_auth_recovery_partial_passkeys_on_expiry()
   FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION expire_due_auth_recovery_cases(integer) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION expire_due_auth_recovery_cases(integer) TO openpims_app;

@@ -38,7 +38,9 @@ const requesterUser = randomUUID();
 const approverUser = randomUUID();
 const credentialId = randomUUID();
 const replacementCredentialId = randomUUID();
+const secondReplacementCredentialId = randomUUID();
 const recoveryChallengeId = randomUUID();
+const secondRecoveryChallengeId = randomUUID();
 const challengeId = randomUUID();
 const proofId = randomUUID();
 const recoveryCaseId = randomUUID();
@@ -243,18 +245,18 @@ try {
     "the app role can select/insert/update cases but cannot delete them",
     Boolean(
       casePrivileges?.canSelect &&
-        casePrivileges.canInsert &&
-        casePrivileges.canUpdate &&
-        !casePrivileges.canDelete,
+      casePrivileges.canInsert &&
+      casePrivileges.canUpdate &&
+      !casePrivileges.canDelete,
     ),
   );
   check(
     "the app role can only select/insert immutable recovery events",
     Boolean(
       eventPrivileges?.canSelect &&
-        eventPrivileges.canInsert &&
-        !eventPrivileges.canUpdate &&
-        !eventPrivileges.canDelete,
+      eventPrivileges.canInsert &&
+      !eventPrivileges.canUpdate &&
+      !eventPrivileges.canDelete,
     ),
   );
   check(
@@ -358,9 +360,7 @@ try {
     ),
   );
   const stalePendingCaseId = randomUUID();
-  const stalePendingRequestedAt = new Date(
-    Date.now() - 25 * 60 * 60 * 1_000,
-  );
+  const stalePendingRequestedAt = new Date(Date.now() - 25 * 60 * 60 * 1_000);
   const stalePendingExpiresAt = new Date(
     stalePendingRequestedAt.getTime() + 24 * 60 * 60 * 1_000,
   );
@@ -678,6 +678,10 @@ try {
       set consumed_at = ${recoveryChallengeConsumedAt}
       where id = ${recoveryChallengeId} and consumed_at is null
         and expires_at > ${recoveryChallengeConsumedAt}`;
+    await tx`insert into auth_recovery_events
+      (case_id, practice_id, user_id, actor_user_id, event_type, occurred_at)
+      values (${recoveryCaseId}, ${targetPractice}, ${targetUser},
+        ${targetUser}, 'reenrollment_started', now())`;
   });
   check(
     "a tenant context cannot inspect or create a recovery-registration challenge",
@@ -703,6 +707,43 @@ try {
         ),
       )),
   );
+
+  check(
+    "one replacement passkey cannot restore ordinary access",
+    await rejected(() => consumeGrant(app, recoveryCaseId, grantHash)),
+  );
+
+  const [firstReplacement] = await owner<
+    Array<{ createdAt: Date }>
+  >`select created_at as "createdAt" from webauthn_credentials
+    where id = ${replacementCredentialId}`;
+  if (!firstReplacement)
+    throw new Error("First replacement fixture is missing");
+  const secondChallengeIssuedAt = new Date(
+    firstReplacement.createdAt.getTime() + 1,
+  );
+  const secondChallengeConsumedAt = new Date();
+  await systemTransaction(app, async (tx) => {
+    await tx`insert into webauthn_challenges
+      (id, practice_id, user_id, session_version, purpose, action,
+        recovery_case_id, challenge_hash, issued_at, expires_at)
+      values (${secondRecoveryChallengeId}, ${targetPractice}, ${targetUser}, 2,
+        'recovery_registration', null, ${recoveryCaseId},
+        ${digest("recovery-challenge", secondRecoveryChallengeId)},
+        ${secondChallengeIssuedAt},
+        ${new Date(secondChallengeIssuedAt.getTime() + 5 * 60 * 1_000)})`;
+    await tx`insert into webauthn_credentials
+      (id, practice_id, user_id, credential_id, public_key, counter,
+        device_type, backed_up, transports, aaguid, name)
+      values (${secondReplacementCredentialId}, ${targetPractice}, ${targetUser},
+        ${`recovered_${secondReplacementCredentialId.replaceAll("-", "")}`},
+        decode(${"ef".repeat(32)}, 'hex'), 0, 'singleDevice', false,
+        '["usb"]'::jsonb, ${randomUUID()}, 'Second recovered contract key')`;
+    await tx`update webauthn_challenges
+      set consumed_at = ${secondChallengeConsumedAt}
+      where id = ${secondRecoveryChallengeId} and consumed_at is null
+        and expires_at > ${secondChallengeConsumedAt}`;
+  });
 
   const race = await Promise.all([
     consumeGrant(app, recoveryCaseId, grantHash),
@@ -763,6 +804,15 @@ try {
       (case_id, practice_id, user_id, actor_user_id, event_type, occurred_at)
       values (${expiredCaseId}, ${targetPractice}, ${targetUser},
         ${approverUser}, 'approved', ${expiredApprovalAt})`;
+    await tx`insert into webauthn_credentials
+      (practice_id, user_id, credential_id, public_key, counter,
+        device_type, backed_up, transports, aaguid, name, created_at, updated_at)
+      values (${targetPractice}, ${targetUser},
+        ${`partial_${expiredCaseId.replaceAll("-", "")}`},
+        decode(${"ac".repeat(32)}, 'hex'), 0, 'singleDevice', false,
+        '["usb"]'::jsonb, ${randomUUID()}, 'Expired partial recovery key',
+        ${new Date(expiredApprovalAt.getTime() + 60_000)},
+        ${new Date(expiredApprovalAt.getTime() + 60_000)})`;
   });
   const forgedConsumptionAt = new Date(
     expiredApprovalAt.getTime() + 60 * 1_000,
