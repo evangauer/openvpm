@@ -36,6 +36,27 @@ the feature behind the normal release, staging, and hosted-billing gates.
   into tickets or chat. The operation id, revision, Stripe subscription id, and
   schedule id are sufficient for operator correlation.
 
+## Read-only provider inventory
+
+Before a provider drill or rollout, run the bounded inventory with a Stripe
+test-mode key and the configured monthly, annual, AI, and SMS price ids:
+
+```bash
+pnpm --filter @openpims/web billing:audit-stripe
+```
+
+The command performs only price retrieval and subscription listing. Its JSON
+contains price/subscription ids, aggregate billing-mode and cadence counts, and
+actionable findings; it never emits customer objects, email addresses, payment
+methods, or the API key. It verifies price activity, interval, usage type, and
+currency, then identifies classic-mode subscriptions and missing metered
+companions.
+
+Live inventory requires both `--allow-live-read-only` and the separate
+`STRIPE_LIVE_READ_ONLY_CONFIRMATION=OPENVPM_STRIPE_LIVE_READ_ONLY` environment
+confirmation. Prefer a restricted read-only key. This guard authorizes reads
+only; the command contains no mutation path and does not authorize remediation.
+
 ## Normal automatic recovery
 
 The authenticated `/api/cron/billing-lifecycle` job runs a bounded cadence
