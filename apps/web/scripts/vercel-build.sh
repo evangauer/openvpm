@@ -18,6 +18,7 @@ fi
 # Validate the exact Vercel target configuration before querying its database
 # or starting a build. The Production SHA approval remains the first gate.
 pnpm environment:validate
+(cd ../.. && pnpm db:target:check)
 
 if [ "${VERCEL_ENV:-}" = "production" ]; then
   schema_attempt=1

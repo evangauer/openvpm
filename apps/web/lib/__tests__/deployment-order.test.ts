@@ -18,9 +18,7 @@ describe("hosted deployment ordering", () => {
     const buildScript = readFileSync("scripts/vercel-build.sh", "utf8");
 
     expect(vercel.buildCommand).toBe("bash scripts/vercel-build.sh");
-    expect(buildScript).toContain(
-      'if [ "${VERCEL_ENV:-}" = "production" ]',
-    );
+    expect(buildScript).toContain('if [ "${VERCEL_ENV:-}" = "production" ]');
     expect(buildScript).toContain('release_sha="${PRODUCTION_RELEASE_SHA:-}"');
     expect(buildScript).toContain('commit_sha="${VERCEL_GIT_COMMIT_SHA:-}"');
     expect(buildScript).toContain("^[0-9a-f]{40}$");
@@ -28,6 +26,7 @@ describe("hosted deployment ordering", () => {
     expect(buildScript).toContain(
       "Production release approval is absent or does not match this exact commit",
     );
+    expect(buildScript).toContain("pnpm db:target:check");
     expect(buildScript).toContain("pnpm db:drift");
     expect(buildScript).toContain("schema_attempt_limit=30");
     expect(buildScript).toContain("refusing production promotion");
@@ -50,7 +49,9 @@ describe("hosted deployment ordering", () => {
     expect(result.stdout).toContain(
       "Production release approval is absent or does not match this exact commit",
     );
-    expect(result.stdout).not.toContain("Database migration is still in progress");
+    expect(result.stdout).not.toContain(
+      "Database migration is still in progress",
+    );
   });
 
   it("checks schema drift before building an exactly approved commit", () => {
@@ -82,7 +83,42 @@ describe("hosted deployment ordering", () => {
       expect(result.status).toBe(0);
       expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
         "environment:validate",
+        "db:target:check",
         "db:drift",
+        "build",
+      ]);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it("checks database identity before a preview build", () => {
+    const fixture = mkdtempSync(join(tmpdir(), "openvpm-preview-order-"));
+    const fakePnpm = join(fixture, "pnpm");
+    const calls = join(fixture, "calls.txt");
+
+    try {
+      writeFileSync(
+        fakePnpm,
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$PNPM_CALLS"\n',
+      );
+      chmodSync(fakePnpm, 0o700);
+
+      const result = spawnSync("bash", ["scripts/vercel-build.sh"], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${fixture}:${process.env.PATH ?? ""}`,
+          PNPM_CALLS: calls,
+          VERCEL_ENV: "preview",
+        },
+      });
+
+      expect(result.status).toBe(0);
+      expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
+        "environment:validate",
+        "db:target:check",
         "build",
       ]);
     } finally {
