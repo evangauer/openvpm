@@ -37,6 +37,8 @@ const targetWithoutEvent = randomUUID();
 const requesterUser = randomUUID();
 const approverUser = randomUUID();
 const credentialId = randomUUID();
+const replacementCredentialId = randomUUID();
+const recoveryChallengeId = randomUUID();
 const challengeId = randomUUID();
 const proofId = randomUUID();
 const recoveryCaseId = randomUUID();
@@ -383,7 +385,7 @@ try {
             and session_version = 1`;
         await tx`update auth_recovery_cases set status = 'approved',
           approver_user_id = ${approverUser}, revoked_session_version = 2,
-          recovery_grant_hash = ${digest("recovery-grant", stalePendingCaseId)},
+          recovery_grant_hash = ${digest("openvpm-auth-recovery-grant:v1", stalePendingCaseId)},
           approved_at = ${forgedPendingActionAt},
           grant_expires_at = ${forgedGrantExpiresAt},
           updated_at = ${forgedPendingActionAt}
@@ -471,7 +473,7 @@ try {
 
   const approvalAt = new Date();
   const grantExpiresAt = new Date(approvalAt.getTime() + 15 * 60 * 1_000);
-  const grantHash = digest("recovery-grant", randomUUID());
+  const grantHash = digest("openvpm-auth-recovery-grant:v1", randomUUID());
   check(
     "the requester cannot self-approve a recovery case",
     await rejected(() =>
@@ -622,6 +624,86 @@ try {
     ),
   );
 
+  check(
+    "a grant cannot be consumed before a recovery-bound replacement passkey",
+    await rejected(() => consumeGrant(app, recoveryCaseId, grantHash)),
+  );
+  const recoveryChallengeIssuedAt = new Date();
+  const recoveryChallengeExpiresAt = new Date(
+    recoveryChallengeIssuedAt.getTime() + 5 * 60 * 1_000,
+  );
+  const recoveryChallengeConsumedAt = new Date();
+  check(
+    "recovery challenge purpose and case binding cannot be separated",
+    (await rejected(() =>
+      systemTransaction(
+        app,
+        (tx) => tx`insert into webauthn_challenges
+          (practice_id, user_id, session_version, purpose, action,
+            recovery_case_id, challenge_hash, issued_at, expires_at)
+          values (${targetPractice}, ${targetUser}, 2, 'recovery_registration',
+            null, null, ${digest("recovery-challenge", randomUUID())},
+            ${recoveryChallengeIssuedAt}, ${recoveryChallengeExpiresAt})`,
+      ),
+    )) &&
+      (await rejected(() =>
+        systemTransaction(
+          app,
+          (tx) => tx`insert into webauthn_challenges
+            (practice_id, user_id, session_version, purpose, action,
+              recovery_case_id, challenge_hash, issued_at, expires_at)
+            values (${targetPractice}, ${targetUser}, 2, 'registration', null,
+              ${recoveryCaseId},
+              ${digest("recovery-challenge", randomUUID())},
+              ${recoveryChallengeIssuedAt}, ${recoveryChallengeExpiresAt})`,
+        ),
+      )),
+  );
+  await systemTransaction(app, async (tx) => {
+    await tx`insert into webauthn_challenges
+      (id, practice_id, user_id, session_version, purpose, action,
+        recovery_case_id, challenge_hash, issued_at, expires_at)
+      values (${recoveryChallengeId}, ${targetPractice}, ${targetUser}, 2,
+        'recovery_registration', null, ${recoveryCaseId},
+        ${digest("recovery-challenge", recoveryChallengeId)},
+        ${recoveryChallengeIssuedAt}, ${recoveryChallengeExpiresAt})`;
+    await tx`insert into webauthn_credentials
+      (id, practice_id, user_id, credential_id, public_key, counter,
+        device_type, backed_up, transports, aaguid, name)
+      values (${replacementCredentialId}, ${targetPractice}, ${targetUser},
+        ${`recovered_${replacementCredentialId.replaceAll("-", "")}`},
+        decode(${"cd".repeat(32)}, 'hex'), 0, 'multiDevice', true,
+        '["internal"]'::jsonb, ${randomUUID()}, 'Recovered contract key')`;
+    await tx`update webauthn_challenges
+      set consumed_at = ${recoveryChallengeConsumedAt}
+      where id = ${recoveryChallengeId} and consumed_at is null
+        and expires_at > ${recoveryChallengeConsumedAt}`;
+  });
+  check(
+    "a tenant context cannot inspect or create a recovery-registration challenge",
+    (
+      await tenantTransaction(
+        app,
+        targetPractice,
+        (tx) => tx`select id from webauthn_challenges
+          where id = ${recoveryChallengeId}`,
+      )
+    ).length === 0 &&
+      (await rejected(() =>
+        tenantTransaction(
+          app,
+          targetPractice,
+          (tx) => tx`insert into webauthn_challenges
+            (practice_id, user_id, session_version, purpose, action,
+              recovery_case_id, challenge_hash, issued_at, expires_at)
+            values (${targetPractice}, ${targetUser}, 2,
+              'recovery_registration', null, ${recoveryCaseId},
+              ${digest("recovery-challenge", randomUUID())},
+              ${recoveryChallengeIssuedAt}, ${recoveryChallengeExpiresAt})`,
+        ),
+      )),
+  );
+
   const race = await Promise.all([
     consumeGrant(app, recoveryCaseId, grantHash),
     consumeGrant(appPeer, recoveryCaseId, grantHash),
@@ -644,7 +726,11 @@ try {
   const expiredRequestDeadline = new Date(
     expiredRequestAt.getTime() + 24 * 60 * 60 * 1_000,
   );
-  const expiredGrantHash = digest("recovery-grant", expiredCaseId);
+  const expiredGrantHash = digest(
+    "openvpm-auth-recovery-grant:v1",
+    expiredCaseId,
+  );
+  const historicalRetirementAt = new Date();
   // Install a historical approved case as the test owner. Live callers cannot
   // backdate approval; the fixture is needed to exercise database-time expiry.
   await owner.begin(async (rawTx) => {
@@ -653,6 +739,11 @@ try {
     await tx`update users set session_version = 3
       where id = ${targetUser} and practice_id = ${targetPractice}
         and session_version = 2`;
+    await tx`update webauthn_credentials
+      set deleted_at = ${historicalRetirementAt},
+        updated_at = ${historicalRetirementAt}
+      where practice_id = ${targetPractice} and user_id = ${targetUser}
+        and deleted_at is null`;
     await tx`insert into auth_recovery_cases
       (id, practice_id, user_id, requester_user_id, approver_user_id,
         target_session_version, revoked_session_version, status, reason_code,

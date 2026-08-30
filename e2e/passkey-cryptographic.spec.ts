@@ -1,13 +1,20 @@
 import { expect, test, type Page } from "@playwright/test";
-import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { randomBytes, randomUUID } from "node:crypto";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import {
+  authRecoveryCases,
+  authRecoveryEvents,
   practices,
   users,
   webauthnChallenges,
   webauthnCredentials,
 } from "@openpims/db";
 import { db } from "@openpims/db/client";
+import {
+  authRecoveryGrantHash,
+  beginAuthRecoveryRegistration,
+  finishAuthRecoveryRegistration,
+} from "../apps/web/server/auth-recovery-lifecycle";
 import {
   beginWebAuthnAuthentication,
   beginWebAuthnRegistration,
@@ -34,6 +41,8 @@ test("verifies a real user-verified passkey ceremony and rejects wrong-origin re
 
   const practiceId = randomUUID();
   const userId = randomUUID();
+  const requesterUserId = randomUUID();
+  const approverUserId = randomUUID();
   const email = `passkey-crypto-${userId}@example.test`;
   const identity = {
     email,
@@ -72,6 +81,24 @@ test("verifies a real user-verified passkey ceremony and rejects wrong-origin re
       practiceId,
       role: "admin",
     });
+    await db.insert(users).values([
+      {
+        id: requesterUserId,
+        email: `recovery-requester-${requesterUserId}@example.test`,
+        name: "Recovery Requester Contract",
+        passwordHash: "not-a-real-password-hash",
+        practiceId,
+        role: "admin",
+      },
+      {
+        id: approverUserId,
+        email: `recovery-approver-${approverUserId}@example.test`,
+        name: "Recovery Approver Contract",
+        passwordHash: "not-a-real-password-hash",
+        practiceId,
+        role: "admin",
+      },
+    ]);
 
     await page.goto("/login", { waitUntil: "domcontentloaded" });
 
@@ -170,6 +197,123 @@ test("verifies a real user-verified passkey ceremony and rejects wrong-origin re
         }),
       ),
     ).rejects.toThrow(/challenge is invalid/i);
+
+    const recoveryCaseId = randomUUID();
+    const rawRecoveryGrant = randomBytes(32).toString("base64url");
+    const requestedAt = new Date();
+    const approvedAt = new Date();
+    await withSystem(db, async (tx) => {
+      await tx.insert(authRecoveryCases).values({
+        expiresAt: new Date(requestedAt.getTime() + 24 * 60 * 60 * 1_000),
+        id: recoveryCaseId,
+        identityProofReferenceHash: "a".repeat(64),
+        practiceId,
+        reasonCode: "lost_all_passkeys",
+        requestedAt,
+        requesterUserId,
+        status: "pending",
+        targetSessionVersion: 1,
+        updatedAt: requestedAt,
+        userId,
+      });
+      await tx.insert(authRecoveryEvents).values({
+        actorUserId: requesterUserId,
+        caseId: recoveryCaseId,
+        eventType: "requested",
+        occurredAt: requestedAt,
+        practiceId,
+        userId,
+      });
+    });
+    await withSystem(db, async (tx) => {
+      await tx
+        .update(webauthnCredentials)
+        .set({ deletedAt: approvedAt, updatedAt: approvedAt })
+        .where(
+          and(
+            eq(webauthnCredentials.practiceId, practiceId),
+            eq(webauthnCredentials.userId, userId),
+            isNull(webauthnCredentials.deletedAt),
+          ),
+        );
+      await tx
+        .update(users)
+        .set({ sessionVersion: 2 })
+        .where(
+          and(
+            eq(users.id, userId),
+            eq(users.practiceId, practiceId),
+            eq(users.sessionVersion, 1),
+          ),
+        );
+      await tx
+        .update(authRecoveryCases)
+        .set({
+          approvedAt,
+          approverUserId,
+          grantExpiresAt: new Date(
+            approvedAt.getTime() + 15 * 60 * 1_000,
+          ),
+          recoveryGrantHash: authRecoveryGrantHash(rawRecoveryGrant),
+          revokedSessionVersion: 2,
+          status: "approved",
+          updatedAt: approvedAt,
+        })
+        .where(eq(authRecoveryCases.id, recoveryCaseId));
+      await tx.insert(authRecoveryEvents).values({
+        actorUserId: approverUserId,
+        caseId: recoveryCaseId,
+        eventType: "approved",
+        occurredAt: approvedAt,
+        practiceId,
+        userId,
+      });
+    });
+
+    const recoveryRegistration = await beginAuthRecoveryRegistration({
+      database: db,
+      grant: rawRecoveryGrant,
+    });
+    const recoveryResponse = await createCredential(
+      page,
+      recoveryRegistration.options,
+    );
+    const recovered = await finishAuthRecoveryRegistration({
+      challengeId: recoveryRegistration.challengeId,
+      credentialName: "Recovered CI virtual authenticator",
+      database: db,
+      grant: rawRecoveryGrant,
+      response: recoveryResponse,
+    });
+    expect(recovered.credentialId).toBe(recoveryResponse.id);
+
+    const [recoveryState] = await withSystem(db, (tx) =>
+      tx
+        .select({ status: authRecoveryCases.status })
+        .from(authRecoveryCases)
+        .where(eq(authRecoveryCases.id, recoveryCaseId)),
+    );
+    const activeRecoveredCredentials = await db
+      .select({ id: webauthnCredentials.id })
+      .from(webauthnCredentials)
+      .where(
+        and(
+          eq(webauthnCredentials.practiceId, practiceId),
+          eq(webauthnCredentials.userId, userId),
+          isNull(webauthnCredentials.deletedAt),
+        ),
+      );
+    expect(recoveryState?.status).toBe("consumed");
+    expect(activeRecoveredCredentials).toHaveLength(1);
+    await expect(
+      finishAuthRecoveryRegistration({
+        challengeId: recoveryRegistration.challengeId,
+        credentialName: "Replay must fail",
+        database: db,
+        grant: rawRecoveryGrant,
+        response: recoveryResponse,
+      }),
+    ).rejects.toThrow(/invalid or expired/i);
   } finally {
     process.env.WEBAUTHN_ORIGINS = originalOrigins;
     await cdp
@@ -177,20 +321,23 @@ test("verifies a real user-verified passkey ceremony and rejects wrong-origin re
       .catch(() => undefined);
     await cdp.send("WebAuthn.disable").catch(() => undefined);
     await db
-      .delete(webauthnChallenges)
-      .where(eq(webauthnChallenges.practiceId, practiceId))
-      .catch(() => undefined);
-    await db
-      .delete(webauthnCredentials)
-      .where(eq(webauthnCredentials.practiceId, practiceId))
-      .catch(() => undefined);
-    await db
-      .delete(users)
-      .where(eq(users.id, userId))
-      .catch(() => undefined);
-    await db
-      .delete(practices)
-      .where(eq(practices.id, practiceId))
+      .transaction(async (tx) => {
+        await tx.execute(sql`set local session_replication_role = replica`);
+        await tx
+          .delete(webauthnChallenges)
+          .where(eq(webauthnChallenges.practiceId, practiceId));
+        await tx
+          .delete(webauthnCredentials)
+          .where(eq(webauthnCredentials.practiceId, practiceId));
+        await tx
+          .delete(authRecoveryEvents)
+          .where(eq(authRecoveryEvents.practiceId, practiceId));
+        await tx
+          .delete(authRecoveryCases)
+          .where(eq(authRecoveryCases.practiceId, practiceId));
+        await tx.delete(users).where(eq(users.practiceId, practiceId));
+        await tx.delete(practices).where(eq(practices.id, practiceId));
+      })
       .catch(() => undefined);
   }
 });

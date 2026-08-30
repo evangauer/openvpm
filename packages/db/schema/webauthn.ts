@@ -16,6 +16,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { practices } from "./practices";
 import { users } from "./users";
+import { authRecoveryCases } from "./auth-recovery";
 
 const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
   dataType() {
@@ -130,6 +131,7 @@ export const webauthnChallenges = pgTable(
     sessionVersion: integer("session_version").notNull(),
     purpose: varchar("purpose", { length: 24 }).notNull(),
     action: varchar("action", { length: 96 }),
+    recoveryCaseId: uuid("recovery_case_id"),
     challengeHash: varchar("challenge_hash", { length: 64 }).notNull(),
     issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -140,6 +142,15 @@ export const webauthnChallenges = pgTable(
       columns: [table.practiceId, table.userId],
       foreignColumns: [users.practiceId, users.id],
       name: "webauthn_challenges_user_tenant_fk",
+    }),
+    recoveryCaseTenantFk: foreignKey({
+      columns: [table.practiceId, table.userId, table.recoveryCaseId],
+      foreignColumns: [
+        authRecoveryCases.practiceId,
+        authRecoveryCases.userId,
+        authRecoveryCases.id,
+      ],
+      name: "webauthn_challenges_recovery_case_tenant_fk",
     }),
     challengeHashUq: uniqueIndex("webauthn_challenges_hash_uq").on(
       table.challengeHash,
@@ -158,13 +169,20 @@ export const webauthnChallenges = pgTable(
     ),
     purposeCheck: check(
       "webauthn_challenges_purpose_check",
-      sql`${table.purpose} in ('registration', 'login', 'privileged_action')`,
+      sql`${table.purpose} in ('registration', 'login', 'privileged_action', 'recovery_registration')`,
     ),
     actionShapeCheck: check(
       "webauthn_challenges_action_shape_check",
       sql`(${table.purpose} = 'privileged_action'
           and ${table.action} ~ '^(admin|billing|subscription|settings|data|apiKeys|webhooks|passkeys)[.][A-Za-z][A-Za-z0-9]+$')
         or (${table.purpose} <> 'privileged_action' and ${table.action} is null)`,
+    ),
+    recoveryCaseShapeCheck: check(
+      "webauthn_challenges_recovery_case_shape_check",
+      sql`(${table.purpose} = 'recovery_registration'
+          and ${table.recoveryCaseId} is not null)
+        or (${table.purpose} <> 'recovery_registration'
+          and ${table.recoveryCaseId} is null)`,
     ),
     hashCheck: check(
       "webauthn_challenges_hash_check",

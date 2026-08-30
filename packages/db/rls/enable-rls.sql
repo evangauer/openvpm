@@ -343,6 +343,18 @@ GRANT SELECT, INSERT, UPDATE ON privileged_action_proofs TO openpims_app;
 -- WebAuthn challenges and credential identities are protected by migration
 -- triggers. The application cannot delete evidence directly; a narrowly
 -- scoped owner function purges only challenges expired for more than 24h.
+-- Recovery-registration challenges are cross-tenant recovery evidence and
+-- remain invisible unless the transaction has explicit system context.
+DROP POLICY IF EXISTS tenant_isolation ON webauthn_challenges;
+CREATE POLICY tenant_isolation ON webauthn_challenges
+  USING (app_rls_bypass() OR (
+    practice_id = app_current_practice_id()
+    AND purpose <> 'recovery_registration'
+  ))
+  WITH CHECK (app_rls_bypass() OR (
+    practice_id = app_current_practice_id()
+    AND purpose <> 'recovery_registration'
+  ));
 REVOKE ALL ON webauthn_challenges, webauthn_credentials FROM openpims_app;
 GRANT SELECT, INSERT, UPDATE ON webauthn_challenges, webauthn_credentials TO openpims_app;
 REVOKE ALL ON FUNCTION protect_webauthn_challenge_update() FROM PUBLIC, openpims_app;
@@ -383,7 +395,8 @@ REVOKE ALL ON auth_recovery_cases, auth_recovery_events FROM openpims_app;
 GRANT SELECT, INSERT, UPDATE ON auth_recovery_cases TO openpims_app;
 GRANT SELECT, INSERT ON auth_recovery_events TO openpims_app;
 REVOKE ALL ON FUNCTION protect_auth_recovery_case_transition(),
-  protect_auth_recovery_event(), require_auth_recovery_transition_event()
+  protect_auth_recovery_event(), require_auth_recovery_transition_event(),
+  require_auth_recovery_passkey_on_consume()
   FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION expire_due_auth_recovery_cases(integer) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION expire_due_auth_recovery_cases(integer) TO openpims_app;

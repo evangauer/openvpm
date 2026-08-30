@@ -736,6 +736,13 @@
       "when": 1788058248275,
       "tag": "0104_majestic_electro",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1788060652516,
+      "tag": "0105_rich_mandroid",
+      "breakpoints": true
     }
   ]
 }

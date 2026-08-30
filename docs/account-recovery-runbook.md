@@ -24,10 +24,18 @@ The bounded `expire_due_auth_recovery_cases` primitive uses row locks with
 expiry event in the same transaction; no scheduler or public route calls it
 yet.
 
-This migration does **not** activate account recovery. There is no application
-or browser path that can create a request, approve it, receive a raw grant, or
-enroll replacement credentials. Do not add such a path until the owner
-decisions below are approved and the remaining ceremony controls are built.
+Migration `0105_rich_mandroid.sql` and the dormant server lifecycle bind an
+already approved 32-byte one-time grant to a system-only
+`recovery_registration` challenge. PostgreSQL refuses to consume the grant
+unless the same transaction has consumed that exact recovery challenge,
+persisted an active replacement passkey after approval, and appended the
+`grant_consumed` event. A real Chromium CTAP2 ceremony exercises this path and
+rejects replay. No HTTP or tRPC route imports the lifecycle module.
+
+These migrations do **not** activate account recovery. There is no route that
+can create a request, approve it, receive a raw grant, or invoke replacement
+enrollment. Do not add such a route until the owner decisions below are
+approved and the remaining activation controls are built.
 
 Until the recovery transaction, one-use enrollment ceremony, and drill below
 exist and pass, `hostedAuthRecovery` and the authoritative release packet must
@@ -54,13 +62,12 @@ approved version in the deployment.
 
 ## Required recovery transaction and remaining activation work
 
-The database foundation is not an approved end-user implementation. Activation
-still requires the restricted application transaction and a browser ceremony
-to prove all of these invariants atomically. The database contract currently
-proves the request/approval separation, locking, revocation, append-only
-evidence, concurrency, expiry, and replay portions; the authority/session
-checks, delivery, enrollment-only scope, and two-passkey restoration remain
-unimplemented:
+The database and dormant server foundation are not an approved end-user
+implementation. They currently prove request/approval separation, locking,
+revocation, append-only evidence, concurrency, expiry, replay, and atomic
+first-passkey enrollment from an already approved grant. Authority policy,
+identity proofing, grant issuance/delivery, second-passkey restoration, and
+closure remain unimplemented. Activation must prove the complete flow:
 
 - the request exists before approval and the requester differs from approver;
 - both operators are named recovery authorities with current passkey sessions;

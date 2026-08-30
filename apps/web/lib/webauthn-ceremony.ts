@@ -78,7 +78,12 @@ export const authenticationResponseSchema = z.object({
 export type WebAuthnChallengePurpose =
   | "registration"
   | "login"
-  | "privileged_action";
+  | "privileged_action"
+  | "recovery_registration";
+
+type RegistrationCeremonyBinding =
+  | { purpose?: "registration"; recoveryCaseId?: undefined }
+  | { purpose: "recovery_registration"; recoveryCaseId: string };
 
 type CeremonyIdentity = {
   email: string;
@@ -158,6 +163,7 @@ async function persistChallenge(input: {
   database: Database;
   identity: CeremonyIdentity;
   purpose: WebAuthnChallengePurpose;
+  recoveryCaseId?: string;
 }) {
   const issuedAt = new Date();
   const expiresAt = new Date(issuedAt.getTime() + WEBAUTHN_CHALLENGE_TTL_MS);
@@ -170,6 +176,7 @@ async function persistChallenge(input: {
       issuedAt,
       practiceId: input.identity.practiceId,
       purpose: input.purpose,
+      recoveryCaseId: input.recoveryCaseId ?? null,
       sessionVersion: input.identity.sessionVersion,
       userId: input.identity.userId,
     })
@@ -181,13 +188,18 @@ async function persistChallenge(input: {
 export async function beginWebAuthnRegistration(input: {
   database: Database;
   identity: CeremonyIdentity;
-}): Promise<{
+} & RegistrationCeremonyBinding): Promise<{
   challengeId: string;
   expiresAt: Date;
   options: PublicKeyCredentialCreationOptionsJSON;
 }> {
   const config = webauthnConfiguration();
   if (!config) throw new Error("WebAuthn is not configured.");
+  const purpose = input.purpose ?? "registration";
+  const recoveryCaseId =
+    purpose === "recovery_registration"
+      ? z.string().uuid().parse(input.recoveryCaseId)
+      : undefined;
   const existing = await activeWebAuthnCredentials(
     input.database,
     input.identity,
@@ -215,7 +227,8 @@ export async function beginWebAuthnRegistration(input: {
     challenge: challenge.encoded,
     database: input.database,
     identity: input.identity,
-    purpose: "registration",
+    purpose,
+    recoveryCaseId,
   });
   return { ...stored, options };
 }
@@ -264,6 +277,7 @@ async function activeChallenge(input: {
   database: Database;
   identity: CeremonyIdentity;
   purpose: WebAuthnChallengePurpose;
+  recoveryCaseId?: string;
 }) {
   const [challenge] = await input.database
     .select()
@@ -278,6 +292,9 @@ async function activeChallenge(input: {
         input.action
           ? eq(webauthnChallenges.action, input.action)
           : isNull(webauthnChallenges.action),
+        input.recoveryCaseId
+          ? eq(webauthnChallenges.recoveryCaseId, input.recoveryCaseId)
+          : isNull(webauthnChallenges.recoveryCaseId),
         isNull(webauthnChallenges.consumedAt),
         gt(webauthnChallenges.expiresAt, new Date()),
       ),
@@ -315,9 +332,14 @@ export async function finishWebAuthnRegistration(input: {
   identity: CeremonyIdentity;
   name: string;
   response: RegistrationResponseJSON;
-}): Promise<{ credentialId: string }> {
+} & RegistrationCeremonyBinding): Promise<{ credentialId: string }> {
   const config = webauthnConfiguration();
   if (!config) throw new Error("WebAuthn is not configured.");
+  const purpose = input.purpose ?? "registration";
+  const recoveryCaseId =
+    purpose === "recovery_registration"
+      ? z.string().uuid().parse(input.recoveryCaseId)
+      : undefined;
   if (input.response.id !== input.response.rawId) {
     throw new Error("Passkey credential identity mismatch.");
   }
@@ -325,7 +347,8 @@ export async function finishWebAuthnRegistration(input: {
     challengeId: input.challengeId,
     database: input.database,
     identity: input.identity,
-    purpose: "registration",
+    purpose,
+    recoveryCaseId,
   });
   if (!challenge)
     throw new Error("WebAuthn registration challenge is invalid.");
