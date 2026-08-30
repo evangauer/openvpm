@@ -95,7 +95,12 @@ describe("hot table indexes", () => {
     [
       "controlled_substance_log",
       controlledSubstanceLog,
-      ["cs_log_practice_drug_date_idx", "cs_log_practice_date_idx"],
+      [
+        "controlled_substance_log_practice_id_uq",
+        "controlled_substance_log_practice_operation_uq",
+        "cs_log_practice_drug_date_idx",
+        "cs_log_practice_date_idx",
+      ],
     ],
     ["webhooks", webhooks, ["webhooks_practice_active_idx"]],
     [

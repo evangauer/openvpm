@@ -35,6 +35,8 @@
     "db:subscription-checkout:test": "tsx test-subscription-checkout-attempts.ts",
     "db:release-line:test": "tsx test-release-line-reconciliation.ts",
     "db:subscription-cadence:test": "tsx test-subscription-cadence-operations.ts",
+    "db:controlled-substance-ledger:test": "tsx test-controlled-substance-ledger.ts",
+    "db:controlled-substance-ledger:audit": "tsx audit-controlled-substance-ledger.ts",
     "db:migrations:check": "pnpm --filter @openpims/web exec vitest run lib/__tests__/migration-journal-integrity.test.ts lib/__tests__/db-migrations.test.ts",
     "db:migrations:conformance": "tsx migration-conformance.ts",
     "db:target:check": "tsx deployment-target.ts",

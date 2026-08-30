@@ -271,6 +271,12 @@ jobs:
           SUBSCRIPTION_CADENCE_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run lib/billing/__tests__/subscription-cadence-operations.integration.test.ts
 
+      # Controlled-drug inventory is append-only regulatory evidence. Prove
+      # retry identity, row-shape constraints, tenant-bound attribution, RLS,
+      # and update/delete denial in real PostgreSQL as the restricted app role.
+      - name: Execute controlled-substance ledger database contract
+        run: pnpm --filter @openpims/db db:controlled-substance-ledger:test
+
       # Subscription notices cross Stripe transactions, a durable outbox,
       # provider idempotency, and final-state suppression. Exercise atomic
       # enqueue, SKIP LOCKED workers, lease/CAS recovery, immutable attempts,

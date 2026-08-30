@@ -162,6 +162,14 @@ GRANT EXECUTE ON FUNCTION restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,
 REVOKE ALL ON prescription_events FROM openpims_app;
 GRANT SELECT, INSERT ON prescription_events TO openpims_app;
 
+-- Controlled-substance entries are an append-only regulatory ledger. Retry
+-- identity and corrections are represented by new rows; tenant code must
+-- never rewrite or erase the recorded inventory history.
+REVOKE ALL ON controlled_substance_log FROM openpims_app;
+GRANT SELECT, INSERT ON controlled_substance_log TO openpims_app;
+REVOKE ALL ON FUNCTION guard_controlled_substance_log_immutability()
+  FROM PUBLIC, openpims_app;
+
 -- Lab result lifecycle events are immutable clinical safety evidence. The app
 -- may append completion, review, and follow-up events but never rewrite them.
 REVOKE ALL ON lab_result_events FROM openpims_app;

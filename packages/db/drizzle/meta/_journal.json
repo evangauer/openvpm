@@ -771,6 +771,13 @@
       "when": 1788111623719,
       "tag": "0109_subscription_cadence_operations",
       "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1788115514125,
+      "tag": "0110_controlled_substance_ledger_integrity",
+      "breakpoints": true
     }
   ]
 }

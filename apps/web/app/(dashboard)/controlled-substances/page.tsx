@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
@@ -68,7 +68,7 @@ const trimmedOrUndefined = (value: string) => value.trim() || undefined;
 
 function formatControlledSubstanceDateTime(
   date: Date | string,
-  timeZone?: string | null
+  timeZone?: string | null,
 ) {
   const options: Intl.DateTimeFormatOptions = {
     dateStyle: "short",
@@ -125,6 +125,7 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
     lotNumber: "",
     notes: "",
   });
+  const operationRef = useRef<{ fingerprint: string; id: string } | null>(null);
   const patientsMissing =
     !patientsQuery.isLoading && !patientsQuery.error && !patientsQuery.data;
   const witnessesMissing =
@@ -150,20 +151,20 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
   const canSubmit =
     isControlledSubstanceRequiredTextInputValid(
       form.drugName,
-      CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH
+      CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH,
     ) &&
     isControlledSubstanceQuantityInputValid(form.quantity) &&
     isControlledSubstanceRequiredTextInputValid(
       form.unit,
-      CONTROLLED_SUBSTANCE_UNIT_MAX_LENGTH
+      CONTROLLED_SUBSTANCE_UNIT_MAX_LENGTH,
     ) &&
     isControlledSubstanceOptionalTextInputValid(
       form.lotNumber,
-      CONTROLLED_SUBSTANCE_LOT_NUMBER_MAX_LENGTH
+      CONTROLLED_SUBSTANCE_LOT_NUMBER_MAX_LENGTH,
     ) &&
     isControlledSubstanceOptionalTextInputValid(
       form.notes,
-      CONTROLLED_SUBSTANCE_NOTES_MAX_LENGTH
+      CONTROLLED_SUBSTANCE_NOTES_MAX_LENGTH,
     ) &&
     (form.action !== "administered" || Boolean(form.patientId)) &&
     (form.action !== "wasted" || Boolean(form.witnessedBy)) &&
@@ -179,7 +180,7 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
         patientsQuery.error?.message ??
           (patientsMissing
             ? "Patient lookup is unavailable. Please retry."
-            : "Patient lookup is still loading")
+            : "Patient lookup is still loading"),
       );
       return;
     }
@@ -188,7 +189,7 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
         witnessesQuery.error?.message ??
           (witnessesMissing
             ? "Witness lookup is unavailable. Please retry."
-            : "Witness lookup is still loading")
+            : "Witness lookup is still loading"),
       );
       return;
     }
@@ -200,17 +201,28 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
       toast.error("Witness is required for wasted entries");
       return;
     }
-    createMutation.mutate({
+    const payload = {
       drugName: form.drugName.trim(),
       deaSchedule: form.deaSchedule as "II" | "III" | "IV" | "V",
-      action: form.action as "received" | "administered" | "wasted" | "returned",
+      action: form.action as
+        | "received"
+        | "administered"
+        | "wasted"
+        | "returned",
       quantity: form.quantity.trim(),
       unit: form.unit.trim(),
       patientId: form.patientId || undefined,
       witnessedBy: form.witnessedBy || undefined,
       lotNumber: trimmedOrUndefined(form.lotNumber),
       notes: trimmedOrUndefined(form.notes),
-    });
+    };
+    const fingerprint = JSON.stringify(payload);
+    const operationId =
+      operationRef.current?.fingerprint === fingerprint
+        ? operationRef.current.id
+        : crypto.randomUUID();
+    operationRef.current = { fingerprint, id: operationId };
+    createMutation.mutate({ ...payload, operationId });
   };
 
   return (
@@ -499,7 +511,12 @@ function SummarySection() {
                         {drug.totalReturned}
                       </td>
                       <td className="py-2 text-right tabular-nums font-semibold">
-                        {(Number(drug.totalReceived) - Number(drug.totalAdministered) - Number(drug.totalWasted) - Number(drug.totalReturned)).toFixed(3)}
+                        {(
+                          Number(drug.totalReceived) -
+                          Number(drug.totalAdministered) -
+                          Number(drug.totalWasted) -
+                          Number(drug.totalReturned)
+                        ).toFixed(3)}
                       </td>
                     </tr>
                   ))}
@@ -695,20 +712,19 @@ function ControlledSubstancesLogPage() {
                       {entry.performedAt
                         ? formatControlledSubstanceDateTime(
                             entry.performedAt,
-                            verifiedLogPayload.settings.timezone
+                            verifiedLogPayload.settings.timezone,
                           )
                         : "\u2014"}
                     </td>
-                    <td className="px-4 py-3 font-medium">
-                      {entry.drugName}
-                    </td>
+                    <td className="px-4 py-3 font-medium">{entry.drugName}</td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {entry.deaSchedule}
                     </td>
                     <td className="px-4 py-3">
                       <span
                         className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
-                          ACTION_STYLES[entry.action] ?? "bg-gray-100 text-gray-700"
+                          ACTION_STYLES[entry.action] ??
+                          "bg-gray-100 text-gray-700"
                         }`}
                       >
                         {entry.action}

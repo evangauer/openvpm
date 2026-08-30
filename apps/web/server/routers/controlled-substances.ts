@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { eq, and, isNull, gte, lte, sql, desc, asc } from "drizzle-orm";
+import { eq, and, isNull, gte, lte, sql, desc, asc, ne } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
@@ -44,7 +44,7 @@ const controlledQuantityInput = z
   .trim()
   .refine(
     isControlledSubstanceQuantityInputValid,
-    "Quantity must be a positive number with up to 3 decimal places."
+    "Quantity must be a positive number with up to 3 decimal places.",
   );
 
 const performedAtInput = z.string().datetime({ offset: true });
@@ -53,7 +53,7 @@ const listInput = z
   .object({
     drugName: optionalClinicalTextInput(
       "Drug name",
-      CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH
+      CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH,
     ),
     startDate: clinicalDateInput("Start date").optional(),
     endDate: clinicalDateInput("End date").optional(),
@@ -93,10 +93,7 @@ const summaryInput = z
     }
   });
 
-function startOfClinicalDate(
-  value: string,
-  timeZone?: string | null
-): Date {
+function startOfClinicalDate(value: string, timeZone?: string | null): Date {
   if (timeZone) return dateInputDayUtcRange(value, timeZone).start;
   return new Date(`${value}T00:00:00.000Z`);
 }
@@ -112,10 +109,7 @@ function endOfClinicalDate(value: string, timeZone?: string | null): Date {
 function controlledSubstanceQuantityMillis(value: string | null | undefined) {
   const trimmed = value?.trim() || "0";
   const [wholePart = "0", fractionPart = ""] = trimmed.split(".");
-  return (
-    BigInt(wholePart) * 1000n +
-    BigInt((fractionPart + "000").slice(0, 3))
-  );
+  return BigInt(wholePart) * 1000n + BigInt((fractionPart + "000").slice(0, 3));
 }
 
 function formatControlledSubstanceQuantity(millis: bigint) {
@@ -130,10 +124,10 @@ function formatControlledSubstanceQuantity(millis: bigint) {
 }
 
 function isControlledSubstanceConsumingAction(
-  action: "received" | "administered" | "wasted" | "returned"
+  action: "received" | "administered" | "wasted" | "returned",
 ) {
   return CONTROLLED_SUBSTANCE_CONSUMING_ACTIONS.includes(
-    action as (typeof CONTROLLED_SUBSTANCE_CONSUMING_ACTIONS)[number]
+    action as (typeof CONTROLLED_SUBSTANCE_CONSUMING_ACTIONS)[number],
   );
 }
 
@@ -176,7 +170,7 @@ async function assertActivePractice(ctx: ControlledSubstancesContext) {
 
 async function lockControlledSubstanceLedger(
   ctx: ControlledSubstancesContext,
-  input: { drugName: string; unit: string }
+  input: { drugName: string; unit: string },
 ) {
   const lockKey = controlledSubstanceLedgerLockKey({
     practiceId: ctx.practiceId,
@@ -185,7 +179,7 @@ async function lockControlledSubstanceLedger(
   });
 
   await ctx.db.execute(
-    sql`select pg_advisory_xact_lock(hashtext(${lockKey}::text))`
+    sql`select pg_advisory_xact_lock(hashtext(${lockKey}::text))`,
   );
 }
 
@@ -196,7 +190,7 @@ async function assertControlledSubstanceBalance(
     drugName: string;
     quantity: string;
     unit: string;
-  }
+  },
 ) {
   if (!isControlledSubstanceConsumingAction(input.action)) return;
 
@@ -214,8 +208,8 @@ async function assertControlledSubstanceBalance(
         activePracticePredicate(ctx.practiceId),
         eq(controlledSubstanceLog.drugName, input.drugName),
         eq(controlledSubstanceLog.unit, input.unit),
-        isNull(controlledSubstanceLog.deletedAt)
-      )
+        isNull(controlledSubstanceLog.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -230,14 +224,14 @@ async function assertControlledSubstanceBalance(
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: `Insufficient ${input.drugName} balance: ${formatControlledSubstanceQuantity(
-        available
+        available,
       )} ${input.unit} available.`,
     });
   }
 }
 
 async function practiceTimeZone(
-  ctx: ControlledSubstancesContext
+  ctx: ControlledSubstancesContext,
 ): Promise<string | null> {
   const [practice] = await ctx.db
     .select({ timezone: practices.timezone })
@@ -254,7 +248,7 @@ async function practiceTimeZone(
 
 async function controlledSubstanceDateRange(
   ctx: ControlledSubstancesContext,
-  input: { startDate?: string; endDate?: string }
+  input: { startDate?: string; endDate?: string },
 ): Promise<{ start?: Date; end?: Date }> {
   if (!input.startDate && !input.endDate) return {};
   const timezone = await practiceTimeZone(ctx);
@@ -269,7 +263,7 @@ async function controlledSubstanceDateRange(
 
 async function assertPatientBelongsToPractice(
   ctx: ControlledSubstancesContext,
-  patientId: string
+  patientId: string,
 ) {
   const [patient] = await ctx.db
     .select({ id: patients.id })
@@ -279,8 +273,8 @@ async function assertPatientBelongsToPractice(
         eq(patients.id, patientId),
         eq(patients.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(patients.deletedAt)
-      )
+        isNull(patients.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -293,7 +287,7 @@ async function assertPatientBelongsToPractice(
 
 async function assertWitnessBelongsToPractice(
   ctx: ControlledSubstancesContext,
-  userId: string
+  userId: string,
 ) {
   const [user] = await ctx.db
     .select({ id: users.id })
@@ -303,8 +297,8 @@ async function assertWitnessBelongsToPractice(
         eq(users.id, userId),
         eq(users.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(users.deletedAt)
-      )
+        isNull(users.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -334,109 +328,103 @@ export const controlledSubstancesRouter = createRouter({
         .where(
           and(
             eq(users.practiceId, ctx.practiceId),
+            ne(users.id, ctx.user.id),
             activePracticePredicate(ctx.practiceId),
-            isNull(users.deletedAt)
-          )
+            isNull(users.deletedAt),
+          ),
         )
         .orderBy(asc(users.name));
     }),
 
-  list: protectedProcedure
-    .input(listInput)
-    .query(async ({ ctx, input }) => {
-      await assertActivePractice(ctx);
-      const performer = alias(users, "performer");
-      const witness = alias(users, "witness");
-      const range = await controlledSubstanceDateRange(ctx, input);
+  list: protectedProcedure.input(listInput).query(async ({ ctx, input }) => {
+    await assertActivePractice(ctx);
+    const performer = alias(users, "performer");
+    const witness = alias(users, "witness");
+    const range = await controlledSubstanceDateRange(ctx, input);
 
-      const conditions = [
-        eq(controlledSubstanceLog.practiceId, ctx.practiceId),
-        activePracticePredicate(ctx.practiceId),
-        isNull(controlledSubstanceLog.deletedAt),
-      ];
+    const conditions = [
+      eq(controlledSubstanceLog.practiceId, ctx.practiceId),
+      activePracticePredicate(ctx.practiceId),
+      isNull(controlledSubstanceLog.deletedAt),
+    ];
 
-      if (input.drugName) {
-        conditions.push(
-          eq(controlledSubstanceLog.drugName, input.drugName)
-        );
-      }
-      if (range.start) {
-        conditions.push(
-          gte(controlledSubstanceLog.performedAt, range.start)
-        );
-      }
-      if (range.end) {
-        conditions.push(
-          lte(controlledSubstanceLog.performedAt, range.end)
-        );
-      }
+    if (input.drugName) {
+      conditions.push(eq(controlledSubstanceLog.drugName, input.drugName));
+    }
+    if (range.start) {
+      conditions.push(gte(controlledSubstanceLog.performedAt, range.start));
+    }
+    if (range.end) {
+      conditions.push(lte(controlledSubstanceLog.performedAt, range.end));
+    }
 
-      const [items, countResult] = await Promise.all([
-        ctx.db
-          .select({
-            id: controlledSubstanceLog.id,
-            drugName: controlledSubstanceLog.drugName,
-            deaSchedule: controlledSubstanceLog.deaSchedule,
-            action: controlledSubstanceLog.action,
-            quantity: controlledSubstanceLog.quantity,
-            unit: controlledSubstanceLog.unit,
-            lotNumber: controlledSubstanceLog.lotNumber,
-            notes: controlledSubstanceLog.notes,
-            performedAt: controlledSubstanceLog.performedAt,
-            patientId: controlledSubstanceLog.patientId,
-            patientName: patients.name,
-            performerName: performer.name,
-            witnessName: witness.name,
-          })
-          .from(controlledSubstanceLog)
-          .leftJoin(
-            patients,
-            and(
-              eq(controlledSubstanceLog.patientId, patients.id),
-              eq(patients.practiceId, ctx.practiceId),
-              activePracticePredicate(ctx.practiceId),
-              isNull(patients.deletedAt)
-            )
-          )
-          .leftJoin(
-            performer,
-            and(
-              eq(controlledSubstanceLog.performedBy, performer.id),
-              eq(performer.practiceId, ctx.practiceId),
-              activePracticePredicate(ctx.practiceId)
-            )
-          )
-          .leftJoin(
-            witness,
-            and(
-              eq(controlledSubstanceLog.witnessedBy, witness.id),
-              eq(witness.practiceId, ctx.practiceId),
-              activePracticePredicate(ctx.practiceId)
-            )
-          )
-          .where(and(...conditions))
-          .orderBy(desc(controlledSubstanceLog.performedAt))
-          .limit(input.limit)
-          .offset(input.offset),
-        ctx.db
-          .select({ count: sql<number>`count(*)` })
-          .from(controlledSubstanceLog)
-          .where(and(...conditions)),
-      ]);
+    const [items, countResult] = await Promise.all([
+      ctx.db
+        .select({
+          id: controlledSubstanceLog.id,
+          drugName: controlledSubstanceLog.drugName,
+          deaSchedule: controlledSubstanceLog.deaSchedule,
+          action: controlledSubstanceLog.action,
+          quantity: controlledSubstanceLog.quantity,
+          unit: controlledSubstanceLog.unit,
+          lotNumber: controlledSubstanceLog.lotNumber,
+          notes: controlledSubstanceLog.notes,
+          performedAt: controlledSubstanceLog.performedAt,
+          patientId: controlledSubstanceLog.patientId,
+          patientName: patients.name,
+          performerName: performer.name,
+          witnessName: witness.name,
+        })
+        .from(controlledSubstanceLog)
+        .leftJoin(
+          patients,
+          and(
+            eq(controlledSubstanceLog.patientId, patients.id),
+            eq(patients.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(patients.deletedAt),
+          ),
+        )
+        .leftJoin(
+          performer,
+          and(
+            eq(controlledSubstanceLog.performedBy, performer.id),
+            eq(performer.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+          ),
+        )
+        .leftJoin(
+          witness,
+          and(
+            eq(controlledSubstanceLog.witnessedBy, witness.id),
+            eq(witness.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+          ),
+        )
+        .where(and(...conditions))
+        .orderBy(desc(controlledSubstanceLog.performedAt))
+        .limit(input.limit)
+        .offset(input.offset),
+      ctx.db
+        .select({ count: sql<number>`count(*)` })
+        .from(controlledSubstanceLog)
+        .where(and(...conditions)),
+    ]);
 
-      return {
-        items,
-        total: Number(countResult[0]?.count ?? 0),
-      };
-    }),
+    return {
+      items,
+      total: Number(countResult[0]?.count ?? 0),
+    };
+  }),
 
   create: protectedProcedure
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
+        operationId: z.string().uuid(),
         drugName: clinicalTextInput(
           "Drug name",
-          CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH
+          CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH,
         ),
         deaSchedule: z.enum(["II", "III", "IV", "V"]),
         action: z.enum(["received", "administered", "wasted", "returned"]),
@@ -446,14 +434,14 @@ export const controlledSubstancesRouter = createRouter({
         witnessedBy: z.string().uuid().nullable().optional(),
         lotNumber: optionalClinicalTextInput(
           "Lot number",
-          CONTROLLED_SUBSTANCE_LOT_NUMBER_MAX_LENGTH
+          CONTROLLED_SUBSTANCE_LOT_NUMBER_MAX_LENGTH,
         ),
         notes: optionalClinicalTextInput(
           "Notes",
-          CONTROLLED_SUBSTANCE_NOTES_MAX_LENGTH
+          CONTROLLED_SUBSTANCE_NOTES_MAX_LENGTH,
         ),
         performedAt: performedAtInput.optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       // Waste requires a witness
@@ -461,6 +449,13 @@ export const controlledSubstancesRouter = createRouter({
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Controlled substance waste requires a witness.",
+        });
+      }
+      if (input.witnessedBy === ctx.user.id) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "The person recording a controlled-substance entry cannot also witness it.",
         });
       }
 
@@ -476,6 +471,48 @@ export const controlledSubstancesRouter = createRouter({
       return ctx.db.transaction(async (tx) => {
         const txCtx = { db: tx, practiceId: ctx.practiceId };
         await assertActivePractice(txCtx);
+        const operationKey = `controlled-substance:${ctx.practiceId}:${input.operationId}`;
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${operationKey}, 0))`,
+        );
+        const [existing] = await tx
+          .select()
+          .from(controlledSubstanceLog)
+          .where(
+            and(
+              eq(controlledSubstanceLog.practiceId, ctx.practiceId),
+              eq(controlledSubstanceLog.operationId, input.operationId),
+              isNull(controlledSubstanceLog.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (existing) {
+          const performedAtMatches = input.performedAt
+            ? existing.performedAt.getTime() ===
+              new Date(input.performedAt).getTime()
+            : true;
+          if (
+            existing.performedBy !== ctx.user.id ||
+            existing.drugName !== input.drugName ||
+            existing.deaSchedule !== input.deaSchedule ||
+            existing.action !== input.action ||
+            controlledSubstanceQuantityMillis(existing.quantity) !==
+              controlledSubstanceQuantityMillis(input.quantity) ||
+            existing.unit !== input.unit ||
+            (existing.patientId ?? null) !== (input.patientId ?? null) ||
+            (existing.witnessedBy ?? null) !== (input.witnessedBy ?? null) ||
+            (existing.lotNumber ?? null) !== (input.lotNumber ?? null) ||
+            (existing.notes ?? null) !== (input.notes ?? null) ||
+            !performedAtMatches
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This controlled-substance operation ID was already used for different details.",
+            });
+          }
+          return existing;
+        }
         if (input.patientId) {
           await assertPatientBelongsToPractice(txCtx, input.patientId);
         }
@@ -498,6 +535,7 @@ export const controlledSubstancesRouter = createRouter({
             patientId: input.patientId ?? null,
             performedBy: ctx.user.id,
             witnessedBy: input.witnessedBy ?? null,
+            operationId: input.operationId,
             lotNumber: input.lotNumber,
             notes: input.notes,
             performedAt: input.performedAt
@@ -522,14 +560,10 @@ export const controlledSubstancesRouter = createRouter({
       ];
 
       if (range.start) {
-        conditions.push(
-          gte(controlledSubstanceLog.performedAt, range.start)
-        );
+        conditions.push(gte(controlledSubstanceLog.performedAt, range.start));
       }
       if (range.end) {
-        conditions.push(
-          lte(controlledSubstanceLog.performedAt, range.end)
-        );
+        conditions.push(lte(controlledSubstanceLog.performedAt, range.end));
       }
 
       const rows = await ctx.db

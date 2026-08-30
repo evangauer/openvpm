@@ -9,9 +9,8 @@ vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
 }));
 
-const { controlledSubstancesRouter } = await import(
-  "../routers/controlled-substances"
-);
+const { controlledSubstancesRouter } =
+  await import("../routers/controlled-substances");
 const { LIST_OFFSET_MAX } = await import("../routers/pagination");
 const {
   CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH,
@@ -25,8 +24,9 @@ const USER_ID = "00000000-0000-0000-0000-000000000001";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000002";
 const WITNESS_ID = "00000000-0000-0000-0000-000000000003";
 const ENTRY_ID = "00000000-0000-0000-0000-000000000004";
+const OPERATION_ID = "00000000-0000-0000-0000-000000000005";
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, injectOperationId = true) {
   const session = {
     user: {
       id: USER_ID,
@@ -36,7 +36,20 @@ function callerWithDb(db: Record<string, unknown>) {
       practiceId: PRACTICE_ID,
     },
   };
-  return controlledSubstancesRouter.createCaller({ db, session } as never);
+  const caller = controlledSubstancesRouter.createCaller({
+    db,
+    session,
+  } as never);
+  if (!injectOperationId) return caller as any;
+  return new Proxy(caller, {
+    get(target, property, receiver) {
+      if (property === "create") {
+        return (input: Record<string, unknown>) =>
+          target.create({ operationId: OPERATION_ID, ...input } as never);
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  }) as any;
 }
 
 function createDb(opts?: {
@@ -53,7 +66,7 @@ function createDb(opts?: {
       orderBy: vi.fn(() => afterWhere),
       then: (
         resolve: (value: unknown[]) => unknown,
-        reject?: (error: unknown) => unknown
+        reject?: (error: unknown) => unknown,
       ) => Promise.resolve(result).then(resolve, reject),
     };
     const builder = {
@@ -89,6 +102,23 @@ afterEach(() => {
 });
 
 describe("controlled substance log safety", () => {
+  it("requires an operation ID before controlled-substance DB work", async () => {
+    const { db, select, insertValues } = createDb();
+
+    await expect(
+      callerWithDb(db, false).create({
+        drugName: "Ketamine",
+        deaSchedule: "III",
+        action: "received",
+        quantity: "1.5",
+        unit: "ml",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("exposes the practice timezone for controlled-substance log timestamps", async () => {
     const { db } = createDb({
       selectResults: [[{ timezone: "America/Los_Angeles" }]],
@@ -122,7 +152,7 @@ describe("controlled substance log safety", () => {
         action: "administered",
         quantity: "1.5",
         unit: "ml",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -138,9 +168,31 @@ describe("controlled substance log safety", () => {
         action: "wasted",
         quantity: "0.2",
         unit: "ml",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("rejects a recorder used as the witness", async () => {
+    const { db, select, insertValues } = createDb();
+
+    await expect(
+      callerWithDb(db).create({
+        drugName: "Ketamine",
+        deaSchedule: "III",
+        action: "wasted",
+        quantity: "0.2",
+        unit: "ml",
+        witnessedBy: USER_ID,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message:
+        "The person recording a controlled-substance entry cannot also witness it.",
+    });
+
+    expect(select).not.toHaveBeenCalled();
     expect(insertValues).not.toHaveBeenCalled();
   });
 
@@ -154,7 +206,7 @@ describe("controlled substance log safety", () => {
         action: "received",
         quantity: "-1",
         unit: "ml",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -170,7 +222,7 @@ describe("controlled substance log safety", () => {
         action: "received",
         quantity: "1.2345",
         unit: "ml",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -180,7 +232,7 @@ describe("controlled substance log safety", () => {
         action: "received",
         quantity: "10000000",
         unit: "ml",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -195,21 +247,21 @@ describe("controlled substance log safety", () => {
         startDate: "2026-02-31",
         limit: 25,
         offset: 0,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).list({
         limit: 25,
         offset: LIST_OFFSET_MAX + 1,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).summary({
         startDate: "2026-06-28",
         endDate: "2026-06-27",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -220,7 +272,7 @@ describe("controlled substance log safety", () => {
         quantity: "1.5",
         unit: "ml",
         performedAt: "2026-06-27",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -243,7 +295,7 @@ describe("controlled substance log safety", () => {
     });
 
     await expect(
-      callerWithDb(db).list({ limit: 25, offset: 0 })
+      callerWithDb(db).list({ limit: 25, offset: 0 }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -261,7 +313,7 @@ describe("controlled substance log safety", () => {
         action: "received",
         quantity: "1.5",
         unit: "ml",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -292,7 +344,7 @@ describe("controlled substance log safety", () => {
         endDate: "2026-07-01",
         limit: 25,
         offset: 0,
-      })
+      }),
     ).resolves.toEqual({ items: [row], total: 1 });
 
     expect(select).toHaveBeenCalledTimes(4);
@@ -319,7 +371,7 @@ describe("controlled substance log safety", () => {
       callerWithDb(db).summary({
         startDate: "2026-07-01",
         endDate: "2026-07-01",
-      })
+      }),
     ).resolves.toEqual([row]);
 
     expect(select).toHaveBeenCalledTimes(3);
@@ -333,7 +385,7 @@ describe("controlled substance log safety", () => {
         drugName: "k".repeat(CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH + 1),
         limit: 25,
         offset: 0,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -343,7 +395,7 @@ describe("controlled substance log safety", () => {
         action: "received",
         quantity: "1.5",
         unit: "m".repeat(CONTROLLED_SUBSTANCE_UNIT_MAX_LENGTH + 1),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -353,7 +405,7 @@ describe("controlled substance log safety", () => {
         action: "received",
         quantity: "1.5",
         unit: "ml",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -364,7 +416,7 @@ describe("controlled substance log safety", () => {
         quantity: "1.5",
         unit: "ml",
         lotNumber: "L".repeat(CONTROLLED_SUBSTANCE_LOT_NUMBER_MAX_LENGTH + 1),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -375,7 +427,7 @@ describe("controlled substance log safety", () => {
         quantity: "1.5",
         unit: "ml",
         notes: "n".repeat(CONTROLLED_SUBSTANCE_NOTES_MAX_LENGTH + 1),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -384,7 +436,7 @@ describe("controlled substance log safety", () => {
 
   it("trims controlled-substance text before writing", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [[{ id: PRACTICE_ID }]],
+      selectResults: [[{ id: PRACTICE_ID }], []],
       insertedRows: [{ id: ENTRY_ID, patientId: null }],
     });
 
@@ -397,7 +449,7 @@ describe("controlled substance log safety", () => {
         unit: "  ml  ",
         lotNumber: "  LOT-42  ",
         notes: "  Initial stock count  ",
-      })
+      }),
     ).resolves.toMatchObject({ id: ENTRY_ID });
 
     expect(insertValues).toHaveBeenCalledWith(
@@ -406,13 +458,14 @@ describe("controlled substance log safety", () => {
         unit: "ml",
         lotNumber: "LOT-42",
         notes: "Initial stock count",
-      })
+        operationId: OPERATION_ID,
+      }),
     );
   });
 
   it("requires administered patients to belong to the practice", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [[{ id: PRACTICE_ID }], []],
+      selectResults: [[{ id: PRACTICE_ID }], [], []],
     });
 
     await expect(
@@ -423,7 +476,7 @@ describe("controlled substance log safety", () => {
         quantity: "1.5",
         unit: "ml",
         patientId: PATIENT_ID,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -431,7 +484,7 @@ describe("controlled substance log safety", () => {
 
   it("requires waste witnesses to belong to the practice", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [[{ id: PRACTICE_ID }], []],
+      selectResults: [[{ id: PRACTICE_ID }], [], []],
     });
 
     await expect(
@@ -442,7 +495,7 @@ describe("controlled substance log safety", () => {
         quantity: "0.2",
         unit: "ml",
         witnessedBy: WITNESS_ID,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -459,12 +512,15 @@ describe("controlled substance log safety", () => {
     const { db, execute, insertValues, transaction } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
+        [],
         [{ id: PATIENT_ID }],
         [balance],
         [{ id: PRACTICE_ID }],
+        [],
         [{ id: WITNESS_ID }],
         [balance],
         [{ id: PRACTICE_ID }],
+        [],
         [balance],
       ],
     });
@@ -477,7 +533,7 @@ describe("controlled substance log safety", () => {
         quantity: "0.251",
         unit: "ml",
         patientId: PATIENT_ID,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "BAD_REQUEST",
       message: "Insufficient Ketamine balance: 0.25 ml available.",
@@ -491,7 +547,7 @@ describe("controlled substance log safety", () => {
         quantity: "0.251",
         unit: "ml",
         witnessedBy: WITNESS_ID,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -501,7 +557,7 @@ describe("controlled substance log safety", () => {
         action: "returned",
         quantity: "0.251",
         unit: "ml",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(transaction).toHaveBeenCalled();
@@ -513,6 +569,7 @@ describe("controlled substance log safety", () => {
     const { db, insertValues } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
+        [],
         [{ id: PATIENT_ID }],
         [
           {
@@ -534,7 +591,7 @@ describe("controlled substance log safety", () => {
         quantity: "1.5",
         unit: "ml",
         patientId: PATIENT_ID,
-      })
+      }),
     ).resolves.toMatchObject({ id: ENTRY_ID, patientId: PATIENT_ID });
 
     expect(insertValues).toHaveBeenCalledWith(
@@ -542,13 +599,14 @@ describe("controlled substance log safety", () => {
         practiceId: PRACTICE_ID,
         patientId: PATIENT_ID,
         performedBy: USER_ID,
-      })
+        operationId: OPERATION_ID,
+      }),
     );
   });
 
   it("records an explicit performed timestamp after validation", async () => {
     const { db, execute, insertValues, transaction } = createDb({
-      selectResults: [[{ id: PRACTICE_ID }]],
+      selectResults: [[{ id: PRACTICE_ID }], []],
       insertedRows: [{ id: ENTRY_ID, patientId: null }],
     });
 
@@ -560,15 +618,16 @@ describe("controlled substance log safety", () => {
         quantity: "1.500",
         unit: "ml",
         performedAt: "2026-06-27T14:30:00.000Z",
-      })
+      }),
     ).resolves.toMatchObject({ id: ENTRY_ID });
 
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         practiceId: PRACTICE_ID,
         performedBy: USER_ID,
+        operationId: OPERATION_ID,
         performedAt: expect.any(Date),
-      })
+      }),
     );
     const [values] = insertValues.mock.calls[0] as unknown as [
       { performedAt: Date },
@@ -582,6 +641,7 @@ describe("controlled substance log safety", () => {
     const { db, insertValues } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
+        [],
         [{ id: WITNESS_ID }],
         [
           {
@@ -603,7 +663,7 @@ describe("controlled substance log safety", () => {
         quantity: "0.2",
         unit: "ml",
         witnessedBy: WITNESS_ID,
-      })
+      }),
     ).resolves.toMatchObject({ id: ENTRY_ID, witnessedBy: WITNESS_ID });
 
     expect(insertValues).toHaveBeenCalledWith(
@@ -611,7 +671,8 @@ describe("controlled substance log safety", () => {
         practiceId: PRACTICE_ID,
         witnessedBy: WITNESS_ID,
         performedBy: USER_ID,
-      })
+        operationId: OPERATION_ID,
+      }),
     );
   });
 
@@ -619,6 +680,7 @@ describe("controlled substance log safety", () => {
     const { db, insertValues } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
+        [],
         [
           {
             totalReceived: "10.000",
@@ -638,39 +700,112 @@ describe("controlled substance log safety", () => {
         action: "returned",
         quantity: "2.5",
         unit: "ml",
-      })
+      }),
     ).resolves.toMatchObject({ id: ENTRY_ID, action: "returned" });
 
     expect(insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "returned",
         quantity: "2.5",
-      })
+      }),
     );
+  });
+
+  it("returns the original immutable entry for an exact operation retry", async () => {
+    const existing = {
+      id: ENTRY_ID,
+      practiceId: PRACTICE_ID,
+      operationId: OPERATION_ID,
+      drugName: "Ketamine",
+      deaSchedule: "III",
+      action: "received",
+      quantity: "1.500",
+      unit: "ml",
+      patientId: null,
+      performedBy: USER_ID,
+      witnessedBy: null,
+      lotNumber: "LOT-42",
+      notes: "Initial count",
+      performedAt: new Date("2026-06-27T14:30:00.000Z"),
+      deletedAt: null,
+    };
+    const { db, insertValues } = createDb({
+      selectResults: [[{ id: PRACTICE_ID }], [existing]],
+    });
+
+    await expect(
+      callerWithDb(db).create({
+        drugName: "Ketamine",
+        deaSchedule: "III",
+        action: "received",
+        quantity: "1.5",
+        unit: "ml",
+        lotNumber: "LOT-42",
+        notes: "Initial count",
+        performedAt: "2026-06-27T14:30:00.000Z",
+      }),
+    ).resolves.toEqual(existing);
+
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("rejects reuse of an operation ID with changed ledger details", async () => {
+    const existing = {
+      id: ENTRY_ID,
+      practiceId: PRACTICE_ID,
+      operationId: OPERATION_ID,
+      drugName: "Ketamine",
+      deaSchedule: "III",
+      action: "received",
+      quantity: "1.500",
+      unit: "ml",
+      patientId: null,
+      performedBy: USER_ID,
+      witnessedBy: null,
+      lotNumber: null,
+      notes: null,
+      performedAt: new Date("2026-06-27T14:30:00.000Z"),
+      deletedAt: null,
+    };
+    const { db, insertValues } = createDb({
+      selectResults: [[{ id: PRACTICE_ID }], [existing]],
+    });
+
+    await expect(
+      callerWithDb(db).create({
+        drugName: "Ketamine",
+        deaSchedule: "III",
+        action: "received",
+        quantity: "2",
+        unit: "ml",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(insertValues).not.toHaveBeenCalled();
   });
 });
 
 describe("controlled substance list scoping", () => {
   const source = readFileSync(
     new URL("../routers/controlled-substances.ts", import.meta.url),
-    "utf8"
+    "utf8",
   );
 
   it("keeps patients active while preserving former-staff ledger attribution", () => {
     expect(source).toMatch(
-      /leftJoin\(\s*patients,\s*and\(\s*eq\(controlledSubstanceLog\.patientId, patients\.id\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(patients\.deletedAt\)\s*\)\s*\)/s
+      /leftJoin\(\s*patients,\s*and\(\s*eq\(controlledSubstanceLog\.patientId, patients\.id\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(patients\.deletedAt\),?\s*\),?\s*\)/s,
     );
     expect(source).toMatch(
-      /leftJoin\(\s*performer,\s*and\(\s*eq\(controlledSubstanceLog\.performedBy, performer\.id\),\s*eq\(performer\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\)\s*,?\s*\)\s*\)/s
+      /leftJoin\(\s*performer,\s*and\(\s*eq\(controlledSubstanceLog\.performedBy, performer\.id\),\s*eq\(performer\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\)\s*,?\s*\),?\s*\)/s,
     );
     expect(source).toMatch(
-      /leftJoin\(\s*witness,\s*and\(\s*eq\(controlledSubstanceLog\.witnessedBy, witness\.id\),\s*eq\(witness\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\)\s*,?\s*\)\s*\)/s
+      /leftJoin\(\s*witness,\s*and\(\s*eq\(controlledSubstanceLog\.witnessedBy, witness\.id\),\s*eq\(witness\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\)\s*,?\s*\),?\s*\)/s,
     );
     expect(source).not.toMatch(
-      /eq\(controlledSubstanceLog\.performedBy, performer\.id\)[\s\S]{0,180}?isNull\(performer\.deletedAt\)/s
+      /eq\(controlledSubstanceLog\.performedBy, performer\.id\)[\s\S]{0,180}?isNull\(performer\.deletedAt\)/s,
     );
     expect(source).not.toMatch(
-      /eq\(controlledSubstanceLog\.witnessedBy, witness\.id\)[\s\S]{0,180}?isNull\(witness\.deletedAt\)/s
+      /eq\(controlledSubstanceLog\.witnessedBy, witness\.id\)[\s\S]{0,180}?isNull\(witness\.deletedAt\)/s,
     );
   });
 
@@ -683,16 +818,16 @@ describe("controlled substance list scoping", () => {
     expect(source).toContain("await assertActivePractice(txCtx)");
     expect(source).not.toContain("practice?.timezone");
     expect(
-      source.match(/activePracticePredicate\(ctx\.practiceId\)/g)?.length ?? 0
+      source.match(/activePracticePredicate\(ctx\.practiceId\)/g)?.length ?? 0,
     ).toBeGreaterThanOrEqual(8);
     expect(source).toMatch(
-      /eq\(controlledSubstanceLog\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(controlledSubstanceLog\.deletedAt\)/
+      /eq\(controlledSubstanceLog\.practiceId, ctx\.practiceId\),\s*activePracticePredicate\(ctx\.practiceId\),\s*isNull\(controlledSubstanceLog\.deletedAt\)/,
     );
   });
 
   it("uses the practice timezone for list and summary date filters", () => {
     expect(source).toContain(
-      "const range = await controlledSubstanceDateRange(ctx, input)"
+      "const range = await controlledSubstanceDateRange(ctx, input)",
     );
     expect(source).toContain("dateInputDayUtcRange(value, timeZone).start");
     expect(source).toContain("return new Date(end.getTime() - 1)");
@@ -701,7 +836,15 @@ describe("controlled substance list scoping", () => {
   it("serializes same-drug ledger writes before checking balance", () => {
     expect(source).toContain("return ctx.db.transaction(async (tx) => {");
     expect(source).toContain("pg_advisory_xact_lock");
-    expect(source).toContain("await lockControlledSubstanceLedger(txCtx, input)");
-    expect(source).toContain("await assertControlledSubstanceBalance(txCtx, input)");
+    expect(source).toContain(
+      "await lockControlledSubstanceLedger(txCtx, input)",
+    );
+    expect(source).toContain(
+      "await assertControlledSubstanceBalance(txCtx, input)",
+    );
+  });
+
+  it("excludes the recording user from eligible waste witnesses", () => {
+    expect(source).toContain("ne(users.id, ctx.user.id)");
   });
 });
