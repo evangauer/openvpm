@@ -17,6 +17,7 @@ export * from "./dispense-charge-queue";
 export * from "./communications";
 export * from "./lifecycle-email-jobs";
 export * from "./subscription-checkout-attempts";
+export * from "./subscription-cadence-operations";
 export * from "./auth";
 export * from "./controlled-substances";
 export * from "./files";
