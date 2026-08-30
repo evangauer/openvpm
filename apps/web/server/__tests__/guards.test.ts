@@ -127,6 +127,22 @@ describe("viewer read-only guard", () => {
     });
   });
 
+  it("requires recent step-up before scheduling an annual billing commitment", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv(
+      "PRIVILEGED_ACTION_SIGNING_KEY",
+      Buffer.alloc(32, 8).toString("base64"),
+    );
+
+    const caller = callerFor("admin");
+    await expect(
+      caller.subscription.scheduleAnnualAtRenewal(),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message: expect.stringContaining("Confirm your identity"),
+    });
+  });
+
   it("requires recent step-up before a hosted lapsed admin requests account deletion review", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
     vi.stubEnv(

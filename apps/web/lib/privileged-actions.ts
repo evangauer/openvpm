@@ -6,6 +6,7 @@ export const PRIVILEGED_ACTIONS = [
   "billing.voidInvoice",
   "subscription.createCheckout",
   "subscription.openBillingPortal",
+  "subscription.scheduleAnnualAtRenewal",
   "settings.requestAccountDeletion",
   "settings.clearDemoData",
   "settings.reseedDemoData",
@@ -51,6 +52,8 @@ export const PRIVILEGED_ACTION_LABELS: Record<PrivilegedAction, string> = {
   "billing.voidInvoice": "Void an invoice",
   "subscription.createCheckout": "Start subscription checkout",
   "subscription.openBillingPortal": "Open subscription billing portal",
+  "subscription.scheduleAnnualAtRenewal":
+    "Schedule annual subscription billing",
   "settings.requestAccountDeletion": "Request clinic account deletion",
   "settings.clearDemoData": "Clear demo data",
   "settings.reseedDemoData": "Reseed demo data",

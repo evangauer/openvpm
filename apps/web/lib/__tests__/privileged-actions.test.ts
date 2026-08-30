@@ -20,6 +20,7 @@ const REQUIRED_BOUNDARIES = [
   "billing.refundPayment",
   "billing.applyInvoiceAdjustment",
   "billing.voidInvoice",
+  "subscription.scheduleAnnualAtRenewal",
   "settings.createUser",
   "settings.inviteStaff",
   "settings.updateUser",
