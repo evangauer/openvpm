@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [development, staging, main]
+  # Stacked pull requests must receive the same release evidence as PRs aimed
+  # directly at a controlled branch. Restrict pushes, not review candidates.
   pull_request: {}
 
 permissions:
@@ -256,6 +258,18 @@ jobs:
         env:
           SUBSCRIPTION_CHECKOUT_SERVICE_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run lib/billing/__tests__/subscription-checkout-attempts.integration.test.ts
+
+      # Cadence changes cross an immutable operation ledger, Stripe schedule
+      # idempotency, signed webhook reconciliation, crash recovery, and
+      # schedule-aware quantity updates. Prove both the database fences and
+      # the protected application orchestration against real PostgreSQL.
+      - name: Execute subscription cadence database contract
+        run: pnpm --filter @openpims/db db:subscription-cadence:test
+
+      - name: Execute subscription cadence service recovery contract
+        env:
+          SUBSCRIPTION_CADENCE_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run lib/billing/__tests__/subscription-cadence-operations.integration.test.ts
 
       # Subscription notices cross Stripe transactions, a durable outbox,
       # provider idempotency, and final-state suppression. Exercise atomic
