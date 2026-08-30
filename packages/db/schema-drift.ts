@@ -409,6 +409,63 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       table,
       name: "EXECUTE",
     })),
+    ...[
+      "subscription_cadence_operations_requester_tenant_fk",
+      "subscription_cadence_operations_request_identity_check",
+      "subscription_cadence_operations_evidence_shape_check",
+      "subscription_cadence_operations_state_check",
+    ].map((name) => ({
+      kind: "constraint" as const,
+      table: "subscription_cadence_operations",
+      name,
+    })),
+    ...[
+      "subscription_cadence_operations_create_idempotency_uq",
+      "subscription_cadence_operations_configure_idempotency_uq",
+      "subscription_cadence_operations_provider_schedule_uq",
+      "subscription_cadence_operations_one_active_uq",
+    ].map((name) => ({
+      kind: "index" as const,
+      table: "subscription_cadence_operations",
+      name,
+    })),
+    ...[
+      [
+        "subscription_cadence_operations",
+        "subscription_cadence_operations_validate_insert",
+      ],
+      [
+        "subscription_cadence_operations",
+        "subscription_cadence_operations_state_guard",
+      ],
+      ["practices", "practices_subscription_cadence_dispatch_guard"],
+      ["locations", "locations_subscription_cadence_dispatch_guard"],
+    ].map(([table, name]) => ({ kind: "trigger" as const, table, name })),
+    {
+      kind: "rls_policy",
+      table: "subscription_cadence_operations",
+      name: "tenant_isolation",
+    },
+    ...["SELECT", "INSERT", "UPDATE"].map((name) => ({
+      kind: "table_privilege" as const,
+      table: "subscription_cadence_operations",
+      name,
+    })),
+    {
+      kind: "forbidden_table_privilege",
+      table: "subscription_cadence_operations",
+      name: "DELETE",
+    },
+    ...[
+      "validate_subscription_cadence_operation_insert",
+      "guard_subscription_cadence_operation_mutation",
+      "guard_practice_during_subscription_cadence_dispatch",
+      "guard_locations_during_subscription_cadence_dispatch",
+    ].map((table) => ({
+      kind: "forbidden_function_privilege" as const,
+      table,
+      name: "EXECUTE",
+    })),
     {
       kind: "constraint",
       table: "sms_provider_events",
@@ -880,7 +937,8 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
       ('payment_processor_payouts'::text, 'DELETE'::text),
       ('payment_disputes'::text, 'DELETE'::text),
       ('financial_closes'::text, 'UPDATE'::text),
-      ('financial_closes'::text, 'DELETE'::text)
+      ('financial_closes'::text, 'DELETE'::text),
+      ('subscription_cadence_operations'::text, 'DELETE'::text)
     ) required_absence(table_name, privilege_type)
     union all
     select
@@ -913,7 +971,11 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
         'validate_financial_close_insert',
         'guard_financial_close_immutability',
         'guard_closed_financial_payment_mutation',
-        'guard_closed_financial_invoice_mutation'
+        'guard_closed_financial_invoice_mutation',
+        'validate_subscription_cadence_operation_insert',
+        'guard_subscription_cadence_operation_mutation',
+        'guard_practice_during_subscription_cadence_dispatch',
+        'guard_locations_during_subscription_cadence_dispatch'
       )
       and function_object.pronargs = 0
   `);

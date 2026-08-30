@@ -26,6 +26,7 @@ const TABLES = [
   "audit_log",
   "rate_limit_buckets",
   "stripe_events",
+  "subscription_cadence_operations",
   "subscription_checkout_attempts",
   "practice_conversion_milestones",
   "auth_email_webhook_conflicts",
