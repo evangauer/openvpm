@@ -125,7 +125,7 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
     lotNumber: "",
     notes: "",
   });
-  const operationRef = useRef<{ fingerprint: string; id: string } | null>(null);
+  const operationIdsRef = useRef(new Map<string, string>());
   const patientsMissing =
     !patientsQuery.isLoading && !patientsQuery.error && !patientsQuery.data;
   const witnessesMissing =
@@ -218,10 +218,8 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
     };
     const fingerprint = JSON.stringify(payload);
     const operationId =
-      operationRef.current?.fingerprint === fingerprint
-        ? operationRef.current.id
-        : crypto.randomUUID();
-    operationRef.current = { fingerprint, id: operationId };
+      operationIdsRef.current.get(fingerprint) ?? crypto.randomUUID();
+    operationIdsRef.current.set(fingerprint, operationId);
     createMutation.mutate({ ...payload, operationId });
   };
 

@@ -60,13 +60,11 @@ describe("controlled substances UI bounds", () => {
     expect(source).toContain("unit: form.unit.trim()");
     expect(source).toContain("lotNumber: trimmedOrUndefined(form.lotNumber)");
     expect(source).toContain("notes: trimmedOrUndefined(form.notes)");
-    expect(source).toContain("const operationRef = useRef");
-    expect(source).toContain(
-      "operationRef.current?.fingerprint === fingerprint",
-    );
+    expect(source).toContain("const operationIdsRef = useRef(new Map");
+    expect(source).toContain("operationIdsRef.current.get(fingerprint)");
     expect(source).toContain("crypto.randomUUID()");
     expect(source).toContain(
-      "operationRef.current = { fingerprint, id: operationId }",
+      "operationIdsRef.current.set(fingerprint, operationId)",
     );
     expect(source).toContain(
       "createMutation.mutate({ ...payload, operationId })",
