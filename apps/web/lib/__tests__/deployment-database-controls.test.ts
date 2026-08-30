@@ -7,6 +7,8 @@ import {
   supabaseProjectRef,
 } from "@openpims/db/deployment-target";
 import {
+  CANONICAL_0086_MIGRATION_IDENTITY,
+  LEGACY_PRODUCTION_0086_MIGRATION_IDENTITY,
   migrationConformanceIssues,
   unexpectedPublicApplicationTables,
   type MigrationIdentity,
@@ -142,7 +144,11 @@ describe("migration ledger conformance", () => {
 
   it("requires exact history after migration", () => {
     expect(
-      migrationConformanceIssues({ expected, applied: expected, mode: "exact" }),
+      migrationConformanceIssues({
+        expected,
+        applied: expected,
+        mode: "exact",
+      }),
     ).toEqual([]);
     expect(
       migrationConformanceIssues({
@@ -169,44 +175,78 @@ describe("migration ledger conformance", () => {
       }),
     ).toEqual(["Database migration history is ahead of committed history"]);
   });
+
+  it("accepts only the exact historical Production 0086 identity after its tenant helper is proven", () => {
+    const expectedWithCanonical0086 = Array.from({ length: 87 }, (_, index) =>
+      migration(index.toString(16), String(index)),
+    );
+    expectedWithCanonical0086[86] = CANONICAL_0086_MIGRATION_IDENTITY;
+    const productionHistory = [...expectedWithCanonical0086];
+    productionHistory[86] = LEGACY_PRODUCTION_0086_MIGRATION_IDENTITY;
+
+    expect(
+      migrationConformanceIssues({
+        expected: expectedWithCanonical0086,
+        applied: productionHistory,
+        mode: "exact",
+      }),
+    ).toEqual(["Legacy 0086 tenant-context adoption is not proven"]);
+    expect(
+      migrationConformanceIssues({
+        expected: expectedWithCanonical0086,
+        applied: productionHistory,
+        mode: "exact",
+        legacy0086AdoptionProven: true,
+      }),
+    ).toEqual([]);
+
+    productionHistory[86] = {
+      ...LEGACY_PRODUCTION_0086_MIGRATION_IDENTITY,
+      hash: "f".repeat(64),
+    };
+    expect(
+      migrationConformanceIssues({
+        expected: expectedWithCanonical0086,
+        applied: productionHistory,
+        mode: "exact",
+        legacy0086AdoptionProven: true,
+      }),
+    ).toEqual(["Database migration history diverges at position 86"]);
+  });
 });
 
 describe("database control CLI output", () => {
-  it(
-    "never prints connection target or credential details",
-    () => {
-      const sensitiveHost = "synthetic-sensitive-postgres-host.invalid";
-      const sensitiveUser = "synthetic_sensitive_user";
-      const sensitivePassword = "synthetic_sensitive_password";
-      const databaseUrl =
-        `postgresql://${sensitiveUser}:${sensitivePassword}@${sensitiveHost}:5432/postgres` +
-        "?connect_timeout=1";
+  it("never prints connection target or credential details", () => {
+    const sensitiveHost = "synthetic-sensitive-postgres-host.invalid";
+    const sensitiveUser = "synthetic_sensitive_user";
+    const sensitivePassword = "synthetic_sensitive_password";
+    const databaseUrl =
+      `postgresql://${sensitiveUser}:${sensitivePassword}@${sensitiveHost}:5432/postgres` +
+      "?connect_timeout=1";
 
-      for (const script of [
-        "db:drift",
-        "db:migrations:conformance",
-        "db:rls:preflight",
-        "db:rls",
-      ]) {
-        const result = spawnSync("pnpm", ["--filter", "@openpims/db", script], {
-          cwd: repoRoot,
-          encoding: "utf8",
-          timeout: 15_000,
-          env: {
-            ...process.env,
-            DATABASE_URL: databaseUrl,
-            MIGRATION_CONFORMANCE_MODE: "prefix",
-            OPENPIMS_APP_DB_PASSWORD: sensitivePassword,
-          },
-        });
-        expect(result.error, script).toBeUndefined();
-        expect(result.status, script).not.toBe(0);
-        const output = `${result.stdout}\n${result.stderr}`;
-        expect(output, script).not.toContain(sensitiveHost);
-        expect(output, script).not.toContain(sensitiveUser);
-        expect(output, script).not.toContain(sensitivePassword);
-      }
-    },
-    40_000,
-  );
+    for (const script of [
+      "db:drift",
+      "db:migrations:conformance",
+      "db:rls:preflight",
+      "db:rls",
+    ]) {
+      const result = spawnSync("pnpm", ["--filter", "@openpims/db", script], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 15_000,
+        env: {
+          ...process.env,
+          DATABASE_URL: databaseUrl,
+          MIGRATION_CONFORMANCE_MODE: "prefix",
+          OPENPIMS_APP_DB_PASSWORD: sensitivePassword,
+        },
+      });
+      expect(result.error, script).toBeUndefined();
+      expect(result.status, script).not.toBe(0);
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output, script).not.toContain(sensitiveHost);
+      expect(output, script).not.toContain(sensitiveUser);
+      expect(output, script).not.toContain(sensitivePassword);
+    }
+  }, 40_000);
 });

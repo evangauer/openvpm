@@ -14,7 +14,8 @@ describe("repository promotion controls", () => {
     expect(workflow).toContain("branches: [development, staging, main]");
     expect(
       workflow.match(/branches: \[development, staging, main\]/g),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+    expect(workflow).toContain("pull_request: {}");
   });
 
   it("targets scheduled dependency version updates at development", () => {
@@ -58,17 +59,16 @@ describe("repository promotion controls", () => {
     expect(production).toContain("github.ref == 'refs/heads/main'");
     expect(production).toContain("inputs.target == 'production'");
     expect(production).toContain("environment: Production");
-    expect(production).toContain("MIGRATE_PRODUCTION");
-    expect(production).toContain("^[0-9a-f]{40}$");
-    expect(production).toContain(
-      '[ "$REQUESTED_RELEASE_SHA" != "$GITHUB_SHA" ]',
-    );
-    expect(workflow).toContain("reject-invalid-dispatch-branch:");
+    expect(workflow).toContain("MIGRATE_PRODUCTION");
+    expect(workflow).toContain("^[0-9a-f]{40}$");
+    expect(workflow).toContain('[ "$REQUESTED_RELEASE_SHA" != "$GITHUB_SHA" ]');
+    expect(workflow).toContain("reject-invalid-production-dispatch:");
     expect(workflow).toContain("validate-production-request:");
     expect(workflow).toContain("needs: validate-production-request");
     expect(workflow).toContain(
-      "group: apply-migrations-${{ inputs.target || 'demo' }}",
+      "inputs.target == 'production' && github.ref != 'refs/heads/main'",
     );
+    expect(production).toContain("group: apply-migrations-production");
     expect(workflow).toContain("queue: max");
     expect(production).toContain("PRODUCTION_DATABASE_URL is not configured");
     expect(production).toContain("OPENPIMS_APP_DB_PASSWORD is not configured");
@@ -84,7 +84,9 @@ describe("repository promotion controls", () => {
     expect(workflow).not.toContain("matrix:");
     expect(workflow).not.toContain("secrets: inherit");
     expect(workflow).toContain("validate-nonproduction-request:");
-    expect(workflow).toContain('development) expected_ref="refs/heads/development"');
+    expect(workflow).toContain(
+      'development) expected_ref="refs/heads/development"',
+    );
     expect(workflow).toContain('staging) expected_ref="refs/heads/staging"');
     expect(workflow).toContain('demo) expected_ref="refs/heads/main"');
     expect(workflow).toContain('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"');
@@ -92,41 +94,41 @@ describe("repository promotion controls", () => {
     expect(workflow.match(/environment: Staging/g)).toHaveLength(1);
     expect(workflow.match(/environment: Demo/g)).toHaveLength(1);
     expect(workflow.match(/secrets\.DATABASE_URL/g)).toHaveLength(27);
-    expect(workflow.match(/group: apply-migrations-(development|staging|demo)/g)).toHaveLength(3);
-    expect(workflow.match(/MIGRATION_CONFORMANCE_MODE: prefix/g)).toHaveLength(3);
-    expect(workflow.match(/MIGRATION_CONFORMANCE_MODE: exact/g)).toHaveLength(3);
+    expect(
+      workflow.match(/group: apply-migrations-(development|staging|demo)/g),
+    ).toHaveLength(3);
+    expect(workflow.match(/MIGRATION_CONFORMANCE_MODE: prefix/g)).toHaveLength(
+      3,
+    );
+    expect(workflow.match(/MIGRATION_CONFORMANCE_MODE: exact/g)).toHaveLength(
+      3,
+    );
     expect(workflow).toContain("DATABASE_TARGET_FINGERPRINT");
     expect(workflow).toContain("FORBIDDEN_DATABASE_TARGET_FINGERPRINTS");
     expect(workflow.match(/FORBIDDEN_FINGERPRINTS:/g)).toHaveLength(3);
     expect(workflow.match(/code contract \(synthetic\)/g)).toHaveLength(3);
   });
 
-  it("gives isolated staging its own exact-revision migration gate", () => {
+  it("checks staging identity and conformance around every migration", () => {
     const workflow = repoFile(".github/workflows/migrate.yml");
-    const staging = workflow.split("  staging:")[1]?.split("  production:")[0];
+    const staging = workflow.split("  staging:")[1]?.split("  demo:")[0];
 
     expect(staging).toBeDefined();
-    expect(staging).toContain("needs: validate-staging-request");
-    expect(staging).toContain("github.ref == 'refs/heads/staging'");
-    expect(staging).toContain("inputs.target == 'staging'");
+    expect(staging).toContain("needs: validate-nonproduction-request");
+    expect(staging).toContain("if: inputs.target == 'staging'");
     expect(staging).toContain("environment: Staging");
-    expect(staging).toContain("secrets.STAGING_DATABASE_URL");
-    expect(staging).toContain("vars.STAGING_PROJECT_REF");
-    expect(staging).toContain("STAGING_PROJECT_REF is missing or invalid");
-    expect(staging).toContain("staging:verify-database-target");
+    expect(staging).toContain("DATABASE_TARGET_FINGERPRINT");
+    expect(staging).toContain("FORBIDDEN_DATABASE_TARGET_FINGERPRINTS");
+    expect(staging).toContain("run: pnpm db:target:check");
     expect(staging).toContain("run: pnpm db:rls:preflight");
     expect(staging).toContain("run: pnpm db:migrate");
     expect(staging).toContain("run: pnpm db:rls");
-    expect(workflow).toContain("MIGRATE_STAGING");
-    expect(workflow).toContain(
-      "Staging migration release SHA must match the exact dispatched staging commit.",
+    expect(staging.indexOf("MIGRATION_CONFORMANCE_MODE: prefix")).toBeLessThan(
+      staging.indexOf("run: pnpm db:migrate"),
     );
-    expect(workflow).toContain(
-      "Staging migrations must run from staging; demo and production migrations must run from main.",
-    );
-    expect(staging.indexOf("staging:verify-database-target")).toBeLessThan(
-      staging.indexOf("name: Schema state before"),
-    );
+    expect(
+      staging.indexOf("MIGRATION_CONFORMANCE_MODE: exact"),
+    ).toBeGreaterThan(staging.indexOf("run: pnpm db:migrate"));
   });
 
   it("keeps backlog cleanup evidence-gated and migration collisions on hold", () => {
@@ -139,7 +141,10 @@ describe("repository promotion controls", () => {
       .split("## Authority checkpoint — 2026-08-26")[1]
       ?.split("## Decision vocabulary")[0];
     const normalizedCurrentCheckpoint = currentCheckpoint?.replace(/\s+/g, " ");
-    const normalizedAuthorityCheckpoint = authorityCheckpoint?.replace(/\s+/g, " ");
+    const normalizedAuthorityCheckpoint = authorityCheckpoint?.replace(
+      /\s+/g,
+      " ",
+    );
 
     expect(policy).toContain("repository-recovery-ledger.md");
     expect(ledger).toContain("Only `close-approved` permits closing");
@@ -150,18 +155,10 @@ describe("repository promotion controls", () => {
     expect(ledger).toContain("The local `0094` and `0095` names collide");
     expect(ledger).toContain("No migration or snapshot from these worktrees");
     expect(ledger).toContain("Authority checkpoint — 2026-08-26");
-    expect(ledger).toContain(
-      "`46a7c0636e91e6f1d1ce58362daa3a4a9487c613`",
-    );
-    expect(ledger).toContain(
-      "tree `f98d82ee4ec57387dfa487e9d615bbf8d18ba2e0`",
-    );
-    expect(ledger).toContain(
-      "`cb22872741db3b9d6a30784ec0b70e41dde03ce1`",
-    );
-    expect(ledger).toContain(
-      "tree `30e498c3192c9bdc2a83c7c204e3c5dda73e2420`",
-    );
+    expect(ledger).toContain("`46a7c0636e91e6f1d1ce58362daa3a4a9487c613`");
+    expect(ledger).toContain("tree `f98d82ee4ec57387dfa487e9d615bbf8d18ba2e0`");
+    expect(ledger).toContain("`cb22872741db3b9d6a30784ec0b70e41dde03ce1`");
+    expect(ledger).toContain("tree `30e498c3192c9bdc2a83c7c204e3c5dda73e2420`");
     expect(ledger).toContain("zero open pull requests");
     expect(ledger).toContain("source code remains `evidence-only`");
     expect(ledger).toContain("issues are #257 through #268");
@@ -203,7 +200,9 @@ describe("repository promotion controls", () => {
     expect(policy).toContain("`past_due` versus");
     expect(policy).toContain("Current transition checkpoint — 2026-08-26");
     expect(currentCheckpoint).toBeDefined();
-    expect(normalizedCurrentCheckpoint).toContain("Promotion remains **NO-GO**");
+    expect(normalizedCurrentCheckpoint).toContain(
+      "Promotion remains **NO-GO**",
+    );
     expect(normalizedCurrentCheckpoint).toContain(
       "protected refs were `development` at `46a7c0636e91e6f1d1ce58362daa3a4a9487c613`; the protected `staging` ref and deployed `main` remain at `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`",
     );
@@ -213,9 +212,15 @@ describe("repository promotion controls", () => {
     expect(normalizedCurrentCheckpoint).toContain(
       "PR #256 remains the latest product integration",
     );
-    expect(normalizedCurrentCheckpoint).toContain("immutable audit observation");
-    expect(normalizedCurrentCheckpoint).toContain("must read the live protected refs");
-    expect(normalizedCurrentCheckpoint).toContain("The retirement grace clock has not started");
+    expect(normalizedCurrentCheckpoint).toContain(
+      "immutable audit observation",
+    );
+    expect(normalizedCurrentCheckpoint).toContain(
+      "must read the live protected refs",
+    );
+    expect(normalizedCurrentCheckpoint).toContain(
+      "The retirement grace clock has not started",
+    );
     expect(normalizedCurrentCheckpoint).toContain(
       "Repository ruleset `20625373` covers exactly `development`, `staging`, and `main`, has no bypass actors",
     );
@@ -248,14 +253,18 @@ describe("repository promotion controls", () => {
       ?.split("Execution order after the clock expires")[0]
       ?.match(/^\| `/gm);
 
-    expect(register).toContain("The retirement grace clock has **not started**");
+    expect(register).toContain(
+      "The retirement grace clock has **not started**",
+    );
     expect(register).toContain("fourteen full calendar days");
     expect(register).toContain("No actual earliest deletion date exists");
     expect(register).toContain("codex/activation-event-coverage");
     expect(register).toContain("codex/activation-recovery");
     expect(register).toContain("fix/lockfile-tiptap");
     expect(register).toContain("chore/remove-apps-www");
-    expect(register).toContain("Every PIMS worktree registered under Orca remains on hold");
+    expect(register).toContain(
+      "Every PIMS worktree registered under Orca remains on hold",
+    );
     expect(orcaRows).toHaveLength(22);
     expect(register).toContain("codex/openvpm-89-treatment-composer");
     expect(register).toContain("fe5c91c2b64c772feb87c340318b026fc81d2e43");

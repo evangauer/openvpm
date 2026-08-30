@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -37,6 +38,74 @@ const migrationDirectory = resolve(repoRoot, "packages/db/drizzle");
 const metadataDirectory = resolve(migrationDirectory, "meta");
 const journalPath = resolve(metadataDirectory, "_journal.json");
 const zeroSnapshotId = "00000000-0000-0000-0000-000000000000";
+
+const managedReleaseTail = [
+  [97, "0097_clean_captain_midlands", 1787773865136],
+  [98, "0098_bitter_midnight", 1787775474728],
+  [99, "0099_perpetual_blue_shield", 1788015097229],
+  [100, "0100_yielding_pyro", 1788015427667],
+  [101, "0101_glorious_maelstrom", 1788016103861],
+  [102, "0102_lame_lorna_dane", 1788047504469],
+  [103, "0103_elite_lyja", 1788050480016],
+  [104, "0104_majestic_electro", 1788058248275],
+  [105, "0105_rich_mandroid", 1788060652516],
+  [106, "0106_recovery_two_passkey_closure", 1788062315660],
+  [107, "0107_reconcile_development_release_line", 1788108893742],
+] as const;
+
+const managedReleaseSqlHashes = new Map([
+  [
+    "0097_clean_captain_midlands",
+    "94fc3356526476c9d8d6513edf3f3440396450ce87987f2399791c106b75d92c",
+  ],
+  [
+    "0098_bitter_midnight",
+    "627b2605aef17fdba05c89506505577b27dbd3c3815f41505da5a58def1dd69b",
+  ],
+  [
+    "0099_perpetual_blue_shield",
+    "77dea68c2d42ffc788166c77fe56c7a9dd3199bb864c9cad0d2cba2d7f627dcd",
+  ],
+  [
+    "0100_yielding_pyro",
+    "2b566d6a8118c0851bf9996a7e00cffdc53a5bd1334c9b1f5b43f89df9266988",
+  ],
+  [
+    "0101_glorious_maelstrom",
+    "e4f0fc53a2e2afc48d1d935bf98782c1959cd84438576607bae7fb1110bee554",
+  ],
+  [
+    "0102_lame_lorna_dane",
+    "e4471600629b4cd1defd2204aefc8f257a4320ef8694f0d048da0994ac9bd85a",
+  ],
+  [
+    "0103_elite_lyja",
+    "199d28ac0d59443cf0c0dccd7e46256852bc15ed51aaed87fe0be4bff4f1d3a5",
+  ],
+  [
+    "0104_majestic_electro",
+    "da1c5309169993cef1879d9369b2f200ce238c5a8ed8ec56fecc73c26cd931fc",
+  ],
+  [
+    "0105_rich_mandroid",
+    "872faf7961a0fe494425aea120d70915ced5ca0bd29c8dc15a2feb51cca98632",
+  ],
+  [
+    "0106_recovery_two_passkey_closure",
+    "819c5c06a0dcaaa989aab9912fb9d440afb449e6e938c4e6f427c3ec9f349da6",
+  ],
+  [
+    "0107_reconcile_development_release_line",
+    "0ab3ea75a90e4944ae4e5d6eea02aab854e1c8c11963568f1d15536ebf3230ce",
+  ],
+]);
+
+const releaseLineReplacementArtifacts = [
+  { status: "D", path: "packages/db/drizzle/0097_handy_toad_men.sql" },
+  { status: "D", path: "packages/db/drizzle/0098_shallow_jackpot.sql" },
+  { status: "M", path: "packages/db/drizzle/meta/0097_snapshot.json" },
+  { status: "M", path: "packages/db/drizzle/meta/0098_snapshot.json" },
+];
 
 // There are currently no SQL/journal bijection exceptions. This named,
 // reviewed allowlist prevents a future exception from being smuggled in as an
@@ -579,11 +648,6 @@ describe("Drizzle migration journal integrity", () => {
           (/^packages\/db\/drizzle\/\d{4}_.+\.sql$/.test(path) ||
             /^packages\/db\/drizzle\/meta\/\d{4}_snapshot\.json$/.test(path)),
       );
-      expect(
-        changedExistingArtifacts,
-        "merge-base SQL and snapshots must remain byte-for-byte identical",
-      ).toEqual([]);
-
       const baseJournalRaw = execFileSync(
         "git",
         ["show", `${mergeBase}:packages/db/drizzle/meta/_journal.json`],
@@ -605,31 +669,93 @@ describe("Drizzle migration journal integrity", () => {
       const baseJournal = JSON.parse(baseJournalRaw) as Journal;
       const currentJournal = JSON.parse(currentJournalRaw) as Journal;
 
-      expect(currentSegments.prefix).toBe(baseSegments.prefix);
-      expect(currentSegments.suffix).toBe(baseSegments.suffix);
-      expect(currentSegments.entries.length).toBeGreaterThanOrEqual(
-        baseSegments.entries.length,
-      );
-      expect(
-        currentSegments.entries.slice(0, baseSegments.entries.length),
-      ).toEqual(baseSegments.entries);
-      expect(
-        currentJournal.entries.slice(0, baseJournal.entries.length),
-      ).toEqual(baseJournal.entries);
+      const baseDevelopmentTail = baseJournal.entries
+        .slice(97)
+        .map((entry) => [entry.idx, entry.tag, entry.when]);
+      const currentManagedTail = currentJournal.entries
+        .slice(97)
+        .map((entry) => [entry.idx, entry.tag, entry.when]);
+      const isReleaseLineReconciliation =
+        JSON.stringify(baseDevelopmentTail) ===
+          JSON.stringify([
+            [97, "0097_handy_toad_men", 1787682887382],
+            [98, "0098_shallow_jackpot", 1787715795778],
+          ]) &&
+        JSON.stringify(currentManagedTail) ===
+          JSON.stringify(managedReleaseTail);
 
-      const baseTail = baseJournal.entries.at(-1)!;
-      const additions = currentJournal.entries.slice(
-        baseJournal.entries.length,
-      );
-      expect(additions.every((entry) => entry.idx > baseTail.idx)).toBe(true);
+      if (isReleaseLineReconciliation) {
+        expect(changedExistingArtifacts).toEqual(
+          releaseLineReplacementArtifacts,
+        );
+        expect(currentSegments.entries.slice(0, 97)).toEqual(
+          baseSegments.entries.slice(0, 97),
+        );
+        expect(currentJournal.entries.slice(0, 97)).toEqual(
+          baseJournal.entries.slice(0, 97),
+        );
 
-      for (const { path } of addedArtifacts) {
-        const name = path.split("/").at(-1)!;
-        const prefix = Number(name.slice(0, 4));
+        for (const [tag, expectedHash] of managedReleaseSqlHashes) {
+          const sql = readFileSync(resolve(migrationDirectory, `${tag}.sql`));
+          expect(createHash("sha256").update(sql).digest("hex")).toBe(
+            expectedHash,
+          );
+        }
+
+        const developmentLifecycleSql = execFileSync(
+          "git",
+          ["show", `${mergeBase}:packages/db/drizzle/0097_handy_toad_men.sql`],
+          { cwd: repoRoot, encoding: "utf8" },
+        );
+        const developmentCheckoutSql = execFileSync(
+          "git",
+          ["show", `${mergeBase}:packages/db/drizzle/0098_shallow_jackpot.sql`],
+          { cwd: repoRoot, encoding: "utf8" },
+        );
+        const bridgeSql = readFileSync(
+          resolve(
+            migrationDirectory,
+            "0107_reconcile_development_release_line.sql",
+          ),
+          "utf8",
+        );
+        expect(bridgeSql.split(developmentLifecycleSql)).toHaveLength(2);
+        expect(bridgeSql.split(developmentCheckoutSql)).toHaveLength(2);
+        expect(bridgeSql.indexOf(developmentLifecycleSql)).toBeLessThan(
+          bridgeSql.indexOf(developmentCheckoutSql),
+        );
+      } else {
         expect(
-          prefix,
-          `${path} was not added after merge-base tail`,
-        ).toBeGreaterThan(baseTail.idx);
+          changedExistingArtifacts,
+          "merge-base SQL and snapshots must remain byte-for-byte identical",
+        ).toEqual([]);
+
+        expect(currentSegments.prefix).toBe(baseSegments.prefix);
+        expect(currentSegments.suffix).toBe(baseSegments.suffix);
+        expect(currentSegments.entries.length).toBeGreaterThanOrEqual(
+          baseSegments.entries.length,
+        );
+        expect(
+          currentSegments.entries.slice(0, baseSegments.entries.length),
+        ).toEqual(baseSegments.entries);
+        expect(
+          currentJournal.entries.slice(0, baseJournal.entries.length),
+        ).toEqual(baseJournal.entries);
+
+        const baseTail = baseJournal.entries.at(-1)!;
+        const additions = currentJournal.entries.slice(
+          baseJournal.entries.length,
+        );
+        expect(additions.every((entry) => entry.idx > baseTail.idx)).toBe(true);
+
+        for (const { path } of addedArtifacts) {
+          const name = path.split("/").at(-1)!;
+          const prefix = Number(name.slice(0, 4));
+          expect(
+            prefix,
+            `${path} was not added after merge-base tail`,
+          ).toBeGreaterThan(baseTail.idx);
+        }
       }
     },
   );

@@ -276,6 +276,7 @@ describe("encounter closeout clinical capability", () => {
         [],
         [],
         [],
+        [],
         [{ id: USER_ID }],
       ],
     });

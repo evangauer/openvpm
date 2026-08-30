@@ -11,6 +11,16 @@ export type MigrationIdentity = {
   createdAt: string;
 };
 
+export const CANONICAL_0086_MIGRATION_IDENTITY: MigrationIdentity = {
+  hash: "8dce4cb82cec1aa8355242d34d0b703873e5b1f5967cb0d86295172c086b4590",
+  createdAt: "1786491884265",
+};
+
+export const LEGACY_PRODUCTION_0086_MIGRATION_IDENTITY: MigrationIdentity = {
+  hash: "719ba65a004fa30054e1fafc540a9aa5a2cae570376728ca06ae8db34f6aa131",
+  createdAt: "1786491884265",
+};
+
 type Journal = {
   version: string;
   dialect: string;
@@ -77,8 +87,9 @@ export function migrationConformanceIssues(input: {
   expected: MigrationIdentity[];
   applied: MigrationIdentity[];
   mode: MigrationConformanceMode;
+  legacy0086AdoptionProven?: boolean;
 }): string[] {
-  const { expected, applied, mode } = input;
+  const { expected, applied, mode, legacy0086AdoptionProven = false } = input;
   const issues: string[] = [];
   if (applied.length > expected.length) {
     issues.push("Database migration history is ahead of committed history");
@@ -89,6 +100,20 @@ export function migrationConformanceIssues(input: {
     const wanted = expected[index]!;
     const found = applied[index]!;
     if (wanted.createdAt !== found.createdAt || wanted.hash !== found.hash) {
+      const exactLegacyProduction0086 =
+        index === 86 &&
+        wanted.createdAt === CANONICAL_0086_MIGRATION_IDENTITY.createdAt &&
+        wanted.hash === CANONICAL_0086_MIGRATION_IDENTITY.hash &&
+        found.createdAt ===
+          LEGACY_PRODUCTION_0086_MIGRATION_IDENTITY.createdAt &&
+        found.hash === LEGACY_PRODUCTION_0086_MIGRATION_IDENTITY.hash;
+      if (exactLegacyProduction0086) {
+        if (!legacy0086AdoptionProven) {
+          issues.push("Legacy 0086 tenant-context adoption is not proven");
+          break;
+        }
+        continue;
+      }
       issues.push(`Database migration history diverges at position ${index}`);
       break;
     }
@@ -116,6 +141,40 @@ export async function appliedMigrationIdentities(
     order by created_at asc, id asc
   `;
   return rows.map((row) => ({ hash: row.hash, createdAt: row.createdAt }));
+}
+
+function usesLegacyProduction0086(applied: MigrationIdentity[]): boolean {
+  const migration = applied[86];
+  return (
+    migration?.createdAt ===
+      LEGACY_PRODUCTION_0086_MIGRATION_IDENTITY.createdAt &&
+    migration.hash === LEGACY_PRODUCTION_0086_MIGRATION_IDENTITY.hash
+  );
+}
+
+async function legacy0086AdoptionIsProven(sql: SqlClient): Promise<boolean> {
+  const [row] = await sql<{ proven: boolean }[]>`
+    select coalesce(
+      pg_catalog.pg_get_function_result(proc.oid) = 'uuid'
+      and proc.provolatile = 's'
+      and not proc.prosecdef
+      and proc.proconfig @> array['search_path=""']::text[]
+      and position(
+        'current_setting(''app.current_practice_id'', true)'
+        in pg_catalog.pg_get_functiondef(proc.oid)
+      ) > 0
+      and position(
+        'nullif('
+        in pg_catalog.pg_get_functiondef(proc.oid)
+      ) > 0,
+      false
+    ) as proven
+    from (select pg_catalog.to_regprocedure(
+      'public.app_current_practice_id()'
+    ) as oid) target
+    left join pg_catalog.pg_proc proc on proc.oid = target.oid
+  `;
+  return row?.proven === true;
 }
 
 export async function assertEmptyMigrationBaseline(
@@ -175,7 +234,15 @@ async function main(): Promise<number> {
     const expected = expectedMigrationIdentities();
     const applied = await appliedMigrationIdentities(sql);
     if (applied.length === 0) await assertEmptyMigrationBaseline(sql);
-    const issues = migrationConformanceIssues({ expected, applied, mode });
+    const legacy0086AdoptionProven = usesLegacyProduction0086(applied)
+      ? await legacy0086AdoptionIsProven(sql)
+      : false;
+    const issues = migrationConformanceIssues({
+      expected,
+      applied,
+      mode,
+      legacy0086AdoptionProven,
+    });
     if (issues.length > 0) {
       for (const issue of issues) console.error(issue);
       return 1;

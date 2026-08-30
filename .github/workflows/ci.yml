@@ -3,8 +3,7 @@ name: CI
 on:
   push:
     branches: [development, staging, main]
-  pull_request:
-    branches: [development, staging, main]
+  pull_request: {}
 
 permissions:
   contents: read
@@ -221,6 +220,9 @@ jobs:
           fi
 
       - run: pnpm --filter @openpims/db db:rls
+
+      - name: Execute managed release-line reconciliation contract
+        run: pnpm --filter @openpims/db db:release-line:test
 
       # A step-up cookie is insufficient by itself: prove the exact-action row
       # can be consumed only once under races and remains tenant/privilege
