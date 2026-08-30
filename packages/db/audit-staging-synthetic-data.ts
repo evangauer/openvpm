@@ -138,5 +138,5 @@ async function main(): Promise<number> {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  process.exitCode = await main();
+  process.exit(await main());
 }
