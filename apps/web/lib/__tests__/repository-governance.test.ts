@@ -8,13 +8,16 @@ const repoFile = (path: string) =>
   readFileSync(new URL(`../../../../${path}`, import.meta.url), "utf8");
 
 describe("repository promotion controls", () => {
-  it("runs CI for each controlled branch", () => {
+  it("runs CI for controlled pushes and every pull request, including stacks", () => {
     const workflow = repoFile(".github/workflows/ci.yml");
 
     expect(workflow).toContain("branches: [development, staging, main]");
-    expect(workflow.match(/branches: \[development, staging, main\]/g)).toHaveLength(
-      2,
-    );
+    expect(
+      workflow.match(/branches: \[development, staging, main\]/g),
+    ).toHaveLength(1);
+    expect(workflow).toContain("pull_request: {}");
+    expect(workflow).toContain("db:subscription-cadence:test");
+    expect(workflow).toContain('SUBSCRIPTION_CADENCE_DB_INTEGRATION: "1"');
   });
 
   it("targets scheduled dependency version updates at development", () => {
