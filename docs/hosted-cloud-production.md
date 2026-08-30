@@ -84,6 +84,11 @@ WEBAUTHN_RP_ID=app.openvpm.com
 WEBAUTHN_RP_NAME=OpenVPM
 WEBAUTHN_ORIGINS=https://app.openvpm.com
 WEBAUTHN_ADMIN_POLICY=migration
+AUTH_RECOVERY_POLICY_VERSION=dual-control-v1
+AUTH_RECOVERY_POLICY_SHA256=... # SHA-256 of the approved PHI-free policy artifact
+AUTH_RECOVERY_AUTHORITY_EMAILS=... # 2-5 distinct members of PLATFORM_ADMIN_EMAILS
+AUTH_RECOVERY_DRILL_COMPLETED_AT=... # canonical UTC ISO timestamp, no older than 90 days
+AUTH_RECOVERY_DRILL_EVIDENCE_SHA256=... # SHA-256 of the completed PHI-free drill artifact
 DATABASE_URL=...
 # Transitional production release lock. Set only to the exact approved
 # 40-character commit, redeploy that revision, then clear or rotate it.
@@ -156,7 +161,7 @@ PLATFORM_ADMIN_EMAILS=...
 
 ### Transitional production release gate
 
-Before production approval, collect one PHI-free, format-version `4` JSON
+Before production approval, collect one PHI-free, format-version `5` JSON
 evidence packet from authoritative sources. Export a read-only `GITHUB_TOKEN`
 in the secure operator environment, then run:
 
@@ -171,6 +176,7 @@ pnpm --filter @openpims/web release:clinic-readiness:collect -- \
   --hosted-health-url https://app.openvpm.com/api/health \
   --restore-evidence /secure/path/provider-restore-evidence.json \
   --incident-evidence /secure/path/incident-tabletop-evidence.json \
+  --auth-recovery-evidence /secure/path/auth-recovery-drill-evidence.json \
   --output /secure/path/clinic-readiness-evidence.json
 ```
 
@@ -298,6 +304,18 @@ Roll out passkeys as a release migration, not a one-step flag change:
 3. Confirm registration, passkey login, exact-action step-up, replay rejection, session revocation, and loss of one authenticator in isolated staging. Do not use real patient data for this exercise.
 4. Obtain owner approval for the lost-authenticator recovery policy in issue #266. OpenVPM intentionally provides no operator bypass and no TOTP fallback once an account has an active passkey.
 5. Change `WEBAUTHN_ADMIN_POLICY=required`, redeploy the same reviewed release SHA, and require `hostedWebAuthn` to be healthy in both staging and production evidence. The health gate fails if configuration is invalid, policy is not required, an allowlisted operator has no active user, or any required identity lacks two active passkeys.
+
+Lost-authenticator recovery is a separate release gate. `hostedAuthRecovery`
+stays unhealthy unless the owner-approved policy version is exactly
+`dual-control-v1`, the approved policy and latest drill artifacts are pinned by
+SHA-256, the drill is no older than 90 days, and 2-5 distinct recovery
+authorities are also members of `PLATFORM_ADMIN_EMAILS`. These variables are
+evidence and activation interlocks, not a reset mechanism. Do not build or use
+an email-only bypass, share recovery codes with operators, or remove passkey
+rows by hand. Until the separately reviewed recovery transaction and ceremony
+exist, loss of all enrolled passkeys remains an incident requiring database
+owner intervention, an incident record, and independent review; release is
+`NO_GO` even when ordinary passkey enrollment is complete.
 
 If any required account is not enrolled, revert the policy to `migration`; do not delete credential records or edit counters/challenges by hand. Database-owner intervention is break-glass recovery, requires an incident record and independent review, and is not an approved day-to-day account recovery path.
 

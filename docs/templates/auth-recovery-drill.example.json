@@ -1,0 +1,41 @@
+{
+  "evidenceFormatVersion": 1,
+  "drillId": "auth-recovery-YYYY-MM-DD-deadbeef",
+  "startedAt": "YYYY-MM-DDTHH:MM:SS.000Z",
+  "completedAt": "YYYY-MM-DDTHH:MM:SS.000Z",
+  "policy": {
+    "version": "dual-control-v1",
+    "sha256": "replace-with-approved-policy-sha256",
+    "approvedBy": "@replace-owner-reviewer",
+    "approvedAt": "YYYY-MM-DDTHH:MM:SS.000Z"
+  },
+  "authorities": ["@replace-recovery-one", "@replace-recovery-two"],
+  "operators": {
+    "requester": "@replace-recovery-one",
+    "approver": "@replace-recovery-two"
+  },
+  "controls": {
+    "approvalRecordedBeforeExecution": false,
+    "auditTrailVerified": false,
+    "emailOnlyRecoveryRejected": false,
+    "identityProofingRecorded": false,
+    "passwordOnlyRecoveryRejected": false,
+    "priorPasskeysRetired": false,
+    "priorSessionsRevoked": false,
+    "recoveryGrantExpired": false,
+    "recoveryGrantSingleUse": false,
+    "requestRecorded": false,
+    "twoPasskeysReenrolled": false
+  },
+  "evidenceSafety": {
+    "emailAddressesFree": false,
+    "localPathsFree": false,
+    "phiFree": false,
+    "secretsFree": false
+  },
+  "findings": {
+    "criticalCount": 0,
+    "highCount": 0,
+    "followUpIssueNumbers": []
+  }
+}

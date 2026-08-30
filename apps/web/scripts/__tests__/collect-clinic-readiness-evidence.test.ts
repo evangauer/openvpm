@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  collect: vi.fn(async () => ({ evidenceFormatVersion: 4 })),
+  collect: vi.fn(async () => ({ evidenceFormatVersion: 5 })),
   evaluate: vi.fn(() => ({
     decision: "GO",
     evaluatedAt: "2026-08-29T21:00:00.000Z",
@@ -57,6 +57,8 @@ function argumentsFor(output: string): string[] {
     "private/restore.json",
     "--incident-evidence",
     "private/incident.json",
+    "--auth-recovery-evidence",
+    "private/auth-recovery.json",
     "--output",
     output,
   ];
@@ -78,6 +80,10 @@ describe("clinic readiness evidence collector CLI", () => {
       expect.objectContaining({
         restoreEvidencePath: path.join(directory, "private/restore.json"),
         incidentEvidencePath: path.join(directory, "private/incident.json"),
+        authRecoveryEvidencePath: path.join(
+          directory,
+          "private/auth-recovery.json",
+        ),
       }),
     );
     expect(log.mock.calls.flat().join(" ")).not.toContain(directory);

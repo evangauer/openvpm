@@ -1,4 +1,5 @@
 import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
+import { evaluateAuthRecoveryEvidence } from "./auth-recovery-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const HEALTH_MAX_AGE_MS = 15 * 60 * 1000;
@@ -31,6 +32,7 @@ const REQUIRED_HOSTED_CHECKS = [
   "hostedFileReplica",
   "hostedMfa",
   "hostedWebAuthn",
+  "hostedAuthRecovery",
   "hostedPrivilegedActionSigning",
   "hostedOpsAlerting",
   "hostedCronHeartbeat",
@@ -136,8 +138,8 @@ export function evaluateClinicReadinessRelease(
 ): ClinicReadinessDecision {
   const reasons: string[] = [];
   const root = record(input);
-  if (root?.evidenceFormatVersion !== 4) {
-    reasons.push("Clinic readiness evidence format version must be 4.");
+  if (root?.evidenceFormatVersion !== 5) {
+    reasons.push("Clinic readiness evidence format version must be 5.");
   }
   const releaseSha =
     root &&
@@ -172,6 +174,17 @@ export function evaluateClinicReadinessRelease(
       nowMs,
     );
     reasons.push(...incidentDecision.reasons);
+  }
+
+  const authRecovery = record(root?.authRecovery);
+  if (!authRecovery) {
+    reasons.push("Account-recovery evidence is missing.");
+  } else {
+    const authRecoveryDecision = evaluateAuthRecoveryEvidence(
+      authRecovery,
+      nowMs,
+    );
+    reasons.push(...authRecoveryDecision.reasons);
   }
 
   const governance = record(root?.repositoryGovernance);

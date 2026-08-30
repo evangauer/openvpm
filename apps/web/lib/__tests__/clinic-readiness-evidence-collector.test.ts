@@ -133,6 +133,59 @@ function incidentEvidencePath() {
   return file;
 }
 
+function authRecoveryEvidencePath() {
+  const directory = mkdtempSync(
+    path.join(tmpdir(), "openvpm-auth-recovery-evidence-"),
+  );
+  temporaryDirectories.push(directory);
+  const file = path.join(directory, "auth-recovery.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      evidenceFormatVersion: 1,
+      drillId: "auth-recovery-2026-08-29-deadbeef",
+      startedAt: "2026-08-29T19:00:00.000Z",
+      completedAt: "2026-08-29T20:00:00.000Z",
+      policy: {
+        version: "dual-control-v1",
+        sha256: "c".repeat(64),
+        approvedBy: "@owner-reviewer",
+        approvedAt: "2026-08-29T18:00:00.000Z",
+      },
+      authorities: ["@recovery-one", "@recovery-two"],
+      operators: {
+        requester: "@recovery-one",
+        approver: "@recovery-two",
+      },
+      controls: {
+        approvalRecordedBeforeExecution: true,
+        auditTrailVerified: true,
+        emailOnlyRecoveryRejected: true,
+        identityProofingRecorded: true,
+        passwordOnlyRecoveryRejected: true,
+        priorPasskeysRetired: true,
+        priorSessionsRevoked: true,
+        recoveryGrantExpired: true,
+        recoveryGrantSingleUse: true,
+        requestRecorded: true,
+        twoPasskeysReenrolled: true,
+      },
+      evidenceSafety: {
+        emailAddressesFree: true,
+        localPathsFree: true,
+        phiFree: true,
+        secretsFree: true,
+      },
+      findings: {
+        criticalCount: 0,
+        highCount: 0,
+        followUpIssueNumbers: [],
+      },
+    }),
+  );
+  return file;
+}
+
 function response(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -152,6 +205,7 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
       "hostedFileReplica",
       "hostedMfa",
       "hostedWebAuthn",
+      "hostedAuthRecovery",
       "hostedPrivilegedActionSigning",
       "hostedOpsAlerting",
       "hostedCronHeartbeat",
@@ -176,7 +230,7 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
     jobs: [
       successfulJob("build", buildSteps),
       successfulJob("Golden clinic workflow", [
-        "Prove the multi-clinic golden workflow",
+        "Prove the golden clinic workflow and real WebAuthn ceremonies",
       ]),
       successfulJob("Migration history integrity", [
         "Verify append-only migration history",
@@ -352,6 +406,7 @@ function options(fetchFn: typeof fetch) {
     hostedHealthUrl: "https://production.example/api/health",
     restoreEvidencePath: restoreEvidencePath(),
     incidentEvidencePath: incidentEvidencePath(),
+    authRecoveryEvidencePath: authRecoveryEvidencePath(),
     now: new Date("2026-08-29T21:00:00.000Z"),
     fetchFn,
   };
@@ -364,7 +419,7 @@ describe("clinic readiness evidence collector", () => {
     );
 
     expect(evidence).toMatchObject({
-      evidenceFormatVersion: 4,
+      evidenceFormatVersion: 5,
       releaseSha: sha,
       ci: {
         releaseSha: sha,
@@ -408,6 +463,9 @@ describe("clinic readiness evidence collector", () => {
       hostedHealth: { releaseSha: sha, statusCode: 200 },
       incidentResponse: {
         exerciseId: "tabletop-2026-08-29-deadbeef",
+      },
+      authRecovery: {
+        drillId: "auth-recovery-2026-08-29-deadbeef",
       },
       restoreDrill: { releaseSha: sha, synthetic: false },
     });
@@ -459,6 +517,17 @@ describe("clinic readiness evidence collector", () => {
     );
     await expect(collectClinicReadinessEvidence(value)).rejects.toThrow(
       "Incident-response evidence is incomplete, stale, or unsafe.",
+    );
+  });
+
+  it("rejects incomplete recovery evidence before assembling a release packet", async () => {
+    const value = options(authoritativeResponses());
+    writeFileSync(
+      value.authRecoveryEvidencePath,
+      JSON.stringify({ evidenceFormatVersion: 1, notes: "not permitted" }),
+    );
+    await expect(collectClinicReadinessEvidence(value)).rejects.toThrow(
+      "Account-recovery evidence is incomplete, stale, or unsafe.",
     );
   });
 

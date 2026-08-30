@@ -1,5 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
+import { evaluateAuthRecoveryEvidence } from "./auth-recovery-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const REPOSITORY_PATTERN = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i;
@@ -67,6 +68,7 @@ export type ClinicReadinessEvidenceCollectionOptions = {
   hostedHealthUrl: string;
   restoreEvidencePath: string;
   incidentEvidencePath: string;
+  authRecoveryEvidencePath: string;
   githubToken?: string;
   now?: Date;
   fetchFn?: typeof fetch;
@@ -564,7 +566,10 @@ export async function collectClinicReadinessEvidence(
   requireSuccessfulStep(buildJob, "Audit production dependencies");
   requireSuccessfulStep(buildJob, "Run pnpm test");
   requireSuccessfulStep(buildJob, "Run pnpm build");
-  requireSuccessfulStep(goldenJob, "Prove the multi-clinic golden workflow");
+  requireSuccessfulStep(
+    goldenJob,
+    "Prove the golden clinic workflow and real WebAuthn ceremonies",
+  );
   requireSuccessfulStep(
     migrationIntegrityJob,
     "Verify append-only migration history",
@@ -609,6 +614,10 @@ export async function collectClinicReadinessEvidence(
     options.incidentEvidencePath,
     "Incident-response evidence",
   );
+  const authRecovery = regularBoundedJsonFile(
+    options.authRecoveryEvidencePath,
+    "Account-recovery evidence",
+  );
   if (
     !evaluateIncidentResponseEvidence(incidentResponse, Date.parse(checkedAt))
       .ready
@@ -617,9 +626,16 @@ export async function collectClinicReadinessEvidence(
       "Incident-response evidence is incomplete, stale, or unsafe.",
     );
   }
+  if (
+    !evaluateAuthRecoveryEvidence(authRecovery, Date.parse(checkedAt)).ready
+  ) {
+    throw new Error(
+      "Account-recovery evidence is incomplete, stale, or unsafe.",
+    );
+  }
 
   return {
-    evidenceFormatVersion: 4,
+    evidenceFormatVersion: 5,
     releaseSha,
     ci: {
       releaseSha,
@@ -664,6 +680,7 @@ export async function collectClinicReadinessEvidence(
       body: healthBody,
     },
     incidentResponse,
+    authRecovery,
     restoreDrill,
   };
 }

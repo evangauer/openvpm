@@ -63,6 +63,50 @@ function healthyIncidentResponseEvidence() {
   };
 }
 
+function healthyAuthRecoveryEvidence() {
+  return {
+    evidenceFormatVersion: 1,
+    drillId: "auth-recovery-2026-08-29-deadbeef",
+    startedAt: "2026-08-29T19:00:00.000Z",
+    completedAt: "2026-08-29T20:00:00.000Z",
+    policy: {
+      version: "dual-control-v1",
+      sha256: "c".repeat(64),
+      approvedBy: "@owner-reviewer",
+      approvedAt: "2026-08-29T18:00:00.000Z",
+    },
+    authorities: ["@recovery-one", "@recovery-two"],
+    operators: {
+      requester: "@recovery-one",
+      approver: "@recovery-two",
+    },
+    controls: {
+      approvalRecordedBeforeExecution: true,
+      auditTrailVerified: true,
+      emailOnlyRecoveryRejected: true,
+      identityProofingRecorded: true,
+      passwordOnlyRecoveryRejected: true,
+      priorPasskeysRetired: true,
+      priorSessionsRevoked: true,
+      recoveryGrantExpired: true,
+      recoveryGrantSingleUse: true,
+      requestRecorded: true,
+      twoPasskeysReenrolled: true,
+    },
+    evidenceSafety: {
+      emailAddressesFree: true,
+      localPathsFree: true,
+      phiFree: true,
+      secretsFree: true,
+    },
+    findings: {
+      criticalCount: 0,
+      highCount: 0,
+      followUpIssueNumbers: [],
+    },
+  };
+}
+
 function healthyEvidence() {
   const checks: Record<string, { ok: boolean; advisory?: boolean }> =
     Object.fromEntries(
@@ -76,13 +120,14 @@ function healthyEvidence() {
         "hostedFileReplica",
         "hostedMfa",
         "hostedWebAuthn",
+        "hostedAuthRecovery",
         "hostedPrivilegedActionSigning",
         "hostedOpsAlerting",
         "hostedCronHeartbeat",
       ].map((name) => [name, { ok: true }]),
     );
   return {
-    evidenceFormatVersion: 4,
+    evidenceFormatVersion: 5,
     releaseSha: sha,
     ci: {
       releaseSha: sha,
@@ -95,6 +140,7 @@ function healthyEvidence() {
       },
     },
     incidentResponse: healthyIncidentResponseEvidence(),
+    authRecovery: healthyAuthRecoveryEvidence(),
     repositoryGovernance: {
       checkedAt: "2026-08-29T20:55:00.000Z",
       productionEnvironment: {
@@ -247,9 +293,21 @@ describe("clinic readiness release decision", () => {
 
   it("rejects an unknown evidence format", () => {
     const evidence = healthyEvidence();
-    evidence.evidenceFormatVersion = 5;
+    evidence.evidenceFormatVersion = 4;
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
-      "Clinic readiness evidence format version must be 4.",
+      "Clinic readiness evidence format version must be 5.",
+    );
+  });
+
+  it("rejects incomplete account-recovery drill evidence", () => {
+    const evidence = healthyEvidence();
+    evidence.authRecovery.operators.approver = "@recovery-one";
+    evidence.authRecovery.controls.priorSessionsRevoked = false;
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toEqual(
+      expect.arrayContaining([
+        "Account-recovery request and approval require distinct named authorities.",
+        "Account-recovery drill did not prove priorSessionsRevoked.",
+      ]),
     );
   });
 

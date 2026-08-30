@@ -16,6 +16,7 @@ const VALUE_ARGS = new Set([
   "--hosted-health-url",
   "--restore-evidence",
   "--incident-evidence",
+  "--auth-recovery-evidence",
   "--output",
 ]);
 
@@ -27,7 +28,7 @@ function argumentsMap(args: string[]): Map<string, string> {
     const value = normalized[index + 1]?.trim();
     if (!name || !VALUE_ARGS.has(name) || !value || values.has(name)) {
       throw new Error(
-        "Usage: release:clinic-readiness:collect -- --release-sha <sha> --repository <owner/name> --ci-run-id <id> --staging-migration-run-id <id> --migration-run-id <id> --staging-health-url <https-url> --hosted-health-url <https-url> --restore-evidence <path> --incident-evidence <path> --output <path>",
+        "Usage: release:clinic-readiness:collect -- --release-sha <sha> --repository <owner/name> --ci-run-id <id> --staging-migration-run-id <id> --migration-run-id <id> --staging-health-url <https-url> --hosted-health-url <https-url> --restore-evidence <path> --incident-evidence <path> --auth-recovery-evidence <path> --output <path>",
       );
     }
     values.set(name, value);
@@ -72,6 +73,9 @@ export async function main(args = process.argv.slice(2)) {
     hostedHealthUrl: values.get("--hosted-health-url")!,
     restoreEvidencePath: operatorPath(values.get("--restore-evidence")!),
     incidentEvidencePath: operatorPath(values.get("--incident-evidence")!),
+    authRecoveryEvidencePath: operatorPath(
+      values.get("--auth-recovery-evidence")!,
+    ),
     githubToken: process.env.GITHUB_TOKEN?.trim() || undefined,
   });
   const outputPath = operatorPath(values.get("--output")!);

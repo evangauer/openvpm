@@ -75,6 +75,11 @@ const mocks = vi.hoisted(() => ({
     detail:
       "Hosted administrator/operator passkey enrollment and redundancy are complete",
   })),
+  checkHostedAuthRecoveryReadiness: vi.fn(() => ({
+    ok: true,
+    detail:
+      "Hosted account recovery policy, dual control, and drill evidence are current",
+  })),
 }));
 
 vi.mock("@openpims/db/client", () => ({
@@ -135,6 +140,10 @@ vi.mock("@/lib/backup/run-evidence", () => ({
 
 vi.mock("@/lib/webauthn-readiness", () => ({
   checkHostedWebAuthnReadiness: mocks.checkHostedWebAuthnReadiness,
+}));
+
+vi.mock("@/lib/auth-recovery-readiness", () => ({
+  checkHostedAuthRecoveryReadiness: mocks.checkHostedAuthRecoveryReadiness,
 }));
 
 const { GET } = await import("./route");
@@ -241,6 +250,11 @@ afterEach(() => {
     ok: true,
     detail:
       "Hosted administrator/operator passkey enrollment and redundancy are complete",
+  });
+  mocks.checkHostedAuthRecoveryReadiness.mockReturnValue({
+    ok: true,
+    detail:
+      "Hosted account recovery policy, dual control, and drill evidence are current",
   });
   mocks.requiredMessagingEnvNames.mockReturnValue([
     "TELNYX_API_KEY",
@@ -502,6 +516,24 @@ describe("health route", () => {
       ok: false,
       detail:
         "Required administrator/operator passkey enrollment or redundancy is incomplete",
+    });
+  });
+
+  it("blocks hosted readiness without approved recovery governance and a current drill", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    mocks.checkHostedAuthRecoveryReadiness.mockReturnValue({
+      ok: false,
+      detail: "Hosted account recovery policy is not approved and pinned",
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedAuthRecovery).toEqual({
+      ok: false,
+      detail: "Hosted account recovery policy is not approved and pinned",
     });
   });
 

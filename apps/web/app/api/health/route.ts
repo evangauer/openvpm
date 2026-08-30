@@ -43,6 +43,7 @@ import { checkBackupRunFreshness } from "@/lib/backup/run-evidence";
 import { mfaEncryptionConfigured } from "@/lib/mfa";
 import { privilegedActionSigningConfigured } from "@/lib/privileged-action-proof";
 import { checkHostedWebAuthnReadiness } from "@/lib/webauthn-readiness";
+import { checkHostedAuthRecoveryReadiness } from "@/lib/auth-recovery-readiness";
 
 export const dynamic = "force-dynamic";
 
@@ -569,6 +570,7 @@ export async function GET() {
         detail: "Hosted WebAuthn readiness check failed",
       };
     }
+    checks.hostedAuthRecovery = checkHostedAuthRecoveryReadiness();
     checks.hostedPrivilegedActionSigning = {
       ok: privilegedActionSigningConfigured(),
       detail: privilegedActionSigningConfigured()
