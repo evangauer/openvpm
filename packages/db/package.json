@@ -23,6 +23,7 @@
     "db:rls:test": "tsx test-rls.ts",
     "db:privileged-action-proofs:test": "tsx test-privileged-action-proofs.ts",
     "db:webauthn:test": "tsx test-webauthn.ts",
+    "db:auth-recovery:test": "tsx test-auth-recovery.ts",
     "db:finance-adoption:test": "tsx test-finance-adoption.ts",
     "db:treatment-plan-evidence:test": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f test-treatment-plan-evidence.sql",
     "db:treatment-plan-concurrency:test": "tsx test-treatment-plan-concurrency.ts",

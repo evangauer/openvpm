@@ -8,6 +8,23 @@ enough to replace a phishing-resistant administrator credential. Database
 owner intervention is incident-only, must increment the account session
 generation, retire every prior passkey, and receive independent review.
 
+Migration `0104_majestic_electro.sql` now installs a dormant, system-only
+recovery case and event ledger. The restricted database role can reach it only
+inside the existing system context; ordinary tenant context cannot read or
+mutate it. Database constraints and triggers enforce a 24-hour request, a
+distinct approver, an immutable event for every transition, target-session
+generation locking, retirement of all active passkeys/challenges/proofs,
+15-minute hashed grants, one-winner consumption, current database time on
+every transition, evidence-preserving expiry that frees a future request,
+and no application-role deletion. A real-PostgreSQL contract
+exercises these controls, including concurrency, replay, stale generations,
+missing evidence, false revocation claims, and forged backdated consumption.
+
+This migration does **not** activate account recovery. There is no application
+or browser path that can create a request, approve it, receive a raw grant, or
+enroll replacement credentials. Do not add such a path until the owner
+decisions below are approved and the remaining ceremony controls are built.
+
 Until the recovery transaction, one-use enrollment ceremony, and drill below
 exist and pass, `hostedAuthRecovery` and the authoritative release packet must
 remain unhealthy. A live-clinic release is `NO_GO`.
@@ -31,10 +48,15 @@ Hash the approved artifact with SHA-256. Store the artifact outside the
 repository in the controlled evidence system; configure only its hash and
 approved version in the deployment.
 
-## Required recovery transaction
+## Required recovery transaction and remaining activation work
 
-The implementation is not approved until a real-PostgreSQL concurrency test
-and a browser ceremony prove all of these invariants atomically:
+The database foundation is not an approved end-user implementation. Activation
+still requires the restricted application transaction and a browser ceremony
+to prove all of these invariants atomically. The database contract currently
+proves the request/approval separation, locking, revocation, append-only
+evidence, concurrency, expiry, and replay portions; the authority/session
+checks, delivery, enrollment-only scope, and two-passkey restoration remain
+unimplemented:
 
 - the request exists before approval and the requester differs from approver;
 - both operators are named recovery authorities with current passkey sessions;

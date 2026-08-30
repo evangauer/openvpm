@@ -729,6 +729,13 @@
       "when": 1788050480016,
       "tag": "0103_elite_lyja",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1788058248275,
+      "tag": "0104_majestic_electro",
+      "breakpoints": true
     }
   ]
 }

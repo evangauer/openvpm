@@ -229,6 +229,12 @@ jobs:
       - name: Execute WebAuthn credential and challenge database contract
         run: pnpm --filter @openpims/db db:webauthn:test
 
+      # Recovery is dormant until owner policy approval, but its database core
+      # must already prove dual control, atomic revocation, immutable evidence,
+      # one-use grants, races, and system-only RLS under the restricted role.
+      - name: Execute account-recovery database contract
+        run: pnpm --filter @openpims/db db:auth-recovery:test
+
       # Client treatment-plan decisions are legal record evidence. Prove the
       # sealed revision/response graph, signature hash binding, replay refusal,
       # immutable grants, and tenant/no-context isolation in real PostgreSQL.
