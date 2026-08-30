@@ -348,6 +348,13 @@ function rowsFor(data: unknown, section: PracticeExportSection): Row[] {
   return value.filter(isRecord);
 }
 
+function controlledSubstanceOperationId(row: Row): unknown {
+  // Migration 0110 uses the immutable row id as retry identity for history
+  // created before operation_id existed. Apply the same deterministic adapter
+  // to portable backups so pre-0110 evidence remains restorable.
+  return row.operationId === undefined ? row.id : row.operationId;
+}
+
 export function sanitizePracticeExportRows(
   section: PracticeExportSection,
   rows: Row[],
@@ -393,6 +400,11 @@ export function sanitizePracticeExportRows(
         return {
           ...row,
           changes: redactSecrets(row.changes),
+        };
+      case "controlledSubstanceLog":
+        return {
+          ...row,
+          operationId: controlledSubstanceOperationId(row),
         };
       case "smsSendAttempts":
         return row.requestedByActorType === "platform_operator"
@@ -1073,6 +1085,50 @@ export function validatePracticeExportRestore(data: unknown): {
       pushError(
         `${label}.licensedDurationMonths must be an integer from 1 through 120.`,
       );
+    }
+  });
+
+  const controlledSubstanceOperationIds = new Set<string>();
+  rowsFor(data, "controlledSubstanceLog").forEach((row, index) => {
+    const label = `controlledSubstanceLog[${rowLabel(row, index)}]`;
+    const operationId = controlledSubstanceOperationId(row);
+    const quantity = typeof row.quantity === "string" ? row.quantity : "";
+
+    if (row.practiceId !== exportRecord.practiceId) {
+      pushError(`${label}.practiceId must match the backup practiceId.`);
+    }
+    if (
+      typeof operationId !== "string" ||
+      !CANONICAL_LOWER_UUID.test(operationId)
+    ) {
+      pushError(`${label}.operationId must be a canonical lowercase UUID.`);
+    } else if (controlledSubstanceOperationIds.has(operationId)) {
+      pushError(`${label}.operationId must be unique within its practice.`);
+    } else {
+      controlledSubstanceOperationIds.add(operationId);
+    }
+    if (
+      !/^(?:0|[1-9]\d{0,6})(?:\.\d{1,3})?$/.test(quantity) ||
+      Number(quantity) <= 0
+    ) {
+      pushError(`${label}.quantity must be a positive numeric(10,3) value.`);
+    }
+    if (
+      row.action !== "received" &&
+      row.action !== "administered" &&
+      row.action !== "wasted" &&
+      row.action !== "returned"
+    ) {
+      pushError(`${label}.action is unsupported.`);
+    }
+    if (row.action === "administered" && row.patientId == null) {
+      pushError(`${label}.patientId is required for administered inventory.`);
+    }
+    if (row.action === "wasted" && row.witnessedBy == null) {
+      pushError(`${label}.witnessedBy is required for wasted inventory.`);
+    }
+    if (row.witnessedBy != null && row.witnessedBy === row.performedBy) {
+      pushError(`${label} cannot be self-witnessed.`);
     }
   });
 

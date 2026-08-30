@@ -1351,6 +1351,94 @@ describe("practice backup secret handling", () => {
 });
 
 describe("restorePracticeData", () => {
+  it("deterministically restores pre-0110 controlled-drug operation identity", async () => {
+    const practiceId = "00000000-0000-4000-8000-000000000060";
+    const userId = "00000000-0000-4000-8000-000000000061";
+    const ledgerId = "00000000-0000-4000-8000-000000000062";
+    const backup = {
+      practiceId,
+      ...emptyBackup(),
+      users: [{ id: userId, practiceId }],
+      controlledSubstanceLog: [
+        {
+          id: ledgerId,
+          practiceId,
+          drugName: "Ketamine 100 mg/mL",
+          deaSchedule: "III",
+          action: "received",
+          quantity: "10.000",
+          unit: "mL",
+          performedBy: userId,
+        },
+      ],
+    };
+
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+    expect(
+      sanitizePracticeExportRows(
+        "controlledSubstanceLog",
+        backup.controlledSubstanceLog,
+      ),
+    ).toEqual([
+      expect.objectContaining({ id: ledgerId, operationId: ledgerId }),
+    ]);
+
+    const { db, inserted } = restoreDb();
+    await restorePracticeData(db as never, practiceId, backup);
+    expect(
+      inserted.flatMap(({ rows }) => rows).find((row) => row.id === ledgerId),
+    ).toMatchObject({ operationId: ledgerId });
+  });
+
+  it("rejects malformed controlled-drug history before recovery hold", async () => {
+    const practiceId = "00000000-0000-4000-8000-000000000060";
+    const userId = "00000000-0000-4000-8000-000000000061";
+    const witnessId = "00000000-0000-4000-8000-000000000063";
+    const malformed = {
+      practiceId,
+      ...emptyBackup(),
+      users: [
+        { id: userId, practiceId },
+        { id: witnessId, practiceId },
+      ],
+      controlledSubstanceLog: [
+        {
+          id: "00000000-0000-4000-8000-000000000062",
+          operationId: null,
+          practiceId,
+          drugName: "Ketamine 100 mg/mL",
+          deaSchedule: "III",
+          action: "wasted",
+          quantity: "-1.000",
+          unit: "mL",
+          performedBy: userId,
+          witnessedBy: userId,
+        },
+      ],
+    };
+    const rootDb = { transaction: vi.fn(), update: vi.fn() };
+
+    expect(validatePracticeExportRestore(malformed)).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([
+        expect.stringContaining(
+          "operationId must be a canonical lowercase UUID",
+        ),
+        expect.stringContaining(
+          "quantity must be a positive numeric(10,3) value",
+        ),
+        expect.stringContaining("cannot be self-witnessed"),
+      ]),
+    });
+    await expect(
+      restorePracticeData(rootDb as never, practiceId, malformed),
+    ).rejects.toThrow("Backup contains invalid restore data");
+    expect(rootDb.update).not.toHaveBeenCalled();
+  });
+
   it("rejects an oversized restore before opening a transaction", async () => {
     const rootDb = {
       transaction: vi.fn(),
