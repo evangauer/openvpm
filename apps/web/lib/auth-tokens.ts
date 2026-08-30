@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from "crypto";
-import { and, eq, gt, isNull, lt } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
 import {
@@ -9,6 +9,7 @@ import {
   verificationTokens,
 } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
+import { rowsFromExecute } from "@/lib/db/execute-rows";
 
 export type AuthTokenType = "email_verify" | "password_reset" | "invite";
 
@@ -115,6 +116,7 @@ export async function cleanupExpiredAuthArtifacts(options: {
   sessionsDeleted: number;
   verificationTokensDeleted: number;
   portalSessionsDeleted: number;
+  webauthnChallengesDeleted: number;
   deleted: number;
   cutoff: Date;
 }> {
@@ -136,12 +138,26 @@ export async function cleanupExpiredAuthArtifacts(options: {
       .delete(portalSessions)
       .where(lt(portalSessions.expiresAt, cutoff))
       .returning({ id: portalSessions.id });
+    const challengePurge = await tx.execute(
+      sql`select public.purge_expired_webauthn_challenges() as deleted`,
+    );
+    const webauthnChallengesDeleted = Number(
+      rowsFromExecute<{ deleted: string | number }>(challengePurge)[0]
+        ?.deleted ?? 0,
+    );
+    if (
+      !Number.isSafeInteger(webauthnChallengesDeleted) ||
+      webauthnChallengesDeleted < 0
+    ) {
+      throw new Error("WebAuthn challenge cleanup returned an invalid count");
+    }
 
     return {
       authTokensDeleted: deletedAuthTokens.length,
       sessionsDeleted: deletedSessions.length,
       verificationTokensDeleted: deletedVerificationTokens.length,
       portalSessionsDeleted: deletedPortalSessions.length,
+      webauthnChallengesDeleted,
     };
   };
 
@@ -154,7 +170,8 @@ export async function cleanupExpiredAuthArtifacts(options: {
       counts.authTokensDeleted +
       counts.sessionsDeleted +
       counts.verificationTokensDeleted +
-      counts.portalSessionsDeleted,
+      counts.portalSessionsDeleted +
+      counts.webauthnChallengesDeleted,
     cutoff,
   };
 }

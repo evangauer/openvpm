@@ -103,6 +103,27 @@ describe("redactSecrets", () => {
       ],
     });
   });
+  it("redacts complete WebAuthn ceremony material while retaining action context", () => {
+    const out = redactSecrets({
+      action: "billing.refundPayment",
+      passkeyChallengeId: "challenge-row-id",
+      credentialResponse: {
+        id: "credential-id",
+        rawId: "credential-id",
+        response: {
+          clientDataJSON: "client-data",
+          authenticatorData: "authenticator-data",
+          signature: "signature",
+        },
+      },
+    });
+
+    expect(out).toEqual({
+      action: "billing.refundPayment",
+      passkeyChallengeId: "[redacted]",
+      credentialResponse: "[redacted]",
+    });
+  });
   it("redacts bulk import/restore payloads (csv, backup) so PHI is not copied into the audit trail", () => {
     const out = redactSecrets({
       csv: "clientEmail,patientName,date,notes\njane@x.com,Rex,2024-03-05,Sensitive medical note",

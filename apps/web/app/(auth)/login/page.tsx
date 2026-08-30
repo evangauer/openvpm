@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
+import { startAuthentication } from "@simplewebauthn/browser";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -84,10 +85,9 @@ function LoginPageInner() {
       redirect: false,
     });
 
-    setLoading(false);
-
+    let finalResult = result;
     let challengeRequired = result?.error?.includes("MFA_REQUIRED") ?? false;
-    if (result?.error && !mfaRequired && !challengeRequired) {
+    if (result?.error && !mfaRequired) {
       try {
         const challengeResponse = await fetch("/api/auth/mfa-required", {
           method: "POST",
@@ -95,24 +95,69 @@ function LoginPageInner() {
           body: JSON.stringify({ email: emailValue, password: passwordValue }),
         });
         const challenge = (await challengeResponse.json()) as {
+          challengeId?: string;
+          factor?:
+            | "none"
+            | "totp"
+            | "passkey"
+            | "enrollment_required"
+            | "unavailable";
+          message?: string;
           mfaRequired?: boolean;
+          options?: Parameters<typeof startAuthentication>[0]["optionsJSON"];
         };
-        challengeRequired =
-          challengeResponse.ok && challenge.mfaRequired === true;
+        if (
+          challengeResponse.ok &&
+          challenge.factor === "passkey" &&
+          challenge.challengeId &&
+          challenge.options
+        ) {
+          const assertion = await startAuthentication({
+            optionsJSON: challenge.options,
+          });
+          finalResult = await signIn("credentials", {
+            email: emailValue,
+            password: passwordValue,
+            passkeyChallengeId: challenge.challengeId,
+            passkeyResponse: JSON.stringify(assertion),
+            redirect: false,
+          });
+          challengeRequired = false;
+        } else if (
+          challengeResponse.ok &&
+          challenge.factor === "totp" &&
+          challenge.mfaRequired === true
+        ) {
+          challengeRequired = true;
+        } else if (challenge.message) {
+          setError(challenge.message);
+          setLoading(false);
+          return;
+        } else {
+          challengeRequired = false;
+        }
       } catch {
-        challengeRequired = false;
+        setError(
+          "Passkey verification was canceled or could not be completed.",
+        );
+        setLoading(false);
+        return;
       }
     }
+
+    setLoading(false);
 
     if (challengeRequired) {
       setMfaRequired(true);
       setMfaCode("");
       setError("");
-    } else if (result?.error) {
+    } else if (finalResult?.error) {
       setError(
         mfaRequired
           ? "That authentication or recovery code was not accepted."
-          : "Invalid email or password",
+          : finalResult.error.includes("PASSKEY")
+            ? "That passkey was not accepted for this account and site."
+            : "Invalid email or password",
       );
     } else {
       router.push(nextPath);

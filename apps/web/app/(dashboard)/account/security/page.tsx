@@ -2,6 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { signOut } from "next-auth/react";
+import {
+  startAuthentication,
+  startRegistration,
+} from "@simplewebauthn/browser";
 import { Check, Copy, KeyRound, Loader2, ShieldCheck } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
@@ -19,6 +23,56 @@ type Enrollment = {
   secret: string;
   provisioningUri: string;
 };
+
+async function confirmSensitiveAction(input: {
+  action: PrivilegedAction;
+  code?: string;
+  passkeyEnabled: boolean;
+  password: string;
+}) {
+  let passkey:
+    | {
+        passkeyChallengeId: string;
+        passkeyResponse: Awaited<ReturnType<typeof startAuthentication>>;
+      }
+    | undefined;
+  if (input.passkeyEnabled) {
+    const optionsResponse = await fetch("/api/auth/step-up", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: input.action }),
+    });
+    const challenge = (await optionsResponse.json()) as {
+      challengeId?: string;
+      message?: string;
+      options?: Parameters<typeof startAuthentication>[0]["optionsJSON"];
+    };
+    if (!optionsResponse.ok || !challenge.challengeId || !challenge.options) {
+      throw new Error(
+        challenge.message ?? "Passkey confirmation could not be started.",
+      );
+    }
+    passkey = {
+      passkeyChallengeId: challenge.challengeId,
+      passkeyResponse: await startAuthentication({
+        optionsJSON: challenge.options,
+      }),
+    };
+  }
+  const response = await fetch("/api/auth/step-up", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      action: input.action,
+      password: input.password,
+      ...(passkey ?? { code: input.code }),
+    }),
+  });
+  const body = (await response.json()) as { message?: string };
+  if (!response.ok) {
+    throw new Error(body.message ?? "Identity confirmation failed.");
+  }
+}
 
 function MutationError({ message }: { message?: string }) {
   return message ? (
@@ -78,7 +132,13 @@ function RecoveryCodes({ codes }: { codes: string[] }) {
   );
 }
 
-function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
+function SensitiveActionConfirmation({
+  mfaEnabled,
+  passkeyEnabled,
+}: {
+  mfaEnabled: boolean;
+  passkeyEnabled: boolean;
+}) {
   const [active, setActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [password, setPassword] = useState("");
@@ -123,22 +183,23 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
     setSubmitting(true);
     setError(null);
     try {
-      const response = await fetch("/api/auth/step-up", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, password, code }),
+      if (!action) return;
+      await confirmSensitiveAction({
+        action,
+        code,
+        passkeyEnabled,
+        password,
       });
-      const body = (await response.json()) as { message?: string };
-      if (!response.ok) {
-        setError(body.message ?? "Identity confirmation failed.");
-        return;
-      }
       setPassword("");
       setCode("");
       setActive(true);
       toast.success("One attempt at the selected action is confirmed");
-    } catch {
-      setError("Identity confirmation is temporarily unavailable.");
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Identity confirmation is temporarily unavailable.",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -216,7 +277,7 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
             End confirmation now
           </Button>
         </div>
-      ) : !mfaEnabled ? (
+      ) : !mfaEnabled && !passkeyEnabled ? (
         <p className="mt-5 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
           Enable two-step verification above before performing sensitive actions
           in hosted OpenVPM.
@@ -236,18 +297,27 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
             onChange={(event) => setPassword(event.target.value)}
             required
           />
-          <Input
-            className="max-w-sm"
-            autoComplete="one-time-code"
-            placeholder="Fresh authenticator or recovery code"
-            value={code}
-            onChange={(event) => setCode(event.target.value)}
-            required
-          />
+          {passkeyEnabled ? (
+            <p className="text-sm text-muted-foreground">
+              Your passkey will verify this exact operation after you enter your
+              password.
+            </p>
+          ) : (
+            <Input
+              className="max-w-sm"
+              autoComplete="one-time-code"
+              placeholder="Fresh authenticator or recovery code"
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              required
+            />
+          )}
           <MutationError message={error ?? undefined} />
           <Button
             type="submit"
-            disabled={!action || !password || !code || submitting}
+            disabled={
+              !action || !password || (!passkeyEnabled && !code) || submitting
+            }
           >
             {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Confirm one attempt for 5 minutes
@@ -258,9 +328,229 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
   );
 }
 
+function PasskeyManagement({ mfaEnabled }: { mfaEnabled: boolean }) {
+  const utils = trpc.useUtils();
+  const status = trpc.passkeys.status.useQuery();
+  const begin = trpc.passkeys.beginRegistration.useMutation();
+  const confirm = trpc.passkeys.confirmRegistration.useMutation();
+  const remove = trpc.passkeys.remove.useMutation();
+  const [name, setName] = useState("Primary passkey");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const passkeyEnabled = Boolean(status.data?.credentials.length);
+
+  async function enroll(event: React.FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setBusyId("enroll");
+    try {
+      await confirmSensitiveAction({
+        action: "passkeys.beginRegistration",
+        code,
+        passkeyEnabled,
+        password,
+      });
+      const challenge = await begin.mutateAsync();
+      const response = await startRegistration({
+        optionsJSON: challenge.options,
+      });
+      await confirm.mutateAsync({
+        challengeId: challenge.challengeId,
+        name,
+        credentialResponse: response,
+      });
+      toast.success("Passkey enrolled; all prior sessions were revoked");
+      await signOut({ callbackUrl: "/login" });
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Passkey enrollment could not be completed.",
+      );
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function retire(id: string) {
+    setError(null);
+    setBusyId(id);
+    try {
+      await confirmSensitiveAction({
+        action: "passkeys.remove",
+        passkeyEnabled: true,
+        password,
+      });
+      await remove.mutateAsync({ id });
+      toast.success("Passkey removed; all prior sessions were revoked");
+      await utils.passkeys.status.invalidate();
+      await signOut({ callbackUrl: "/login" });
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "The passkey could not be removed.",
+      );
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <section className="rounded-xl border bg-card p-6">
+      <div className="flex items-start gap-3">
+        <div className="rounded-lg bg-primary/10 p-2 text-primary">
+          <KeyRound className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="font-heading text-lg font-semibold">Passkeys</h2>
+            {status.data?.requiredForIdentity && (
+              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                Required for this account
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Passkeys use your device unlock, fingerprint, face, or security key
+            and resist credential-phishing sites. OpenVPM stores only the public
+            key and authenticator counter.
+          </p>
+        </div>
+      </div>
+
+      {status.isLoading ? (
+        <p className="mt-5 flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading passkeys...
+        </p>
+      ) : status.error || !status.data ? (
+        <MutationError
+          message={status.error?.message ?? "Could not load passkeys."}
+        />
+      ) : !status.data.available ? (
+        <p className="mt-5 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+          Passkeys are not configured on this deployment. Clinic launch remains
+          blocked until the relying-party ID and exact trusted origins are set.
+        </p>
+      ) : (
+        <div className="mt-5 space-y-5 border-t pt-5">
+          {status.data.credentials.length > 0 && (
+            <div className="space-y-2">
+              {status.data.credentials.map((credential) => (
+                <div
+                  key={credential.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"
+                >
+                  <div>
+                    <p className="text-sm font-medium">{credential.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {credential.deviceType === "multiDevice"
+                        ? "Synced passkey"
+                        : "Device-bound passkey"}
+                      {credential.lastUsedAt
+                        ? ` · Last used ${new Date(credential.lastUsedAt).toLocaleDateString()}`
+                        : " · Not used yet"}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    disabled={
+                      busyId !== null ||
+                      !password ||
+                      (status.data.requiredForIdentity &&
+                        status.data.credentials.length <= 2)
+                    }
+                    onClick={() => void retire(credential.id)}
+                  >
+                    {busyId === credential.id && (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    )}
+                    Remove
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!passkeyEnabled && !mfaEnabled ? (
+            <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+              Enable the authenticator factor above first. It provides the
+              fresh, one-time bootstrap confirmation for your first passkey.
+            </p>
+          ) : (
+            <form className="space-y-3" onSubmit={enroll}>
+              <h3 className="text-sm font-semibold">
+                {passkeyEnabled ? "Add another passkey" : "Enroll a passkey"}
+              </h3>
+              <Input
+                className="max-w-sm"
+                maxLength={80}
+                placeholder="Passkey name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                required
+              />
+              <Input
+                className="max-w-sm"
+                type="password"
+                autoComplete="current-password"
+                placeholder="Current password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                required
+              />
+              {passkeyEnabled && (
+                <p className="text-xs text-muted-foreground">
+                  This password also authorizes a Remove action above; the
+                  selected passkey then provides the fresh confirmation.
+                </p>
+              )}
+              {!passkeyEnabled && (
+                <Input
+                  className="max-w-sm"
+                  autoComplete="one-time-code"
+                  placeholder="Fresh authenticator or recovery code"
+                  value={code}
+                  onChange={(event) => setCode(event.target.value)}
+                  required
+                />
+              )}
+              {passkeyEnabled && (
+                <p className="text-xs text-muted-foreground">
+                  Your existing passkey will authorize enrollment before the
+                  browser asks you to create the new one.
+                </p>
+              )}
+              <MutationError message={error ?? undefined} />
+              <Button
+                type="submit"
+                disabled={
+                  busyId !== null ||
+                  !name.trim() ||
+                  !password ||
+                  (!passkeyEnabled && !code)
+                }
+              >
+                {busyId === "enroll" && (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                )}
+                {passkeyEnabled ? "Add passkey" : "Enroll passkey"}
+              </Button>
+            </form>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function AccountSecurityPage() {
   const utils = trpc.useUtils();
   const status = trpc.mfa.status.useQuery();
+  const passkeyStatus = trpc.passkeys.status.useQuery();
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [enrollment, setEnrollment] = useState<Enrollment | null>(null);
@@ -301,7 +591,7 @@ export default function AccountSecurityPage() {
     },
   });
 
-  if (status.isLoading) {
+  if (status.isLoading || passkeyStatus.isLoading) {
     return (
       <div className="flex items-center justify-center gap-2 py-24 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
@@ -310,17 +600,27 @@ export default function AccountSecurityPage() {
     );
   }
 
-  if (status.error || !status.data) {
+  if (
+    status.error ||
+    !status.data ||
+    passkeyStatus.error ||
+    !passkeyStatus.data
+  ) {
     return (
       <div className="mx-auto max-w-2xl rounded-xl border bg-card p-6">
         <h1 className="font-heading text-xl font-semibold">Account Security</h1>
         <p className="mt-2 text-sm text-destructive" role="alert">
-          {status.error?.message ?? "Could not load account security."}
+          {status.error?.message ??
+            passkeyStatus.error?.message ??
+            "Could not load account security."}
         </p>
         <Button
           className="mt-4"
           variant="outline"
-          onClick={() => void status.refetch()}
+          onClick={() => {
+            void status.refetch();
+            void passkeyStatus.refetch();
+          }}
         >
           Retry
         </Button>
@@ -599,7 +899,12 @@ export default function AccountSecurityPage() {
         )}
       </section>
 
-      <SensitiveActionConfirmation mfaEnabled={status.data.enabled} />
+      <PasskeyManagement mfaEnabled={status.data.enabled} />
+
+      <SensitiveActionConfirmation
+        mfaEnabled={status.data.enabled}
+        passkeyEnabled={passkeyStatus.data.credentials.length > 0}
+      />
 
       <section className="rounded-xl border bg-card p-6">
         <h2 className="font-heading text-lg font-semibold">Active sessions</h2>

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { validCredentialsRequireMfa } from "@/lib/auth";
+import { validCredentialsSecondFactor } from "@/lib/auth";
 import { AUTH_PASSWORD_MAX_LENGTH } from "@/lib/auth-password";
 import { AUTH_EMAIL_MAX_LENGTH } from "@/lib/auth-input-policy";
 import { clientIpFromRequest } from "@/lib/request-ip";
@@ -36,10 +36,38 @@ export async function POST(request: Request) {
     return NextResponse.json({ mfaRequired: false }, { status: 400, headers });
   }
 
-  const mfaRequired = await validCredentialsRequireMfa({
+  const challenge = await validCredentialsSecondFactor({
     email: parsed.data.email,
     password: parsed.data.password,
     ip: clientIpFromRequest(request),
   });
-  return NextResponse.json({ mfaRequired }, { headers });
+  if (challenge.factor === "unavailable") {
+    return NextResponse.json(
+      {
+        mfaRequired: false,
+        factor: challenge.factor,
+        message: "Secure sign-in is temporarily unavailable.",
+      },
+      { status: 503, headers },
+    );
+  }
+  if (challenge.factor === "enrollment_required") {
+    return NextResponse.json(
+      {
+        mfaRequired: false,
+        factor: challenge.factor,
+        message:
+          "This administrator or operator must enroll a passkey before required-mode sign-in can continue.",
+      },
+      { status: 409, headers },
+    );
+  }
+  return NextResponse.json(
+    {
+      mfaRequired:
+        challenge.factor === "totp" || challenge.factor === "passkey",
+      ...challenge,
+    },
+    { headers },
+  );
 }

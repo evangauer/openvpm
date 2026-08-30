@@ -22,25 +22,50 @@ import {
   isPrivilegedAction,
   type PrivilegedAction,
 } from "@/lib/privileged-actions";
+import {
+  activeWebAuthnCredentials,
+  authenticationResponseSchema,
+  beginWebAuthnAuthentication,
+  finishWebAuthnAuthentication,
+} from "@/lib/webauthn-ceremony";
+import {
+  passkeyRequiredForIdentity,
+  webauthnConfiguration,
+} from "@/lib/webauthn-config";
 import { clientIpFromRequest } from "@/lib/request-ip";
 import { rateLimit } from "@/lib/rate-limit";
 import { readJsonRequestBody } from "@/lib/request-json";
 import { withSystem, withTenant } from "@/lib/tenant-db";
 import { db } from "@openpims/db/client";
+import type { Database } from "@openpims/db/client";
 import { privilegedActionProofs, users } from "@openpims/db";
 
 export const dynamic = "force-dynamic";
 
-const inputSchema = z.object({
+const inputSchema = z
+  .object({
+    action: z.string().refine(isPrivilegedAction),
+    password: z.string().min(1).max(128),
+    code: z.string().trim().min(6).max(64).optional(),
+    passkeyChallengeId: z.string().uuid().optional(),
+    passkeyResponse: authenticationResponseSchema.optional(),
+  })
+  .refine(
+    (value) =>
+      Boolean(value.code) ||
+      Boolean(value.passkeyChallengeId && value.passkeyResponse),
+  );
+const optionsInputSchema = z.object({
   action: z.string().refine(isPrivilegedAction),
-  password: z.string().min(1).max(128),
-  code: z.string().trim().min(6).max(64),
 });
-const STEP_UP_BODY_MAX_BYTES = 2 * 1024;
+const STEP_UP_BODY_MAX_BYTES = 192 * 1024;
 
 type ActiveSession = {
   user: {
     id: string;
+    email: string;
+    name: string;
+    role: string;
     practiceId: string;
     sessionVersion: number;
   };
@@ -76,8 +101,13 @@ async function confirmAndPersistProof(input: {
   session: ActiveSession;
   action: PrivilegedAction;
   password: string;
-  code: string;
-}): Promise<{ proof: string; factorType: "totp" | "recovery" } | null> {
+  code?: string;
+  passkeyChallengeId?: string;
+  passkeyResponse?: z.infer<typeof authenticationResponseSchema>;
+}): Promise<{
+  proof: string;
+  factorType: "passkey" | "totp" | "recovery";
+} | null> {
   const issued = issuePrivilegedActionProof({
     action: input.action,
     userId: input.session.user.id,
@@ -88,6 +118,9 @@ async function confirmAndPersistProof(input: {
     const [user] = await tx
       .select({
         id: users.id,
+        email: users.email,
+        name: users.name,
+        role: users.role,
         passwordHash: users.passwordHash,
         sessionVersion: users.sessionVersion,
         mfaSecretEncrypted: users.mfaSecretEncrypted,
@@ -107,45 +140,88 @@ async function confirmAndPersistProof(input: {
     if (
       !user ||
       user.sessionVersion !== input.session.user.sessionVersion ||
-      !user.mfaEnabledAt ||
-      !user.mfaSecretEncrypted ||
       !(await compare(input.password, user.passwordHash))
     ) {
       return null;
     }
 
-    let secret: string;
-    try {
-      secret = decryptMfaSecret(user.mfaSecretEncrypted);
-    } catch {
-      return null;
-    }
-    let factorType: "totp" | "recovery" | null = null;
-    const counter = matchingTotpCounter(secret, input.code);
-    if (
-      counter !== null &&
-      (user.mfaLastUsedTotpCounter === null ||
-        counter > user.mfaLastUsedTotpCounter)
-    ) {
-      const [updated] = await tx
-        .update(users)
-        .set({ mfaLastUsedTotpCounter: counter })
-        .where(
-          and(
-            eq(users.id, user.id),
-            eq(users.practiceId, input.session.user.practiceId),
-            eq(users.sessionVersion, user.sessionVersion),
-            or(
-              isNull(users.mfaLastUsedTotpCounter),
-              lt(users.mfaLastUsedTotpCounter, counter),
+    const credentials = await activeWebAuthnCredentials(tx, {
+      practiceId: input.session.user.practiceId,
+      userId: input.session.user.id,
+    });
+    let factorType: "passkey" | "totp" | "recovery" | null = null;
+    if (credentials.length > 0) {
+      if (
+        !input.passkeyChallengeId ||
+        !input.passkeyResponse ||
+        !webauthnConfiguration()
+      ) {
+        return null;
+      }
+      try {
+        // Use a savepoint because an invalid WebAuthn response is translated to
+        // a normal 401 result below. Without it, a late failure could otherwise
+        // leave a counter update committed by the surrounding tenant tx.
+        await tx.transaction(async (verificationTx) => {
+          await finishWebAuthnAuthentication({
+            action: input.action,
+            challengeId: input.passkeyChallengeId!,
+            database: verificationTx as unknown as Database,
+            identity: {
+              email: user.email,
+              name: user.name,
+              practiceId: input.session.user.practiceId,
+              sessionVersion: user.sessionVersion,
+              userId: user.id,
+            },
+            purpose: "privileged_action",
+            response: input.passkeyResponse!,
+          });
+        });
+        factorType = "passkey";
+      } catch {
+        return null;
+      }
+    } else {
+      // Required-mode identities never fall back to a weaker factor. Hosted
+      // readiness should prevent this state, but the route remains fail-closed
+      // for stale sessions, newly promoted admins, and operational drift.
+      if (passkeyRequiredForIdentity(user)) return null;
+      if (!user.mfaEnabledAt || !user.mfaSecretEncrypted || !input.code) {
+        return null;
+      }
+      let secret: string;
+      try {
+        secret = decryptMfaSecret(user.mfaSecretEncrypted);
+      } catch {
+        return null;
+      }
+      const counter = matchingTotpCounter(secret, input.code);
+      if (
+        counter !== null &&
+        (user.mfaLastUsedTotpCounter === null ||
+          counter > user.mfaLastUsedTotpCounter)
+      ) {
+        const [updated] = await tx
+          .update(users)
+          .set({ mfaLastUsedTotpCounter: counter })
+          .where(
+            and(
+              eq(users.id, user.id),
+              eq(users.practiceId, input.session.user.practiceId),
+              eq(users.sessionVersion, user.sessionVersion),
+              or(
+                isNull(users.mfaLastUsedTotpCounter),
+                lt(users.mfaLastUsedTotpCounter, counter),
+              ),
+              isNull(users.deletedAt),
             ),
-            isNull(users.deletedAt),
-          ),
-        )
-        .returning({ id: users.id });
-      if (updated) factorType = "totp";
+          )
+          .returning({ id: users.id });
+        if (updated) factorType = "totp";
+      }
     }
-    if (!factorType) {
+    if (!factorType && input.code) {
       const existingHashes = Array.isArray(user.mfaRecoveryCodeHashes)
         ? user.mfaRecoveryCodeHashes
         : [];
@@ -179,6 +255,102 @@ async function confirmAndPersistProof(input: {
   });
 }
 
+export async function PUT(request: Request) {
+  if (!sameOrigin(request)) {
+    return jsonError(403, "The identity confirmation request was rejected.");
+  }
+  if (!request.headers.get("content-type")?.startsWith("application/json")) {
+    return jsonError(415, "Identity confirmation requires JSON.");
+  }
+  const session = await activeSession();
+  if (!session) return jsonError(401, "Sign in again to continue.");
+  const body = await readJsonRequestBody(request, 2 * 1024);
+  const parsed = body.ok ? optionsInputSchema.safeParse(body.data) : null;
+  if (!parsed?.success) return jsonError(400, "Choose one sensitive action.");
+  const ip = clientIpFromRequest(request);
+  try {
+    const limited = await rateLimit({
+      key: `step-up-options:${session.user.id}:${ip}`,
+      limit: 20,
+      windowMs: 15 * 60 * 1000,
+    });
+    if (!limited.success) {
+      return jsonError(429, "Too many attempts. Please try again later.");
+    }
+  } catch {
+    return jsonError(503, "Identity confirmation is temporarily unavailable.");
+  }
+  try {
+    const result = await withTenant(db, session.user.practiceId, async (tx) => {
+      const [currentUser] = await tx
+        .select({
+          email: users.email,
+          role: users.role,
+          sessionVersion: users.sessionVersion,
+        })
+        .from(users)
+        .where(
+          and(
+            eq(users.id, session.user.id),
+            eq(users.practiceId, session.user.practiceId),
+            eq(users.sessionVersion, session.user.sessionVersion),
+            isNull(users.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!currentUser) return { factor: "reauth" as const };
+      const credentials = await activeWebAuthnCredentials(tx, {
+        practiceId: session.user.practiceId,
+        userId: session.user.id,
+      });
+      if (credentials.length === 0) {
+        return passkeyRequiredForIdentity(currentUser)
+          ? { factor: "enrollment_required" as const }
+          : { factor: "totp" as const };
+      }
+      if (!webauthnConfiguration()) {
+        throw new Error("WebAuthn verifier configuration is unavailable.");
+      }
+      const challenge = await beginWebAuthnAuthentication({
+        action: parsed.data.action,
+        credentials,
+        database: tx,
+        identity: {
+          email: session.user.email,
+          name: session.user.name,
+          practiceId: session.user.practiceId,
+          sessionVersion: session.user.sessionVersion,
+          userId: session.user.id,
+        },
+        purpose: "privileged_action",
+      });
+      return {
+        factor: "passkey" as const,
+        challengeId: challenge.challengeId,
+        options: challenge.options,
+      };
+    });
+    if (result.factor === "reauth") {
+      return jsonError(401, "Sign in again to continue.");
+    }
+    if (result.factor === "enrollment_required") {
+      return jsonError(
+        409,
+        "This administrator or operator must enroll a passkey before required-mode confirmation can continue.",
+      );
+    }
+    return NextResponse.json(
+      { ok: true, action: parsed.data.action, ...result },
+      { headers: { "Cache-Control": "no-store, max-age=0" } },
+    );
+  } catch {
+    return jsonError(
+      503,
+      "Sensitive-action confirmation is temporarily unavailable.",
+    );
+  }
+}
+
 export async function POST(request: Request) {
   if (!sameOrigin(request)) {
     return jsonError(403, "The identity confirmation request was rejected.");
@@ -194,7 +366,7 @@ export async function POST(request: Request) {
   if (!parsed?.success) {
     return jsonError(
       400,
-      "Choose one sensitive action and enter your current password and authentication code.",
+      "Choose one sensitive action and provide your current password plus its required fresh factor.",
     );
   }
 
@@ -228,7 +400,7 @@ export async function POST(request: Request) {
   if (!confirmation) {
     return jsonError(
       401,
-      "The password or authentication code was not accepted.",
+      "The password or required fresh factor was not accepted.",
     );
   }
 

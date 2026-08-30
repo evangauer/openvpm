@@ -219,6 +219,12 @@ jobs:
       - name: Execute privileged-action proof database contract
         run: pnpm --filter @openpims/db db:privileged-action-proofs:test
 
+      # Passkeys are account-bound authentication evidence. Prove one-use
+      # challenges, monotone credential lifecycle, races, privileges, and
+      # tenant isolation against the restricted role in real PostgreSQL.
+      - name: Execute WebAuthn credential and challenge database contract
+        run: pnpm --filter @openpims/db db:webauthn:test
+
       # Client treatment-plan decisions are legal record evidence. Prove the
       # sealed revision/response graph, signature hash binding, replay refusal,
       # immutable grants, and tenant/no-context isolation in real PostgreSQL.

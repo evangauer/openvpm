@@ -78,6 +78,12 @@ NEXT_PUBLIC_APP_URL=https://app.openvpm.com
 NEXTAUTH_SECRET=...
 MFA_ENCRYPTION_KEY=... # dedicated `openssl rand -base64 32`; never reuse NEXTAUTH_SECRET
 PRIVILEGED_ACTION_SIGNING_KEY=... # independently generated; never reuse MFA_ENCRYPTION_KEY or NEXTAUTH_SECRET
+# WebAuthn hostname and exact HTTPS origin allowlist. Keep `migration` until all
+# admins/operators have enrolled at least two independent authenticators.
+WEBAUTHN_RP_ID=app.openvpm.com
+WEBAUTHN_RP_NAME=OpenVPM
+WEBAUTHN_ORIGINS=https://app.openvpm.com
+WEBAUTHN_ADMIN_POLICY=migration
 DATABASE_URL=...
 # Transitional production release lock. Set only to the exact approved
 # 40-character commit, redeploy that revision, then clear or rotate it.
@@ -284,6 +290,16 @@ or losing it invalidates every enrolled authenticator and recovery-code hash.
 Treat the signing key as independently rotatable authorization material:
 rotation invalidates every outstanding five-minute proof without affecting TOTP
 decryption. Do not rotate either without a reviewed recovery plan.
+
+Roll out passkeys as a release migration, not a one-step flag change:
+
+1. Deploy the credential/challenge migration with `WEBAUTHN_ADMIN_POLICY=migration`, an exact `WEBAUTHN_RP_ID`, and the exact HTTPS `WEBAUTHN_ORIGINS` for the environment. Never include production and staging origins in one relying party.
+2. Have every active clinic administrator and every `PLATFORM_ADMIN_EMAILS` operator enroll at least two independent passkeys (for example, a platform-synced passkey plus a hardware key). Adding or removing a passkey revokes existing sessions.
+3. Confirm registration, passkey login, exact-action step-up, replay rejection, session revocation, and loss of one authenticator in isolated staging. Do not use real patient data for this exercise.
+4. Obtain owner approval for the lost-authenticator recovery policy in issue #266. OpenVPM intentionally provides no operator bypass and no TOTP fallback once an account has an active passkey.
+5. Change `WEBAUTHN_ADMIN_POLICY=required`, redeploy the same reviewed release SHA, and require `hostedWebAuthn` to be healthy in both staging and production evidence. The health gate fails if configuration is invalid, policy is not required, an allowlisted operator has no active user, or any required identity lacks two active passkeys.
+
+If any required account is not enrolled, revert the policy to `migration`; do not delete credential records or edit counters/challenges by hand. Database-owner intervention is break-glass recovery, requires an incident record and independent review, and is not an approved day-to-day account recovery path.
 
 `STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only. They must not be used for new checkout or required hosted readiness.
 
@@ -681,10 +697,11 @@ GET https://app.openvpm.com/api/health
 ```
 
 It checks database connectivity and required hosted configuration for auth,
-MFA, Stripe billing, storage, fresh complete backup-run evidence, email, AI, and
-ops hooks. It never returns secret values. A reachable object store is not
-treated as proof that backups ran. SMS provider setup is reported as advisory
-until the active provider is provisioned.
+MFA, WebAuthn relying-party enforcement and required-account enrollment, Stripe
+billing, storage, fresh complete backup-run evidence, email, AI, and ops hooks.
+It never returns secret values or enrollment counts. A reachable object store
+is not treated as proof that backups ran. SMS provider setup is reported as
+advisory until the active provider is provisioned.
 
 Cron heartbeat/dead-man monitoring gates hosted readiness in `/api/health`: set
 one global `CRON_HEARTBEAT_URL` to receive every cron completion as POST JSON, or

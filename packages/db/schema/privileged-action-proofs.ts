@@ -57,7 +57,7 @@ export const privilegedActionProofs = pgTable(
     ),
     actionShapeCheck: check(
       "privileged_action_proofs_action_shape_check",
-      sql`${table.action} ~ '^(admin|billing|subscription|settings|data|apiKeys|webhooks)[.][A-Za-z][A-Za-z0-9]+$'`,
+      sql`${table.action} ~ '^(admin|billing|subscription|settings|data|apiKeys|webhooks|passkeys)[.][A-Za-z][A-Za-z0-9]+$'`,
     ),
     nonceHashCheck: check(
       "privileged_action_proofs_nonce_hash_check",
@@ -65,7 +65,7 @@ export const privilegedActionProofs = pgTable(
     ),
     factorTypeCheck: check(
       "privileged_action_proofs_factor_type_check",
-      sql`${table.factorType} in ('totp', 'recovery')`,
+      sql`${table.factorType} in ('passkey', 'totp', 'recovery')`,
     ),
     ttlCheck: check(
       "privileged_action_proofs_ttl_check",

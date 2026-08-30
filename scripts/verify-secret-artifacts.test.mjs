@@ -192,3 +192,59 @@ test("accepts only the generated Twilio export assignment", () => {
     rmSync(value.root, { recursive: true, force: true });
   }
 });
+
+test("accepts only the pinned Peculiar X509 PEM parser tag assignment", () => {
+  const value = fixture();
+  try {
+    const file = path.join(value.server, "chunks/fixture.js");
+    const source = path.join(
+      value.root,
+      "node_modules/.pnpm/@peculiar+x509@1.14.3/node_modules/@peculiar/x509/build",
+    );
+    mkdirSync(source, { recursive: true });
+    writeFileSync(
+      path.join(source, "x509.cjs.js"),
+      [
+        'PemConverter.CertificateRequestTag = "CERTIFICATE REQUEST";',
+        'PemConverter.PublicKeyTag = "PUBLIC KEY";',
+        'PemConverter.PrivateKeyTag = "PRIVATE KEY";',
+      ].join("\n"),
+    );
+    const compiledPrivateKeyAssignment = ["a.PrivateKeyTag", "="].join("");
+    writeFileSync(
+      file,
+      `a.CertificateRequestTag="CERTIFICATE REQUEST",a.PublicKeyTag="PUBLIC KEY",${compiledPrivateKeyAssignment}"PRIVATE KEY";`,
+    );
+    const manifests = assertNextManifestInvariants(value.build);
+    const base = {
+      RuleID: "generic-api-key",
+      File: file,
+      Secret: compiledPrivateKeyAssignment,
+    };
+    expectClassification(base, "pinned-peculiar-x509-pem-tag");
+
+    function expectClassification(finding, expected) {
+      assert.equal(
+        classifyArtifactFinding({
+          finding,
+          manifests,
+          artifactRoot: value.build,
+          sourceRoot: value.root,
+        }),
+        expected,
+      );
+    }
+
+    expectClassification(
+      { ...base, Secret: `${compiledPrivateKeyAssignment}token` },
+      null,
+    );
+    writeFileSync(
+      file,
+      `a.CertificateRequestTag="CERTIFICATE REQUEST",a.PublicKeyTag="PUBLIC KEY",${compiledPrivateKeyAssignment}"actual-secret";`,
+    );
+    expectClassification(base, null);
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});

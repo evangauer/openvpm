@@ -75,6 +75,7 @@ function healthyEvidence() {
         "hostedBackupFreshness",
         "hostedFileReplica",
         "hostedMfa",
+        "hostedWebAuthn",
         "hostedPrivilegedActionSigning",
         "hostedOpsAlerting",
         "hostedCronHeartbeat",

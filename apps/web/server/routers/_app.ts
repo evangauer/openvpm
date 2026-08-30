@@ -35,6 +35,7 @@ import { careRemindersRouter } from "./care-reminders";
 import { migrationArchiveRouter } from "./migration-archive";
 import { visitTreatmentPlansRouter } from "./visit-treatment-plans";
 import { mfaRouter } from "./mfa";
+import { passkeysRouter } from "./passkeys";
 
 export const appRouter = createRouter({
   auth: authRouter,
@@ -73,6 +74,7 @@ export const appRouter = createRouter({
   migrationArchive: migrationArchiveRouter,
   visitTreatmentPlans: visitTreatmentPlansRouter,
   mfa: mfaRouter,
+  passkeys: passkeysRouter,
 });
 
 export type AppRouter = typeof appRouter;

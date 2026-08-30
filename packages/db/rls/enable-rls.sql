@@ -58,7 +58,7 @@ DECLARE
     'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_note_replacements','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'visit_treatment_plan_response_lines','visit_treatment_plan_responses','visit_treatment_plan_revision_lines','visit_treatment_plan_revisions','visit_treatment_plans',
-    'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
+    'visit_closeouts','visit_work_items','vital_signs','webauthn_challenges','webauthn_credentials','webhooks','wellness_enrollments','wellness_plans'
   ];
 BEGIN
   FOREACH t IN ARRAY tbls LOOP
@@ -339,6 +339,30 @@ GRANT SELECT, INSERT, UPDATE ON dispense_charge_queue TO openpims_app;
 -- them or invoke the protective trigger implementation directly.
 REVOKE ALL ON privileged_action_proofs FROM openpims_app;
 GRANT SELECT, INSERT, UPDATE ON privileged_action_proofs TO openpims_app;
+
+-- WebAuthn challenges and credential identities are protected by migration
+-- triggers. The application cannot delete evidence directly; a narrowly
+-- scoped owner function purges only challenges expired for more than 24h.
+REVOKE ALL ON webauthn_challenges, webauthn_credentials FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON webauthn_challenges, webauthn_credentials TO openpims_app;
+REVOKE ALL ON FUNCTION protect_webauthn_challenge_update() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION protect_webauthn_credential_update() FROM PUBLIC, openpims_app;
+CREATE OR REPLACE FUNCTION purge_expired_webauthn_challenges()
+RETURNS bigint
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE deleted_count bigint;
+BEGIN
+  DELETE FROM public.webauthn_challenges
+  WHERE expires_at < statement_timestamp() - interval '24 hours';
+  GET DIAGNOSTICS deleted_count = ROW_COUNT;
+  RETURN deleted_count;
+END;
+$$;
+REVOKE ALL ON FUNCTION purge_expired_webauthn_challenges() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION purge_expired_webauthn_challenges() TO openpims_app;
 REVOKE ALL ON FUNCTION protect_privileged_action_proof_update() FROM PUBLIC, openpims_app;
 
 -- 5) Child tables without their own practice_id are isolated by joining to the

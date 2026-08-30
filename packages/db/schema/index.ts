@@ -3,6 +3,7 @@ export * from "./users";
 export * from "./clients";
 export * from "./portal-sessions";
 export * from "./privileged-action-proofs";
+export * from "./webauthn";
 export * from "./patients";
 export * from "./patient-merge-events";
 export * from "./scheduling";

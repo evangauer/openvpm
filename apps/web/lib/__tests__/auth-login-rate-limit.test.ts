@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => {
     practiceId: "practice-1",
     passwordHash: "hashed-password",
     emailVerifiedAt: null,
+    sessionVersion: 1,
+    mfaEnabledAt: null,
+    mfaSecretEncrypted: null,
   };
   const selectLimit = vi.fn(async (): Promise<unknown[]> => [activeUser]);
   const selectWhere = vi.fn(() => ({ limit: selectLimit }));
@@ -21,6 +24,15 @@ const mocks = vi.hoisted(() => {
     activeUser,
     bcryptCompare: vi.fn(async () => true),
     clearRateLimit: vi.fn(async () => undefined),
+    activeWebAuthnCredentials: vi.fn(async () => [] as unknown[]),
+    finishWebAuthnAuthentication: vi.fn(async () => ({
+      credentialRowId: "credential-row-id",
+    })),
+    beginWebAuthnAuthentication: vi.fn(async () => ({
+      challengeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expiresAt: new Date("2030-01-01T00:05:00.000Z"),
+      options: { challenge: "browser-challenge" },
+    })),
     rateLimit: vi.fn(async () => ({
       success: true,
       remaining: 4,
@@ -28,7 +40,7 @@ const mocks = vi.hoisted(() => {
     })),
     selectLimit,
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
-      fn({ select })
+      fn({ select }),
     ),
   };
 });
@@ -50,16 +62,30 @@ vi.mock("bcryptjs", () => ({
   compare: mocks.bcryptCompare,
 }));
 
-const { authOptions } = await import("../auth");
-const { createDemoAccessToken, DEMO_ACCESS_COOKIE_NAME } = await import(
-  "../demo-access"
-);
+vi.mock("@/lib/webauthn-ceremony", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/lib/webauthn-ceremony")
+  >("@/lib/webauthn-ceremony");
+  return {
+    ...actual,
+    activeWebAuthnCredentials: mocks.activeWebAuthnCredentials,
+    beginWebAuthnAuthentication: mocks.beginWebAuthnAuthentication,
+    finishWebAuthnAuthentication: mocks.finishWebAuthnAuthentication,
+  };
+});
+
+const { authOptions, validCredentialsSecondFactor } = await import("../auth");
+const { createDemoAccessToken, DEMO_ACCESS_COOKIE_NAME } =
+  await import("../demo-access");
 
 type CredentialsProviderWithAuthorize = {
   options: {
     authorize: (
-      credentials: Record<"email" | "password", string>,
-      req: { headers: Record<string, string> }
+      credentials: Record<"email" | "password", string> &
+        Partial<
+          Record<"mfaCode" | "passkeyChallengeId" | "passkeyResponse", string>
+        >,
+      req: { headers: Record<string, string> },
     ) => Promise<unknown>;
   };
 };
@@ -68,7 +94,7 @@ type DemoProviderWithAuthorize = {
   options: {
     authorize: (
       credentials: { role: string },
-      req: { headers: Record<string, string> }
+      req: { headers: Record<string, string> },
     ) => Promise<unknown>;
   };
 };
@@ -95,6 +121,16 @@ afterEach(() => {
   vi.clearAllMocks();
   mocks.selectLimit.mockResolvedValue([mocks.activeUser]);
   mocks.bcryptCompare.mockResolvedValue(true);
+  mocks.activeWebAuthnCredentials.mockResolvedValue([]);
+  mocks.finishWebAuthnAuthentication.mockResolvedValue({
+    credentialRowId: "credential-row-id",
+  });
+  mocks.beginWebAuthnAuthentication.mockResolvedValue({
+    challengeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    expiresAt: new Date("2030-01-01T00:05:00.000Z"),
+    options: { challenge: "browser-challenge" },
+  });
+  vi.unstubAllEnvs();
   mocks.rateLimit.mockResolvedValue({
     success: true,
     remaining: 4,
@@ -106,7 +142,7 @@ describe("credentials login rate-limit cleanup", () => {
   it("keeps trial access open while the user's email is unverified", async () => {
     const user = await credentialsProvider().authorize(
       { email: "admin@example.com", password: "password123" },
-      { headers: { "x-forwarded-for": "203.0.113.10" } }
+      { headers: { "x-forwarded-for": "203.0.113.10" } },
     );
 
     expect(user).toMatchObject({
@@ -120,7 +156,7 @@ describe("credentials login rate-limit cleanup", () => {
   it("clears the email bucket after successful sign-in without resetting the IP bucket", async () => {
     const user = await credentialsProvider().authorize(
       { email: " Admin@Example.COM ", password: "password123" },
-      { headers: { "x-forwarded-for": "203.0.113.10, 198.51.100.5" } }
+      { headers: { "x-forwarded-for": "203.0.113.10, 198.51.100.5" } },
     );
 
     expect(user).toMatchObject({
@@ -132,10 +168,10 @@ describe("credentials login rate-limit cleanup", () => {
     });
     expect(mocks.clearRateLimit).toHaveBeenCalledTimes(1);
     expect(mocks.clearRateLimit).toHaveBeenCalledWith(
-      "login:email:admin@example.com"
+      "login:email:admin@example.com",
     );
     expect(mocks.clearRateLimit).not.toHaveBeenCalledWith(
-      "login:ip:203.0.113.10"
+      "login:ip:203.0.113.10",
     );
   });
 
@@ -145,8 +181,8 @@ describe("credentials login rate-limit cleanup", () => {
     await expect(
       credentialsProvider().authorize(
         { email: "admin@example.com", password: "wrong-password" },
-        { headers: { "x-forwarded-for": "203.0.113.10" } }
-      )
+        { headers: { "x-forwarded-for": "203.0.113.10" } },
+      ),
     ).resolves.toBeNull();
 
     expect(mocks.clearRateLimit).not.toHaveBeenCalled();
@@ -162,13 +198,13 @@ describe("credentials login rate-limit cleanup", () => {
       await expect(
         credentialsProvider().authorize(
           { email: "admin@example.com", password: "password123" },
-          { headers: { "x-forwarded-for": "203.0.113.10" } }
-        )
+          { headers: { "x-forwarded-for": "203.0.113.10" } },
+        ),
       ).resolves.toBeNull();
 
       expect(errorSpy).toHaveBeenCalledWith(
         "[auth] login rate limit failed:",
-        expect.any(Error)
+        expect.any(Error),
       );
       expect(mocks.withSystem).not.toHaveBeenCalled();
       expect(mocks.bcryptCompare).not.toHaveBeenCalled();
@@ -184,13 +220,79 @@ describe("credentials login rate-limit cleanup", () => {
     await expect(
       credentialsProvider().authorize(
         { email: "admin@example.com", password: "password123" },
-        { headers: { "x-forwarded-for": "203.0.113.10" } }
-      )
+        { headers: { "x-forwarded-for": "203.0.113.10" } },
+      ),
     ).resolves.toBeNull();
 
     expect(mocks.rateLimit).not.toHaveBeenCalled();
     expect(mocks.withSystem).not.toHaveBeenCalled();
     expect(mocks.bcryptCompare).not.toHaveBeenCalled();
+  });
+
+  it("requires and accepts the enrolled passkey without TOTP fallback", async () => {
+    vi.stubEnv("WEBAUTHN_RP_ID", "app.openvpm.com");
+    vi.stubEnv("WEBAUTHN_ORIGINS", "https://app.openvpm.com");
+    mocks.activeWebAuthnCredentials.mockResolvedValue([
+      { id: "credential-row-id" },
+    ]);
+
+    await expect(
+      credentialsProvider().authorize(
+        { email: "admin@example.com", password: "password123" },
+        { headers: { "x-forwarded-for": "203.0.113.10" } },
+      ),
+    ).rejects.toThrow("PASSKEY_REQUIRED");
+
+    const response = {
+      id: "credential_identifier_1234",
+      rawId: "credential_identifier_1234",
+      type: "public-key",
+      clientExtensionResults: {},
+      response: {
+        clientDataJSON: "client_data",
+        authenticatorData: "authenticator_data",
+        signature: "signature",
+      },
+    };
+    await expect(
+      credentialsProvider().authorize(
+        {
+          email: "admin@example.com",
+          password: "password123",
+          passkeyChallengeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          passkeyResponse: JSON.stringify(response),
+        },
+        { headers: { "x-forwarded-for": "203.0.113.10" } },
+      ),
+    ).resolves.toMatchObject({ id: mocks.activeUser.id });
+    expect(mocks.finishWebAuthnAuthentication).toHaveBeenCalledWith(
+      expect.objectContaining({ purpose: "login", response }),
+    );
+  });
+
+  it("issues a bounded login challenge only after password verification", async () => {
+    vi.stubEnv("WEBAUTHN_RP_ID", "app.openvpm.com");
+    vi.stubEnv("WEBAUTHN_ORIGINS", "https://app.openvpm.com");
+    mocks.activeWebAuthnCredentials.mockResolvedValueOnce([
+      { id: "credential-row-id" },
+    ]);
+
+    await expect(
+      validCredentialsSecondFactor({
+        email: "admin@example.com",
+        password: "password123",
+        ip: "203.0.113.10",
+      }),
+    ).resolves.toMatchObject({
+      factor: "passkey",
+      challengeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      options: { challenge: "browser-challenge" },
+    });
+    expect(mocks.bcryptCompare).toHaveBeenCalledWith(
+      "password123",
+      mocks.activeUser.passwordHash,
+    );
+    expect(mocks.beginWebAuthnAuthentication).toHaveBeenCalledOnce();
   });
 });
 
@@ -207,7 +309,7 @@ describe("email-gated demo login", () => {
 
     const user = await demoProvider().authorize(
       { role: "admin" },
-      { headers: { cookie: `${DEMO_ACCESS_COOKIE_NAME}=${token}` } }
+      { headers: { cookie: `${DEMO_ACCESS_COOKIE_NAME}=${token}` } },
     );
 
     expect(user).toMatchObject({
@@ -225,16 +327,13 @@ describe("email-gated demo login", () => {
     process.env.NEXTAUTH_SECRET = "test-secret-at-least-32-characters-long";
 
     await expect(
-      demoProvider().authorize(
-        { role: "admin" },
-        { headers: {} }
-      )
+      demoProvider().authorize({ role: "admin" }, { headers: {} }),
     ).resolves.toBeNull();
     await expect(
       demoProvider().authorize(
         { role: "owner" },
-        { headers: { cookie: `${DEMO_ACCESS_COOKIE_NAME}=invalid` } }
-      )
+        { headers: { cookie: `${DEMO_ACCESS_COOKIE_NAME}=invalid` } },
+      ),
     ).resolves.toBeNull();
 
     expect(mocks.withSystem).not.toHaveBeenCalled();
@@ -251,8 +350,8 @@ describe("email-gated demo login", () => {
     await expect(
       demoProvider().authorize(
         { role: "admin" },
-        { headers: { cookie: `${DEMO_ACCESS_COOKIE_NAME}=${token}` } }
-      )
+        { headers: { cookie: `${DEMO_ACCESS_COOKIE_NAME}=${token}` } },
+      ),
     ).resolves.toBeNull();
   });
 });

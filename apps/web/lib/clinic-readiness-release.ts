@@ -30,6 +30,7 @@ const REQUIRED_HOSTED_CHECKS = [
   "hostedBackupFreshness",
   "hostedFileReplica",
   "hostedMfa",
+  "hostedWebAuthn",
   "hostedPrivilegedActionSigning",
   "hostedOpsAlerting",
   "hostedCronHeartbeat",

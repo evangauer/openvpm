@@ -44,9 +44,12 @@ If you deploy OpenVPM on your own infrastructure:
 - Multi-tenant isolation combines tenant-scoped application queries with PostgreSQL row-level security
 - Role-based access control includes Admin, Veterinarian, Technician, Front Desk, and read-only Viewer roles
 - Hosted privileged procedures require a separately signed, five-minute proof bound to the exact action, user, tenant, and current database session generation; PostgreSQL consumes the proof once in the same transaction as the operation
+- WebAuthn passkeys require user verification, bind challenges to an exact relying-party ID and origin allowlist, persist only public credential material, and consume hashed five-minute challenges once; enrolled passkeys replace TOTP for login and privileged-action confirmation
 - Security headers are set on all responses (X-Frame-Options, X-Content-Type-Options, etc.)
 - Controlled substance logs are append-only with witness requirements
 
-## Known Authentication Limitation
+## Authentication Release Gate
 
-OpenVPM currently supports TOTP and single-use recovery codes. TOTP is a shared-secret factor and is not phishing-resistant. The exact-action, one-time privileged-action proof limits reuse after a fresh TOTP confirmation, but it does not make TOTP phishing-resistant. Clinic launch remains blocked on a reviewed WebAuthn/passkey primary-factor flow and recovery policy tracked in [issue #266](https://github.com/evangauer/openvpm/issues/266).
+OpenVPM supports TOTP, single-use recovery codes, and WebAuthn passkeys. TOTP remains the bootstrap path during migration, but it is a shared-secret factor and is not phishing-resistant. Once an account has an active passkey, login and privileged-action confirmation fail closed to passkey verification instead of silently falling back to TOTP. Hosted readiness also requires exact relying-party configuration, the `required` administrator/operator policy, and at least two active passkeys for every required identity.
+
+Clinic launch remains blocked until the owner approves and tests a lost-authenticator recovery policy tracked in [issue #266](https://github.com/evangauer/openvpm/issues/266). There is intentionally no operator bypass or automatic downgrade to TOTP for an enrolled account. Required users should enroll at least two independent authenticators before enforcement; database-owner intervention is an emergency operational procedure, not a normal product recovery flow.

@@ -1,11 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  validCredentialsRequireMfa: vi.fn(async () => false),
+  validCredentialsSecondFactor: vi.fn(
+    async (): Promise<{
+      factor: string;
+      challengeId?: string;
+      options?: Record<string, unknown>;
+    }> => ({ factor: "none" }),
+  ),
 }));
 
 vi.mock("@/lib/auth", () => ({
-  validCredentialsRequireMfa: mocks.validCredentialsRequireMfa,
+  validCredentialsSecondFactor: mocks.validCredentialsSecondFactor,
 }));
 
 const { POST } = await import("./route");
@@ -46,21 +52,62 @@ describe("MFA challenge probe", () => {
       }),
     );
     expect(oversized.status).toBe(400);
-    expect(mocks.validCredentialsRequireMfa).not.toHaveBeenCalled();
+    expect(mocks.validCredentialsSecondFactor).not.toHaveBeenCalled();
   });
 
   it("returns only the bounded challenge decision", async () => {
-    mocks.validCredentialsRequireMfa.mockResolvedValueOnce(true);
+    mocks.validCredentialsSecondFactor.mockResolvedValueOnce({
+      factor: "totp",
+    });
     const response = await POST(
       request('{"email":" Admin@Example.com ","password":"secret"}'),
     );
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ mfaRequired: true });
-    expect(mocks.validCredentialsRequireMfa).toHaveBeenCalledWith({
+    await expect(response.json()).resolves.toEqual({
+      mfaRequired: true,
+      factor: "totp",
+    });
+    expect(mocks.validCredentialsSecondFactor).toHaveBeenCalledWith({
       email: "Admin@Example.com",
       password: "secret",
       ip: "unknown",
     });
     expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
+  });
+
+  it("returns a bounded passkey ceremony only after the password probe", async () => {
+    mocks.validCredentialsSecondFactor.mockResolvedValueOnce({
+      factor: "passkey",
+      challengeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      options: { challenge: "challenge", rpId: "preview.example.test" },
+    });
+    const response = await POST(
+      request('{"email":"admin@example.com","password":"secret"}'),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      mfaRequired: true,
+      factor: "passkey",
+      challengeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      options: { challenge: "challenge", rpId: "preview.example.test" },
+    });
+  });
+
+  it("fails closed when required enrollment or verifier config is missing", async () => {
+    mocks.validCredentialsSecondFactor.mockResolvedValueOnce({
+      factor: "enrollment_required",
+    });
+    const enrollment = await POST(
+      request('{"email":"admin@example.com","password":"secret"}'),
+    );
+    expect(enrollment.status).toBe(409);
+
+    mocks.validCredentialsSecondFactor.mockResolvedValueOnce({
+      factor: "unavailable",
+    });
+    const unavailable = await POST(
+      request('{"email":"admin@example.com","password":"secret"}'),
+    );
+    expect(unavailable.status).toBe(503);
   });
 });

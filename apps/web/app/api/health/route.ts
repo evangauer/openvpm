@@ -42,6 +42,7 @@ import { hostedSmsCredentialIssueCount } from "@/lib/messaging/hosted-sms-readin
 import { checkBackupRunFreshness } from "@/lib/backup/run-evidence";
 import { mfaEncryptionConfigured } from "@/lib/mfa";
 import { privilegedActionSigningConfigured } from "@/lib/privileged-action-proof";
+import { checkHostedWebAuthnReadiness } from "@/lib/webauthn-readiness";
 
 export const dynamic = "force-dynamic";
 
@@ -560,6 +561,14 @@ export async function GET() {
         ? "Hosted MFA encryption is configured"
         : "Hosted MFA encryption is missing or invalid",
     };
+    try {
+      checks.hostedWebAuthn = await checkHostedWebAuthnReadiness();
+    } catch {
+      checks.hostedWebAuthn = {
+        ok: false,
+        detail: "Hosted WebAuthn readiness check failed",
+      };
+    }
     checks.hostedPrivilegedActionSigning = {
       ok: privilegedActionSigningConfigured(),
       detail: privilegedActionSigningConfigured()

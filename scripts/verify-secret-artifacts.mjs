@@ -197,6 +197,39 @@ function isPinnedTwilioRouteFinding(finding, root, sourceRoot) {
   );
 }
 
+function isPinnedPeculiarX509PemTagFinding(finding, root, sourceRoot) {
+  if (finding.RuleID !== "generic-api-key") return false;
+  const relativeFile = path.relative(root, path.resolve(finding.File));
+  if (!/^server\/chunks\/[^/]+\.js$/.test(relativeFile)) return false;
+  if (!/^[A-Za-z_$][\w$]*\.PrivateKeyTag=$/.test(finding.Secret)) {
+    return false;
+  }
+  const compiled = readFileSync(finding.File, "utf8");
+  const index = compiled.indexOf(finding.Secret);
+  if (index < 0) return false;
+  const context = compiled.slice(Math.max(0, index - 400), index + 400);
+  if (
+    !context.includes(`${finding.Secret}"PRIVATE KEY"`) ||
+    !context.includes('CertificateRequestTag="CERTIFICATE REQUEST"') ||
+    !context.includes('PublicKeyTag="PUBLIC KEY"')
+  ) {
+    return false;
+  }
+  const source = path.join(
+    sourceRoot,
+    "node_modules/.pnpm/@peculiar+x509@1.14.3/node_modules/@peculiar/x509/build/x509.cjs.js",
+  );
+  if (!existsSync(source)) return false;
+  const packageSource = readFileSync(source, "utf8");
+  return (
+    packageSource.includes(
+      'PemConverter.CertificateRequestTag = "CERTIFICATE REQUEST";',
+    ) &&
+    packageSource.includes('PemConverter.PublicKeyTag = "PUBLIC KEY";') &&
+    packageSource.includes('PemConverter.PrivateKeyTag = "PRIVATE KEY";')
+  );
+}
+
 export function classifyArtifactFinding({
   finding,
   manifests,
@@ -211,6 +244,9 @@ export function classifyArtifactFinding({
   }
   if (isPinnedTwilioRouteFinding(finding, artifactRoot, sourceRoot)) {
     return "pinned-twilio-route-constant";
+  }
+  if (isPinnedPeculiarX509PemTagFinding(finding, artifactRoot, sourceRoot)) {
+    return "pinned-peculiar-x509-pem-tag";
   }
   return null;
 }

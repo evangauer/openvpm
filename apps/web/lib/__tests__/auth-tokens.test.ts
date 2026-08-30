@@ -75,7 +75,7 @@ function issueDb() {
   };
 }
 
-function cleanupDb(rowCounts: number[]) {
+function cleanupDb(rowCounts: number[], webauthnChallengesDeleted = 5) {
   const returningMocks: Array<ReturnType<typeof vi.fn>> = [];
   const whereMocks: Array<ReturnType<typeof vi.fn>> = [];
   const deleteTable = vi.fn((_table: unknown) => {
@@ -90,7 +90,10 @@ function cleanupDb(rowCounts: number[]) {
   });
 
   return {
-    db: { delete: deleteTable },
+    db: {
+      delete: deleteTable,
+      execute: vi.fn(async () => [{ deleted: webauthnChallengesDeleted }]),
+    },
     deleteTable,
     whereMocks,
     returningMocks,
@@ -204,7 +207,8 @@ describe("cleanupExpiredAuthArtifacts", () => {
       sessionsDeleted: 3,
       verificationTokensDeleted: 1,
       portalSessionsDeleted: 4,
-      deleted: 10,
+      webauthnChallengesDeleted: 5,
+      deleted: 15,
       cutoff,
     });
 
@@ -213,5 +217,16 @@ describe("cleanupExpiredAuthArtifacts", () => {
     for (const where of fake.whereMocks) {
       expect(includesValue(where.mock.calls[0]?.[0], cutoff)).toBe(true);
     }
+  });
+
+  it("fails closed on an invalid privileged challenge-purge count", async () => {
+    const fake = cleanupDb([0, 0, 0, 0], -1);
+
+    await expect(
+      cleanupExpiredAuthArtifacts({
+        now: new Date("2026-06-28T04:45:00Z"),
+        db: fake.db as never,
+      })
+    ).rejects.toThrow("invalid count");
   });
 });

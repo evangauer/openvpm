@@ -70,6 +70,11 @@ const mocks = vi.hoisted(() => ({
     ok: true,
     detail: "2/2 primary backups verified in the latest run",
   })),
+  checkHostedWebAuthnReadiness: vi.fn(async () => ({
+    ok: true,
+    detail:
+      "Hosted administrator/operator passkey enrollment and redundancy are complete",
+  })),
 }));
 
 vi.mock("@openpims/db/client", () => ({
@@ -128,6 +133,10 @@ vi.mock("@/lib/backup/run-evidence", () => ({
   checkBackupRunFreshness: mocks.checkBackupRunFreshness,
 }));
 
+vi.mock("@/lib/webauthn-readiness", () => ({
+  checkHostedWebAuthnReadiness: mocks.checkHostedWebAuthnReadiness,
+}));
+
 const { GET } = await import("./route");
 
 function stubHostedRequiredEnvs() {
@@ -181,6 +190,10 @@ function stubHostedRequiredEnvs() {
   vi.stubEnv("OPS_ALERT_WEBHOOK_URL", "https://ops.example/hook");
   vi.stubEnv("CRON_HEARTBEAT_URL", "https://heartbeat.example/{job}");
   vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+  vi.stubEnv("WEBAUTHN_RP_ID", "app.example");
+  vi.stubEnv("WEBAUTHN_RP_NAME", "OpenVPM");
+  vi.stubEnv("WEBAUTHN_ORIGINS", "https://app.example");
+  vi.stubEnv("WEBAUTHN_ADMIN_POLICY", "required");
   mocks.cronHeartbeatConfigured.mockReturnValue({
     ok: true,
     detail: "Cron heartbeat URL configured",
@@ -223,6 +236,11 @@ afterEach(() => {
   mocks.checkReplicaStorageHealth.mockResolvedValue({
     ok: true,
     detail: "Replica object storage reachable",
+  });
+  mocks.checkHostedWebAuthnReadiness.mockResolvedValue({
+    ok: true,
+    detail:
+      "Hosted administrator/operator passkey enrollment and redundancy are complete",
   });
   mocks.requiredMessagingEnvNames.mockReturnValue([
     "TELNYX_API_KEY",
@@ -465,6 +483,26 @@ describe("health route", () => {
         "Hosted privileged-action signing is missing, invalid, or reuses an MFA/session key",
     });
     expect(JSON.stringify(json)).not.toContain(shared);
+  });
+
+  it("blocks hosted readiness while required passkey enrollment is incomplete", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    mocks.checkHostedWebAuthnReadiness.mockResolvedValue({
+      ok: false,
+      detail:
+        "Required administrator/operator passkey enrollment or redundancy is incomplete",
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedWebAuthn).toEqual({
+      ok: false,
+      detail:
+        "Required administrator/operator passkey enrollment or redundancy is incomplete",
+    });
   });
 
   it("makes hosted SMS release-blocking as soon as provisioning is enabled", async () => {

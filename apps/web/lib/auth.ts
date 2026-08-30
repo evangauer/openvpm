@@ -19,6 +19,16 @@ import {
   mfaEncryptionConfigured,
 } from "@/lib/mfa";
 import {
+  activeWebAuthnCredentials,
+  authenticationResponseSchema,
+  beginWebAuthnAuthentication,
+  finishWebAuthnAuthentication,
+} from "@/lib/webauthn-ceremony";
+import {
+  passkeyRequiredForIdentity,
+  webauthnConfiguration,
+} from "@/lib/webauthn-config";
+import {
   DEMO_ROLE_EMAILS,
   demoModeEnabled,
   isDemoRole,
@@ -43,14 +53,24 @@ const loginCredentialsInput = z.object({
     .transform((value) => value.toLowerCase()),
   password: z.string().min(1).max(AUTH_PASSWORD_MAX_LENGTH),
   mfaCode: z.string().trim().max(64).optional(),
+  passkeyChallengeId: z.string().uuid().optional(),
+  passkeyResponse: z.string().max(131_072).optional(),
 });
 
 export function parseLoginCredentials(
   credentials:
     | (Record<"email" | "password", string> &
-        Partial<Record<"mfaCode", string>>)
+        Partial<
+          Record<"mfaCode" | "passkeyChallengeId" | "passkeyResponse", string>
+        >)
     | undefined,
-): { email: string; password: string; mfaCode?: string } | null {
+): {
+  email: string;
+  password: string;
+  mfaCode?: string;
+  passkeyChallengeId?: string;
+  passkeyResponse?: string;
+} | null {
   const parsed = loginCredentialsInput.safeParse(credentials);
   return parsed.success ? parsed.data : null;
 }
@@ -60,16 +80,29 @@ export function parseLoginCredentials(
  * credentials failure. It reveals an MFA challenge only when the submitted
  * password is already valid, preserving account-enumeration resistance.
  */
-export async function validCredentialsRequireMfa(input: {
+export type LoginSecondFactorChallenge =
+  | { factor: "none" }
+  | { factor: "totp" }
+  | { factor: "enrollment_required" }
+  | { factor: "unavailable" }
+  | {
+      factor: "passkey";
+      challengeId: string;
+      options: Awaited<
+        ReturnType<typeof beginWebAuthnAuthentication>
+      >["options"];
+    };
+
+export async function validCredentialsSecondFactor(input: {
   email: string;
   password: string;
   ip: string;
-}): Promise<boolean> {
+}): Promise<LoginSecondFactorChallenge> {
   const parsed = parseLoginCredentials({
     email: input.email,
     password: input.password,
   });
-  if (!parsed) return false;
+  if (!parsed) return { factor: "none" };
 
   try {
     const { success } = await rateLimit({
@@ -77,15 +110,21 @@ export async function validCredentialsRequireMfa(input: {
       limit: LOGIN_EMAIL_LIMIT,
       windowMs: LOGIN_WINDOW_MS,
     });
-    if (!success) return false;
+    if (!success) return { factor: "none" };
   } catch {
-    return false;
+    return { factor: "none" };
   }
 
   const [user] = await withSystem(db, (tx) =>
     tx
       .select({
         passwordHash: users.passwordHash,
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        practiceId: users.practiceId,
+        role: users.role,
+        sessionVersion: users.sessionVersion,
         mfaEnabledAt: users.mfaEnabledAt,
         mfaSecretEncrypted: users.mfaSecretEncrypted,
       })
@@ -95,15 +134,58 @@ export async function validCredentialsRequireMfa(input: {
   );
   if (!user) {
     await compare(parsed.password, DUMMY_PASSWORD_HASH);
-    return false;
+    return { factor: "none" };
   }
   const valid = await compare(parsed.password, user.passwordHash);
-  return Boolean(
-    valid &&
-    user.mfaEnabledAt &&
-    user.mfaSecretEncrypted &&
-    mfaEncryptionConfigured(),
-  );
+  if (!valid) return { factor: "none" };
+  try {
+    return await withSystem(db, async (tx) => {
+      const credentials = await activeWebAuthnCredentials(tx, {
+        practiceId: user.practiceId,
+        userId: user.id,
+      });
+      if (credentials.length > 0) {
+        if (!webauthnConfiguration()) return { factor: "unavailable" };
+        const challenge = await beginWebAuthnAuthentication({
+          credentials,
+          database: tx,
+          identity: {
+            email: user.email,
+            name: user.name,
+            practiceId: user.practiceId,
+            sessionVersion: user.sessionVersion,
+            userId: user.id,
+          },
+          purpose: "login",
+        });
+        return {
+          factor: "passkey",
+          challengeId: challenge.challengeId,
+          options: challenge.options,
+        };
+      }
+      if (passkeyRequiredForIdentity(user)) {
+        return { factor: "enrollment_required" };
+      }
+      return user.mfaEnabledAt &&
+        user.mfaSecretEncrypted &&
+        mfaEncryptionConfigured()
+        ? { factor: "totp" }
+        : { factor: "none" };
+    });
+  } catch {
+    return { factor: "unavailable" };
+  }
+}
+
+/** Backward-compatible bounded probe used by older callers and tests. */
+export async function validCredentialsRequireMfa(input: {
+  email: string;
+  password: string;
+  ip: string;
+}): Promise<boolean> {
+  const challenge = await validCredentialsSecondFactor(input);
+  return challenge.factor === "totp" || challenge.factor === "passkey";
 }
 
 export const clientIpFromAuthRequest = clientIpFromRequest;
@@ -161,6 +243,8 @@ export const authOptions: NextAuthOptions = {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
         mfaCode: { label: "Authentication code", type: "text" },
+        passkeyChallengeId: { label: "Passkey challenge", type: "text" },
+        passkeyResponse: { label: "Passkey response", type: "text" },
       },
       async authorize(credentials, req) {
         // The hosted demo uses its own signed email gate. Never leave the
@@ -171,7 +255,13 @@ export const authOptions: NextAuthOptions = {
         if (!parsedCredentials) {
           return null;
         }
-        const { email, password, mfaCode } = parsedCredentials;
+        const {
+          email,
+          password,
+          mfaCode,
+          passkeyChallengeId,
+          passkeyResponse,
+        } = parsedCredentials;
         const ip = clientIpFromAuthRequest(req);
         const { emailKey, ipKey } = loginRateLimitKeys(email, ip);
 
@@ -216,8 +306,16 @@ export const authOptions: NextAuthOptions = {
         const isValid = await compare(password, user.passwordHash);
         if (!isValid) return null;
 
-        const mfaResult = await verifyLoginMfa(user, mfaCode);
+        const mfaResult = await verifyLoginMfa(user, {
+          mfaCode,
+          passkeyChallengeId,
+          passkeyResponse,
+        });
         if (mfaResult === "required") throw new Error("MFA_REQUIRED");
+        if (mfaResult === "passkey_required")
+          throw new Error("PASSKEY_REQUIRED");
+        if (mfaResult === "passkey_enrollment_required")
+          throw new Error("PASSKEY_ENROLLMENT_REQUIRED");
         if (mfaResult !== "accepted") throw new Error("MFA_INVALID");
 
         await clearRateLimit(emailKey).catch(() => undefined);
@@ -318,10 +416,66 @@ export const authOptions: NextAuthOptions = {
 
 async function verifyLoginMfa(
   user: typeof users.$inferSelect,
-  suppliedCode: string | undefined,
-): Promise<"accepted" | "required" | "invalid"> {
+  supplied: {
+    mfaCode?: string;
+    passkeyChallengeId?: string;
+    passkeyResponse?: string;
+  },
+): Promise<
+  | "accepted"
+  | "required"
+  | "passkey_required"
+  | "passkey_enrollment_required"
+  | "invalid"
+> {
+  try {
+    const passkeyResult = await withSystem(db, async (tx) => {
+      const credentials = await activeWebAuthnCredentials(tx, {
+        practiceId: user.practiceId,
+        userId: user.id,
+      });
+      if (credentials.length === 0) return "none" as const;
+      if (!webauthnConfiguration()) return "invalid" as const;
+      if (!supplied.passkeyChallengeId || !supplied.passkeyResponse) {
+        return "required" as const;
+      }
+      let rawResponse: unknown;
+      try {
+        rawResponse = JSON.parse(supplied.passkeyResponse);
+      } catch {
+        return "invalid" as const;
+      }
+      const response = authenticationResponseSchema.safeParse(rawResponse);
+      if (!response.success) return "invalid" as const;
+      // Let verification/storage failures escape the transaction callback.
+      // withSystem will then roll back any counter update or challenge consume
+      // before the outer catch converts the result to a generic login failure.
+      await finishWebAuthnAuthentication({
+        challengeId: supplied.passkeyChallengeId,
+        database: tx,
+        identity: {
+          email: user.email,
+          name: user.name,
+          practiceId: user.practiceId,
+          sessionVersion: user.sessionVersion,
+          userId: user.id,
+        },
+        purpose: "login",
+        response: response.data,
+      });
+      return "accepted" as const;
+    });
+    if (passkeyResult === "accepted") return "accepted";
+    if (passkeyResult === "required") return "passkey_required";
+    if (passkeyResult === "invalid") return "invalid";
+  } catch {
+    return "invalid";
+  }
+  if (passkeyRequiredForIdentity(user)) {
+    return "passkey_enrollment_required";
+  }
   if (!user.mfaEnabledAt) return "accepted";
-  const code = suppliedCode?.trim();
+  const code = supplied.mfaCode?.trim();
   if (!code) return "required";
   if (!user.mfaSecretEncrypted || !mfaEncryptionConfigured()) {
     console.error("[auth] enabled MFA is not decryptable");
