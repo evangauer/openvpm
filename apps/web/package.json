@@ -14,7 +14,8 @@
     "environment:validate": "tsx scripts/validate-deployment-environment.ts",
     "migration:preflight-archives": "tsx scripts/preflight-migration-archives.ts",
     "backup:verify-evidence": "node scripts/verify-backup-evidence.mjs",
-    "backup:recover-practice": "tsx scripts/recover-practice.ts"
+    "backup:recover-practice": "tsx scripts/recover-practice.ts",
+    "billing:recover-cadence": "tsx scripts/recover-subscription-cadence.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.86",
