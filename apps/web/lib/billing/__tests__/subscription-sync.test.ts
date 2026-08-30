@@ -5,6 +5,16 @@ const mocks = vi.hoisted(() => ({
   retrieve: vi.fn(),
   update: vi.fn(),
   create: vi.fn(),
+  syncOwnedSchedule: vi.fn(),
+  markScheduleConflict: vi.fn(),
+}));
+
+vi.mock("../subscription-cadence-provider", () => ({
+  syncOwnedAnnualScheduleLocationQuantity: mocks.syncOwnedSchedule,
+}));
+
+vi.mock("../subscription-cadence-operations", () => ({
+  markCadenceScheduleQuantityConflict: mocks.markScheduleConflict,
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -22,6 +32,8 @@ import {
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
+  mocks.syncOwnedSchedule.mockResolvedValue("updated");
+  mocks.markScheduleConflict.mockResolvedValue(true);
 });
 
 describe("countBillableStaffRows", () => {
@@ -196,6 +208,67 @@ describe("billing sync practice scoping", () => {
     expect(writeWhere).toHaveBeenCalledOnce();
   });
 
+  it("routes attached schedules through the schedule API, never item updates", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_monthly");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_annual");
+    const providerSubscription = {
+      id: "sub_scheduled",
+      schedule: "sub_sched_owned",
+      items: {
+        data: [{ id: "si_monthly", price: { id: "price_monthly" } }],
+      },
+    };
+    mocks.retrieve.mockResolvedValue(providerSubscription);
+    const rows = [
+      {
+        stripeSubscriptionId: "sub_scheduled",
+        recoveryHold: false,
+        leaseToken: "lease-test",
+        leaseExpiresAt,
+      },
+      { c: 2 },
+      { c: 1 },
+    ];
+    const select = vi.fn(() => {
+      const result = [rows.shift()!];
+      const builder: Record<string, unknown> = {};
+      builder.from = () => builder;
+      builder.where = () => builder;
+      builder.limit = () => builder;
+      builder.for = async () => result;
+      builder.then = (
+        resolve: (value: unknown[]) => unknown,
+        reject?: (reason: unknown) => unknown,
+      ) => Promise.resolve(result).then(resolve, reject);
+      return builder;
+    });
+    const dbUpdate = vi.fn(() => ({
+      set: () => ({ where: vi.fn(async () => []) }),
+    }));
+
+    await expect(
+      syncPracticeSubscriptionQuantities({
+        db: { select, update: dbUpdate } as never,
+        practiceId: "practice-scheduled",
+        ...durableOptions,
+        subscriptionId: "sub_scheduled",
+      }),
+    ).resolves.toMatchObject({ status: "ok", billingCadence: "month" });
+    expect(mocks.syncOwnedSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subscription: providerSubscription,
+        practiceId: "practice-scheduled",
+        monthlyPriceId: "price_monthly",
+        annualPriceId: "price_annual",
+        locationQuantity: 2,
+        idempotencyKey: expect.any(String),
+      }),
+    );
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+
   it("resolves Stripe price IDs through trim-aware billing helpers", () => {
     const syncState = source.slice(
       source.indexOf(
@@ -204,7 +277,8 @@ describe("billing sync practice scoping", () => {
       source.length,
     );
 
-    expect(syncState).toContain("cloudCheckoutPriceIds()");
+    expect(syncState).toContain('cloudCheckoutPriceIds("month")');
+    expect(syncState).toContain('cloudCheckoutPriceIds("year")');
     expect(syncState).toContain(
       "stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_LEGACY_ENV)",
     );

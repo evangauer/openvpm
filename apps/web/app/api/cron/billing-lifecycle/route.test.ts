@@ -42,6 +42,13 @@ const mocks = vi.hoisted(() => {
       completed: 0,
       deferred: 0,
     })),
+    runDurableCadenceOperationRecoveryBatch: vi.fn(async () => ({
+      candidates: 0,
+      scheduled: 0,
+      manualReview: 0,
+      deferred: 0,
+      failed: 0,
+    })),
     sendTrialEndingEmail: vi.fn(async () => ({
       success: true,
       id: "email_123",
@@ -102,6 +109,11 @@ vi.mock("@/lib/billing/stripe-subscription-quantity-sync", () => ({
     mocks.runDurableSubscriptionQuantitySyncBatch,
   runDurablePracticeSubscriptionQuantitySyncBatch:
     mocks.runDurablePracticeSubscriptionQuantitySyncBatch,
+}));
+
+vi.mock("@/lib/billing/subscription-cadence-operations", () => ({
+  runDurableCadenceOperationRecoveryBatch:
+    mocks.runDurableCadenceOperationRecoveryBatch,
 }));
 
 const { GET } = await import("./route");
@@ -219,7 +231,8 @@ describe("billing lifecycle cron", () => {
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith({
       job: "billing-lifecycle",
       status: "ok",
-      detail: "1 sent, 0 deduped, 0 suppressed, 0 failed, 0 skipped",
+      detail:
+        "1 sent, 0 deduped, 0 suppressed, 0 failed, 0 skipped; cadence 0 scheduled, 0 manual, 0 deferred, 0 failed",
       metrics: {
         candidates: 1,
         sent: 1,
@@ -227,8 +240,47 @@ describe("billing lifecycle cron", () => {
         suppressed: 0,
         failed: 0,
         skipped: 0,
+        cadenceCandidates: 0,
+        cadenceScheduled: 0,
+        cadenceManualReview: 0,
+        cadenceDeferred: 0,
+        cadenceFailed: 0,
       },
     });
+  });
+
+  it("degrades the heartbeat when cadence recovery needs intervention", async () => {
+    mocks.selectResults.push([]);
+    mocks.runDurableCadenceOperationRecoveryBatch.mockResolvedValueOnce({
+      candidates: 2,
+      scheduled: 0,
+      manualReview: 1,
+      deferred: 1,
+      failed: 0,
+    });
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/billing-lifecycle"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        job: "billing-lifecycle",
+        status: "degraded",
+        detail: expect.stringContaining(
+          "cadence 0 scheduled, 1 manual, 1 deferred, 0 failed",
+        ),
+        metrics: expect.objectContaining({
+          cadenceCandidates: 2,
+          cadenceManualReview: 1,
+          cadenceDeferred: 1,
+        }),
+      }),
+    );
+    expect(mocks.runDurableCadenceOperationRecoveryBatch).toHaveBeenCalledWith(
+      mocks.db,
+    );
   });
 
   it("dedupes trial-ending emails by the practice-local trial end date", async () => {

@@ -30,6 +30,7 @@ import {
 } from "@/lib/stripe-webhook-limits";
 import { projectStripeConversionMilestonesForEvent } from "@/lib/conversion-milestones";
 import { reconcileSubscriptionCheckoutWebhook } from "@/lib/billing/subscription-checkout-attempts";
+import { reconcileCadenceOperationFromSignedSubscriptionSnapshot } from "@/lib/billing/subscription-cadence-operations";
 
 class UnmanagedStripeSubscriptionError extends Error {
   constructor(subscriptionId: string) {
@@ -373,6 +374,16 @@ export async function POST(req: NextRequest) {
                 subscriptionGeneration: practices.subscriptionGeneration,
               });
             if (canceledPractice) {
+              await reconcileCadenceOperationFromSignedSubscriptionSnapshot(
+                tx,
+                {
+                  practiceId: canceledPractice.id,
+                  subscriptionId: sub.id,
+                  billingStatus: "canceled",
+                  providerScheduleId: subscriptionScheduleId(sub),
+                  itemPriceIds: subscriptionItemPriceIds(sub),
+                },
+              );
               const practice = await practiceById(tx, canceledPractice.id);
               const to = billingContactEmail(practice?.email);
               if (practice && to) {
@@ -810,7 +821,26 @@ async function applySubscription(
     );
     return null;
   }
+  await reconcileCadenceOperationFromSignedSubscriptionSnapshot(tx, {
+    practiceId: practice.id,
+    subscriptionId: sub.id,
+    billingStatus,
+    providerScheduleId: subscriptionScheduleId(sub),
+    itemPriceIds: subscriptionItemPriceIds(sub),
+  });
   return practice;
+}
+
+function subscriptionScheduleId(sub: Stripe.Subscription): string | null {
+  return typeof sub.schedule === "string"
+    ? sub.schedule
+    : (sub.schedule?.id ?? null);
+}
+
+function subscriptionItemPriceIds(
+  sub: Stripe.Subscription,
+): Array<string | null> {
+  return (sub.items?.data ?? []).map((item) => item.price?.id ?? null);
 }
 
 function conversionEvidenceForEvent(

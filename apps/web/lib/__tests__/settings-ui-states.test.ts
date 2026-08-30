@@ -95,6 +95,23 @@ describe("settings UI states", () => {
     expect(source).not.toContain("mailto:evan@openvpm.com");
   });
 
+  it("makes monthly-to-annual changes explicit, confirmed, and server-authoritative", () => {
+    expect(source).toContain(
+      'import { ActionConfirmationDialog } from "@/components/common/action-confirmation-dialog"',
+    );
+    expect(source).toContain(
+      "trpc.subscription.scheduleAnnualAtRenewal.useMutation",
+    );
+    expect(source).toContain("function AnnualCadenceControl");
+    expect(source).toContain("Switch to annual billing at renewal?");
+    expect(source).toContain("there is no immediate charge or proration");
+    expect(source).toContain("Annual billing change paused");
+    expect(source).toContain(
+      "A signed Stripe subscription snapshot confirmed the annual plan is active.",
+    );
+    expect(source).toContain("void utils.subscription.get.invalidate()");
+  });
+
   it("uses shared empty states for first-run settings panels", () => {
     expect(source).toContain('title="Practice settings unavailable"');
     expect(source).toContain('title="No active locations configured"');
