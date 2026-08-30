@@ -1,6 +1,6 @@
 {
-  "id": "dfaff287-e6b5-4192-9372-56f65e50206d",
-  "prevId": "4228e4b4-7650-46d1-8f8d-88db7200cbcf",
+  "id": "4d0c2d62-1d72-4c42-a6b9-2a51219e0108",
+  "prevId": "ef73c554-4cd8-430a-9f10-2c41be1dcf0a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -260,6 +260,46 @@
           "notNull": true,
           "default": "'none'"
         },
+        "subscription_generation": {
+          "name": "subscription_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "stripe_subscription_sync_revision": {
+          "name": "stripe_subscription_sync_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "stripe_quantity_sync_lease_token": {
+          "name": "stripe_quantity_sync_lease_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stripe_quantity_sync_lease_expires_at": {
+          "name": "stripe_quantity_sync_lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stripe_quantity_sync_requested_revision": {
+          "name": "stripe_quantity_sync_requested_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "stripe_quantity_sync_completed_revision": {
+          "name": "stripe_quantity_sync_completed_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "trial_ends_at": {
           "name": "trial_ends_at",
           "type": "timestamp with time zone",
@@ -437,6 +477,22 @@
         "practices_recovery_hold_evidence_check": {
           "name": "practices_recovery_hold_evidence_check",
           "value": "not \"practices\".\"recovery_hold\" or (\"practices\".\"recovery_hold_set_at\" is not null and \"practices\".\"recovery_hold_reason\" is not null and \"practices\".\"recovery_hold_reason\" ~ '[^[:space:]]')"
+        },
+        "practices_subscription_generation_check": {
+          "name": "practices_subscription_generation_check",
+          "value": "\"practices\".\"subscription_generation\" >= 0"
+        },
+        "practices_stripe_subscription_sync_revision_check": {
+          "name": "practices_stripe_subscription_sync_revision_check",
+          "value": "\"practices\".\"stripe_subscription_sync_revision\" >= 0"
+        },
+        "practices_stripe_quantity_sync_lease_shape_check": {
+          "name": "practices_stripe_quantity_sync_lease_shape_check",
+          "value": "(\"practices\".\"stripe_quantity_sync_lease_token\" is null) = (\"practices\".\"stripe_quantity_sync_lease_expires_at\" is null)"
+        },
+        "practices_stripe_quantity_sync_revision_check": {
+          "name": "practices_stripe_quantity_sync_revision_check",
+          "value": "\"practices\".\"stripe_quantity_sync_requested_revision\" >= 0 and \"practices\".\"stripe_quantity_sync_completed_revision\" >= 0 and \"practices\".\"stripe_quantity_sync_completed_revision\" <= \"practices\".\"stripe_quantity_sync_requested_revision\""
         }
       },
       "isRLSEnabled": false
@@ -490,6 +546,42 @@
           "primaryKey": false,
           "notNull": true,
           "default": 1
+        },
+        "mfa_secret_encrypted": {
+          "name": "mfa_secret_encrypted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mfa_enabled_at": {
+          "name": "mfa_enabled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mfa_last_used_totp_counter": {
+          "name": "mfa_last_used_totp_counter",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mfa_recovery_code_hashes": {
+          "name": "mfa_recovery_code_hashes",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mfa_pending_secret_encrypted": {
+          "name": "mfa_pending_secret_encrypted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mfa_pending_expires_at": {
+          "name": "mfa_pending_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "name": {
           "name": "name",
@@ -707,7 +799,20 @@
         }
       },
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "users_mfa_active_shape_check": {
+          "name": "users_mfa_active_shape_check",
+          "value": "(\"users\".\"mfa_enabled_at\" is null\n          and \"users\".\"mfa_secret_encrypted\" is null\n          and \"users\".\"mfa_last_used_totp_counter\" is null\n          and \"users\".\"mfa_recovery_code_hashes\" is null)\n        or\n        (\"users\".\"mfa_enabled_at\" is not null\n          and length(\"users\".\"mfa_secret_encrypted\") between 40 and 1024\n          and jsonb_typeof(\"users\".\"mfa_recovery_code_hashes\") = 'array'\n          and jsonb_array_length(\"users\".\"mfa_recovery_code_hashes\") <= 20)"
+        },
+        "users_mfa_pending_shape_check": {
+          "name": "users_mfa_pending_shape_check",
+          "value": "(\"users\".\"mfa_pending_secret_encrypted\" is null and \"users\".\"mfa_pending_expires_at\" is null)\n        or\n        (\"users\".\"mfa_enabled_at\" is null\n          and length(\"users\".\"mfa_pending_secret_encrypted\") between 40 and 1024\n          and \"users\".\"mfa_pending_expires_at\" is not null)"
+        },
+        "users_mfa_totp_counter_check": {
+          "name": "users_mfa_totp_counter_check",
+          "value": "\"users\".\"mfa_last_used_totp_counter\" is null or \"users\".\"mfa_last_used_totp_counter\" >= 0"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.clients": {
@@ -1281,6 +1386,1078 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.privileged_action_proofs": {
+      "name": "privileged_action_proofs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "practice_id": {
+          "name": "practice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_version": {
+          "name": "session_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "varchar(96)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "nonce_hash": {
+          "name": "nonce_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "factor_type": {
+          "name": "factor_type",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "privileged_action_proofs_nonce_hash_uq": {
+          "name": "privileged_action_proofs_nonce_hash_uq",
+          "columns": [
+            {
+              "expression": "nonce_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "privileged_action_proofs_active_idx": {
+          "name": "privileged_action_proofs_active_idx",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "action",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "consumed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "privileged_action_proofs_practice_id_practices_id_fk": {
+          "name": "privileged_action_proofs_practice_id_practices_id_fk",
+          "tableFrom": "privileged_action_proofs",
+          "tableTo": "practices",
+          "columnsFrom": [
+            "practice_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "privileged_action_proofs_user_tenant_fk": {
+          "name": "privileged_action_proofs_user_tenant_fk",
+          "tableFrom": "privileged_action_proofs",
+          "tableTo": "users",
+          "columnsFrom": [
+            "practice_id",
+            "user_id"
+          ],
+          "columnsTo": [
+            "practice_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "privileged_action_proofs_session_version_check": {
+          "name": "privileged_action_proofs_session_version_check",
+          "value": "\"privileged_action_proofs\".\"session_version\" > 0"
+        },
+        "privileged_action_proofs_action_shape_check": {
+          "name": "privileged_action_proofs_action_shape_check",
+          "value": "\"privileged_action_proofs\".\"action\" ~ '^(admin|billing|subscription|settings|data|apiKeys|webhooks|passkeys)[.][A-Za-z][A-Za-z0-9]+$'"
+        },
+        "privileged_action_proofs_nonce_hash_check": {
+          "name": "privileged_action_proofs_nonce_hash_check",
+          "value": "\"privileged_action_proofs\".\"nonce_hash\" ~ '^[0-9a-f]{64}$'"
+        },
+        "privileged_action_proofs_factor_type_check": {
+          "name": "privileged_action_proofs_factor_type_check",
+          "value": "\"privileged_action_proofs\".\"factor_type\" in ('passkey', 'totp', 'recovery')"
+        },
+        "privileged_action_proofs_ttl_check": {
+          "name": "privileged_action_proofs_ttl_check",
+          "value": "\"privileged_action_proofs\".\"expires_at\" = \"privileged_action_proofs\".\"issued_at\" + interval '5 minutes'"
+        },
+        "privileged_action_proofs_consumption_time_check": {
+          "name": "privileged_action_proofs_consumption_time_check",
+          "value": "\"privileged_action_proofs\".\"consumed_at\" is null or (\"privileged_action_proofs\".\"consumed_at\" >= \"privileged_action_proofs\".\"issued_at\" and \"privileged_action_proofs\".\"consumed_at\" <= \"privileged_action_proofs\".\"expires_at\")"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.webauthn_challenges": {
+      "name": "webauthn_challenges",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "practice_id": {
+          "name": "practice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_version": {
+          "name": "session_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "purpose": {
+          "name": "purpose",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "varchar(96)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "recovery_case_id": {
+          "name": "recovery_case_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "challenge_hash": {
+          "name": "challenge_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "webauthn_challenges_hash_uq": {
+          "name": "webauthn_challenges_hash_uq",
+          "columns": [
+            {
+              "expression": "challenge_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "webauthn_challenges_active_user_idx": {
+          "name": "webauthn_challenges_active_user_idx",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "purpose",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "consumed_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "webauthn_challenges_practice_id_practices_id_fk": {
+          "name": "webauthn_challenges_practice_id_practices_id_fk",
+          "tableFrom": "webauthn_challenges",
+          "tableTo": "practices",
+          "columnsFrom": [
+            "practice_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "webauthn_challenges_user_tenant_fk": {
+          "name": "webauthn_challenges_user_tenant_fk",
+          "tableFrom": "webauthn_challenges",
+          "tableTo": "users",
+          "columnsFrom": [
+            "practice_id",
+            "user_id"
+          ],
+          "columnsTo": [
+            "practice_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "webauthn_challenges_recovery_case_tenant_fk": {
+          "name": "webauthn_challenges_recovery_case_tenant_fk",
+          "tableFrom": "webauthn_challenges",
+          "tableTo": "auth_recovery_cases",
+          "columnsFrom": [
+            "practice_id",
+            "user_id",
+            "recovery_case_id"
+          ],
+          "columnsTo": [
+            "practice_id",
+            "user_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "webauthn_challenges_session_version_check": {
+          "name": "webauthn_challenges_session_version_check",
+          "value": "\"webauthn_challenges\".\"session_version\" > 0"
+        },
+        "webauthn_challenges_purpose_check": {
+          "name": "webauthn_challenges_purpose_check",
+          "value": "\"webauthn_challenges\".\"purpose\" in ('registration', 'login', 'privileged_action', 'recovery_registration')"
+        },
+        "webauthn_challenges_action_shape_check": {
+          "name": "webauthn_challenges_action_shape_check",
+          "value": "(\"webauthn_challenges\".\"purpose\" = 'privileged_action'\n          and \"webauthn_challenges\".\"action\" ~ '^(admin|billing|subscription|settings|data|apiKeys|webhooks|passkeys)[.][A-Za-z][A-Za-z0-9]+$')\n        or (\"webauthn_challenges\".\"purpose\" <> 'privileged_action' and \"webauthn_challenges\".\"action\" is null)"
+        },
+        "webauthn_challenges_recovery_case_shape_check": {
+          "name": "webauthn_challenges_recovery_case_shape_check",
+          "value": "(\"webauthn_challenges\".\"purpose\" = 'recovery_registration'\n          and \"webauthn_challenges\".\"recovery_case_id\" is not null)\n        or (\"webauthn_challenges\".\"purpose\" <> 'recovery_registration'\n          and \"webauthn_challenges\".\"recovery_case_id\" is null)"
+        },
+        "webauthn_challenges_hash_check": {
+          "name": "webauthn_challenges_hash_check",
+          "value": "\"webauthn_challenges\".\"challenge_hash\" ~ '^[0-9a-f]{64}$'"
+        },
+        "webauthn_challenges_ttl_check": {
+          "name": "webauthn_challenges_ttl_check",
+          "value": "\"webauthn_challenges\".\"expires_at\" = \"webauthn_challenges\".\"issued_at\" + interval '5 minutes'"
+        },
+        "webauthn_challenges_consumption_time_check": {
+          "name": "webauthn_challenges_consumption_time_check",
+          "value": "\"webauthn_challenges\".\"consumed_at\" is null or (\"webauthn_challenges\".\"consumed_at\" >= \"webauthn_challenges\".\"issued_at\" and \"webauthn_challenges\".\"consumed_at\" <= \"webauthn_challenges\".\"expires_at\")"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.webauthn_credentials": {
+      "name": "webauthn_credentials",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "practice_id": {
+          "name": "practice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credential_id": {
+          "name": "credential_id",
+          "type": "varchar(1024)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "public_key": {
+          "name": "public_key",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "counter": {
+          "name": "counter",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_type": {
+          "name": "device_type",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "backed_up": {
+          "name": "backed_up",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "transports": {
+          "name": "transports",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "aaguid": {
+          "name": "aaguid",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(80)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_used_at": {
+          "name": "last_used_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "webauthn_credentials_credential_id_uq": {
+          "name": "webauthn_credentials_credential_id_uq",
+          "columns": [
+            {
+              "expression": "credential_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "webauthn_credentials_active_user_idx": {
+          "name": "webauthn_credentials_active_user_idx",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "deleted_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "webauthn_credentials_practice_id_practices_id_fk": {
+          "name": "webauthn_credentials_practice_id_practices_id_fk",
+          "tableFrom": "webauthn_credentials",
+          "tableTo": "practices",
+          "columnsFrom": [
+            "practice_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "webauthn_credentials_user_tenant_fk": {
+          "name": "webauthn_credentials_user_tenant_fk",
+          "tableFrom": "webauthn_credentials",
+          "tableTo": "users",
+          "columnsFrom": [
+            "practice_id",
+            "user_id"
+          ],
+          "columnsTo": [
+            "practice_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "webauthn_credentials_credential_id_shape_check": {
+          "name": "webauthn_credentials_credential_id_shape_check",
+          "value": "length(\"webauthn_credentials\".\"credential_id\") between 16 and 1024\n        and \"webauthn_credentials\".\"credential_id\" ~ '^[A-Za-z0-9_-]+$'"
+        },
+        "webauthn_credentials_public_key_size_check": {
+          "name": "webauthn_credentials_public_key_size_check",
+          "value": "octet_length(\"webauthn_credentials\".\"public_key\") between 32 and 4096"
+        },
+        "webauthn_credentials_counter_check": {
+          "name": "webauthn_credentials_counter_check",
+          "value": "\"webauthn_credentials\".\"counter\" >= 0"
+        },
+        "webauthn_credentials_device_type_check": {
+          "name": "webauthn_credentials_device_type_check",
+          "value": "\"webauthn_credentials\".\"device_type\" in ('singleDevice', 'multiDevice')"
+        },
+        "webauthn_credentials_transports_check": {
+          "name": "webauthn_credentials_transports_check",
+          "value": "jsonb_typeof(\"webauthn_credentials\".\"transports\") = 'array'\n        and jsonb_array_length(\"webauthn_credentials\".\"transports\") <= 7\n        and \"webauthn_credentials\".\"transports\" <@ '[\"ble\", \"cable\", \"hybrid\", \"internal\", \"nfc\", \"smart-card\", \"usb\"]'::jsonb"
+        },
+        "webauthn_credentials_name_check": {
+          "name": "webauthn_credentials_name_check",
+          "value": "length(btrim(\"webauthn_credentials\".\"name\")) between 1 and 80"
+        },
+        "webauthn_credentials_use_time_check": {
+          "name": "webauthn_credentials_use_time_check",
+          "value": "\"webauthn_credentials\".\"last_used_at\" is null or \"webauthn_credentials\".\"last_used_at\" >= \"webauthn_credentials\".\"created_at\""
+        },
+        "webauthn_credentials_deletion_time_check": {
+          "name": "webauthn_credentials_deletion_time_check",
+          "value": "\"webauthn_credentials\".\"deleted_at\" is null or \"webauthn_credentials\".\"deleted_at\" >= \"webauthn_credentials\".\"created_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.auth_recovery_cases": {
+      "name": "auth_recovery_cases",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "practice_id": {
+          "name": "practice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requester_user_id": {
+          "name": "requester_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "approver_user_id": {
+          "name": "approver_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancelled_by_user_id": {
+          "name": "cancelled_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "target_session_version": {
+          "name": "target_session_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoked_session_version": {
+          "name": "revoked_session_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason_code": {
+          "name": "reason_code",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "identity_proof_reference_hash": {
+          "name": "identity_proof_reference_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recovery_grant_hash": {
+          "name": "recovery_grant_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "approved_at": {
+          "name": "approved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "grant_expires_at": {
+          "name": "grant_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancelled_at": {
+          "name": "cancelled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expired_at": {
+          "name": "expired_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "auth_recovery_cases_active_target_uq": {
+          "name": "auth_recovery_cases_active_target_uq",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"auth_recovery_cases\".\"status\" in ('pending', 'approved')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "auth_recovery_cases_grant_hash_uq": {
+          "name": "auth_recovery_cases_grant_hash_uq",
+          "columns": [
+            {
+              "expression": "recovery_grant_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"auth_recovery_cases\".\"recovery_grant_hash\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "auth_recovery_cases_queue_idx": {
+          "name": "auth_recovery_cases_queue_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "requested_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "auth_recovery_cases_practice_id_practices_id_fk": {
+          "name": "auth_recovery_cases_practice_id_practices_id_fk",
+          "tableFrom": "auth_recovery_cases",
+          "tableTo": "practices",
+          "columnsFrom": [
+            "practice_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "auth_recovery_cases_requester_user_id_users_id_fk": {
+          "name": "auth_recovery_cases_requester_user_id_users_id_fk",
+          "tableFrom": "auth_recovery_cases",
+          "tableTo": "users",
+          "columnsFrom": [
+            "requester_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "auth_recovery_cases_approver_user_id_users_id_fk": {
+          "name": "auth_recovery_cases_approver_user_id_users_id_fk",
+          "tableFrom": "auth_recovery_cases",
+          "tableTo": "users",
+          "columnsFrom": [
+            "approver_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "auth_recovery_cases_cancelled_by_user_id_users_id_fk": {
+          "name": "auth_recovery_cases_cancelled_by_user_id_users_id_fk",
+          "tableFrom": "auth_recovery_cases",
+          "tableTo": "users",
+          "columnsFrom": [
+            "cancelled_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "auth_recovery_cases_target_tenant_fk": {
+          "name": "auth_recovery_cases_target_tenant_fk",
+          "tableFrom": "auth_recovery_cases",
+          "tableTo": "users",
+          "columnsFrom": [
+            "practice_id",
+            "user_id"
+          ],
+          "columnsTo": [
+            "practice_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "auth_recovery_cases_tenant_id_uq": {
+          "name": "auth_recovery_cases_tenant_id_uq",
+          "nullsNotDistinct": false,
+          "columns": [
+            "practice_id",
+            "user_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "auth_recovery_cases_target_session_check": {
+          "name": "auth_recovery_cases_target_session_check",
+          "value": "\"auth_recovery_cases\".\"target_session_version\" > 0\n        and (\"auth_recovery_cases\".\"revoked_session_version\" is null\n          or \"auth_recovery_cases\".\"revoked_session_version\" = \"auth_recovery_cases\".\"target_session_version\" + 1)"
+        },
+        "auth_recovery_cases_distinct_approver_check": {
+          "name": "auth_recovery_cases_distinct_approver_check",
+          "value": "\"auth_recovery_cases\".\"approver_user_id\" is null\n        or \"auth_recovery_cases\".\"approver_user_id\" <> \"auth_recovery_cases\".\"requester_user_id\""
+        },
+        "auth_recovery_cases_reason_check": {
+          "name": "auth_recovery_cases_reason_check",
+          "value": "\"auth_recovery_cases\".\"reason_code\" = 'lost_all_passkeys'"
+        },
+        "auth_recovery_cases_proof_hash_check": {
+          "name": "auth_recovery_cases_proof_hash_check",
+          "value": "\"auth_recovery_cases\".\"identity_proof_reference_hash\" ~ '^[0-9a-f]{64}$'"
+        },
+        "auth_recovery_cases_grant_hash_check": {
+          "name": "auth_recovery_cases_grant_hash_check",
+          "value": "\"auth_recovery_cases\".\"recovery_grant_hash\" is null\n        or \"auth_recovery_cases\".\"recovery_grant_hash\" ~ '^[0-9a-f]{64}$'"
+        },
+        "auth_recovery_cases_request_ttl_check": {
+          "name": "auth_recovery_cases_request_ttl_check",
+          "value": "\"auth_recovery_cases\".\"expires_at\" = \"auth_recovery_cases\".\"requested_at\" + interval '24 hours'"
+        },
+        "auth_recovery_cases_state_check": {
+          "name": "auth_recovery_cases_state_check",
+          "value": "(\n          \"auth_recovery_cases\".\"status\" = 'pending'\n          and \"auth_recovery_cases\".\"approver_user_id\" is null\n          and \"auth_recovery_cases\".\"cancelled_by_user_id\" is null\n          and \"auth_recovery_cases\".\"revoked_session_version\" is null\n          and \"auth_recovery_cases\".\"recovery_grant_hash\" is null\n          and \"auth_recovery_cases\".\"approved_at\" is null\n          and \"auth_recovery_cases\".\"grant_expires_at\" is null\n          and \"auth_recovery_cases\".\"consumed_at\" is null\n          and \"auth_recovery_cases\".\"cancelled_at\" is null\n          and \"auth_recovery_cases\".\"expired_at\" is null\n        ) or (\n          \"auth_recovery_cases\".\"status\" = 'approved'\n          and \"auth_recovery_cases\".\"approver_user_id\" is not null\n          and \"auth_recovery_cases\".\"cancelled_by_user_id\" is null\n          and \"auth_recovery_cases\".\"revoked_session_version\" = \"auth_recovery_cases\".\"target_session_version\" + 1\n          and \"auth_recovery_cases\".\"recovery_grant_hash\" is not null\n          and \"auth_recovery_cases\".\"approved_at\" >= \"auth_recovery_cases\".\"requested_at\"\n          and \"auth_recovery_cases\".\"approved_at\" <= \"auth_recovery_cases\".\"expires_at\"\n          and \"auth_recovery_cases\".\"grant_expires_at\" = \"auth_recovery_cases\".\"approved_at\" + interval '15 minutes'\n          and \"auth_recovery_cases\".\"consumed_at\" is null\n          and \"auth_recovery_cases\".\"cancelled_at\" is null\n          and \"auth_recovery_cases\".\"expired_at\" is null\n        ) or (\n          \"auth_recovery_cases\".\"status\" = 'consumed'\n          and \"auth_recovery_cases\".\"approver_user_id\" is not null\n          and \"auth_recovery_cases\".\"cancelled_by_user_id\" is null\n          and \"auth_recovery_cases\".\"revoked_session_version\" = \"auth_recovery_cases\".\"target_session_version\" + 1\n          and \"auth_recovery_cases\".\"recovery_grant_hash\" is not null\n          and \"auth_recovery_cases\".\"approved_at\" >= \"auth_recovery_cases\".\"requested_at\"\n          and \"auth_recovery_cases\".\"approved_at\" <= \"auth_recovery_cases\".\"expires_at\"\n          and \"auth_recovery_cases\".\"grant_expires_at\" = \"auth_recovery_cases\".\"approved_at\" + interval '15 minutes'\n          and \"auth_recovery_cases\".\"consumed_at\" >= \"auth_recovery_cases\".\"approved_at\"\n          and \"auth_recovery_cases\".\"consumed_at\" <= \"auth_recovery_cases\".\"grant_expires_at\"\n          and \"auth_recovery_cases\".\"cancelled_at\" is null\n          and \"auth_recovery_cases\".\"expired_at\" is null\n        ) or (\n          \"auth_recovery_cases\".\"status\" = 'cancelled'\n          and \"auth_recovery_cases\".\"approver_user_id\" is null\n          and \"auth_recovery_cases\".\"cancelled_by_user_id\" is not null\n          and \"auth_recovery_cases\".\"revoked_session_version\" is null\n          and \"auth_recovery_cases\".\"recovery_grant_hash\" is null\n          and \"auth_recovery_cases\".\"approved_at\" is null\n          and \"auth_recovery_cases\".\"grant_expires_at\" is null\n          and \"auth_recovery_cases\".\"consumed_at\" is null\n          and \"auth_recovery_cases\".\"cancelled_at\" >= \"auth_recovery_cases\".\"requested_at\"\n          and \"auth_recovery_cases\".\"cancelled_at\" <= \"auth_recovery_cases\".\"expires_at\"\n          and \"auth_recovery_cases\".\"expired_at\" is null\n        ) or (\n          \"auth_recovery_cases\".\"status\" = 'expired'\n          and \"auth_recovery_cases\".\"cancelled_by_user_id\" is null\n          and \"auth_recovery_cases\".\"consumed_at\" is null\n          and \"auth_recovery_cases\".\"cancelled_at\" is null\n          and \"auth_recovery_cases\".\"expired_at\" is not null\n          and ((\"auth_recovery_cases\".\"approver_user_id\" is null\n            and \"auth_recovery_cases\".\"revoked_session_version\" is null\n            and \"auth_recovery_cases\".\"recovery_grant_hash\" is null\n            and \"auth_recovery_cases\".\"approved_at\" is null\n            and \"auth_recovery_cases\".\"grant_expires_at\" is null\n            and \"auth_recovery_cases\".\"expired_at\" >= \"auth_recovery_cases\".\"expires_at\")\n          or (\"auth_recovery_cases\".\"approver_user_id\" is not null\n            and \"auth_recovery_cases\".\"revoked_session_version\" = \"auth_recovery_cases\".\"target_session_version\" + 1\n            and \"auth_recovery_cases\".\"recovery_grant_hash\" is not null\n            and \"auth_recovery_cases\".\"approved_at\" >= \"auth_recovery_cases\".\"requested_at\"\n            and \"auth_recovery_cases\".\"approved_at\" <= \"auth_recovery_cases\".\"expires_at\"\n            and \"auth_recovery_cases\".\"grant_expires_at\" = \"auth_recovery_cases\".\"approved_at\" + interval '15 minutes'\n            and \"auth_recovery_cases\".\"expired_at\" >= \"auth_recovery_cases\".\"grant_expires_at\"))\n        )"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.auth_recovery_events": {
+      "name": "auth_recovery_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "case_id": {
+          "name": "case_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "practice_id": {
+          "name": "practice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "event_type": {
+          "name": "event_type",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "auth_recovery_events_case_event_uq": {
+          "name": "auth_recovery_events_case_event_uq",
+          "columns": [
+            {
+              "expression": "case_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "event_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "auth_recovery_events_case_timeline_idx": {
+          "name": "auth_recovery_events_case_timeline_idx",
+          "columns": [
+            {
+              "expression": "case_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "auth_recovery_events_actor_user_id_users_id_fk": {
+          "name": "auth_recovery_events_actor_user_id_users_id_fk",
+          "tableFrom": "auth_recovery_events",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "auth_recovery_events_case_tenant_fk": {
+          "name": "auth_recovery_events_case_tenant_fk",
+          "tableFrom": "auth_recovery_events",
+          "tableTo": "auth_recovery_cases",
+          "columnsFrom": [
+            "practice_id",
+            "user_id",
+            "case_id"
+          ],
+          "columnsTo": [
+            "practice_id",
+            "user_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "auth_recovery_events_type_check": {
+          "name": "auth_recovery_events_type_check",
+          "value": "\"auth_recovery_events\".\"event_type\" in ('requested', 'approved', 'reenrollment_started', 'grant_consumed', 'cancelled', 'expired')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.patient_allergies": {
@@ -14038,6 +15215,871 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.lifecycle_email_attempts": {
+      "name": "lifecycle_email_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "clock_timestamp()"
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "practice_id": {
+          "name": "practice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt_number": {
+          "name": "attempt_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_fingerprint_sha256": {
+          "name": "request_fingerprint_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "lifecycle_email_attempt_outcome",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_detail": {
+          "name": "failure_detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "lifecycle_email_attempts_job_attempt_uq": {
+          "name": "lifecycle_email_attempts_job_attempt_uq",
+          "columns": [
+            {
+              "expression": "job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attempt_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "lifecycle_email_attempts_job_history_idx": {
+          "name": "lifecycle_email_attempts_job_history_idx",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attempt_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "lifecycle_email_attempts_provider_message_uq": {
+          "name": "lifecycle_email_attempts_provider_message_uq",
+          "columns": [
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"lifecycle_email_attempts\".\"provider_message_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "lifecycle_email_attempts_practice_id_practices_id_fk": {
+          "name": "lifecycle_email_attempts_practice_id_practices_id_fk",
+          "tableFrom": "lifecycle_email_attempts",
+          "tableTo": "practices",
+          "columnsFrom": [
+            "practice_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "lifecycle_email_attempts_job_tenant_fk": {
+          "name": "lifecycle_email_attempts_job_tenant_fk",
+          "tableFrom": "lifecycle_email_attempts",
+          "tableTo": "lifecycle_email_jobs",
+          "columnsFrom": [
+            "practice_id",
+            "job_id"
+          ],
+          "columnsTo": [
+            "practice_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "lifecycle_email_attempts_identity_check": {
+          "name": "lifecycle_email_attempts_identity_check",
+          "value": "\"lifecycle_email_attempts\".\"attempt_number\" >= 1\n        and \"lifecycle_email_attempts\".\"provider\" in ('resend', 'console')\n        and \"lifecycle_email_attempts\".\"request_fingerprint_sha256\" ~ '^[0-9a-f]{64}$'\n        and (\"lifecycle_email_attempts\".\"failure_code\" is null or (\n          length(btrim(\"lifecycle_email_attempts\".\"failure_code\")) between 1 and 64\n          and \"lifecycle_email_attempts\".\"failure_code\" ~ '^[A-Za-z0-9_.:-]+$'\n        ))\n        and (\"lifecycle_email_attempts\".\"failure_detail\" is null or length(\"lifecycle_email_attempts\".\"failure_detail\") <= 2000)"
+        },
+        "lifecycle_email_attempts_outcome_check": {
+          "name": "lifecycle_email_attempts_outcome_check",
+          "value": "(\n          \"lifecycle_email_attempts\".\"resolved_at\" is null\n          and \"lifecycle_email_attempts\".\"outcome\" is null\n          and \"lifecycle_email_attempts\".\"provider_message_id\" is null\n          and \"lifecycle_email_attempts\".\"failure_code\" is null\n          and \"lifecycle_email_attempts\".\"failure_detail\" is null\n        ) or (\n          \"lifecycle_email_attempts\".\"resolved_at\" is not null\n          and \"lifecycle_email_attempts\".\"outcome\" = 'accepted'\n          and \"lifecycle_email_attempts\".\"provider_message_id\" is not null\n          and \"lifecycle_email_attempts\".\"failure_code\" is null\n          and \"lifecycle_email_attempts\".\"failure_detail\" is null\n        ) or (\n          \"lifecycle_email_attempts\".\"resolved_at\" is not null\n          and \"lifecycle_email_attempts\".\"outcome\" in ('definite_failure', 'outcome_unknown')\n          and \"lifecycle_email_attempts\".\"provider_message_id\" is null\n          and \"lifecycle_email_attempts\".\"failure_code\" is not null\n        )"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.lifecycle_email_jobs": {
+      "name": "lifecycle_email_jobs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "clock_timestamp()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "clock_timestamp()"
+        },
+        "practice_id": {
+          "name": "practice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "communication_id": {
+          "name": "communication_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "lifecycle_email_job_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "lifecycle_email_job_state",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "dedupe_key": {
+          "name": "dedupe_key",
+          "type": "varchar(160)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_idempotency_key": {
+          "name": "provider_idempotency_key",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recipient_hash_sha256": {
+          "name": "recipient_hash_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "practice_name": {
+          "name": "practice_name",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subscription_id": {
+          "name": "subscription_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subscription_generation": {
+          "name": "subscription_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "first_attempt_at": {
+          "name": "first_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "clock_timestamp()"
+        },
+        "lease_token": {
+          "name": "lease_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "request_fingerprint_sha256": {
+          "name": "request_fingerprint_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_outcome": {
+          "name": "last_outcome",
+          "type": "lifecycle_email_attempt_outcome",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error_code": {
+          "name": "last_error_code",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error_detail": {
+          "name": "last_error_detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "lifecycle_email_jobs_practice_id_uq": {
+          "name": "lifecycle_email_jobs_practice_id_uq",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "lifecycle_email_jobs_communication_uq": {
+          "name": "lifecycle_email_jobs_communication_uq",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "communication_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "lifecycle_email_jobs_dedupe_key_uq": {
+          "name": "lifecycle_email_jobs_dedupe_key_uq",
+          "columns": [
+            {
+              "expression": "dedupe_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "lifecycle_email_jobs_due_idx": {
+          "name": "lifecycle_email_jobs_due_idx",
+          "columns": [
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"lifecycle_email_jobs\".\"state\" in ('pending', 'retry', 'blocked_recovery')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "lifecycle_email_jobs_lease_idx": {
+          "name": "lifecycle_email_jobs_lease_idx",
+          "columns": [
+            {
+              "expression": "lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"lifecycle_email_jobs\".\"state\" = 'delivering'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "lifecycle_email_jobs_practice_id_practices_id_fk": {
+          "name": "lifecycle_email_jobs_practice_id_practices_id_fk",
+          "tableFrom": "lifecycle_email_jobs",
+          "tableTo": "practices",
+          "columnsFrom": [
+            "practice_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "lifecycle_email_jobs_communication_tenant_fk": {
+          "name": "lifecycle_email_jobs_communication_tenant_fk",
+          "tableFrom": "lifecycle_email_jobs",
+          "tableTo": "communications",
+          "columnsFrom": [
+            "practice_id",
+            "communication_id"
+          ],
+          "columnsTo": [
+            "practice_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "lifecycle_email_jobs_identity_check": {
+          "name": "lifecycle_email_jobs_identity_check",
+          "value": "length(btrim(\"lifecycle_email_jobs\".\"dedupe_key\")) between 1 and 160\n        and length(btrim(\"lifecycle_email_jobs\".\"provider_idempotency_key\")) between 1 and 200\n        and \"lifecycle_email_jobs\".\"recipient_hash_sha256\" ~ '^[0-9a-f]{64}$'\n        and length(btrim(\"lifecycle_email_jobs\".\"practice_name\")) between 1 and 255\n        and length(btrim(\"lifecycle_email_jobs\".\"subscription_id\")) between 1 and 64\n        and \"lifecycle_email_jobs\".\"subscription_generation\" >= 0\n        and (\"lifecycle_email_jobs\".\"request_fingerprint_sha256\" is null or \"lifecycle_email_jobs\".\"request_fingerprint_sha256\" ~ '^[0-9a-f]{64}$')\n        and (\"lifecycle_email_jobs\".\"last_error_code\" is null or (\n          length(btrim(\"lifecycle_email_jobs\".\"last_error_code\")) between 1 and 64\n          and \"lifecycle_email_jobs\".\"last_error_code\" ~ '^[A-Za-z0-9_.:-]+$'\n        ))\n        and (\"lifecycle_email_jobs\".\"last_error_detail\" is null or length(\"lifecycle_email_jobs\".\"last_error_detail\") <= 2000)"
+        },
+        "lifecycle_email_jobs_state_check": {
+          "name": "lifecycle_email_jobs_state_check",
+          "value": "\"lifecycle_email_jobs\".\"attempt_count\" >= 0 and (\n        (\n          \"lifecycle_email_jobs\".\"state\" in ('pending', 'blocked_recovery')\n          and \"lifecycle_email_jobs\".\"next_attempt_at\" is not null\n          and \"lifecycle_email_jobs\".\"lease_token\" is null\n          and \"lifecycle_email_jobs\".\"lease_expires_at\" is null\n          and \"lifecycle_email_jobs\".\"completed_at\" is null\n          and \"lifecycle_email_jobs\".\"provider_message_id\" is null\n        ) or (\n          \"lifecycle_email_jobs\".\"state\" = 'retry'\n          and \"lifecycle_email_jobs\".\"attempt_count\" >= 1\n          and \"lifecycle_email_jobs\".\"next_attempt_at\" is not null\n          and \"lifecycle_email_jobs\".\"lease_token\" is null\n          and \"lifecycle_email_jobs\".\"lease_expires_at\" is null\n          and \"lifecycle_email_jobs\".\"completed_at\" is null\n          and \"lifecycle_email_jobs\".\"provider_message_id\" is null\n          and \"lifecycle_email_jobs\".\"last_outcome\" in ('definite_failure', 'outcome_unknown')\n        ) or (\n          \"lifecycle_email_jobs\".\"state\" = 'delivering'\n          and \"lifecycle_email_jobs\".\"next_attempt_at\" is null\n          and \"lifecycle_email_jobs\".\"lease_token\" is not null\n          and \"lifecycle_email_jobs\".\"lease_expires_at\" is not null\n          and \"lifecycle_email_jobs\".\"completed_at\" is null\n          and \"lifecycle_email_jobs\".\"provider_message_id\" is null\n        ) or (\n          \"lifecycle_email_jobs\".\"state\" = 'delivered'\n          and \"lifecycle_email_jobs\".\"next_attempt_at\" is null\n          and \"lifecycle_email_jobs\".\"completed_at\" is not null\n          and \"lifecycle_email_jobs\".\"lease_token\" is null\n          and \"lifecycle_email_jobs\".\"lease_expires_at\" is null\n          and \"lifecycle_email_jobs\".\"provider_message_id\" is not null\n          and \"lifecycle_email_jobs\".\"last_outcome\" = 'accepted'\n        ) or (\n          \"lifecycle_email_jobs\".\"state\" = 'suppressed_stale'\n          and \"lifecycle_email_jobs\".\"next_attempt_at\" is null\n          and \"lifecycle_email_jobs\".\"completed_at\" is not null\n          and \"lifecycle_email_jobs\".\"lease_token\" is null\n          and \"lifecycle_email_jobs\".\"lease_expires_at\" is null\n          and \"lifecycle_email_jobs\".\"provider_message_id\" is null\n        ) or (\n          \"lifecycle_email_jobs\".\"state\" = 'failed'\n          and \"lifecycle_email_jobs\".\"next_attempt_at\" is null\n          and \"lifecycle_email_jobs\".\"completed_at\" is not null\n          and \"lifecycle_email_jobs\".\"lease_token\" is null\n          and \"lifecycle_email_jobs\".\"lease_expires_at\" is null\n          and \"lifecycle_email_jobs\".\"provider_message_id\" is null\n          and \"lifecycle_email_jobs\".\"last_outcome\" = 'definite_failure'\n        ) or (\n          \"lifecycle_email_jobs\".\"state\" = 'outcome_unknown'\n          and \"lifecycle_email_jobs\".\"next_attempt_at\" is null\n          and \"lifecycle_email_jobs\".\"completed_at\" is not null\n          and \"lifecycle_email_jobs\".\"lease_token\" is null\n          and \"lifecycle_email_jobs\".\"lease_expires_at\" is null\n          and \"lifecycle_email_jobs\".\"provider_message_id\" is null\n          and \"lifecycle_email_jobs\".\"last_outcome\" = 'outcome_unknown'\n        )\n      )"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.subscription_checkout_attempts": {
+      "name": "subscription_checkout_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "clock_timestamp()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "clock_timestamp()"
+        },
+        "practice_id": {
+          "name": "practice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "subscription_checkout_attempt_state",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'reserved'"
+        },
+        "source": {
+          "name": "source",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "billing_cadence": {
+          "name": "billing_cadence",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "return_target": {
+          "name": "return_target",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "location_price_id": {
+          "name": "location_price_id",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "location_quantity": {
+          "name": "location_quantity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "customer_id": {
+          "name": "customer_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "customer_email": {
+          "name": "customer_email",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "customer_identity_source": {
+          "name": "customer_identity_source",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "customer_identity_user_id": {
+          "name": "customer_identity_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "trial_end": {
+          "name": "trial_end",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "trial_period_days": {
+          "name": "trial_period_days",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "success_url": {
+          "name": "success_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cancel_url": {
+          "name": "cancel_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_idempotency_key": {
+          "name": "provider_idempotency_key",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_fingerprint_sha256": {
+          "name": "request_fingerprint_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "first_provider_attempt_at": {
+          "name": "first_provider_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_token": {
+          "name": "lease_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_attempt_at": {
+          "name": "last_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_session_id": {
+          "name": "provider_session_id",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_expires_at": {
+          "name": "provider_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_reconciled_at": {
+          "name": "last_reconciled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expired_at": {
+          "name": "expired_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failed_at": {
+          "name": "failed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error_code": {
+          "name": "last_error_code",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "subscription_checkout_attempts_practice_id_uq": {
+          "name": "subscription_checkout_attempts_practice_id_uq",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "subscription_checkout_attempts_provider_idempotency_uq": {
+          "name": "subscription_checkout_attempts_provider_idempotency_uq",
+          "columns": [
+            {
+              "expression": "provider_idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "subscription_checkout_attempts_provider_session_uq": {
+          "name": "subscription_checkout_attempts_provider_session_uq",
+          "columns": [
+            {
+              "expression": "provider_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"subscription_checkout_attempts\".\"provider_session_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "subscription_checkout_attempts_one_active_uq": {
+          "name": "subscription_checkout_attempts_one_active_uq",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"subscription_checkout_attempts\".\"state\" in ('reserved', 'creating', 'outcome_unknown', 'manual_review', 'open')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "subscription_checkout_attempts_history_idx": {
+          "name": "subscription_checkout_attempts_history_idx",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "subscription_checkout_attempts_customer_identity_user_idx": {
+          "name": "subscription_checkout_attempts_customer_identity_user_idx",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "customer_identity_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "subscription_checkout_attempts_practice_id_practices_id_fk": {
+          "name": "subscription_checkout_attempts_practice_id_practices_id_fk",
+          "tableFrom": "subscription_checkout_attempts",
+          "tableTo": "practices",
+          "columnsFrom": [
+            "practice_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "subscription_checkout_attempts_identity_check": {
+          "name": "subscription_checkout_attempts_identity_check",
+          "value": "\"subscription_checkout_attempts\".\"source\" in ('signup', 'settings')\n        and \"subscription_checkout_attempts\".\"billing_cadence\" in ('month', 'year')\n        and (\n          (\"subscription_checkout_attempts\".\"source\" = 'signup' and \"subscription_checkout_attempts\".\"return_target\" = 'login')\n          or (\"subscription_checkout_attempts\".\"source\" = 'settings' and \"subscription_checkout_attempts\".\"return_target\" in ('settings', 'setup'))\n        )\n        and length(btrim(\"subscription_checkout_attempts\".\"location_price_id\")) between 1 and 255\n        and \"subscription_checkout_attempts\".\"location_quantity\" >= 1\n        and \"subscription_checkout_attempts\".\"customer_identity_source\" in ('stripe_customer', 'practice_email', 'user_email')\n        and (\n          (\"subscription_checkout_attempts\".\"customer_identity_source\" = 'stripe_customer'\n            and \"subscription_checkout_attempts\".\"customer_id\" is not null and \"subscription_checkout_attempts\".\"customer_email\" is null\n            and \"subscription_checkout_attempts\".\"customer_identity_user_id\" is null)\n          or (\"subscription_checkout_attempts\".\"customer_identity_source\" = 'practice_email'\n            and \"subscription_checkout_attempts\".\"customer_id\" is null and \"subscription_checkout_attempts\".\"customer_email\" is not null\n            and \"subscription_checkout_attempts\".\"customer_identity_user_id\" is null)\n          or (\"subscription_checkout_attempts\".\"customer_identity_source\" = 'user_email'\n            and \"subscription_checkout_attempts\".\"customer_id\" is null and \"subscription_checkout_attempts\".\"customer_email\" is not null\n            and \"subscription_checkout_attempts\".\"customer_identity_user_id\" is not null)\n        )\n        and (\"subscription_checkout_attempts\".\"customer_id\" is null or length(btrim(\"subscription_checkout_attempts\".\"customer_id\")) between 1 and 64)\n        and (\"subscription_checkout_attempts\".\"customer_email\" is null or (\n          length(btrim(\"subscription_checkout_attempts\".\"customer_email\")) between 3 and 255\n          and \"subscription_checkout_attempts\".\"customer_email\" = lower(btrim(\"subscription_checkout_attempts\".\"customer_email\"))\n        ))\n        and num_nonnulls(\"subscription_checkout_attempts\".\"trial_end\", \"subscription_checkout_attempts\".\"trial_period_days\") <= 1\n        and (\"subscription_checkout_attempts\".\"trial_period_days\" is null or \"subscription_checkout_attempts\".\"trial_period_days\" >= 1)\n        and length(\"subscription_checkout_attempts\".\"success_url\") between 1 and 2048\n        and length(\"subscription_checkout_attempts\".\"cancel_url\") between 1 and 2048\n        and length(btrim(\"subscription_checkout_attempts\".\"provider_idempotency_key\")) between 1 and 200\n        and \"subscription_checkout_attempts\".\"request_fingerprint_sha256\" ~ '^[0-9a-f]{64}$'\n        and (\"subscription_checkout_attempts\".\"last_error_code\" is null or \"subscription_checkout_attempts\".\"last_error_code\" ~ '^[A-Za-z0-9_.:-]{1,64}$')"
+        },
+        "subscription_checkout_attempts_state_check": {
+          "name": "subscription_checkout_attempts_state_check",
+          "value": "\"subscription_checkout_attempts\".\"attempt_count\" >= 0 and (\n        (\"subscription_checkout_attempts\".\"state\" = 'reserved'\n          and \"subscription_checkout_attempts\".\"attempt_count\" = 0\n          and \"subscription_checkout_attempts\".\"lease_token\" is null and \"subscription_checkout_attempts\".\"lease_expires_at\" is null\n          and \"subscription_checkout_attempts\".\"last_attempt_at\" is null and \"subscription_checkout_attempts\".\"provider_session_id\" is null\n          and \"subscription_checkout_attempts\".\"first_provider_attempt_at\" is null and \"subscription_checkout_attempts\".\"provider_expires_at\" is null\n          and \"subscription_checkout_attempts\".\"completed_at\" is null and \"subscription_checkout_attempts\".\"expired_at\" is null\n          and \"subscription_checkout_attempts\".\"failed_at\" is null and \"subscription_checkout_attempts\".\"last_error_code\" is null)\n        or (\"subscription_checkout_attempts\".\"state\" = 'creating'\n          and \"subscription_checkout_attempts\".\"attempt_count\" >= 1\n          and \"subscription_checkout_attempts\".\"lease_token\" is not null and \"subscription_checkout_attempts\".\"lease_expires_at\" is not null\n          and \"subscription_checkout_attempts\".\"first_provider_attempt_at\" is not null and \"subscription_checkout_attempts\".\"last_attempt_at\" is not null\n          and \"subscription_checkout_attempts\".\"provider_session_id\" is null and \"subscription_checkout_attempts\".\"provider_expires_at\" is null\n          and \"subscription_checkout_attempts\".\"completed_at\" is null and \"subscription_checkout_attempts\".\"expired_at\" is null\n          and \"subscription_checkout_attempts\".\"failed_at\" is null and \"subscription_checkout_attempts\".\"last_error_code\" is null)\n        or (\"subscription_checkout_attempts\".\"state\" = 'outcome_unknown'\n          and \"subscription_checkout_attempts\".\"attempt_count\" >= 1\n          and \"subscription_checkout_attempts\".\"lease_token\" is null and \"subscription_checkout_attempts\".\"lease_expires_at\" is null\n          and \"subscription_checkout_attempts\".\"first_provider_attempt_at\" is not null and \"subscription_checkout_attempts\".\"last_attempt_at\" is not null\n          and \"subscription_checkout_attempts\".\"provider_session_id\" is null and \"subscription_checkout_attempts\".\"provider_expires_at\" is null\n          and \"subscription_checkout_attempts\".\"completed_at\" is null and \"subscription_checkout_attempts\".\"expired_at\" is null\n          and \"subscription_checkout_attempts\".\"failed_at\" is null and \"subscription_checkout_attempts\".\"last_error_code\" is not null)\n        or (\"subscription_checkout_attempts\".\"state\" = 'manual_review'\n          and \"subscription_checkout_attempts\".\"attempt_count\" >= 1\n          and \"subscription_checkout_attempts\".\"first_provider_attempt_at\" is not null and \"subscription_checkout_attempts\".\"last_attempt_at\" is not null\n          and \"subscription_checkout_attempts\".\"lease_token\" is null and \"subscription_checkout_attempts\".\"lease_expires_at\" is null\n          and num_nonnulls(\"subscription_checkout_attempts\".\"provider_session_id\", \"subscription_checkout_attempts\".\"provider_expires_at\") in (0, 2)\n          and \"subscription_checkout_attempts\".\"completed_at\" is null and \"subscription_checkout_attempts\".\"expired_at\" is null\n          and \"subscription_checkout_attempts\".\"failed_at\" is null and \"subscription_checkout_attempts\".\"last_error_code\" is not null)\n        or (\"subscription_checkout_attempts\".\"state\" = 'open'\n          and \"subscription_checkout_attempts\".\"attempt_count\" >= 1\n          and \"subscription_checkout_attempts\".\"lease_token\" is null and \"subscription_checkout_attempts\".\"lease_expires_at\" is null\n          and \"subscription_checkout_attempts\".\"first_provider_attempt_at\" is not null and \"subscription_checkout_attempts\".\"last_attempt_at\" is not null\n          and \"subscription_checkout_attempts\".\"provider_session_id\" is not null and \"subscription_checkout_attempts\".\"provider_expires_at\" is not null\n          and \"subscription_checkout_attempts\".\"last_reconciled_at\" is not null\n          and \"subscription_checkout_attempts\".\"completed_at\" is null and \"subscription_checkout_attempts\".\"expired_at\" is null\n          and \"subscription_checkout_attempts\".\"failed_at\" is null)\n        or (\"subscription_checkout_attempts\".\"state\" = 'completed'\n          and \"subscription_checkout_attempts\".\"lease_token\" is null and \"subscription_checkout_attempts\".\"lease_expires_at\" is null\n          and \"subscription_checkout_attempts\".\"provider_session_id\" is not null\n          and \"subscription_checkout_attempts\".\"completed_at\" is not null and \"subscription_checkout_attempts\".\"expired_at\" is null\n          and \"subscription_checkout_attempts\".\"failed_at\" is null)\n        or (\"subscription_checkout_attempts\".\"state\" = 'expired'\n          and \"subscription_checkout_attempts\".\"lease_token\" is null and \"subscription_checkout_attempts\".\"lease_expires_at\" is null\n          and \"subscription_checkout_attempts\".\"expired_at\" is not null\n          and \"subscription_checkout_attempts\".\"completed_at\" is null and \"subscription_checkout_attempts\".\"failed_at\" is null)\n        or (\"subscription_checkout_attempts\".\"state\" = 'failed'\n          and \"subscription_checkout_attempts\".\"lease_token\" is null and \"subscription_checkout_attempts\".\"lease_expires_at\" is null\n          and \"subscription_checkout_attempts\".\"provider_session_id\" is null\n          and \"subscription_checkout_attempts\".\"completed_at\" is null and \"subscription_checkout_attempts\".\"expired_at\" is null\n          and \"subscription_checkout_attempts\".\"failed_at\" is not null and \"subscription_checkout_attempts\".\"last_error_code\" is not null)\n      )"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.sessions": {
       "name": "sessions",
       "schema": "",
@@ -18472,6 +20514,80 @@
           "primaryKey": false,
           "notNull": false
         },
+        "subscription_reconciliation_state": {
+          "name": "subscription_reconciliation_state",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subscription_reconciliation_attempts": {
+          "name": "subscription_reconciliation_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "subscription_reconciliation_revision": {
+          "name": "subscription_reconciliation_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subscription_reconciliation_authorized_at": {
+          "name": "subscription_reconciliation_authorized_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subscription_reconciliation_resolved_at": {
+          "name": "subscription_reconciliation_resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subscription_reconciliation_subscription_id": {
+          "name": "subscription_reconciliation_subscription_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subscription_quantity_sync_state": {
+          "name": "subscription_quantity_sync_state",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subscription_quantity_sync_attempts": {
+          "name": "subscription_quantity_sync_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "subscription_quantity_sync_lease_token": {
+          "name": "subscription_quantity_sync_lease_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subscription_quantity_sync_lease_expires_at": {
+          "name": "subscription_quantity_sync_lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subscription_quantity_sync_last_attempt_at": {
+          "name": "subscription_quantity_sync_last_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subscription_quantity_sync_completed_at": {
+          "name": "subscription_quantity_sync_completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "processed_at": {
           "name": "processed_at",
           "type": "timestamp with time zone",
@@ -18514,6 +20630,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "stripe_events_pending_subscription_quantity_sync_idx": {
+          "name": "stripe_events_pending_subscription_quantity_sync_idx",
+          "columns": [
+            {
+              "expression": "subscription_quantity_sync_lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"stripe_events\".\"subscription_quantity_sync_state\" in ('pending', 'running')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -18546,6 +20684,14 @@
         "stripe_events_conversion_evidence_shape_check": {
           "name": "stripe_events_conversion_evidence_shape_check",
           "value": "(\n        \"stripe_events\".\"evidence_kind\" is null and\n        \"stripe_events\".\"event_created_at\" is null and\n        \"stripe_events\".\"object_id\" is null and\n        \"stripe_events\".\"amount_cents\" is null and\n        \"stripe_events\".\"currency\" is null\n      ) or (\n        \"stripe_events\".\"evidence_kind\" is not null and\n        \"stripe_events\".\"event_created_at\" is not null and\n        \"stripe_events\".\"object_id\" is not null and\n        length(btrim(\"stripe_events\".\"object_id\")) > 0 and\n        (\n          (\"stripe_events\".\"evidence_kind\" = 'subscription_checkout_completed' and\n            \"stripe_events\".\"amount_cents\" is null and \"stripe_events\".\"currency\" is null) or\n          (\"stripe_events\".\"evidence_kind\" = 'positive_subscription_invoice_paid' and\n            \"stripe_events\".\"amount_cents\" is not null and \"stripe_events\".\"amount_cents\" > 0 and\n            \"stripe_events\".\"currency\" is not null and\n            \"stripe_events\".\"currency\" ~ '^[a-z]{3}$')\n        )\n      )"
+        },
+        "stripe_events_subscription_reconciliation_shape_check": {
+          "name": "stripe_events_subscription_reconciliation_shape_check",
+          "value": "(\n        \"stripe_events\".\"subscription_reconciliation_state\" is null and\n        \"stripe_events\".\"subscription_reconciliation_attempts\" = 0 and\n        \"stripe_events\".\"subscription_reconciliation_revision\" is null and\n        \"stripe_events\".\"subscription_reconciliation_authorized_at\" is null and\n        \"stripe_events\".\"subscription_reconciliation_resolved_at\" is null and\n        \"stripe_events\".\"subscription_reconciliation_subscription_id\" is null\n      ) or (\n        \"stripe_events\".\"subscription_reconciliation_state\" in ('authorized', 'applied', 'superseded') and\n        \"stripe_events\".\"practice_id\" is not null and\n        \"stripe_events\".\"subscription_reconciliation_subscription_id\" is not null and\n        length(btrim(\"stripe_events\".\"subscription_reconciliation_subscription_id\")) > 0 and\n        \"stripe_events\".\"subscription_reconciliation_attempts\" > 0 and\n        \"stripe_events\".\"subscription_reconciliation_revision\" is not null and\n        \"stripe_events\".\"subscription_reconciliation_revision\" > 0 and\n        \"stripe_events\".\"subscription_reconciliation_authorized_at\" is not null and\n        ((\"stripe_events\".\"subscription_reconciliation_state\" = 'authorized' and \"stripe_events\".\"subscription_reconciliation_resolved_at\" is null) or\n         (\"stripe_events\".\"subscription_reconciliation_state\" in ('applied', 'superseded') and \"stripe_events\".\"subscription_reconciliation_resolved_at\" is not null))\n      )"
+        },
+        "stripe_events_subscription_quantity_sync_shape_check": {
+          "name": "stripe_events_subscription_quantity_sync_shape_check",
+          "value": "(\n        \"stripe_events\".\"subscription_quantity_sync_state\" is null and\n        \"stripe_events\".\"subscription_quantity_sync_attempts\" = 0 and\n        \"stripe_events\".\"subscription_quantity_sync_lease_token\" is null and\n        \"stripe_events\".\"subscription_quantity_sync_lease_expires_at\" is null and\n        \"stripe_events\".\"subscription_quantity_sync_last_attempt_at\" is null and\n        \"stripe_events\".\"subscription_quantity_sync_completed_at\" is null\n      ) or (\n        \"stripe_events\".\"subscription_quantity_sync_state\" = 'pending' and\n        \"stripe_events\".\"subscription_reconciliation_state\" = 'applied' and\n        \"stripe_events\".\"subscription_quantity_sync_lease_token\" is null and\n        \"stripe_events\".\"subscription_quantity_sync_lease_expires_at\" is null and\n        \"stripe_events\".\"subscription_quantity_sync_completed_at\" is null\n      ) or (\n        \"stripe_events\".\"subscription_quantity_sync_state\" = 'running' and\n        \"stripe_events\".\"subscription_reconciliation_state\" = 'applied' and\n        \"stripe_events\".\"subscription_quantity_sync_attempts\" > 0 and\n        \"stripe_events\".\"subscription_quantity_sync_lease_token\" is not null and\n        \"stripe_events\".\"subscription_quantity_sync_lease_expires_at\" is not null and\n        \"stripe_events\".\"subscription_quantity_sync_last_attempt_at\" is not null and\n        \"stripe_events\".\"subscription_quantity_sync_completed_at\" is null\n      ) or (\n        \"stripe_events\".\"subscription_quantity_sync_state\" = 'completed' and\n        \"stripe_events\".\"subscription_reconciliation_state\" = 'applied' and\n        \"stripe_events\".\"subscription_quantity_sync_attempts\" > 0 and\n        \"stripe_events\".\"subscription_quantity_sync_lease_token\" is null and\n        \"stripe_events\".\"subscription_quantity_sync_lease_expires_at\" is null and\n        \"stripe_events\".\"subscription_quantity_sync_last_attempt_at\" is not null and\n        \"stripe_events\".\"subscription_quantity_sync_completed_at\" is not null and\n        \"stripe_events\".\"subscription_quantity_sync_completed_at\" >= \"stripe_events\".\"subscription_quantity_sync_last_attempt_at\"\n      )"
         }
       },
       "isRLSEnabled": false
@@ -30653,6 +32799,51 @@
         "outbound"
       ]
     },
+    "public.lifecycle_email_attempt_outcome": {
+      "name": "lifecycle_email_attempt_outcome",
+      "schema": "public",
+      "values": [
+        "accepted",
+        "definite_failure",
+        "outcome_unknown"
+      ]
+    },
+    "public.lifecycle_email_job_kind": {
+      "name": "lifecycle_email_job_kind",
+      "schema": "public",
+      "values": [
+        "subscription_confirmed",
+        "subscription_canceled"
+      ]
+    },
+    "public.lifecycle_email_job_state": {
+      "name": "lifecycle_email_job_state",
+      "schema": "public",
+      "values": [
+        "pending",
+        "retry",
+        "delivering",
+        "blocked_recovery",
+        "delivered",
+        "suppressed_stale",
+        "failed",
+        "outcome_unknown"
+      ]
+    },
+    "public.subscription_checkout_attempt_state": {
+      "name": "subscription_checkout_attempt_state",
+      "schema": "public",
+      "values": [
+        "reserved",
+        "creating",
+        "outcome_unknown",
+        "manual_review",
+        "open",
+        "completed",
+        "expired",
+        "failed"
+      ]
+    },
     "public.controlled_substance_action": {
       "name": "controlled_substance_action",
       "schema": "public",
@@ -31366,4 +33557,3 @@
     "schemas": {},
     "tables": {}
   }
-}

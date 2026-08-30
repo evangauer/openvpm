@@ -736,6 +736,36 @@ Store this endpoint secret as `STRIPE_CONNECT_WEBHOOK_SECRET`.
 unset for v1 if OpenVPM should not take a percentage fee from clinic client
 payments.
 
+### Clinic-day financial close
+
+The Billing page exposes a database-authoritative day-close worksheet. It uses
+the database clock and the practice's stored IANA timezone, so browser clock
+drift and daylight-saving transitions cannot move the cutoff. Only an active
+clinic administrator can close a day; all authenticated staff can inspect the
+worksheet and recent closes.
+
+Operator procedure:
+
+1. Select an ended clinic date and compare gross receipts, refunds, net
+   receipts, processor fees/net, payouts, and open disputes with the clinic's
+   source records.
+2. Resolve every listed payment settlement, refund, and payout exception. The
+   close remains disabled while any canonical evidence is unresolved.
+3. Confirm the immutable close once. A retry returns the existing snapshot; it
+   never creates a second close.
+4. Record later refunds or corrections as new dated activity. Never rewrite a
+   closed payment or invoice: database triggers reject backdated insert,
+   update, delete, and invoice-retirement races even for a database-owner
+   connection.
+
+The current bounded close slice does **not** implement the remaining Stripe
+reconciliation runtime or its operator queues. In particular, a Connect
+payment without a canonical `payment_processor_settlements` row stays blocked.
+Do not fabricate provider evidence or edit the close tables to clear the gate;
+complete the signed-event/provider reconciliation work tracked in issue #264.
+Until that runtime has independent review and staging evidence, treat a blocked
+Connect day as an expected release stop, not an operator override request.
+
 Hosted subscription webhook endpoint:
 
 ```text

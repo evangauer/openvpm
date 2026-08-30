@@ -93,6 +93,14 @@ REVOKE ALL ON FUNCTION public.guard_subscription_checkout_attempt_mutation()
   FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION public.validate_payment_processor_refund_tenant()
   FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.validate_financial_close_insert()
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.guard_financial_close_immutability()
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.guard_closed_financial_payment_mutation()
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.guard_closed_financial_invoice_mutation()
+  FROM PUBLIC, openpims_app;
 
 -- Object-replica evidence is operational recovery state, not clinic-editable
 -- data. Only an explicit system context may read or write it; the composite

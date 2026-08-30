@@ -757,6 +757,13 @@
       "when": 1788108893742,
       "tag": "0107_reconcile_development_release_line",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1788111000000,
+      "tag": "0108_immutable_financial_close",
+      "breakpoints": true
     }
   ]
 }

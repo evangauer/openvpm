@@ -116,6 +116,23 @@ function formatBillingInstantDate(
   }
 }
 
+function previousClinicBusinessDate(timeZone?: string | null): string {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timeZone ?? undefined,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(new Date())
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, Number(part.value)])
+  ) as Record<"year" | "month" | "day", number>;
+  const prior = new Date(Date.UTC(parts.year, parts.month - 1, parts.day - 1));
+  return prior.toISOString().slice(0, 10);
+}
+
 function getDisplayStatus(invoice: {
   status: string;
   paidAmount: string | null;
@@ -361,6 +378,11 @@ export default function BillingPage() {
         canManageBilling={canManageBilling}
       />
 
+      <FinancialClosePanel
+        billingTimeZone={billingTimeZone}
+        isAdmin={session?.user?.role === "admin"}
+      />
+
       {/* Accounts receivable at a glance */}
       <div className="mt-6 grid gap-4 sm:grid-cols-3">
         <div className="rounded-lg border border-border bg-card p-4">
@@ -573,6 +595,226 @@ export default function BillingPage() {
         onConfirm={confirmInvoiceVoid}
       />
     </div>
+  );
+}
+
+function FinancialClosePanel({
+  billingTimeZone,
+  isAdmin,
+}: {
+  billingTimeZone?: string | null;
+  isAdmin: boolean;
+}) {
+  const formatCurrency = useCurrencyFormatter();
+  const utils = trpc.useUtils();
+  const [businessDate, setBusinessDate] = useState("");
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  useEffect(() => {
+    if (!businessDate && billingTimeZone) {
+      setBusinessDate(previousClinicBusinessDate(billingTimeZone));
+    }
+  }, [billingTimeZone, businessDate]);
+
+  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(businessDate);
+  const statement = trpc.billing.financialDayStatement.useQuery(
+    { businessDate },
+    { enabled: validDate }
+  );
+  const history = trpc.billing.listFinancialCloses.useQuery(
+    { limit: 5 },
+    { staleTime: 60 * 1000 }
+  );
+  const closeDay = trpc.billing.closeFinancialDay.useMutation({
+    onSuccess: async (result) => {
+      setConfirmOpen(false);
+      toast.success(
+        result.created
+          ? "Clinic day closed with an immutable snapshot"
+          : "Clinic day was already closed"
+      );
+      await Promise.all([
+        utils.billing.financialDayStatement.invalidate({ businessDate }),
+        utils.billing.listFinancialCloses.invalidate(),
+      ]);
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
+  const data = statement.data;
+  const cents = (value: number) => formatCurrency(value / 100);
+  const closeDisabled =
+    !isAdmin || !data?.canClose || closeDay.isPending || !validDate;
+
+  return (
+    <section className="mt-6 rounded-lg border border-border bg-card p-4">
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+        <div>
+          <div className="flex items-center gap-2">
+            <CalendarClock className="h-4 w-4 text-primary" />
+            <h3 className="font-heading font-semibold">Clinic day close</h3>
+          </div>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            Reconcile an ended clinic day against committed payment evidence. A
+            completed close is permanent and uses the database clock in the
+            practice timezone.
+          </p>
+        </div>
+        <div className="flex items-end gap-2">
+          <div>
+            <label
+              htmlFor="financial-close-business-date"
+              className="block text-xs font-medium text-muted-foreground"
+            >
+              Clinic date
+            </label>
+            <Input
+              id="financial-close-business-date"
+              className="mt-1 w-40"
+              type="date"
+              value={businessDate}
+              onChange={(event) => setBusinessDate(event.target.value)}
+            />
+          </div>
+          {isAdmin ? (
+            <Button
+              disabled={closeDisabled}
+              onClick={() => setConfirmOpen(true)}
+            >
+              {closeDay.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
+              Close day
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      {statement.isLoading && validDate ? (
+        <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Reading the database snapshot…
+        </div>
+      ) : statement.error ? (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+          {statement.error.message}
+        </div>
+      ) : data ? (
+        <>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-md bg-muted/50 p-3">
+              <p className="text-xs text-muted-foreground">Gross receipts</p>
+              <p className="mt-1 font-semibold">
+                {cents(data.grossReceiptsCents)}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {data.paymentCount} payment
+                {data.paymentCount === 1 ? "" : "s"}
+              </p>
+            </div>
+            <div className="rounded-md bg-muted/50 p-3">
+              <p className="text-xs text-muted-foreground">Refunds</p>
+              <p className="mt-1 font-semibold">{cents(data.refundsCents)}</p>
+              <p className="text-xs text-muted-foreground">
+                Net {cents(data.netReceiptsCents)}
+              </p>
+            </div>
+            <div className="rounded-md bg-muted/50 p-3">
+              <p className="text-xs text-muted-foreground">Processor net</p>
+              <p className="mt-1 font-semibold">{cents(data.clinicNetCents)}</p>
+              <p className="text-xs text-muted-foreground">
+                Fees {cents(data.processorFeeCents + data.applicationFeeCents)}
+              </p>
+            </div>
+            <div className="rounded-md bg-muted/50 p-3">
+              <p className="text-xs text-muted-foreground">Paid out</p>
+              <p className="mt-1 font-semibold">{cents(data.paidOutCents)}</p>
+              <p className="text-xs text-muted-foreground">
+                Open disputes {cents(data.openDisputeCents)}
+              </p>
+            </div>
+          </div>
+
+          <div
+            className={`mt-3 rounded-md border p-3 text-sm ${
+              data.blocker === "unreconciled_items"
+                ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+                : data.blocker === "day_not_ended"
+                  ? "border-border bg-muted/50 text-muted-foreground"
+                  : "border-green-300 bg-green-50 text-green-900 dark:border-green-900 dark:bg-green-950/30 dark:text-green-200"
+            }`}
+          >
+            {data.blocker === "already_closed" ? (
+              <span>
+                Closed permanently
+                {data.closedAt
+                  ? ` on ${formatBillingInstantDate(data.closedAt, billingTimeZone)}`
+                  : ""}
+                . Stored totals are shown above.
+              </span>
+            ) : data.blocker === "day_not_ended" ? (
+              <span>
+                This clinic day has not ended yet. Cutoff:{" "}
+                {new Date(data.cutoffAt).toLocaleString("en-US", {
+                  timeZone: billingTimeZone ?? undefined,
+                })}
+                .
+              </span>
+            ) : data.blocker === "unreconciled_items" ? (
+              <span>
+                Close blocked: {data.unreconciledPaymentCount} payment
+                settlement{data.unreconciledPaymentCount === 1 ? "" : "s"},{" "}
+                {data.unresolvedRefundCount} refund
+                {data.unresolvedRefundCount === 1 ? "" : "s"}, and{" "}
+                {data.unreconciledPayoutCount} payout
+                {data.unreconciledPayoutCount === 1 ? "" : "s"} need
+                reconciliation.
+              </span>
+            ) : (
+              <span>
+                Reconciled and eligible to close. Review the totals before
+                confirming.
+              </span>
+            )}
+          </div>
+        </>
+      ) : null}
+
+      {history.data && history.data.length > 0 ? (
+        <div className="mt-4 border-t border-border pt-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Recent immutable closes
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {history.data.map((close) => (
+              <button
+                key={close.id}
+                type="button"
+                className="rounded-full border border-border px-3 py-1 text-xs hover:bg-muted"
+                onClick={() => setBusinessDate(close.businessDate)}
+              >
+                {formatBillingDateInput(close.businessDate, billingTimeZone)} ·{" "}
+                {cents(close.netReceiptsCents)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <ActionConfirmationDialog
+        open={confirmOpen}
+        title={`Close clinic day ${businessDate}?`}
+        description="This writes an immutable financial snapshot. Payments and invoices in the closed period can no longer be changed or deleted. Confirm only after reviewing every total and resolving the operator queue."
+        confirmLabel="Create immutable close"
+        isPending={closeDay.isPending}
+        onCancel={() => {
+          if (!closeDay.isPending) setConfirmOpen(false);
+        }}
+        onConfirm={() => {
+          if (!closeDisabled) closeDay.mutate({ businessDate });
+        }}
+      />
+    </section>
   );
 }
 
