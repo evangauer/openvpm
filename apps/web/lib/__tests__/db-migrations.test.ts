@@ -2156,8 +2156,8 @@ describe("committed Drizzle migrations", () => {
     const journal = JSON.parse(
       readRepoFile("packages/db/drizzle/meta/_journal.json"),
     ) as { entries: Array<{ tag: string }> };
-    const tag = journal.entries.find((entry) =>
-      entry.tag === "0107_reconcile_development_release_line",
+    const tag = journal.entries.find(
+      (entry) => entry.tag === "0107_reconcile_development_release_line",
     )?.tag;
     expect(tag).toBe("0107_reconcile_development_release_line");
     const migration = readRepoFile(`packages/db/drizzle/${tag}.sql`);
@@ -2212,7 +2212,9 @@ describe("committed Drizzle migrations", () => {
       readRepoFile("packages/db/drizzle/meta/_journal.json"),
     ) as { entries: Array<{ tag: string }> };
     expect(
-      journal.entries.some((entry) => entry.tag === "0111_prescription_integrity"),
+      journal.entries.some(
+        (entry) => entry.tag === "0111_prescription_integrity",
+      ),
     ).toBe(true);
     const migration = readRepoFile(
       "packages/db/drizzle/0111_prescription_integrity.sql",
@@ -2263,7 +2265,11 @@ describe("committed Drizzle migrations", () => {
     const journal = JSON.parse(
       readRepoFile("packages/db/drizzle/meta/_journal.json"),
     ) as { entries: Array<{ tag: string }> };
-    expect(journal.entries.at(-1)?.tag).toBe("0112_lab_result_integrity");
+    expect(
+      journal.entries.some(
+        (entry) => entry.tag === "0112_lab_result_integrity",
+      ),
+    ).toBe(true);
     const migration = readRepoFile(
       "packages/db/drizzle/0112_lab_result_integrity.sql",
     );
@@ -2294,5 +2300,59 @@ describe("committed Drizzle migrations", () => {
     expect(rls).toContain(
       "GRANT SELECT, INSERT ON lab_results TO openpims_app",
     );
+  });
+
+  it("keeps vaccination identity immutable while allowing bounded certificate completion", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries: Array<{ tag: string }> };
+    expect(journal.entries.at(-1)?.tag).toBe("0113_vaccination_integrity");
+    const migration = readRepoFile(
+      "packages/db/drizzle/0113_vaccination_integrity.sql",
+    );
+
+    expect(migration).toContain(
+      "Vaccination integrity migration blocked: existing records violate tenant, clinician, or date-order requirements.",
+    );
+    expect(migration).toContain("validate_vaccination_record_write");
+    expect(migration).toContain(
+      "appointment.patient_id = vaccination.patient_id",
+    );
+    expect(migration).toContain("supervisor.is_veterinarian = true");
+    expect(migration).toContain(
+      "Vaccination next due date must follow administration.",
+    );
+    expect(migration).toContain(
+      "Vaccination certificate updates require an active clinic actor and reason.",
+    );
+    expect(migration).toContain("app.vaccination_certificate_actor_id");
+    expect(migration).toContain("app.vaccination_certificate_reason");
+    expect(migration).toContain("'certificate_details_updated'");
+    expect(migration).toContain("INSERT INTO public.audit_log");
+    expect(migration).toContain(
+      "REVOKE ALL ON vaccination_records FROM openpims_app",
+    );
+    expect(migration).toContain(
+      "GRANT SELECT ON vaccination_records TO openpims_app",
+    );
+    expect(migration).toContain("GRANT INSERT (");
+    expect(migration).toContain("administered_at, next_due_date");
+    expect(migration).toContain("supervising_veterinarian_id, updated_at");
+    expect(migration).not.toContain(
+      "GRANT SELECT, INSERT, UPDATE, DELETE ON vaccination_records",
+    );
+    expect(migration).toContain("REVOKE ALL ON audit_log FROM openpims_app");
+    expect(migration).toContain("GRANT SELECT ON audit_log TO openpims_app");
+    expect(migration).toContain("entity_id, changes");
+    expect(migration).toContain("ip_address");
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(rls).toContain(
+      "REVOKE ALL ON vaccination_records FROM openpims_app",
+    );
+    expect(rls).toContain(
+      "GRANT SELECT ON vaccination_records TO openpims_app",
+    );
+    expect(rls).toContain("appends the audit row");
   });
 });

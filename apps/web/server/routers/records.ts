@@ -300,6 +300,30 @@ async function practiceDateInput(ctx: RecordsContext): Promise<string> {
   return formatDateInputForTimeZone(new Date(), await practiceTimeZone(ctx));
 }
 
+function assertVaccinationDateOrder(
+  input: {
+    productExpirationDate?: string;
+    nextDueDate?: string;
+  },
+  administeredDate: string,
+) {
+  if (
+    input.productExpirationDate &&
+    input.productExpirationDate < administeredDate
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Product expiration cannot precede administration.",
+    });
+  }
+  if (input.nextDueDate && input.nextDueDate <= administeredDate) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Next due date must follow administration.",
+    });
+  }
+}
+
 function practiceTodayExpression(practiceId: string) {
   return sql<string>`(
     now() at time zone coalesce(
@@ -1952,6 +1976,7 @@ export const recordsRouter = createRouter({
             rabiesTagNumber: vaccinationRecords.rabiesTagNumber,
             supervisingVeterinarianId:
               vaccinationRecords.supervisingVeterinarianId,
+            administeredAt: vaccinationRecords.administeredAt,
             updatedAt: vaccinationRecords.updatedAt,
           })
           .from(vaccinationRecords)
@@ -1995,8 +2020,31 @@ export const recordsRouter = createRouter({
               "This vaccination changed. Refresh before updating certificate details.",
           });
         }
+        assertVaccinationDateOrder(
+          { productExpirationDate: input.productExpirationDate },
+          formatDateInputForTimeZone(
+            current.administeredAt,
+            await practiceTimeZone(txCtx),
+          ),
+        );
 
         const now = new Date();
+        await tx.execute(sql`select
+          set_config(
+            'app.vaccination_certificate_actor_id',
+            ${ctx.user.id},
+            true
+          ),
+          set_config(
+            'app.vaccination_certificate_reason',
+            ${input.reason},
+            true
+          ),
+          set_config(
+            'app.vaccination_certificate_ip',
+            ${ctx.ip ?? ""},
+            true
+          )`);
         const patch = {
           productName: input.productName ?? null,
           manufacturer: input.manufacturer ?? null,
@@ -2026,27 +2074,6 @@ export const recordsRouter = createRouter({
               "This vaccination changed. Refresh before updating certificate details.",
           });
         }
-        await tx.insert(auditLog).values({
-          practiceId: ctx.practiceId,
-          userId: ctx.user.id,
-          action: "certificate_details_updated",
-          entityType: "vaccination_record",
-          entityId: current.id,
-          changes: {
-            reason: input.reason,
-            before: {
-              productName: current.productName,
-              manufacturer: current.manufacturer,
-              lotNumber: current.lotNumber,
-              productExpirationDate: current.productExpirationDate,
-              doseType: current.doseType,
-              licensedDurationMonths: current.licensedDurationMonths,
-              rabiesTagNumber: current.rabiesTagNumber,
-              supervisingVeterinarianId: current.supervisingVeterinarianId,
-            },
-            after: patch,
-          },
-        });
         return updated;
       }),
     ),
@@ -2477,6 +2504,7 @@ export const recordsRouter = createRouter({
           txCtx,
           input.supervisingVeterinarianId,
         );
+        assertVaccinationDateOrder(input, await practiceDateInput(txCtx));
         if (input.appointmentId) {
           await lockOpenAppointmentForClinicalWork(
             txCtx,

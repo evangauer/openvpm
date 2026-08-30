@@ -1221,7 +1221,16 @@ describe("settings demo data cleanup scoping", () => {
       "const latest = await seedDemoData(tx, { practiceId })",
     );
     expect(SETTINGS_SOURCE).toContain(
-      "clearSeededDemoData(ctx.db, ctx.practiceId)",
+      "clearSeededDemoData(ctx.db, ctx.practiceId, {",
+    );
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
+      ".insert(clinicalRecordCorrections)",
+    );
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).toContain(
+      'reason: "Seeded demonstration record cleared from the clinic."',
+    );
+    expect(DEMO_DATA_LIFECYCLE_SOURCE).not.toContain(
+      ".update(vaccinationRecords)",
     );
     expect(SETTINGS_SOURCE).toContain(
       "reseedSampleClinic(ctx.db, ctx.practiceId)",

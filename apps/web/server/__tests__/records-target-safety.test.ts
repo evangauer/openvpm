@@ -124,6 +124,15 @@ afterEach(() => {
 
 describe("records target safety", () => {
   const patientRow = [{ id: PATIENT_ID }];
+  const practiceSettingsRow = [
+    {
+      name: "Practice",
+      address: null,
+      phone: null,
+      email: null,
+      timezone: "America/New_York",
+    },
+  ];
   const appointmentRow = [
     { id: APPOINTMENT_ID, doctorId: USER_ID, status: "in_exam" },
   ];
@@ -238,7 +247,7 @@ describe("records target safety", () => {
 
   it("creates a vaccination after validating the patient", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [patientRow],
+      selectResults: [patientRow, practiceSettingsRow],
       insertedRows: [
         {
           id: RECORD_ID,
@@ -274,6 +283,32 @@ describe("records target safety", () => {
         source: "dashboard",
       },
     );
+  });
+
+  it("rejects vaccination expiration and due dates that precede administration", async () => {
+    const expired = createDb({
+      selectResults: [patientRow, practiceSettingsRow],
+    });
+    await expect(
+      callerWithDb(expired.db).createVaccination({
+        patientId: PATIENT_ID,
+        vaccineName: "Rabies",
+        productExpirationDate: "2000-01-01",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(expired.insertValues).not.toHaveBeenCalled();
+
+    const invalidDue = createDb({
+      selectResults: [patientRow, practiceSettingsRow],
+    });
+    await expect(
+      callerWithDb(invalidDue.db).createVaccination({
+        patientId: PATIENT_ID,
+        vaccineName: "Rabies",
+        nextDueDate: "2000-01-01",
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(invalidDue.insertValues).not.toHaveBeenCalled();
   });
 
   it("prepares a complete, uniquely identified rabies certificate for staff", async () => {

@@ -3,6 +3,7 @@ import {
   appointments,
   clients,
   communications,
+  clinicalRecordCorrections,
   invoiceItems,
   invoices,
   patients,
@@ -89,6 +90,7 @@ function settingsDemoPatch(demoData: DemoDataProvenance) {
 export async function clearSeededDemoData(
   db: Database,
   practiceId: string,
+  actor: { id: string; name: string },
 ): Promise<{ found: boolean; alreadyCleared: boolean }> {
   return db.transaction(async (transaction) => {
     const tx = transaction as unknown as Database;
@@ -190,15 +192,37 @@ export async function clearSeededDemoData(
         );
     }
     if (demo.vaccinationIds?.length) {
-      await tx
-        .update(vaccinationRecords)
-        .set({ deletedAt: now })
+      const demoVaccinations = await tx
+        .select({
+          id: vaccinationRecords.id,
+          patientId: vaccinationRecords.patientId,
+          appointmentId: vaccinationRecords.appointmentId,
+        })
+        .from(vaccinationRecords)
         .where(
           and(
             eq(vaccinationRecords.practiceId, practiceId),
             inArray(vaccinationRecords.id, demo.vaccinationIds),
           ),
         );
+      if (demoVaccinations.length > 0) {
+        await tx
+          .insert(clinicalRecordCorrections)
+          .values(
+            demoVaccinations.map((vaccination) => ({
+              practiceId,
+              recordType: "vaccination_record" as const,
+              action: "entered_in_error" as const,
+              vaccinationRecordId: vaccination.id,
+              patientId: vaccination.patientId,
+              appointmentId: vaccination.appointmentId,
+              reason: "Seeded demonstration record cleared from the clinic.",
+              correctedBy: actor.id,
+              correctedByName: actor.name,
+            })),
+          )
+          .onConflictDoNothing();
+      }
     }
     if (demoSoapNoteIds.length) {
       await tx

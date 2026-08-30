@@ -289,6 +289,12 @@ jobs:
       - name: Execute lab result integrity database contract
         run: pnpm --filter @openpims/db db:lab-result-integrity:test
 
+      # Vaccination rows are immutable clinical identity with narrowly mutable
+      # certificate metadata. Prove tenant/chart references, date ordering,
+      # veterinarian attribution, bounded updates, and delete denial.
+      - name: Execute vaccination integrity database contract
+        run: pnpm --filter @openpims/db db:vaccination-integrity:test
+
       # Subscription notices cross Stripe transactions, a durable outbox,
       # provider idempotency, and final-state suppression. Exercise atomic
       # enqueue, SKIP LOCKED workers, lease/CAS recovery, immutable attempts,

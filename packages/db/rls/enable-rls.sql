@@ -150,6 +150,38 @@ GRANT SELECT, INSERT ON clinical_record_corrections TO openpims_app;
 REVOKE ALL ON patient_allergies FROM openpims_app;
 GRANT SELECT, INSERT ON patient_allergies TO openpims_app;
 
+-- Vaccination rows are clinical and certificate evidence. The app may append
+-- administered doses and fill bounded certificate metadata. The database
+-- trigger requires an active clinic actor and reason and appends the audit row
+-- atomically. The app cannot rewrite patient/encounter identity,
+-- administration, due dates, vaccine identity, or erase the source record.
+REVOKE ALL ON vaccination_records FROM openpims_app;
+GRANT SELECT ON vaccination_records TO openpims_app;
+GRANT INSERT (
+  practice_id, patient_id, appointment_id, vaccine_name,
+  import_fingerprint, product_name, manufacturer, lot_number,
+  product_expiration_date, dose_type, licensed_duration_months,
+  rabies_tag_number, administered_by, supervising_veterinarian_id,
+  administered_at, next_due_date
+) ON vaccination_records TO openpims_app;
+GRANT UPDATE (
+  product_name, manufacturer, lot_number, product_expiration_date,
+  dose_type, licensed_duration_months, rabies_tag_number,
+  supervising_veterinarian_id, updated_at
+) ON vaccination_records TO openpims_app;
+REVOKE ALL ON FUNCTION validate_vaccination_record_write()
+  FROM PUBLIC, openpims_app;
+
+-- Audit rows are append-only evidence. Identity and timestamps are generated
+-- by PostgreSQL; tenant code may read and append attributed events but cannot
+-- rewrite, soft-delete, erase, or backdate the ledger.
+REVOKE ALL ON audit_log FROM openpims_app;
+GRANT SELECT ON audit_log TO openpims_app;
+GRANT INSERT (
+  practice_id, user_id, action, entity_type, entity_id, changes,
+  ip_address
+) ON audit_log TO openpims_app;
+
 -- SOAP addenda are immutable, attributed extensions to a finalized note.
 REVOKE ALL ON soap_note_addenda FROM openpims_app;
 GRANT SELECT, INSERT ON soap_note_addenda TO openpims_app;

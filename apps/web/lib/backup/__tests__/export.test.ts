@@ -2331,6 +2331,80 @@ describe("restorePracticeData", () => {
     );
   });
 
+  it("rejects vaccination restore rows that violate chart, supervisor, or date order", () => {
+    const backup = {
+      ...emptyBackup(),
+      practice: {
+        id: "practice-1",
+        name: "Practice",
+        timezone: "America/New_York",
+      },
+      users: [
+        { id: "user-1", isVeterinarian: false },
+        { id: "vet-1", isVeterinarian: true },
+      ],
+      clients: [{ id: "client-1" }],
+      patients: [
+        { id: "patient-1", clientId: "client-1" },
+        { id: "patient-2", clientId: "client-1" },
+      ],
+      appointments: [
+        {
+          id: "appointment-1",
+          clientId: "client-1",
+          patientId: "patient-2",
+        },
+      ],
+      vaccinationRecords: [
+        {
+          id: "vaccination-1",
+          patientId: "patient-1",
+          appointmentId: "appointment-1",
+          administeredBy: "user-1",
+          supervisingVeterinarianId: "user-1",
+          administeredAt: "2026-08-30T16:00:00.000Z",
+          productExpirationDate: "2026-08-29",
+          nextDueDate: "2026-08-30",
+        },
+      ],
+    };
+
+    expect(validatePracticeExportRestore(backup).errors).toEqual(
+      expect.arrayContaining([
+        "vaccinationRecords[vaccination-1].appointmentId must reference an appointment for the same patientId.",
+        "vaccinationRecords[vaccination-1].supervisingVeterinarianId must reference a veterinarian.",
+        "vaccinationRecords[vaccination-1].productExpirationDate cannot precede administration.",
+        "vaccinationRecords[vaccination-1].nextDueDate must follow administration.",
+      ]),
+    );
+  });
+
+  it("fails vaccination date validation closed for an invalid practice timezone", () => {
+    const backup = {
+      ...emptyBackup(),
+      practice: {
+        id: "practice-1",
+        name: "Practice",
+        timezone: "Not/A_Time_Zone",
+      },
+      users: [{ id: "user-1", isVeterinarian: false }],
+      clients: [{ id: "client-1" }],
+      patients: [{ id: "patient-1", clientId: "client-1" }],
+      vaccinationRecords: [
+        {
+          id: "vaccination-1",
+          patientId: "patient-1",
+          administeredBy: "user-1",
+          administeredAt: "2026-08-30T16:00:00.000Z",
+        },
+      ],
+    };
+
+    expect(validatePracticeExportRestore(backup).errors).toContain(
+      "practice.timezone must be a valid IANA time zone.",
+    );
+  });
+
   it("validates exact append-only lab replacement chains", () => {
     const backup = validLabReplacementBackup();
     expect(validatePracticeExportRestore(backup)).toEqual({

@@ -2272,7 +2272,10 @@ export const settingsRouter = createRouter({
 
   /** Remove the seeded demo clients/patients/appointments (soft delete). */
   clearDemoData: adminProcedure.mutation(async ({ ctx }) => {
-    const result = await clearSeededDemoData(ctx.db, ctx.practiceId);
+    const result = await clearSeededDemoData(ctx.db, ctx.practiceId, {
+      id: ctx.user.id,
+      name: ctx.user.name,
+    });
     if (!result.found) throw practiceNotFound();
     return { ok: true, alreadyCleared: result.alreadyCleared };
   }),

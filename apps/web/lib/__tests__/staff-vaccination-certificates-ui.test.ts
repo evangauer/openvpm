@@ -57,12 +57,13 @@ describe("staff vaccination certificates", () => {
       router.indexOf("prepareVaccinationCertificate"),
     );
     expect(router).toContain("updateVaccinationCertificateDetails");
-    expect(router).toContain('action: "certificate_details_updated"');
-    expect(router).toContain("before:");
-    expect(router).toContain("after: patch");
+    expect(updateSection).toContain("app.vaccination_certificate_actor_id");
+    expect(updateSection).toContain("app.vaccination_certificate_reason");
+    expect(updateSection).toContain("app.vaccination_certificate_ip");
     expect(router).toContain("expectedUpdatedAt");
     expect(updateSection).toContain("notExists(");
     expect(updateSection).toContain('.for("update")');
+    expect(updateSection).toContain("assertVaccinationDateOrder(");
     expect(updateSection).not.toContain(".leftJoin(");
     expect(updateSection).not.toContain(
       "eq(vaccinationRecords.updatedAt, current.updatedAt)",

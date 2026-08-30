@@ -13,6 +13,7 @@ import { withSystem } from "@/lib/tenant-db";
 import { redactSecrets } from "@/lib/audit";
 import { normalizeE164 } from "@/lib/messaging/phone";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
+import { formatDateInputForTimeZone } from "@/lib/date-input";
 import {
   isPracticeBackupJsonSizeValid,
   PRACTICE_BACKUP_JSON_MAX_BYTES,
@@ -1079,8 +1080,48 @@ export function validatePracticeExportRestore(data: unknown): {
     }
   });
 
+  const restoreAppointments = new Map(
+    rowsFor(data, "appointments").map((row) => [row.id, row]),
+  );
+  const restoreUsers = new Map(
+    rowsFor(data, "users").map((row) => [row.id, row]),
+  );
+  const restoreTimeZone =
+    isRecord(exportRecord.practice) &&
+    typeof exportRecord.practice.timezone === "string"
+      ? exportRecord.practice.timezone
+      : "UTC";
+  let restoreTimeZoneValid = true;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: restoreTimeZone }).format(
+      new Date(0),
+    );
+  } catch {
+    restoreTimeZoneValid = false;
+    pushError("practice.timezone must be a valid IANA time zone.");
+  }
   rowsFor(data, "vaccinationRecords").forEach((row, index) => {
     const label = `vaccinationRecords[${rowLabel(row, index)}]`;
+    const appointment = restoreAppointments.get(row.appointmentId);
+    if (
+      row.appointmentId != null &&
+      appointment &&
+      appointment.patientId !== row.patientId
+    ) {
+      pushError(
+        `${label}.appointmentId must reference an appointment for the same patientId.`,
+      );
+    }
+    const supervisor = restoreUsers.get(row.supervisingVeterinarianId);
+    if (
+      row.supervisingVeterinarianId != null &&
+      supervisor &&
+      supervisor.isVeterinarian !== true
+    ) {
+      pushError(
+        `${label}.supervisingVeterinarianId must reference a veterinarian.`,
+      );
+    }
     if (
       row.doseType != null &&
       row.doseType !== "initial" &&
@@ -1097,6 +1138,31 @@ export function validatePracticeExportRestore(data: unknown): {
       pushError(
         `${label}.licensedDurationMonths must be an integer from 1 through 120.`,
       );
+    }
+    if (row.administeredAt != null) {
+      const administeredAt = new Date(String(row.administeredAt));
+      if (Number.isNaN(administeredAt.getTime())) {
+        pushError(`${label}.administeredAt must be a valid timestamp.`);
+      } else if (restoreTimeZoneValid) {
+        const administeredDate = formatDateInputForTimeZone(
+          administeredAt,
+          restoreTimeZone,
+        );
+        if (
+          typeof row.productExpirationDate === "string" &&
+          row.productExpirationDate < administeredDate
+        ) {
+          pushError(
+            `${label}.productExpirationDate cannot precede administration.`,
+          );
+        }
+        if (
+          typeof row.nextDueDate === "string" &&
+          row.nextDueDate <= administeredDate
+        ) {
+          pushError(`${label}.nextDueDate must follow administration.`);
+        }
+      }
     }
   });
 
