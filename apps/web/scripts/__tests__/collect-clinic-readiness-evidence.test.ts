@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  collect: vi.fn(async () => ({ evidenceFormatVersion: 5 })),
+  collect: vi.fn(async () => ({ evidenceFormatVersion: 6 })),
   evaluate: vi.fn(() => ({
     decision: "GO",
     evaluatedAt: "2026-08-29T21:00:00.000Z",
@@ -59,6 +59,16 @@ function argumentsFor(output: string): string[] {
     "private/incident.json",
     "--auth-recovery-evidence",
     "private/auth-recovery.json",
+    "--clinical-database-fingerprint",
+    "d".repeat(64),
+    "--controlled-substance-audit",
+    "private/controlled-substances.json",
+    "--prescription-audit",
+    "private/prescriptions.json",
+    "--lab-result-audit",
+    "private/lab-results.json",
+    "--vaccination-audit",
+    "private/vaccinations.json",
     "--output",
     output,
   ];
@@ -84,6 +94,17 @@ describe("clinic readiness evidence collector CLI", () => {
           directory,
           "private/auth-recovery.json",
         ),
+        clinicalDatabaseFingerprint: "d".repeat(64),
+        controlledSubstanceAuditPath: path.join(
+          directory,
+          "private/controlled-substances.json",
+        ),
+        prescriptionAuditPath: path.join(
+          directory,
+          "private/prescriptions.json",
+        ),
+        labResultAuditPath: path.join(directory, "private/lab-results.json"),
+        vaccinationAuditPath: path.join(directory, "private/vaccinations.json"),
       }),
     );
     expect(log.mock.calls.flat().join(" ")).not.toContain(directory);

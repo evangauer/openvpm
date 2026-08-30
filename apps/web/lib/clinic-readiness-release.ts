@@ -1,5 +1,6 @@
 import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
 import { evaluateAuthRecoveryEvidence } from "./auth-recovery-evidence";
+import { evaluateClinicalDataIntegrityEvidence } from "./clinical-data-integrity-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const HEALTH_MAX_AGE_MS = 15 * 60 * 1000;
@@ -138,8 +139,8 @@ export function evaluateClinicReadinessRelease(
 ): ClinicReadinessDecision {
   const reasons: string[] = [];
   const root = record(input);
-  if (root?.evidenceFormatVersion !== 5) {
-    reasons.push("Clinic readiness evidence format version must be 5.");
+  if (root?.evidenceFormatVersion !== 6) {
+    reasons.push("Clinic readiness evidence format version must be 6.");
   }
   const releaseSha =
     root &&
@@ -149,6 +150,22 @@ export function evaluateClinicReadinessRelease(
       : null;
   if (!releaseSha)
     reasons.push("Release SHA must be an exact 40-character commit.");
+
+  const clinicalDataIntegrity = record(root?.clinicalDataIntegrity);
+  if (!clinicalDataIntegrity) {
+    reasons.push("Clinical-data integrity evidence is missing.");
+  } else {
+    const clinicalDecision = evaluateClinicalDataIntegrityEvidence(
+      clinicalDataIntegrity,
+      nowMs,
+    );
+    reasons.push(...clinicalDecision.reasons);
+    if (releaseSha && clinicalDecision.releaseSha !== releaseSha) {
+      reasons.push(
+        "Clinical-data integrity evidence does not match the release SHA.",
+      );
+    }
+  }
 
   const ci = record(root?.ci);
   if (!ci) {

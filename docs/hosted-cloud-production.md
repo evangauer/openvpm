@@ -182,9 +182,25 @@ PLATFORM_ADMIN_EMAILS=...
 
 ### Transitional production release gate
 
-Before production approval, collect one PHI-free, format-version `5` JSON
+Before production approval, collect one PHI-free, format-version `6` JSON
 evidence packet from authoritative sources. Export a read-only `GITHUB_TOKEN`
-in the secure operator environment, then run:
+in the secure operator environment. Immediately before collection, run all four
+aggregate-only audits against the same intended production database. Each audit
+requires its explicit read-only confirmation and writes no database data:
+
+```sh
+umask 077
+export CONTROLLED_SUBSTANCE_LEDGER_READ_ONLY_CONFIRMATION=OPENVPM_CONTROLLED_SUBSTANCE_LEDGER_READ_ONLY
+export PRESCRIPTION_INTEGRITY_READ_ONLY_CONFIRMATION=OPENVPM_PRESCRIPTION_INTEGRITY_READ_ONLY
+export LAB_RESULT_INTEGRITY_READ_ONLY_CONFIRMATION=OPENVPM_LAB_RESULT_INTEGRITY_READ_ONLY
+export VACCINATION_INTEGRITY_READ_ONLY_CONFIRMATION=OPENVPM_VACCINATION_INTEGRITY_READ_ONLY
+pnpm --filter @openpims/db db:controlled-substance-ledger:audit -- --allow-live-read-only > /secure/path/controlled-substances.json
+pnpm --filter @openpims/db db:prescription-integrity:audit -- --allow-live-read-only > /secure/path/prescriptions.json
+pnpm --filter @openpims/db db:lab-result-integrity:audit -- --allow-live-read-only > /secure/path/lab-results.json
+pnpm --filter @openpims/db db:vaccination-integrity:audit -- --allow-live-read-only > /secure/path/vaccinations.json
+```
+
+Then assemble the release packet while those reports are still fresh:
 
 ```sh
 pnpm --filter @openpims/web release:clinic-readiness:collect -- \
@@ -198,6 +214,11 @@ pnpm --filter @openpims/web release:clinic-readiness:collect -- \
   --restore-evidence /secure/path/provider-restore-evidence.json \
   --incident-evidence /secure/path/incident-tabletop-evidence.json \
   --auth-recovery-evidence /secure/path/auth-recovery-drill-evidence.json \
+  --clinical-database-fingerprint "$DATABASE_TARGET_FINGERPRINT" \
+  --controlled-substance-audit /secure/path/controlled-substances.json \
+  --prescription-audit /secure/path/prescriptions.json \
+  --lab-result-audit /secure/path/lab-results.json \
+  --vaccination-audit /secure/path/vaccinations.json \
   --output /secure/path/clinic-readiness-evidence.json
 ```
 
@@ -214,8 +235,11 @@ branch scope is wrong, `staging` lacks independent approval, `main` needs fewer
 than two approvals, code-owner or last-push review is disabled, or any required
 clinic-readiness/security check is optional. It fetches the HTTPS health
 response itself and requires bounded local provider-restore and incident-
-tabletop packets. It writes the combined packet with owner-only permissions and
-evaluates it immediately.
+tabletop packets. It also requires fresh, aggregate-only controlled-substance,
+prescription, lab-result, and vaccination reports from the same independently
+configured database fingerprint; every report must have valid counts, empty
+finding lists, and `releaseSafe: true`. It writes the combined packet with
+owner-only permissions and evaluates it immediately.
 To re-evaluate that immutable packet without new network calls, run:
 
 ```sh
@@ -234,8 +258,9 @@ proves the hold/release workflow, exact object version, and authentication,
 tenant, scheduling, clinical, invoice, payment, and file smokes; and a fresh,
 approved incident tabletop covers all five required scenarios with three
 distinct named authorities. Missing, stale, cross-SHA, synthetic-only,
-unhealthy, incomplete-incident, or weak-governance evidence returns `NO_GO` and
-a nonzero exit. The synthetic CI drill is necessary regression proof, but it
+unhealthy, incomplete-incident, cross-database, unsafe-clinical-data, or
+weak-governance evidence returns `NO_GO` and a nonzero exit. The synthetic CI
+drill is necessary regression proof, but it
 cannot authorize production. Keep the packet access-controlled; it contains
 only bounded status evidence and safe role handles, never credentials, private
 contact details, object bytes, provider payloads, local paths, or patient data.

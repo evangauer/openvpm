@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
 import { evaluateAuthRecoveryEvidence } from "./auth-recovery-evidence";
+import { evaluateClinicalDataIntegrityEvidence } from "./clinical-data-integrity-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const REPOSITORY_PATTERN = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i;
@@ -69,6 +70,11 @@ export type ClinicReadinessEvidenceCollectionOptions = {
   restoreEvidencePath: string;
   incidentEvidencePath: string;
   authRecoveryEvidencePath: string;
+  clinicalDatabaseFingerprint: string;
+  controlledSubstanceAuditPath: string;
+  prescriptionAuditPath: string;
+  labResultAuditPath: string;
+  vaccinationAuditPath: string;
   githubToken?: string;
   now?: Date;
   fetchFn?: typeof fetch;
@@ -77,6 +83,15 @@ export type ClinicReadinessEvidenceCollectionOptions = {
 function exactSha(value: string): string {
   if (!SHA_PATTERN.test(value)) {
     throw new Error("Release SHA must be an exact 40-character commit.");
+  }
+  return value.toLowerCase();
+}
+
+function exactFingerprint(value: string): string {
+  if (!/^[0-9a-f]{64}$/i.test(value)) {
+    throw new Error(
+      "Clinical database fingerprint must be an exact SHA-256 value.",
+    );
   }
   return value.toLowerCase();
 }
@@ -459,6 +474,9 @@ export async function collectClinicReadinessEvidence(
   options: ClinicReadinessEvidenceCollectionOptions,
 ) {
   const releaseSha = exactSha(options.releaseSha);
+  const clinicalDatabaseFingerprint = exactFingerprint(
+    options.clinicalDatabaseFingerprint,
+  );
   if (!REPOSITORY_PATTERN.test(options.repository)) {
     throw new Error("GitHub repository must use the owner/name form.");
   }
@@ -618,6 +636,30 @@ export async function collectClinicReadinessEvidence(
     options.authRecoveryEvidencePath,
     "Account-recovery evidence",
   );
+  const clinicalDataIntegrity = {
+    evidenceFormatVersion: 1,
+    releaseSha,
+    collectedAt: checkedAt,
+    databaseTargetFingerprint: clinicalDatabaseFingerprint,
+    audits: {
+      controlledSubstances: regularBoundedJsonFile(
+        options.controlledSubstanceAuditPath,
+        "Controlled-substance audit evidence",
+      ),
+      prescriptions: regularBoundedJsonFile(
+        options.prescriptionAuditPath,
+        "Prescription audit evidence",
+      ),
+      labResults: regularBoundedJsonFile(
+        options.labResultAuditPath,
+        "Lab-result audit evidence",
+      ),
+      vaccinations: regularBoundedJsonFile(
+        options.vaccinationAuditPath,
+        "Vaccination audit evidence",
+      ),
+    },
+  };
   if (
     !evaluateIncidentResponseEvidence(incidentResponse, Date.parse(checkedAt))
       .ready
@@ -633,9 +675,19 @@ export async function collectClinicReadinessEvidence(
       "Account-recovery evidence is incomplete, stale, or unsafe.",
     );
   }
+  if (
+    !evaluateClinicalDataIntegrityEvidence(
+      clinicalDataIntegrity,
+      Date.parse(checkedAt),
+    ).ready
+  ) {
+    throw new Error(
+      "Clinical-data integrity evidence is incomplete, stale, cross-target, or unsafe.",
+    );
+  }
 
   return {
-    evidenceFormatVersion: 5,
+    evidenceFormatVersion: 6,
     releaseSha,
     ci: {
       releaseSha,
@@ -681,6 +733,7 @@ export async function collectClinicReadinessEvidence(
     },
     incidentResponse,
     authRecovery,
+    clinicalDataIntegrity,
     restoreDrill,
   };
 }

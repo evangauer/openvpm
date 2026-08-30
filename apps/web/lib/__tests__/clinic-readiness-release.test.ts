@@ -1,8 +1,61 @@
 import { describe, expect, it } from "vitest";
 import { evaluateClinicReadinessRelease } from "../clinic-readiness-release";
+import { CLINICAL_DATA_AUDIT_SCHEMAS } from "../clinical-data-integrity-evidence";
 
 const now = Date.parse("2026-08-29T21:00:00.000Z");
 const sha = "a".repeat(40);
+const clinicalDatabaseFingerprint = "d".repeat(64);
+
+function healthyClinicalDataIntegrityEvidence() {
+  type AuditDomain = keyof typeof CLINICAL_DATA_AUDIT_SCHEMAS;
+  const audit = (domain: AuditDomain, extra: Record<string, unknown>) => ({
+    version: 1,
+    mode: "read_only_aggregate",
+    checkedAt: "2026-08-29T20:55:00.000Z",
+    databaseTargetFingerprint: clinicalDatabaseFingerprint,
+    counts: Object.fromEntries(
+      CLINICAL_DATA_AUDIT_SCHEMAS[domain].countFields.map((field) => [
+        field,
+        0,
+      ]),
+    ),
+    releaseSafe: true,
+    ...extra,
+  });
+  return {
+    evidenceFormatVersion: 1,
+    releaseSha: sha,
+    collectedAt: "2026-08-29T20:55:00.000Z",
+    databaseTargetFingerprint: clinicalDatabaseFingerprint,
+    audits: {
+      controlledSubstances: audit("controlledSubstances", { findings: [] }),
+      prescriptions: audit("prescriptions", {
+        findings: [],
+        architectureFindings: [],
+      }),
+      labResults: audit("labResults", {
+        architectureState: Object.fromEntries(
+          CLINICAL_DATA_AUDIT_SCHEMAS.labResults.architectureFields.map(
+            (field) => [field, true],
+          ),
+        ),
+        integrityFindings: [],
+        operationalFindings: [],
+        architectureFindings: [],
+      }),
+      vaccinations: audit("vaccinations", {
+        architectureState: Object.fromEntries(
+          CLINICAL_DATA_AUDIT_SCHEMAS.vaccinations.architectureFields.map(
+            (field) => [field, true],
+          ),
+        ),
+        integrityFindings: [],
+        operationalFindings: [],
+        architectureFindings: [],
+      }),
+    },
+  };
+}
 
 function healthyIncidentResponseEvidence() {
   const scenario = {
@@ -127,8 +180,9 @@ function healthyEvidence() {
       ].map((name) => [name, { ok: true }]),
     );
   return {
-    evidenceFormatVersion: 5,
+    evidenceFormatVersion: 6,
     releaseSha: sha,
+    clinicalDataIntegrity: healthyClinicalDataIntegrityEvidence(),
     ci: {
       releaseSha: sha,
       gates: {
@@ -293,9 +347,28 @@ describe("clinic readiness release decision", () => {
 
   it("rejects an unknown evidence format", () => {
     const evidence = healthyEvidence();
-    evidence.evidenceFormatVersion = 4;
+    evidence.evidenceFormatVersion = 5;
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
-      "Clinic readiness evidence format version must be 5.",
+      "Clinic readiness evidence format version must be 6.",
+    );
+  });
+
+  it("rejects missing, cross-SHA, or unsafe configured clinical-data evidence", () => {
+    const evidence = healthyEvidence();
+    evidence.clinicalDataIntegrity.releaseSha = "c".repeat(40);
+    evidence.clinicalDataIntegrity.audits.vaccinations.releaseSafe = false;
+    const reasons = evaluateClinicReadinessRelease(evidence, now).reasons;
+    expect(reasons).toEqual(
+      expect.arrayContaining([
+        "Clinical-data integrity evidence does not match the release SHA.",
+        "Clinical-data audit vaccinations is not release-safe.",
+      ]),
+    );
+
+    delete (evidence as Partial<ReturnType<typeof healthyEvidence>>)
+      .clinicalDataIntegrity;
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
+      "Clinical-data integrity evidence is missing.",
     );
   });
 

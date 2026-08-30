@@ -3,6 +3,7 @@ import { config } from "dotenv";
 config({ path: process.env.OPENPIMS_ENV_FILE?.trim() || "../../.env" });
 
 import postgres from "postgres";
+import { databaseConnectionIdentityFingerprint } from "./deployment-target";
 
 const CONFIRMATION = "OPENVPM_LAB_RESULT_INTEGRITY_READ_ONLY";
 
@@ -30,7 +31,6 @@ if (!databaseUrl) {
   console.error("DATABASE_URL is required.");
   process.exit(1);
 }
-
 const sql = postgres(databaseUrl, {
   max: 1,
   connect_timeout: 10,
@@ -75,6 +75,8 @@ type ArchitectureState = {
 };
 
 try {
+  const databaseTargetFingerprint =
+    databaseConnectionIdentityFingerprint(databaseUrl);
   const audit = await sql.begin(
     "isolation level repeatable read read only",
     async (tx) => {
@@ -341,6 +343,8 @@ try {
       {
         version: 1,
         mode: "read_only_aggregate",
+        checkedAt: new Date().toISOString(),
+        databaseTargetFingerprint,
         counts,
         architectureState: architecture,
         releaseSafe:

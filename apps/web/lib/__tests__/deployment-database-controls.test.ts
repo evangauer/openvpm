@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   assertDatabaseTarget,
+  databaseConnectionIdentityFingerprint,
   databaseTargetFingerprint,
   supabaseProjectRef,
 } from "@openpims/db/deployment-target";
@@ -71,6 +72,28 @@ describe("database deployment target identity", () => {
         forbiddenFingerprints: databaseTargetFingerprint(PROJECT_REF),
       }),
     ).toThrow("forbidden");
+  });
+
+  it("fingerprints the connected database without credentials and converges Supabase connection modes", () => {
+    const direct = `postgresql://postgres:direct-secret@db.${PROJECT_REF}.supabase.co:5432/postgres?sslmode=require`;
+    const pooler = `postgresql://postgres.${PROJECT_REF}:pooler-secret@pooler.supabase.com:6543/postgres`;
+    expect(databaseConnectionIdentityFingerprint(direct)).toBe(
+      databaseTargetFingerprint(PROJECT_REF),
+    );
+    expect(databaseConnectionIdentityFingerprint(pooler)).toBe(
+      databaseTargetFingerprint(PROJECT_REF),
+    );
+
+    const local = databaseConnectionIdentityFingerprint(
+      "postgresql://openvpm:do-not-log@localhost:5433/openvpm_test?sslmode=disable",
+    );
+    expect(local).toMatch(/^[0-9a-f]{64}$/);
+    expect(local).not.toContain("do-not-log");
+    expect(local).toBe(
+      databaseConnectionIdentityFingerprint(
+        "postgresql://openvpm:another-secret@localhost:5433/openvpm_test",
+      ),
+    );
   });
 
   it("requires at least one well-formed forbidden target fingerprint", () => {

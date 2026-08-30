@@ -168,7 +168,7 @@ workflow, migration-history and RLS isolation jobs, both CodeQL analyses, and
 the disposable restore drill. A drift in any of these settings makes the
 authoritative release packet `NO_GO` even when the application checks are green.
 
-Evidence format version 4 also requires a fresh security-incident tabletop
+Evidence format version 6 also requires a fresh security-incident tabletop
 covering database, object-store, Stripe, email-provider, and credential
 compromise. Three distinct named people must approve the incident commander,
 privacy/legal, and notification-authority roles. The bounded packet accepts no

@@ -143,7 +143,7 @@ The evidence schema accepts no free-form notes. It contains only safe handles,
 an opaque `tabletop-YYYY-MM-DD-<8-lowercase-hex>` exercise ID whose date matches
 completion, timestamps, booleans, counts, and follow-up issue numbers. The
 authoritative clinic-readiness
-collector requires this file through `--incident-evidence` and format version 4
+collector requires this file through `--incident-evidence` and format version 6
 returns `NO_GO` when evidence is missing, stale, incomplete, unsafe,
 placeholder-owned, self-overlapping, or unapproved.
 

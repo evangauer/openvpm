@@ -3,6 +3,7 @@ import { config } from "dotenv";
 config({ path: process.env.OPENPIMS_ENV_FILE?.trim() || "../../.env" });
 
 import postgres from "postgres";
+import { databaseConnectionIdentityFingerprint } from "./deployment-target";
 
 const CONFIRMATION = "OPENVPM_CONTROLLED_SUBSTANCE_LEDGER_READ_ONLY";
 
@@ -31,7 +32,6 @@ if (!databaseUrl) {
   console.error("DATABASE_URL is required.");
   process.exit(1);
 }
-
 const sql = postgres(databaseUrl, {
   max: 1,
   connect_timeout: 10,
@@ -55,6 +55,8 @@ type AuditCounts = {
 };
 
 try {
+  const databaseTargetFingerprint =
+    databaseConnectionIdentityFingerprint(databaseUrl);
   const counts = await sql.begin(
     "isolation level repeatable read read only",
     async (tx) => {
@@ -140,6 +142,8 @@ try {
       {
         version: 1,
         mode: "read_only_aggregate",
+        checkedAt: new Date().toISOString(),
+        databaseTargetFingerprint,
         counts,
         releaseSafe: findingKeys.length === 0,
         findings: findingKeys,

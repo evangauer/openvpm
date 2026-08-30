@@ -4,8 +4,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { collectClinicReadinessEvidence } from "../clinic-readiness-evidence-collector";
 import { evaluateClinicReadinessRelease } from "../clinic-readiness-release";
+import { CLINICAL_DATA_AUDIT_SCHEMAS } from "../clinical-data-integrity-evidence";
 
 const sha = "a".repeat(40);
+const clinicalDatabaseFingerprint = "d".repeat(64);
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
@@ -184,6 +186,74 @@ function authRecoveryEvidencePath() {
     }),
   );
   return file;
+}
+
+function clinicalAuditPaths() {
+  const directory = mkdtempSync(
+    path.join(tmpdir(), "openvpm-clinical-audit-evidence-"),
+  );
+  temporaryDirectories.push(directory);
+  const base = (domain: keyof typeof CLINICAL_DATA_AUDIT_SCHEMAS) => ({
+    version: 1,
+    mode: "read_only_aggregate",
+    checkedAt: "2026-08-29T20:58:00.000Z",
+    databaseTargetFingerprint: clinicalDatabaseFingerprint,
+    counts: Object.fromEntries(
+      CLINICAL_DATA_AUDIT_SCHEMAS[domain].countFields.map((field) => [
+        field,
+        0,
+      ]),
+    ),
+    releaseSafe: true,
+  });
+  const architectureState = (domain: "labResults" | "vaccinations") =>
+    Object.fromEntries(
+      CLINICAL_DATA_AUDIT_SCHEMAS[domain].architectureFields.map((field) => [
+        field,
+        true,
+      ]),
+    );
+  const reports = {
+    controlledSubstanceAuditPath: {
+      file: "controlled-substances.json",
+      body: { ...base("controlledSubstances"), findings: [] },
+    },
+    prescriptionAuditPath: {
+      file: "prescriptions.json",
+      body: {
+        ...base("prescriptions"),
+        findings: [],
+        architectureFindings: [],
+      },
+    },
+    labResultAuditPath: {
+      file: "lab-results.json",
+      body: {
+        ...base("labResults"),
+        architectureState: architectureState("labResults"),
+        integrityFindings: [],
+        operationalFindings: [],
+        architectureFindings: [],
+      },
+    },
+    vaccinationAuditPath: {
+      file: "vaccinations.json",
+      body: {
+        ...base("vaccinations"),
+        architectureState: architectureState("vaccinations"),
+        integrityFindings: [],
+        operationalFindings: [],
+        architectureFindings: [],
+      },
+    },
+  };
+  return Object.fromEntries(
+    Object.entries(reports).map(([name, report]) => {
+      const file = path.join(directory, report.file);
+      writeFileSync(file, JSON.stringify(report.body));
+      return [name, file];
+    }),
+  ) as Record<keyof typeof reports, string>;
 }
 
 function response(body: unknown, status = 200) {
@@ -407,6 +477,8 @@ function options(fetchFn: typeof fetch) {
     restoreEvidencePath: restoreEvidencePath(),
     incidentEvidencePath: incidentEvidencePath(),
     authRecoveryEvidencePath: authRecoveryEvidencePath(),
+    clinicalDatabaseFingerprint,
+    ...clinicalAuditPaths(),
     now: new Date("2026-08-29T21:00:00.000Z"),
     fetchFn,
   };
@@ -419,7 +491,7 @@ describe("clinic readiness evidence collector", () => {
     );
 
     expect(evidence).toMatchObject({
-      evidenceFormatVersion: 5,
+      evidenceFormatVersion: 6,
       releaseSha: sha,
       ci: {
         releaseSha: sha,
@@ -466,6 +538,16 @@ describe("clinic readiness evidence collector", () => {
       },
       authRecovery: {
         drillId: "auth-recovery-2026-08-29-deadbeef",
+      },
+      clinicalDataIntegrity: {
+        releaseSha: sha,
+        databaseTargetFingerprint: clinicalDatabaseFingerprint,
+        audits: {
+          controlledSubstances: { releaseSafe: true },
+          prescriptions: { releaseSafe: true },
+          labResults: { releaseSafe: true },
+          vaccinations: { releaseSafe: true },
+        },
       },
       restoreDrill: { releaseSha: sha, synthetic: false },
     });
@@ -528,6 +610,26 @@ describe("clinic readiness evidence collector", () => {
     );
     await expect(collectClinicReadinessEvidence(value)).rejects.toThrow(
       "Account-recovery evidence is incomplete, stale, or unsafe.",
+    );
+  });
+
+  it("rejects an unsafe configured clinical-data audit before assembling a release packet", async () => {
+    const value = options(authoritativeResponses());
+    writeFileSync(
+      value.prescriptionAuditPath,
+      JSON.stringify({
+        version: 1,
+        mode: "read_only_aggregate",
+        checkedAt: "2026-08-29T20:58:00.000Z",
+        databaseTargetFingerprint: clinicalDatabaseFingerprint,
+        counts: { totalPrescriptions: 1 },
+        releaseSafe: false,
+        findings: [],
+        architectureFindings: ["interaction_catalog_is_empty"],
+      }),
+    );
+    await expect(collectClinicReadinessEvidence(value)).rejects.toThrow(
+      "Clinical-data integrity evidence is incomplete, stale, cross-target, or unsafe.",
     );
   });
 

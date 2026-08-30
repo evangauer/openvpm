@@ -118,5 +118,5 @@ The health response never returns authority identities. The clinic-readiness
 collector independently parses the drill artifact, rejects extra/free-form
 fields, validates timestamps, authority separation, every control assertion,
 evidence-safety attestations, and tracked findings, then embeds it in evidence
-format version 5. Both staging and production must report healthy recovery
+format version 6. Both staging and production must report healthy recovery
 configuration for the exact release SHA.

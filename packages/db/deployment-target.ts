@@ -47,6 +47,54 @@ export function databaseTargetFingerprint(projectRef: string): string {
     .digest("hex");
 }
 
+/**
+ * Produce a credential-free identity for the database an operator actually
+ * connected to. Supabase direct and pooler URLs intentionally converge on the
+ * same project fingerprint; other PostgreSQL targets use connection identity
+ * without password or query parameters.
+ */
+export function databaseConnectionIdentityFingerprint(
+  databaseUrl: string,
+): string {
+  const projectRef = supabaseProjectRef(databaseUrl);
+  if (projectRef) return databaseTargetFingerprint(projectRef);
+
+  let url: URL;
+  try {
+    url = new URL(databaseUrl);
+  } catch {
+    throw new Error("Database connection identity is invalid");
+  }
+  if (
+    (url.protocol !== "postgres:" && url.protocol !== "postgresql:") ||
+    !url.hostname ||
+    !decodedUsername(url) ||
+    !url.pathname.slice(1)
+  ) {
+    throw new Error("Database connection identity is invalid");
+  }
+  const port = url.port || "5432";
+  let databaseName: string;
+  try {
+    databaseName = decodeURIComponent(url.pathname.slice(1));
+  } catch {
+    throw new Error("Database connection identity is invalid");
+  }
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        protocol: "postgresql",
+        hostname: url.hostname.toLowerCase(),
+        port,
+        username: decodedUsername(url),
+        databaseName,
+      }),
+      "utf8",
+    )
+    .digest("hex");
+}
+
 function sameFingerprint(left: string, right: string): boolean {
   if (!FINGERPRINT_PATTERN.test(left) || !FINGERPRINT_PATTERN.test(right)) {
     return false;
@@ -83,7 +131,9 @@ export function assertDatabaseTarget(input: {
     throw new Error("Forbidden database target identities are not configured");
   }
   if (forbidden.some((value) => sameFingerprint(actual, value))) {
-    throw new Error("Database target identity is forbidden for this environment");
+    throw new Error(
+      "Database target identity is forbidden for this environment",
+    );
   }
 }
 
@@ -92,8 +142,7 @@ async function main(): Promise<number> {
     assertDatabaseTarget({
       databaseUrl: process.env.DATABASE_URL,
       expectedFingerprint: process.env.DATABASE_TARGET_FINGERPRINT,
-      forbiddenFingerprints:
-        process.env.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS,
+      forbiddenFingerprints: process.env.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS,
     });
     console.log("Database target identity matched.");
     return 0;
