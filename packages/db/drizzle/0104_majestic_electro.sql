@@ -360,3 +360,47 @@ CREATE CONSTRAINT TRIGGER auth_recovery_cases_require_event
 AFTER INSERT OR UPDATE ON auth_recovery_cases
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION require_auth_recovery_transition_event();
+--> statement-breakpoint
+CREATE FUNCTION expire_due_auth_recovery_cases(batch_size integer DEFAULT 100)
+RETURNS integer
+LANGUAGE plpgsql
+SET search_path = ''
+AS $$
+DECLARE
+  expiry_at timestamptz := statement_timestamp();
+  expired_count integer := 0;
+  recovery_case record;
+BEGIN
+  IF batch_size IS NULL OR batch_size < 1 OR batch_size > 1000 THEN
+    RAISE EXCEPTION 'auth recovery expiry batch size must be between 1 and 1000';
+  END IF;
+
+  FOR recovery_case IN
+    SELECT recovery.id, recovery.practice_id, recovery.user_id
+    FROM public.auth_recovery_cases recovery
+    WHERE (recovery.status = 'pending' AND recovery.expires_at <= expiry_at)
+      OR (recovery.status = 'approved'
+        AND recovery.grant_expires_at <= expiry_at)
+    ORDER BY CASE
+        WHEN recovery.status = 'pending' THEN recovery.expires_at
+        ELSE recovery.grant_expires_at
+      END,
+      recovery.id
+    FOR UPDATE SKIP LOCKED
+    LIMIT batch_size
+  LOOP
+    UPDATE public.auth_recovery_cases
+    SET status = 'expired', expired_at = expiry_at, updated_at = expiry_at
+    WHERE id = recovery_case.id;
+
+    INSERT INTO public.auth_recovery_events
+      (case_id, practice_id, user_id, actor_user_id, event_type, occurred_at)
+    VALUES
+      (recovery_case.id, recovery_case.practice_id, recovery_case.user_id,
+        NULL, 'expired', expiry_at);
+    expired_count := expired_count + 1;
+  END LOOP;
+
+  RETURN expired_count;
+END;
+$$;

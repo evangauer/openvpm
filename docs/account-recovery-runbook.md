@@ -16,9 +16,13 @@ distinct approver, an immutable event for every transition, target-session
 generation locking, retirement of all active passkeys/challenges/proofs,
 15-minute hashed grants, one-winner consumption, current database time on
 every transition, evidence-preserving expiry that frees a future request,
-and no application-role deletion. A real-PostgreSQL contract
-exercises these controls, including concurrency, replay, stale generations,
+and no application-role deletion. A real-PostgreSQL contract exercises these
+controls, including concurrency, replay, stale generations,
 missing evidence, false revocation claims, and forged backdated consumption.
+The bounded `expire_due_auth_recovery_cases` primitive uses row locks with
+`SKIP LOCKED`, is invisible outside system context, and appends the required
+expiry event in the same transaction; no scheduler or public route calls it
+yet.
 
 This migration does **not** activate account recovery. There is no application
 or browser path that can create a request, approve it, receive a raw grant, or

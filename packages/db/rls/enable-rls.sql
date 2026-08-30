@@ -385,6 +385,8 @@ GRANT SELECT, INSERT ON auth_recovery_events TO openpims_app;
 REVOKE ALL ON FUNCTION protect_auth_recovery_case_transition(),
   protect_auth_recovery_event(), require_auth_recovery_transition_event()
   FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION expire_due_auth_recovery_cases(integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION expire_due_auth_recovery_cases(integer) TO openpims_app;
 
 -- 5) Child tables without their own practice_id are isolated by joining to the
 --    parent row, which carries practice_id and its own tenant RLS.

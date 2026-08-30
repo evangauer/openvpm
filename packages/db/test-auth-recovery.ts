@@ -167,6 +167,15 @@ async function consumeGrant(
   });
 }
 
+async function expireDueCases(client: typeof app, batchSize = 100) {
+  return systemTransaction(client, async (tx) => {
+    const [result] = await tx<Array<{ expiredCount: number }>>`
+      select expire_due_auth_recovery_cases(${batchSize})::int
+        as "expiredCount"`;
+    return result?.expiredCount ?? 0;
+  });
+}
+
 try {
   await owner`insert into practices (id, name) values
     (${targetPractice}, 'Recovery contract target'),
@@ -249,6 +258,32 @@ try {
   check(
     "the restricted app role never bypasses RLS",
     privileges.length === 2 && privileges.every((row) => !row.bypassesRls),
+  );
+
+  const [expiryFunctionPrivileges] = await owner<
+    Array<{ appCanExecute: boolean; publicCanExecute: boolean }>
+  >`select
+      has_function_privilege(
+        'openpims_app', procedure.oid, 'EXECUTE'
+      ) as "appCanExecute",
+      exists (
+        select 1
+        from aclexplode(
+          coalesce(
+            procedure.proacl,
+            acldefault('f', procedure.proowner)
+          )
+        ) function_acl
+        where function_acl.grantee = 0
+          and function_acl.privilege_type = 'EXECUTE'
+      ) as "publicCanExecute"
+    from pg_proc procedure
+    where procedure.oid =
+      'public.expire_due_auth_recovery_cases(integer)'::regprocedure`;
+  check(
+    "only the application role receives the recovery expiry function grant",
+    expiryFunctionPrivileges?.appCanExecute === true &&
+      expiryFunctionPrivileges.publicCanExecute === false,
   );
 
   check(
@@ -378,17 +413,27 @@ try {
       }),
     ),
   );
-  const pendingExpiryObservedAt = new Date();
-  await systemTransaction(app, async (tx) => {
-    await tx`update auth_recovery_cases set status = 'expired',
-      expired_at = ${pendingExpiryObservedAt},
-      updated_at = ${pendingExpiryObservedAt}
-      where id = ${stalePendingCaseId}`;
-    await tx`insert into auth_recovery_events
-      (case_id, practice_id, user_id, event_type, occurred_at)
-      values (${stalePendingCaseId}, ${targetPractice}, ${targetWithoutEvent},
-        'expired', ${pendingExpiryObservedAt})`;
-  });
+  const [noContextExpiry] = await app<Array<{ expiredCount: number }>>`
+    select expire_due_auth_recovery_cases(1)::int as "expiredCount"`;
+  const tenantExpiryCount = await tenantTransaction(
+    app,
+    targetPractice,
+    async (tx) => {
+      const [result] = await tx<Array<{ expiredCount: number }>>`
+        select expire_due_auth_recovery_cases(1)::int as "expiredCount"`;
+      return result?.expiredCount ?? 0;
+    },
+  );
+  check(
+    "the expiry primitive cannot see cases without system context",
+    noContextExpiry?.expiredCount === 0 && tenantExpiryCount === 0,
+  );
+  check(
+    "the expiry primitive rejects unbounded batch sizes",
+    (await rejected(() => expireDueCases(app, 0))) &&
+      (await rejected(() => expireDueCases(app, 1001))),
+  );
+  const expiredPendingCount = await expireDueCases(app, 1);
   const pendingReplacementId = randomUUID();
   await insertRequest({
     caseId: pendingReplacementId,
@@ -408,7 +453,9 @@ try {
   );
   check(
     "an expired pending request is evidenced and does not block replacement",
-    pendingExpiry?.status === "expired" && pendingExpiry.expiryEvents === 1,
+    expiredPendingCount === 1 &&
+      pendingExpiry?.status === "expired" &&
+      pendingExpiry.expiryEvents === 1,
   );
   check(
     "only one active recovery case can exist for a target",
@@ -644,16 +691,11 @@ try {
       }),
     ),
   );
-  const expiryObservedAt = new Date();
-  await systemTransaction(app, async (tx) => {
-    await tx`update auth_recovery_cases set status = 'expired',
-      expired_at = ${expiryObservedAt}, updated_at = ${expiryObservedAt}
-      where id = ${expiredCaseId}`;
-    await tx`insert into auth_recovery_events
-      (case_id, practice_id, user_id, event_type, occurred_at)
-      values (${expiredCaseId}, ${targetPractice}, ${targetUser},
-        'expired', ${expiryObservedAt})`;
-  });
+  const expiryRace = await Promise.all([
+    expireDueCases(app, 1),
+    expireDueCases(appPeer, 1),
+  ]);
+  const expiryReplayCount = await expireDueCases(app, 1);
   const replacementCaseId = randomUUID();
   await insertRequest({
     caseId: replacementCaseId,
@@ -688,7 +730,9 @@ try {
   );
   check(
     "expiry is evidenced, leaves the account locked, and permits a new request",
-    expiryState?.expiredStatus === "expired" &&
+    expiryRace[0] + expiryRace[1] === 1 &&
+      expiryReplayCount === 0 &&
+      expiryState?.expiredStatus === "expired" &&
       expiryState.expiryEvents === 1 &&
       expiryState.replacementStatus === "pending" &&
       expiryState.sessionVersion === 3 &&
