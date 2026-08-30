@@ -785,6 +785,13 @@
       "when": 1788118916270,
       "tag": "0111_prescription_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1788121931662,
+      "tag": "0112_lab_result_integrity",
+      "breakpoints": true
     }
   ]
 }

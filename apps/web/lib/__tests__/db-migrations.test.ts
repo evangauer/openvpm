@@ -2211,7 +2211,9 @@ describe("committed Drizzle migrations", () => {
     const journal = JSON.parse(
       readRepoFile("packages/db/drizzle/meta/_journal.json"),
     ) as { entries: Array<{ tag: string }> };
-    expect(journal.entries.at(-1)?.tag).toBe("0111_prescription_integrity");
+    expect(
+      journal.entries.some((entry) => entry.tag === "0111_prescription_integrity"),
+    ).toBe(true);
     const migration = readRepoFile(
       "packages/db/drizzle/0111_prescription_integrity.sql",
     );
@@ -2254,6 +2256,43 @@ describe("committed Drizzle migrations", () => {
     expect(rls).toContain("REVOKE ALL ON prescriptions FROM openpims_app");
     expect(rls).toContain(
       "GRANT UPDATE (status, refills_remaining, updated_at) ON prescriptions",
+    );
+  });
+
+  it("keeps lab replacements in one chart and narrows projection mutation", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries: Array<{ tag: string }> };
+    expect(journal.entries.at(-1)?.tag).toBe("0112_lab_result_integrity");
+    const migration = readRepoFile(
+      "packages/db/drizzle/0112_lab_result_integrity.sql",
+    );
+
+    expect(migration).toContain(
+      "Lab result integrity migration blocked: replacement lineage crosses a patient or appointment chart",
+    );
+    expect(migration).toContain(
+      "source.patient_id IS DISTINCT FROM replacement.patient_id",
+    );
+    expect(migration).toContain(
+      "source.appointment_id IS NOT DISTINCT FROM replacement.appointment_id",
+    );
+    expect(migration).toContain(
+      "Lab result replacement must remain in the source patient and appointment chart.",
+    );
+    expect(migration).toContain("REVOKE ALL ON lab_results FROM openpims_app");
+    expect(migration).toContain(
+      "GRANT SELECT, INSERT ON lab_results TO openpims_app",
+    );
+    expect(migration).toContain("follow_up_completed_at, follow_up_outcome");
+    expect(migration).not.toContain(
+      "GRANT SELECT, INSERT, UPDATE, DELETE ON lab_results",
+    );
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(rls).toContain("REVOKE ALL ON lab_results FROM openpims_app");
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT ON lab_results TO openpims_app",
     );
   });
 });

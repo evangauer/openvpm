@@ -87,6 +87,8 @@ describe("lab result clinical safety contract", () => {
     expect(inbox).toMatch(/!isFrontDesk \? <div>\s*<dt[^>]*>Clinical review<\/dt>/);
     expect(inbox).toContain("Your 100 highest-priority assigned items are shown.");
     expect(rls).toContain("'lab_result_events'");
+    expect(rls).toContain("REVOKE ALL ON lab_results FROM openpims_app");
+    expect(rls).toContain("GRANT SELECT, INSERT ON lab_results TO openpims_app");
     expect(rlsTest).toContain("application role cannot rewrite lab result evidence");
     expect(rlsTest).toContain("lab evidence owner mutation requires the maintenance GUC");
     expect(rlsTest).toContain("cross-tenant lab evidence actor is blocked");
@@ -174,6 +176,11 @@ describe("lab result clinical safety contract", () => {
     );
     expect(creation.match(/assertLabReplacementReplay/g)).toHaveLength(2);
     expect(creation).toContain("replacementCorrectionId = source.correctionId");
+    expect(creation).toContain("patientId: labResults.patientId");
+    expect(creation).toContain("appointmentId: labResults.appointmentId");
+    expect(creation).toContain(
+      "A replacement lab result must remain in the source patient and encounter chart.",
+    );
     expect(creation).toContain("await tx.insert(labResultReplacements).values");
     expect(creation).toMatch(
       /sourceWork\?\.status === "charged"\s*\|\|\s*sourceWork\?\.status === "no_charge"/,

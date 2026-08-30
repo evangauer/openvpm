@@ -3756,6 +3756,8 @@ export const recordsRouter = createRouter({
           const [source] = await tx
             .select({
               id: labResults.id,
+              patientId: labResults.patientId,
+              appointmentId: labResults.appointmentId,
               correctionId: clinicalRecordCorrections.id,
             })
             .from(labResults)
@@ -3781,6 +3783,16 @@ export const recordsRouter = createRouter({
               code: "PRECONDITION_FAILED",
               message:
                 "A replacement must point to an entered-in-error result in this patient chart.",
+            });
+          }
+          if (
+            source.patientId !== input.patientId ||
+            source.appointmentId !== (input.appointmentId ?? null)
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "A replacement lab result must remain in the source patient and encounter chart.",
             });
           }
           replacementCorrectionId = source.correctionId;

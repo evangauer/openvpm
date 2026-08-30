@@ -176,6 +176,14 @@ REVOKE ALL ON FUNCTION guard_controlled_substance_log_immutability()
 
 -- Lab result lifecycle events are immutable clinical safety evidence. The app
 -- may append completion, review, and follow-up events but never rewrite them.
+REVOKE ALL ON lab_results FROM openpims_app;
+GRANT SELECT, INSERT ON lab_results TO openpims_app;
+GRANT UPDATE (
+  status, result_value, unit, reference_range_low, reference_range_high,
+  result_flag, completed_at, reviewed_by, reviewed_at, follow_up_status,
+  follow_up_assigned_to, follow_up_due_at, follow_up_note,
+  follow_up_completed_by, follow_up_completed_at, follow_up_outcome, updated_at
+) ON lab_results TO openpims_app;
 REVOKE ALL ON lab_result_events FROM openpims_app;
 GRANT SELECT, INSERT ON lab_result_events TO openpims_app;
 

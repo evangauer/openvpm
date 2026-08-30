@@ -2393,6 +2393,25 @@ describe("restorePracticeData", () => {
     ).toContain(
       "labResultReplacements[replacement-link-2].practiceId must match all linked evidence.",
     );
+
+    expect(
+      validatePracticeExportRestore({
+        ...backup,
+        patients: [
+          ...backup.patients,
+          {
+            id: "patient-2",
+            practiceId: "practice-1",
+            clientId: "client-1",
+          },
+        ],
+        labResults: backup.labResults.map((row) =>
+          row.id === "lab-3" ? { ...row, patientId: "patient-2" } : row,
+        ),
+      }).errors,
+    ).toContain(
+      "labResultReplacements[replacement-link-2] source and replacement must remain in the same patient and appointment chart.",
+    );
   });
 
   it("validates exact immutable SOAP replacement evidence", () => {

@@ -2307,6 +2307,14 @@ export function validatePracticeExportRestore(data: unknown): {
     ) {
       pushError(`${label}.practiceId must match all linked evidence.`);
     }
+    if (
+      source.patientId !== replacement.patientId ||
+      (source.appointmentId ?? null) !== (replacement.appointmentId ?? null)
+    ) {
+      pushError(
+        `${label} source and replacement must remain in the same patient and appointment chart.`,
+      );
+    }
     if (replacementSources.has(row.sourceLabResultId as string)) {
       pushError(
         `${label}.sourceLabResultId must be unique within its practice.`,
