@@ -1,3 +1,8 @@
+-- Reissue durable subscription cadence operations after canonical clinic close 0108.
+SET LOCAL lock_timeout = '5s';
+--> statement-breakpoint
+SET LOCAL statement_timeout = '5min';
+--> statement-breakpoint
 CREATE TYPE "public"."subscription_cadence_operation_state" AS ENUM('reserved', 'inspecting', 'authorized', 'creating_schedule', 'schedule_created', 'configuring_schedule', 'outcome_unknown', 'scheduled', 'applied', 'failed', 'manual_review', 'superseded');--> statement-breakpoint
 CREATE TABLE "subscription_cadence_operations" (
 	"id" uuid PRIMARY KEY NOT NULL,

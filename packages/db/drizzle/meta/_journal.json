@@ -764,6 +764,13 @@
       "when": 1788111000000,
       "tag": "0108_immutable_financial_close",
       "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1788111623719,
+      "tag": "0109_subscription_cadence_operations",
+      "breakpoints": true
     }
   ]
 }
