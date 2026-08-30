@@ -150,6 +150,8 @@ const aProduct = randomUUID();
 const bProduct = randomUUID();
 const aPrescription = randomUUID();
 const bPrescription = randomUUID();
+const aPrescriptionOperation = randomUUID();
+const bPrescriptionOperation = randomUUID();
 const aPrescriptionEvent = randomUUID();
 const bPrescriptionEvent = randomUUID();
 const aDispenseCharge = randomUUID();
@@ -647,15 +649,15 @@ try {
     (${aProduct}, ${aId}, 'RLS Drug A', 'medication', 1, 10),
     (${bProduct}, ${bId}, 'RLS Drug B', 'medication', 1, 10)`;
   await owner`insert into prescriptions
-    (id, practice_id, patient_id, product_id, medication_name, dosage, frequency, quantity, refills_remaining, prescribed_by, start_date)
+    (id, practice_id, patient_id, product_id, operation_id, medication_name, dosage, frequency, quantity, refills_remaining, prescribed_by, start_date)
     values
-    (${aPrescription}, ${aId}, ${aPatient}, ${aProduct}, 'RLS Drug A', '1 tablet', 'daily', 1, 1, ${aUser}, current_date),
-    (${bPrescription}, ${bId}, ${bPatient}, ${bProduct}, 'RLS Drug B', '1 tablet', 'daily', 1, 1, ${bUser}, current_date)`;
+    (${aPrescription}, ${aId}, ${aPatient}, ${aProduct}, ${aPrescriptionOperation}, 'RLS Drug A', '1 tablet', 'daily', 1, 1, ${aUser}, current_date),
+    (${bPrescription}, ${bId}, ${bPatient}, ${bProduct}, ${bPrescriptionOperation}, 'RLS Drug B', '1 tablet', 'daily', 1, 1, ${bUser}, current_date)`;
   await owner`insert into prescription_events
-    (id, practice_id, prescription_id, patient_id, product_id, event_type, quantity, status_after, refills_after, actor_id, actor_name)
+    (id, practice_id, prescription_id, patient_id, product_id, event_type, quantity, status_after, refills_after, actor_id, actor_name, operation_id)
     values
-    (${aPrescriptionEvent}, ${aId}, ${aPrescription}, ${aPatient}, ${aProduct}, 'created', 1, 'active', 1, ${aUser}, 'RLS Admin A'),
-    (${bPrescriptionEvent}, ${bId}, ${bPrescription}, ${bPatient}, ${bProduct}, 'created', 1, 'active', 1, ${bUser}, 'RLS Admin B')`;
+    (${aPrescriptionEvent}, ${aId}, ${aPrescription}, ${aPatient}, ${aProduct}, 'created', 1, 'active', 1, ${aUser}, 'RLS Admin A', ${aPrescriptionOperation}),
+    (${bPrescriptionEvent}, ${bId}, ${bPrescription}, ${bPatient}, ${bProduct}, 'created', 1, 'active', 1, ${bUser}, 'RLS Admin B', ${bPrescriptionOperation})`;
   await owner`insert into dispense_charge_queue
     (id, practice_id, prescription_event_id, prescription_id, patient_id, client_id, product_id, quantity, description_snapshot, unit_price_snapshot)
     select ${aDispenseCharge}, ${aId}, ${aPrescriptionEvent}, ${aPrescription}, ${aPatient}, client_id, ${aProduct}, 1, 'RLS Drug A', 1
