@@ -113,6 +113,8 @@ import {
   RECOVERY_HOLD_BLOCK_MESSAGE,
 } from "@/lib/recovery-hold";
 import { hostedSmsConfigurationDiagnostics } from "@/lib/messaging/hosted-sms-readiness";
+import { loadHostedSmsPilotActivationPreflight } from "@/lib/messaging/hosted-sms-pilot-preflight";
+import { providerProfileAttestationIsCurrent } from "@/lib/messaging/provider-profile-attestation";
 import { envFlagEnabled } from "@/lib/env-bool";
 
 /**
@@ -174,7 +176,6 @@ async function withMessagingProviderEffectsAllowed<T>(
 }
 
 const MESSAGING_SUBMISSION_LOCK_STALE_MS = 15 * 60 * 1000;
-const MESSAGING_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS = 15 * 60 * 1000;
 const WITHHELD_PHONE_LIKE_OPERATIONAL_ID = "[withheld: phone-like identifier]";
 
 const smsProviderEventResolutionBaseInput = z
@@ -274,8 +275,7 @@ function safeOperationalProviderId(value: string | null): string | null {
 }
 
 function assertMessagingProviderMutationsEnabled() {
-  const flag = process.env.MESSAGING_PROVISIONING_ENABLED?.trim().toLowerCase();
-  if (flag !== "true" && flag !== "1") {
+  if (!envFlagEnabled("MESSAGING_PROVISIONING_ENABLED")) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message:
@@ -1520,6 +1520,12 @@ export const adminRouter = createRouter({
     return hostedSmsConfigurationDiagnostics();
   }),
 
+  /** Read-only, secret- and PHI-free readiness for the exact staged pilot. */
+  hostedSmsPilotActivationPreflight: platformAdminProcedure.query(() => {
+    noStore();
+    return loadHostedSmsPilotActivationPreflight(db);
+  }),
+
   /** Newest-first, PHI-free carrier lifecycle evidence for one exact clinic. */
   messagingRegistrationHistory: platformAdminProcedure
     .input(
@@ -1659,9 +1665,9 @@ export const adminRouter = createRouter({
             ...sender,
             providerProfileReady:
               sender.providerProfileReady &&
-              sender.providerProfileSyncedAt !== null &&
-              sender.providerProfileSyncedAt.getTime() >=
-                Date.now() - MESSAGING_PROVIDER_PROFILE_ATTESTATION_MAX_AGE_MS,
+              providerProfileAttestationIsCurrent(
+                sender.providerProfileSyncedAt,
+              ),
           })),
       }));
     }),

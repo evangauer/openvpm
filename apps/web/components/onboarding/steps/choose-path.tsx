@@ -24,21 +24,19 @@ export function ChoosePathStep({ register, state, setState }: StepProps) {
     register({
       continueLabel: "Build my first day",
       async onContinue() {
-        await saveIntent.mutateAsync({
+        const current = utils.settings.getOnboardingState.getData();
+        if (!current) {
+          await utils.settings.getOnboardingState.fetch();
+          throw new Error("Setup state refreshed. Try again.");
+        }
+        const authoritative = await saveIntent.mutateAsync({
           intent: state.onboardingIntent,
           clinicModel: state.clinicModel,
           firstGoal: state.firstGoal,
+          expectedRevision: current.journeyRevision,
         });
         utils.settings.getOnboardingState.setData(undefined, (prev) =>
-          prev
-            ? {
-                ...prev,
-                onboardingIntent: state.onboardingIntent,
-                clinicModel: state.clinicModel,
-                firstGoal: state.firstGoal,
-                journeyDismissed: false,
-              }
-            : prev,
+          prev ? { ...prev, ...authoritative } : prev,
         );
         trackFunnelEvent(FUNNEL_EVENTS.onboardingPlanBuilt, {
           model: state.clinicModel,

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const resendSend = vi.fn();
@@ -28,6 +28,10 @@ async function loadEmailBrand() {
   vi.resetModules();
   return import("@openpims/email");
 }
+
+beforeEach(() => {
+  vi.stubEnv("EMAIL_COMPANY_ADDRESS", "123 Cloud Lane, Boston, MA 02108");
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -399,6 +403,41 @@ describe("sendEmail", () => {
     });
   });
 
+  it.each([
+    ["concurrent_idempotent_requests", 409],
+    ["invalid_idempotent_request", 409],
+    ["internal_server_error", 500],
+    ["application_error", null],
+  ])(
+    "classifies ambiguous Resend %s errors as unknown outcomes",
+    async (name, statusCode) => {
+      vi.stubEnv("RESEND_API_KEY", "re_test");
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      mocks.resendSend.mockResolvedValue({
+        data: null,
+        error: { message: "Provider outcome is not provable", name, statusCode },
+      });
+      const { dispatchPreparedEmailWithProviderEvidence } = await loadEmail();
+
+      await expect(
+        dispatchPreparedEmailWithProviderEvidence({
+          to: "private-owner@example.com",
+          subject: "Subscription confirmed",
+          html: "<p>Ready</p>",
+          idempotencyKey: "lc:confirmed:sub_123",
+          redactRecipientInLogs: true,
+        }),
+      ).resolves.toMatchObject({
+        success: false,
+        outcome: "outcome_unknown",
+        failureCode: "provider_outcome_ambiguous",
+      });
+      consoleError.mockRestore();
+    },
+  );
+
   it("aborts hung Resend sends and returns a timeout error", async () => {
     vi.useFakeTimers();
     vi.stubEnv("RESEND_API_KEY", "re_test");
@@ -477,9 +516,143 @@ describe("openvpmBrand", () => {
     expect(openvpmBrand().companyAddress).toBeUndefined();
     expect(openvpmBrand().logoUrl).toBeUndefined();
   });
+
+  it.each([
+    "123 Cloud Lane, Boston, MA 02108",
+    "Suite 400, 500 Market Street, Philadelphia, PA 19106",
+    "P.O. Box 123, Boston, MA 02108",
+    "RR 2 Box 152, Montpelier, VT 05602",
+    "PMB 42, 123 Main St, Austin, TX 78701",
+  ])("accepts a structurally plausible physical address: %s", async (value) => {
+    const { isPlausiblePhysicalCompanyAddress } = await loadEmailBrand();
+
+    expect(isPlausiblePhysicalCompanyAddress(value)).toBe(true);
+  });
+
+  it.each([
+    "",
+    "support@openvpm.com",
+    "mailto:support@openvpm.com",
+    "https://openvpm.com/address/123",
+    "www.openvpm.com 123",
+    "123 Cloud Lane\nBoston, MA 02108",
+    "\t123 Cloud Lane, Boston, MA 02108",
+    "123 Cloud Building, Boston, MA 02108",
+  ])("rejects a non-postal address impostor: %s", async (value) => {
+    const { isPlausiblePhysicalCompanyAddress } = await loadEmailBrand();
+
+    expect(isPlausiblePhysicalCompanyAddress(value)).toBe(false);
+  });
 });
 
 describe("lifecycle email branding", () => {
+  it("fails promotional sends before provider initialization for an invalid address", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("EMAIL_COMPANY_ADDRESS", "support@openvpm.com");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    const {
+      sendFirstClinicWinEmail,
+      sendSetupRecoveryEmail,
+      sendTrialEndingEmail,
+      sendWelcomeEmail,
+    } = await loadEmail();
+    const failure = {
+      success: false,
+      error: "Promotional email requires a valid physical company address.",
+      outcome: "definite_failure",
+      failureCode: "invalid_company_address",
+    };
+
+    await expect(
+      sendWelcomeEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+      }),
+    ).resolves.toEqual(failure);
+    await expect(
+      sendSetupRecoveryEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        stepTitle: "clinic setup",
+        nextAction: "Resume setup.",
+        attemptNumber: 1,
+      }),
+    ).resolves.toEqual(failure);
+    await expect(
+      sendTrialEndingEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        daysLeft: 3,
+        trialEndDate: "August 28, 2026",
+      }),
+    ).resolves.toEqual(failure);
+    await expect(
+      sendFirstClinicWinEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        trialEndDate: "August 28, 2026",
+        idempotencyKey: "lc:first-clinic-win:v1:practice",
+      }),
+    ).resolves.toEqual(failure);
+    expect(mocks.Resend).not.toHaveBeenCalled();
+    expect(mocks.resendSend).not.toHaveBeenCalled();
+  });
+
+  it("does not apply the promotional address gate to auth or transactional email", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("EMAIL_COMPANY_ADDRESS", "support@openvpm.com");
+    mocks.resendSend
+      .mockResolvedValueOnce({ data: { id: "email-reset" } })
+      .mockResolvedValueOnce({ data: { id: "email-receipt" } })
+      .mockResolvedValueOnce({ data: { id: "email-dunning" } })
+      .mockResolvedValueOnce({ data: { id: "email-confirmed" } });
+    const {
+      sendPasswordResetEmail,
+      sendPaymentFailedEmail,
+      sendPaymentReceiptEmail,
+      sendSubscriptionConfirmedEmail,
+    } = await loadEmail();
+
+    await expect(
+      sendPasswordResetEmail({
+        to: "owner@example.com",
+        name: "Taylor",
+        resetUrl: "https://app.openvpm.com/reset-password?token=test",
+      }),
+    ).resolves.toEqual({ success: true });
+    await expect(
+      sendPaymentReceiptEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        amount: "$79.00",
+        periodLabel: "August 2026",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-receipt" });
+    await expect(
+      sendPaymentFailedEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        amount: "$79.00",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-dunning" });
+    await expect(
+      sendSubscriptionConfirmedEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        idempotencyKey: "lc:confirmed:sub_123",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-confirmed" });
+    expect(mocks.resendSend).toHaveBeenCalledTimes(4);
+  });
+
   it("renders setup recovery as a one-click, preference-aware resume", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv(
@@ -698,6 +871,49 @@ describe("lifecycle email branding", () => {
         replyTo: "support@openvpm.com",
         to: "owner@example.com",
       }),
+    );
+  });
+
+  it("passes durable idempotency keys through subscription lifecycle sends", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    mocks.resendSend
+      .mockResolvedValueOnce({ data: { id: "email-confirmed" } })
+      .mockResolvedValueOnce({ data: { id: "email-canceled" } });
+    const {
+      sendSubscriptionConfirmedEmail,
+      sendSubscriptionCanceledEmail,
+    } = await loadEmail();
+
+    await expect(
+      sendSubscriptionConfirmedEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        idempotencyKey: "lc:confirmed:sub_123",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-confirmed" });
+    await expect(
+      sendSubscriptionCanceledEmail({
+        to: "owner@example.com",
+        practiceName: "Neighborhood Veterinary",
+        idempotencyKey: "lc:canceled:sub_123",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-canceled" });
+
+    expect(mocks.resendSend).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        to: "owner@example.com",
+        subject: "You're on OpenVPM Cloud",
+      }),
+      expect.objectContaining({ idempotencyKey: "lc:confirmed:sub_123" }),
+    );
+    expect(mocks.resendSend).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        to: "owner@example.com",
+        subject: "Your OpenVPM Cloud subscription was canceled",
+      }),
+      expect.objectContaining({ idempotencyKey: "lc:canceled:sub_123" }),
     );
   });
 });

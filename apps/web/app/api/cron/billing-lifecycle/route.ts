@@ -14,6 +14,10 @@ import { withSystem } from "@/lib/tenant-db";
 import { reportCronHeartbeat } from "@/lib/cron-heartbeat";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { billingContactEmail } from "@/lib/billing/contact";
+import {
+  runDurablePracticeSubscriptionQuantitySyncBatch,
+  runDurableSubscriptionQuantitySyncBatch,
+} from "@/lib/billing/stripe-subscription-quantity-sync";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -52,6 +56,10 @@ export async function GET(request: Request) {
   }
 
   try {
+    // Provider calls happen in the durable workers after their short claim
+    // transactions have committed. The cron is only a retry driver.
+    await runDurableSubscriptionQuantitySyncBatch();
+    await runDurablePracticeSubscriptionQuantitySyncBatch();
     const now = new Date();
     const latestTrialEnd = new Date(
       now.getTime() + (Math.max(...TRIAL_REMINDER_DAYS) + 1) * DAY_MS,

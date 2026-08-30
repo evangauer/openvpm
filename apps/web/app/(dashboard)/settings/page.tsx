@@ -71,6 +71,11 @@ import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { trialCalendarDaysLeft } from "@/lib/billing/trial-days";
+import {
+  SUBSCRIPTION_SETUP_POLL_WINDOW_MS,
+  subscriptionSetupPollInterval,
+  subscriptionSetupPollingEligible,
+} from "@/lib/billing/subscription-setup-state";
 import { CloudBillingCadencePicker } from "@/components/billing/cloud-billing-cadence-picker";
 import {
   billingCadenceFromQuery,
@@ -1398,6 +1403,10 @@ function redirectToClientPaymentUrl(url: unknown) {
 function BillingTab() {
   const utils = trpc.useUtils();
   const searchParams = useSearchParams();
+  const checkoutStatus = searchParams.get("checkout");
+  const [checkoutReturnStartedAt] = useState(() => Date.now());
+  const [checkoutPollingTimedOut, setCheckoutPollingTimedOut] = useState(false);
+  const billingConfirmationInvalidated = useRef(false);
   const [selectedCadence, setSelectedCadence] = useState<BillingCadence>(() =>
     billingCadenceFromQuery(searchParams.get("plan")),
   );
@@ -1407,6 +1416,56 @@ function BillingTab() {
     error: billingError,
     refetch: refetchBilling,
   } = trpc.subscription.get.useQuery();
+  const setupStatus = trpc.subscription.getSetupStatus.useQuery(undefined, {
+    enabled: checkoutStatus === "success",
+    staleTime: 0,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchInterval: (query) =>
+      subscriptionSetupPollInterval({
+        checkoutReturn: checkoutStatus,
+        pollEligible: subscriptionSetupPollingEligible({
+          checkoutReturn: checkoutStatus,
+          narrowPollEligible: query.state.data?.pollEligible,
+          fullPollEligible: data?.pollEligible,
+        }),
+        elapsedMs: Date.now() - checkoutReturnStartedAt,
+      }),
+  });
+  const checkoutPollEligible = subscriptionSetupPollingEligible({
+    checkoutReturn: checkoutStatus,
+    narrowPollEligible: setupStatus.data?.pollEligible,
+    fullPollEligible: data?.pollEligible,
+  });
+
+  useEffect(() => {
+    if (!checkoutPollEligible) {
+      setCheckoutPollingTimedOut(false);
+      return;
+    }
+    const remaining =
+      SUBSCRIPTION_SETUP_POLL_WINDOW_MS -
+      (Date.now() - checkoutReturnStartedAt);
+    if (remaining <= 0) {
+      setCheckoutPollingTimedOut(true);
+      return;
+    }
+    const timeout = window.setTimeout(
+      () => setCheckoutPollingTimedOut(true),
+      remaining,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [checkoutPollEligible, checkoutReturnStartedAt]);
+
+  useEffect(() => {
+    if (
+      setupStatus.data?.billingSetupCompleted &&
+      !billingConfirmationInvalidated.current
+    ) {
+      billingConfirmationInvalidated.current = true;
+      void utils.subscription.get.invalidate();
+    }
+  }, [setupStatus.data?.billingSetupCompleted, utils.subscription.get]);
   const paymentAccount = trpc.billing.paymentAccountStatus.useQuery(undefined, {
     staleTime: 60_000,
   });
@@ -1520,8 +1579,15 @@ function BillingTab() {
   const availableCadences = data.billingOptions
     .filter((option) => option.purchasable)
     .map((option) => option.cadence);
-  const firstActivation = !data.hasSubscription;
-  const checkoutStatus = searchParams.get("checkout");
+  const authoritativeSetup =
+    checkoutStatus === "success" ? (setupStatus.data ?? data) : data;
+  const firstActivation = !authoritativeSetup.billingSetupCompleted;
+  const checkoutReturnPolling =
+    checkoutPollEligible && !checkoutPollingTimedOut;
+  const billingSetupNeedsReview =
+    authoritativeSetup.billingSetupState === "manual_review" ||
+    authoritativeSetup.billingSetupState === "blocked_recovery" ||
+    authoritativeSetup.billingSetupState === "contradiction";
   // Only surface the sync note when something actually needs attention.
   const showSyncNote =
     data.billingSyncStatus &&
@@ -1538,10 +1604,59 @@ function BillingTab() {
           </p>
         </div>
       ) : null}
-      {checkoutStatus === "success" ? (
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-          <p className="font-medium">Your billing details were received</p>
-          <p className="mt-1">OpenVPM is confirming the subscription now.</p>
+      {checkoutStatus === "success" &&
+      authoritativeSetup.billingSetupCompleted ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900"
+        >
+          <p className="font-medium">Billing is connected</p>
+          <p className="mt-1">
+            Your subscription was confirmed from the durable billing record.
+          </p>
+        </div>
+      ) : null}
+      {checkoutReturnPolling ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900"
+        >
+          <p className="font-medium">Confirming your subscription</p>
+          <p className="mt-1">
+            Keep this page open. Checkout actions stay disabled while OpenVPM
+            waits for the signed billing confirmation.
+          </p>
+        </div>
+      ) : null}
+      {checkoutStatus === "success" &&
+      !authoritativeSetup.billingSetupCompleted &&
+      !checkoutReturnPolling &&
+      !billingSetupNeedsReview ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+        >
+          <p className="font-medium">Billing is not confirmed yet</p>
+          <p className="mt-1">
+            {authoritativeSetup.checkoutAction === null
+              ? "The return URL does not prove completion. Refresh this page or contact support before trying Checkout again."
+              : "The return URL does not prove completion. Use only the action shown below, or contact support if the setup needs review."}
+          </p>
+        </div>
+      ) : null}
+      {billingSetupNeedsReview ? (
+        <div
+          role="alert"
+          className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive"
+        >
+          <p className="font-medium">Billing setup needs review</p>
+          <p className="mt-1">
+            Checkout and billing management are paused so OpenVPM cannot create
+            a duplicate or act on conflicting account evidence.
+          </p>
         </div>
       ) : null}
 
@@ -1607,7 +1722,11 @@ function BillingTab() {
                 onValueChange={setSelectedCadence}
                 locationCount={data.locationCount}
                 availableCadences={availableCadences}
-                disabled={checkout.isPending}
+                disabled={
+                  checkout.isPending ||
+                  checkoutReturnPolling ||
+                  authoritativeSetup.checkoutAction === null
+                }
               />
 
               <div className="mt-6 flex flex-col gap-4 border-t border-border pt-5 sm:flex-row sm:items-center sm:justify-between">
@@ -1627,6 +1746,8 @@ function BillingTab() {
                   className="w-full gap-2 sm:w-auto"
                   disabled={
                     checkout.isPending ||
+                    checkoutReturnPolling ||
+                    authoritativeSetup.checkoutAction === null ||
                     !availableCadences.includes(selectedCadence)
                   }
                   onClick={() =>
@@ -1641,7 +1762,9 @@ function BillingTab() {
                   ) : (
                     <CreditCard className="size-4" />
                   )}
-                  Continue to secure checkout
+                  {authoritativeSetup.checkoutAction === "resume"
+                    ? "Resume secure checkout"
+                    : "Continue to secure checkout"}
                 </Button>
               </div>
             </>
@@ -1660,7 +1783,9 @@ function BillingTab() {
               </div>
               <Button
                 variant="outline"
-                disabled={portal.isPending}
+                disabled={
+                  portal.isPending || !authoritativeSetup.canManageBilling
+                }
                 onClick={() => portal.mutate()}
               >
                 {portal.isPending ? (

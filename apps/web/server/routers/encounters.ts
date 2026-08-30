@@ -705,6 +705,7 @@ export const encountersRouter = createRouter({
         soapDraftRows,
         missingSoapReplacementRows,
         medications,
+        visitDispenses,
         followUpAppointments,
         followUpAssignees,
         canFinalizeDoctorRequiredVisit,
@@ -824,7 +825,50 @@ export const encountersRouter = createRouter({
             ),
           )
           .orderBy(desc(prescriptions.createdAt)),
-          appointment.patientId && appointment.clientId
+        ctx.db
+          .select({
+            id: prescriptions.id,
+            medicationName: prescriptions.medicationName,
+            dosage: prescriptions.dosage,
+            frequency: prescriptions.frequency,
+            instructions: prescriptions.instructions,
+            quantity: dispenseChargeQueue.quantity,
+            productId: dispenseChargeQueue.productId,
+            productName: products.name,
+            productTaxable: products.taxable,
+            productUnitPrice: dispenseChargeQueue.unitPriceSnapshot,
+            dispenseChargeId: dispenseChargeQueue.id,
+            dispenseChargeStatus: dispenseChargeQueue.status,
+            dispenseChargeDescription: dispenseChargeQueue.descriptionSnapshot,
+            status: prescriptions.status,
+            endDate: prescriptions.endDate,
+          })
+          .from(dispenseChargeQueue)
+          .innerJoin(
+            prescriptions,
+            and(
+              eq(dispenseChargeQueue.prescriptionId, prescriptions.id),
+              eq(prescriptions.practiceId, ctx.practiceId),
+            ),
+          )
+          .leftJoin(
+            products,
+            and(
+              eq(dispenseChargeQueue.productId, products.id),
+              eq(products.practiceId, ctx.practiceId),
+            ),
+          )
+          .where(
+            and(
+              eq(dispenseChargeQueue.practiceId, ctx.practiceId),
+              eq(dispenseChargeQueue.appointmentId, input.appointmentId),
+            ),
+          )
+          .orderBy(
+            desc(dispenseChargeQueue.createdAt),
+            desc(dispenseChargeQueue.id),
+          ),
+        appointment.patientId && appointment.clientId
             ? ctx.db
                 .select({
                   id: appointments.id,
@@ -887,7 +931,20 @@ export const encountersRouter = createRouter({
         new Date(),
         appointment.practiceTimezone,
       );
-      const medicationHistory = medications.map((medication) => ({
+      const visitDispenseIdsAlreadyIncluded = new Set(
+        medications
+          .map((medication) => medication.dispenseChargeId)
+          .filter((id): id is string => Boolean(id)),
+      );
+      const chargeCaptureMedications = [
+        ...medications,
+        ...visitDispenses.filter(
+          (medication) =>
+            !medication.dispenseChargeId ||
+            !visitDispenseIdsAlreadyIncluded.has(medication.dispenseChargeId),
+        ),
+      ];
+      const medicationHistory = chargeCaptureMedications.map((medication) => ({
         ...medication,
         effectiveStatus: effectivePrescriptionStatus({
           status: medication.status,
@@ -895,6 +952,17 @@ export const encountersRouter = createRouter({
           today: practiceToday,
         }),
       }));
+      const activeMedications = [
+        ...medicationHistory
+          .filter((medication) => medication.effectiveStatus === "active")
+          .reduce((byPrescription, medication) => {
+            if (!byPrescription.has(medication.id)) {
+              byPrescription.set(medication.id, medication);
+            }
+            return byPrescription;
+          }, new Map<string, (typeof medicationHistory)[number]>())
+          .values(),
+      ];
 
       return {
         closeout,
@@ -914,9 +982,7 @@ export const encountersRouter = createRouter({
             ? (missingSoapReplacementRows[0] ?? null)
             : null,
         medications: medicationHistory,
-        activeMedications: medicationHistory.filter(
-          (medication) => medication.effectiveStatus === "active",
-        ),
+        activeMedications,
         followUpAppointments,
         followUpAssignees,
         invoices: invoiceSummaries,

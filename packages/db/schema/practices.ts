@@ -40,6 +40,30 @@ export const practices = pgTable(
     billingStatus: varchar("billing_status", { length: 24 })
       .notNull()
       .default("none"),
+    // Monotonic fence for subscription identity/status transitions. Durable
+    // billing-email jobs capture this value and refuse delivery after a newer
+    // subscription generation supersedes the event that created them.
+    subscriptionGeneration: integer("subscription_generation")
+      .notNull()
+      .default(0),
+    stripeSubscriptionSyncRevision: integer("stripe_subscription_sync_revision")
+      .notNull()
+      .default(0),
+    stripeQuantitySyncLeaseToken: uuid("stripe_quantity_sync_lease_token"),
+    stripeQuantitySyncLeaseExpiresAt: timestamp(
+      "stripe_quantity_sync_lease_expires_at",
+      { withTimezone: true },
+    ),
+    stripeQuantitySyncRequestedRevision: integer(
+      "stripe_quantity_sync_requested_revision",
+    )
+      .notNull()
+      .default(0),
+    stripeQuantitySyncCompletedRevision: integer(
+      "stripe_quantity_sync_completed_revision",
+    )
+      .notNull()
+      .default(0),
     trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
     // Region/locale — gates currency, tax, formatting, and (later) regulatory
     // behavior. Defaults keep existing US practices working unchanged.
@@ -100,6 +124,22 @@ export const practices = pgTable(
     recoveryHoldEvidenceCheck: check(
       "practices_recovery_hold_evidence_check",
       sql`not ${table.recoveryHold} or (${table.recoveryHoldSetAt} is not null and ${table.recoveryHoldReason} is not null and ${table.recoveryHoldReason} ~ '[^[:space:]]')`,
+    ),
+    subscriptionGenerationCheck: check(
+      "practices_subscription_generation_check",
+      sql`${table.subscriptionGeneration} >= 0`,
+    ),
+    stripeSubscriptionSyncRevisionCheck: check(
+      "practices_stripe_subscription_sync_revision_check",
+      sql`${table.stripeSubscriptionSyncRevision} >= 0`,
+    ),
+    stripeQuantitySyncLeaseShapeCheck: check(
+      "practices_stripe_quantity_sync_lease_shape_check",
+      sql`(${table.stripeQuantitySyncLeaseToken} is null) = (${table.stripeQuantitySyncLeaseExpiresAt} is null)`,
+    ),
+    stripeQuantitySyncRevisionCheck: check(
+      "practices_stripe_quantity_sync_revision_check",
+      sql`${table.stripeQuantitySyncRequestedRevision} >= 0 and ${table.stripeQuantitySyncCompletedRevision} >= 0 and ${table.stripeQuantitySyncCompletedRevision} <= ${table.stripeQuantitySyncRequestedRevision}`,
     ),
   }),
 );

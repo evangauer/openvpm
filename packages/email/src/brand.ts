@@ -23,6 +23,37 @@ export interface Brand {
   logoUrl?: string;
 }
 
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
+const URL_LIKE_PATTERN = /(?:[a-z][a-z0-9+.-]*:\/\/|mailto:|www\.)/iu;
+const PO_BOX_PATTERN =
+  /\b(?:p\.?\s*o\.?\s+box|post office box|pmb)\s*[a-z0-9-]+\b/iu;
+const RURAL_ROUTE_PATTERN =
+  /\b(?:rr|rural route)\s*\d+[a-z0-9-]*\s+box\s*[a-z0-9-]+\b/iu;
+const STREET_ADDRESS_PATTERN =
+  /\b\d+[a-z]?(?:-\d+[a-z]?)?\s+[a-z0-9.'-]+(?:\s+[a-z0-9.'-]+){0,5}\s+(?:avenue|ave|boulevard|blvd|circle|cir|court|ct|drive|dr|highway|hwy|lane|ln|loop|parkway|pkwy|place|pl|plaza|road|rd|route|rte|square|sq|street|st|terrace|ter|trail|trl|way)\b/iu;
+
+/**
+ * Conservative structural gate for the physical postal address required in
+ * promotional email footers. This does not prove that an address exists or is
+ * deliverable; a hosted operator must verify that separately.
+ */
+export function isPlausiblePhysicalCompanyAddress(
+  value: string | null | undefined,
+): boolean {
+  if (typeof value !== "string" || CONTROL_CHARACTER_PATTERN.test(value)) {
+    return false;
+  }
+  const address = value.trim();
+  if (!address || address.length < 10 || address.length > 300) return false;
+  if (address.includes("@") || URL_LIKE_PATTERN.test(address)) return false;
+
+  return (
+    PO_BOX_PATTERN.test(address) ||
+    RURAL_ROUTE_PATTERN.test(address) ||
+    STREET_ADDRESS_PATTERN.test(address)
+  );
+}
+
 function nonBlankEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value ? value : undefined;

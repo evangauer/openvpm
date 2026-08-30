@@ -1,5 +1,6 @@
 import { Resend } from "resend";
 import {
+  isPlausiblePhysicalCompanyAddress,
   openvpmBrand,
   renderWelcomeEmail,
   renderSetupRecoveryEmail,
@@ -7,6 +8,8 @@ import {
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
   renderFirstClinicWinEmail,
+  renderSubscriptionConfirmedEmail,
+  renderSubscriptionCanceledEmail,
 } from "@openpims/email";
 import {
   createEmailPreferenceLinks,
@@ -57,9 +60,30 @@ export interface EmailProviderEvidence {
   failureCode?:
     | "provider_not_configured"
     | "provider_rejected"
+    | "provider_outcome_ambiguous"
     | "send_timeout"
     | "provider_exception"
-    | "missing_provider_id";
+    | "missing_provider_id"
+    | "invalid_company_address";
+}
+
+type PromotionalEmailAddressFailure = {
+  success: false;
+  error: string;
+  outcome: "definite_failure";
+  failureCode: "invalid_company_address";
+};
+
+function promotionalEmailAddressFailure(
+  companyAddress: string | undefined,
+): PromotionalEmailAddressFailure | null {
+  if (isPlausiblePhysicalCompanyAddress(companyAddress)) return null;
+  return {
+    success: false,
+    error: "Promotional email requires a valid physical company address.",
+    outcome: "definite_failure",
+    failureCode: "invalid_company_address",
+  };
 }
 
 function emailSendTimeoutMessage(): string {
@@ -139,7 +163,7 @@ function ctaButton(label: string, url: string): string {
 // Core send function
 // ---------------------------------------------------------------------------
 
-interface EmailDispatchOptions {
+export interface EmailDispatchOptions {
   to: string;
   subject: string;
   html: string;
@@ -229,12 +253,22 @@ async function dispatchEmail(
           : error,
       );
       const timedOut = controller.signal.aborted;
+      const outcomeUnknown =
+        timedOut ||
+        error.name === "concurrent_idempotent_requests" ||
+        error.name === "invalid_idempotent_request" ||
+        error.statusCode === null ||
+        error.statusCode >= 500;
       return {
         success: false,
         provider,
         error: timedOut ? emailSendTimeoutMessage() : error.message,
-        outcome: timedOut ? "outcome_unknown" : "definite_failure",
-        failureCode: timedOut ? "send_timeout" : "provider_rejected",
+        outcome: outcomeUnknown ? "outcome_unknown" : "definite_failure",
+        failureCode: timedOut
+          ? "send_timeout"
+          : outcomeUnknown
+            ? "provider_outcome_ambiguous"
+            : "provider_rejected",
       };
     }
 
@@ -284,6 +318,19 @@ export function verificationEmailProvider(): EmailProvider {
   if (emailDemoMode()) return "console";
   if (getResend()) return "resend";
   return billingEnforced() ? "resend" : "console";
+}
+
+/** Provider identity used when durably reserving any email attempt. */
+export const emailProviderForDispatch = verificationEmailProvider;
+
+/**
+ * Dispatch an already-rendered request and return provider evidence. Durable
+ * outboxes fingerprint this exact object before crossing the provider boundary.
+ */
+export function dispatchPreparedEmailWithProviderEvidence(
+  options: EmailDispatchOptions,
+): Promise<EmailProviderEvidence> {
+  return dispatchEmail(options);
 }
 
 export async function sendEmail(
@@ -652,8 +699,15 @@ export async function sendWelcomeEmail(data: {
   to: string;
   practiceName: string;
   trialDays?: number;
-}): Promise<{ success: boolean; id?: string; error?: string }> {
+}): Promise<
+  | { success: boolean; id?: string; error?: string }
+  | PromotionalEmailAddressFailure
+> {
   const brand = openvpmBrand();
+  const addressFailure = promotionalEmailAddressFailure(
+    process.env.EMAIL_COMPANY_ADDRESS,
+  );
+  if (addressFailure) return addressFailure;
   const recipientHash = emailPreferenceRecipientHash(data.to);
   if (!recipientHash) {
     return {
@@ -697,8 +751,15 @@ export async function sendSetupRecoveryEmail(data: {
   nextAction: string;
   attemptNumber: 1 | 2;
   resumeUrl?: string;
-}): Promise<{ success: boolean; id?: string; error?: string }> {
+}): Promise<
+  | { success: boolean; id?: string; error?: string }
+  | PromotionalEmailAddressFailure
+> {
   const brand = openvpmBrand();
+  const addressFailure = promotionalEmailAddressFailure(
+    process.env.EMAIL_COMPANY_ADDRESS,
+  );
+  if (addressFailure) return addressFailure;
   const recipientHash = emailPreferenceRecipientHash(data.to);
   if (!recipientHash) {
     return {
@@ -747,8 +808,15 @@ export async function sendTrialEndingEmail(data: {
   billingUrl?: string;
   billingConnected?: boolean;
   idempotencyKey?: string;
-}): Promise<{ success: boolean; id?: string; error?: string }> {
+}): Promise<
+  | { success: boolean; id?: string; error?: string }
+  | PromotionalEmailAddressFailure
+> {
   const brand = openvpmBrand();
+  const addressFailure = promotionalEmailAddressFailure(
+    process.env.EMAIL_COMPANY_ADDRESS,
+  );
+  if (addressFailure) return addressFailure;
   const billingUrl = data.billingUrl ?? `${brand.appUrl}/settings?tab=billing`;
   const recipientHash = emailPreferenceRecipientHash(data.to);
   if (!recipientHash) {
@@ -797,8 +865,15 @@ export async function sendFirstClinicWinEmail(data: {
   trialEndDate: string;
   billingUrl?: string;
   idempotencyKey: string;
-}): Promise<{ success: boolean; id?: string; error?: string }> {
+}): Promise<
+  | { success: boolean; id?: string; error?: string }
+  | PromotionalEmailAddressFailure
+> {
   const brand = openvpmBrand();
+  const addressFailure = promotionalEmailAddressFailure(
+    process.env.EMAIL_COMPANY_ADDRESS,
+  );
+  if (addressFailure) return addressFailure;
   const billingUrl = data.billingUrl ?? `${brand.appUrl}/settings?tab=billing`;
   const recipientHash = emailPreferenceRecipientHash(data.to);
   if (!recipientHash) {
@@ -888,4 +963,66 @@ export async function sendPaymentFailedEmail(data: {
     replyTo: brand.supportEmail,
     idempotencyKey: data.idempotencyKey,
   });
+}
+
+/** Confirmation sent after Checkout resolves to a currently active subscription. */
+export async function sendSubscriptionConfirmedEmail(data: {
+  to: string;
+  practiceName: string;
+  idempotencyKey?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  return sendEmail(await prepareSubscriptionConfirmedEmail(data));
+}
+
+export async function prepareSubscriptionConfirmedEmail(data: {
+  to: string;
+  practiceName: string;
+  idempotencyKey?: string;
+}): Promise<EmailDispatchOptions> {
+  const brand = openvpmBrand();
+  const { subject, html } = await renderSubscriptionConfirmedEmail({
+    brand,
+    practiceName: data.practiceName,
+  });
+  return {
+    to: data.to,
+    subject,
+    html,
+    from: defaultEmailFrom(),
+    replyTo: brand.supportEmail,
+    idempotencyKey: data.idempotencyKey,
+  };
+}
+
+/** Notice sent after Stripe confirms that the stored subscription was deleted. */
+export async function sendSubscriptionCanceledEmail(data: {
+  to: string;
+  practiceName: string;
+  reactivateUrl?: string;
+  idempotencyKey?: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  return sendEmail(await prepareSubscriptionCanceledEmail(data));
+}
+
+export async function prepareSubscriptionCanceledEmail(data: {
+  to: string;
+  practiceName: string;
+  reactivateUrl?: string;
+  idempotencyKey?: string;
+}): Promise<EmailDispatchOptions> {
+  const brand = openvpmBrand();
+  const { subject, html } = await renderSubscriptionCanceledEmail({
+    brand,
+    practiceName: data.practiceName,
+    reactivateUrl:
+      data.reactivateUrl ?? `${brand.appUrl}/settings?tab=billing`,
+  });
+  return {
+    to: data.to,
+    subject,
+    html,
+    from: defaultEmailFrom(),
+    replyTo: brand.supportEmail,
+    idempotencyKey: data.idempotencyKey,
+  };
 }

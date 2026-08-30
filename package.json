@@ -10,6 +10,8 @@
     "db:push": "pnpm --filter @openpims/db db:push",
     "db:generate": "pnpm --filter @openpims/db db:generate",
     "db:migrate": "pnpm --filter @openpims/db db:migrate",
+    "db:migrations:conformance": "pnpm --filter @openpims/db db:migrations:conformance",
+    "db:target:check": "pnpm --filter @openpims/db db:target:check",
     "db:seed": "pnpm --filter @openpims/db db:seed",
     "db:reset": "pnpm --filter @openpims/db db:reset",
     "db:rls": "pnpm --filter @openpims/db db:rls",

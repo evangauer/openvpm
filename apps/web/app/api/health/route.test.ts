@@ -1,7 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  dbExecute: vi.fn(async () => [{ ok: 1, scopeValid: true }]),
+  dbExecute: vi.fn(async () => [
+    {
+      ok: 1,
+      practiceActive: true,
+      recoveryClear: true,
+      carrierIdentityReady: true,
+      providerProfileReady: true,
+      providerProfileSyncedAt: new Date() as Date | string | null,
+      clinicSenderEnabled: true,
+    },
+  ]),
   withSystem: vi.fn(
     async (
       database: { execute: typeof mocks.dbExecute },
@@ -150,6 +160,8 @@ const { GET } = await import("./route");
 
 function stubHostedRequiredEnvs() {
   vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "a".repeat(40));
+  vi.stubEnv("OPENVPM_ENVIRONMENT", "production");
+  vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
   vi.stubEnv("NEXTAUTH_URL", "https://app.example");
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example");
   vi.stubEnv("NEXTAUTH_SECRET", "secret");
@@ -223,10 +235,27 @@ function stubHostedSmsInboundGate() {
   vi.stubEnv("MESSAGING_INBOUND_ENABLED", "true");
 }
 
+function stubHostedSmsProvisioningScope() {
+  vi.stubEnv(
+    "MESSAGING_PROVISIONING_PRACTICE_IDS",
+    "00000000-0000-4000-8000-0000000000aa",
+  );
+}
+
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
-  mocks.dbExecute.mockResolvedValue([{ ok: 1, scopeValid: true }]);
+  mocks.dbExecute.mockResolvedValue([
+    {
+      ok: 1,
+      practiceActive: true,
+      recoveryClear: true,
+      carrierIdentityReady: true,
+      providerProfileReady: true,
+      providerProfileSyncedAt: new Date(),
+      clinicSenderEnabled: true,
+    },
+  ]);
   mocks.withSystem.mockImplementation(async (database, fn) => fn(database));
   mocks.billingEnforced.mockReturnValue(false);
   mocks.replicaStorageReadiness.mockReturnValue({
@@ -395,6 +424,21 @@ describe("health route schema drift", () => {
 });
 
 describe("health route", () => {
+  it("fails closed without leaking values when a managed environment is invalid", async () => {
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("VERCEL_ENV", "preview");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.deploymentEnvironment).toEqual({
+      ok: false,
+      detail: "1 deployment environment configuration issue detected",
+    });
+    expect(JSON.stringify(json)).not.toContain("OPENVPM_ENVIRONMENT");
+  });
+
   it("does not expose raw database errors in unauthenticated health checks", async () => {
     mocks.dbExecute.mockRejectedValueOnce(
       new Error("password=secret host=prod-db connection refused"),
@@ -553,7 +597,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "3 required hosted SMS configuration issues detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
     expect(JSON.stringify(json)).not.toContain("TELNYX_API_KEY");
     expect(JSON.stringify(json)).not.toContain(
@@ -581,6 +625,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsProvisioningScope();
     stubHostedSmsInboundGate();
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv(
@@ -594,7 +639,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "1 required hosted SMS configuration issue detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
   });
 
@@ -602,6 +647,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsProvisioningScope();
     stubHostedSmsInboundGate();
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv(
@@ -621,7 +667,7 @@ describe("health route", () => {
       ok: true,
       detail: "Hosted SMS pilot configuration active",
     });
-    expect(mocks.withSystem).toHaveBeenCalledTimes(2);
+    expect(mocks.withSystem).toHaveBeenCalledTimes(1);
   });
 
   it("rejects different provisioning and sending clinic scopes", async () => {
@@ -648,7 +694,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "1 required hosted SMS configuration issue detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
   });
 
@@ -656,6 +702,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsProvisioningScope();
     stubHostedSmsInboundGate();
     vi.stubEnv("MESSAGING_SENDING_ENABLED", "true");
     vi.stubEnv(
@@ -667,8 +714,28 @@ describe("health route", () => {
       "00000000-0000-4000-8000-000000000002",
     );
     mocks.dbExecute
-      .mockResolvedValueOnce([{ ok: 1, scopeValid: true }])
-      .mockResolvedValueOnce([{ ok: 1, scopeValid: false }]);
+      .mockResolvedValueOnce([
+        {
+          ok: 1,
+          practiceActive: true,
+          recoveryClear: true,
+          carrierIdentityReady: true,
+          providerProfileReady: true,
+          providerProfileSyncedAt: new Date(),
+          clinicSenderEnabled: true,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          ok: 1,
+          practiceActive: true,
+          recoveryClear: true,
+          carrierIdentityReady: false,
+          providerProfileReady: false,
+          providerProfileSyncedAt: null,
+          clinicSenderEnabled: false,
+        },
+      ]);
 
     const response = await GET();
     const json = await response.json();
@@ -676,8 +743,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail:
-        "Hosted SMS pilot scope does not match an active, carrier-ready clinic location",
+      detail: "2 hosted SMS pilot readiness issues detected",
     });
   });
 
@@ -685,6 +751,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsProvisioningScope();
     stubHostedSmsInboundGate();
     vi.stubEnv("MESSAGING_PROVIDER", "twilio");
     vi.stubEnv(
@@ -702,7 +769,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "1 required hosted SMS configuration issue detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
   });
 
@@ -710,6 +777,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsProvisioningScope();
     stubHostedSmsInboundGate();
     vi.stubEnv("MESSAGING_SENDING_PRACTICE_IDS", "not-a-practice-id");
     vi.stubEnv(
@@ -723,7 +791,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "1 required hosted SMS configuration issue detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
   });
 
@@ -731,6 +799,7 @@ describe("health route", () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();
     stubValidTelnyxEnvs();
+    stubHostedSmsProvisioningScope();
     stubHostedSmsInboundGate();
     vi.stubEnv(
       "MESSAGING_SENDING_PRACTICE_IDS",
@@ -747,7 +816,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "1 required hosted SMS configuration issue detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
   });
 
@@ -770,7 +839,7 @@ describe("health route", () => {
     expect(response.status).toBe(503);
     expect(json.checks.hostedSms).toEqual({
       ok: false,
-      detail: "3 required hosted SMS configuration issues detected",
+      detail: "1 hosted SMS pilot readiness issue detected",
     });
     expect(JSON.stringify(json)).not.toContain("test-api-key");
     expect(JSON.stringify(json)).not.toContain("test-public-key");
@@ -989,6 +1058,27 @@ describe("health route", () => {
     expect(body).not.toContain("EMAIL_SUPPORT_ADDRESS");
     expect(body).not.toContain("EMAIL_COMPANY_ADDRESS");
     expect(body).not.toContain("123 Cloud Lane");
+  });
+
+  it("rejects a non-postal company address without exposing it", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("EMAIL_COMPANY_ADDRESS", "evan@openvpm.com");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedEmail).toEqual({
+      ok: false,
+      detail: "1 required hosted configuration value is invalid",
+    });
+    const body = JSON.stringify(json);
+    expect(body).not.toContain("evan@openvpm.com");
+    expect(body).not.toContain("EMAIL_COMPANY_ADDRESS");
+    expect(
+      mocks.platformEmailIdentityConfigurationReady,
+    ).not.toHaveBeenCalled();
   });
 
   it("ignores blank AI_MODEL values before selecting the hosted Vertex provider", async () => {

@@ -143,6 +143,12 @@ describe("visit work reconciliation", () => {
     expect(integritySource).toMatch(
       /select \$\{labResults\.id\} as id[\s\S]*order by \$\{labResults\.id\}[\s\S]*\) as lab_source/,
     );
+    expect(integritySource).toContain(
+      "${dispenseChargeQueue.appointmentId} = ${appointmentId}",
+    );
+    expect(integritySource).toContain(
+      "${dispenseChargeQueue.status} = 'pending'",
+    );
   });
 
   it("does not create unresolved ledger work for a historical closed visit", async () => {

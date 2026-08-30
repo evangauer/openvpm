@@ -157,6 +157,13 @@ describe("API reference docs", () => {
       "Instruction text is trimmed and must be nonblank",
     );
     expect(source).toContain("/api/trpc/ + /api/v1/");
+    expect(source).toContain('name: "billing.convertEstimateToInvoice"');
+    expect(source).toContain(
+      "expectedUpdatedAt: Date // updatedAt from the displayed estimate",
+    );
+    expect(source).toContain("deduct tracked product stock atomically");
+    expect(source).toContain("does not charge the client");
+    expect(source).toContain("automatically reconcile visit work");
     expect(source).not.toContain("All endpoints are available via tRPC");
     expect(source).not.toContain("All endpoints use tRPC");
   });

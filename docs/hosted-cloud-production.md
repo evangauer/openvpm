@@ -9,6 +9,26 @@ OpenVPM has two operating modes:
 - **Self-host / OSS:** leave `HOSTED_BILLING_ENABLED` unset. Hosted billing gates and usage metering are disabled, and Stripe subscription envs are optional.
 - **OpenVPM Cloud:** set `HOSTED_BILLING_ENABLED=true`. Hosted billing, trials, read-only lapsed state, usage metering, and Stripe subscription management are active.
 
+Managed deployments must also set `OPENVPM_ENVIRONMENT` to exactly one of
+`development`, `staging`, `demo`, or `production`. Local and self-hosted OSS
+installs may leave it unset. The application build and `/api/health` both reject
+an invalid managed environment without returning configuration values.
+
+Development and Staging use the Cloud business tier for behavioral parity, but
+their default contract keeps provider mutations and real fees off: SMS
+provisioning/sending/inbound flags and scopes are empty, broad replica rollout
+is disabled, the Stripe Connect application fee is zero, and any configured
+Stripe secret is test-mode. Demo requires `NEXT_PUBLIC_DEMO_MODE=true` and
+hosted billing off. Production requires hosted billing on and forbids demo mode
+and `OPENVPM_EXPOSE_AUTH_LINKS`.
+
+The manual database jobs are an inert pre-provisioning control. Do not populate
+their GitHub environment secrets or target fingerprints until dedicated
+projects and forbidden-target fingerprints have been reviewed. Do not use the
+populated legacy staging project as replacement Staging, and do not enable
+automatic branch migrations or Vercel preview builds until the isolation canary
+has passed.
+
 This boundary is intentional. Do not add hosted-only requirements to the self-host path.
 
 ## Public Website Flow
@@ -68,6 +88,7 @@ same app-role credential you will put in hosted `DATABASE_URL`.
 Set these on the hosted app deployment:
 
 ```env
+OPENVPM_ENVIRONMENT=production
 HOSTED_BILLING_ENABLED=true
 # Default-off. Set both only after reviewing the verified-admin recipient
 # cohort; the timestamp is the prospective closeout eligibility boundary.
@@ -233,15 +254,21 @@ the gate evaluates it only in a newly created or redeployed build.
    40-character `main` commit, and type `MIGRATE_PRODUCTION`.
 2. Wait for the RLS ownership preflight, migration, RLS reapplication, and final
    drift check to pass.
-3. Set `PRODUCTION_RELEASE_SHA` to that same commit in the app and demo Vercel
+3. In Vercel, set and verify `OPENVPM_ENVIRONMENT=production` on the app
+   project's Production scope. Set `OPENVPM_ENVIRONMENT=demo` on the demo
+   project's deployment scope. Do this before setting the release lock or
+   redeploying either candidate.
+4. Set `PRODUCTION_RELEASE_SHA` to that same commit in the app and demo Vercel
    projects, then redeploy the exact candidate in each project.
-4. From the secure operator environment, invoke the authenticated
+5. From the secure operator environment, invoke the authenticated
    `/api/cron/backup` endpoint once with the production cron credential. Verify
    the response reports every primary backup successful; do not print or paste
    the credential into release notes. A new deployment intentionally remains
    unhealthy until this first durable `backup_runs` row exists.
-5. Verify `/api/health` and the release smoke path before recording success.
-6. Clear or rotate the value so the approval cannot apply to a later commit.
+6. Verify `/api/health` reports the intended deployment environment and the
+   release smoke path passes before recording success.
+7. Clear or rotate the release-lock value so the approval cannot apply to a
+   later commit.
 
 The GitHub `Production` environment must have an independent required reviewer
 before this is treated as two-person approval. See
@@ -570,8 +597,14 @@ For local or staging signup tests without real email delivery, set `OPENVPM_EXPO
 Resend sends transactional email and posts delivery lifecycle callbacks back to OpenVPM so bounces, spam complaints, and provider suppressions can fail closed before future client email sends.
 
 `EMAIL_SUPPORT_ADDRESS` is used as lifecycle email Reply-To and footer contact
-address. `EMAIL_COMPANY_ADDRESS` is rendered in hosted email footers. Both gate
-hosted readiness so production emails do not fall back to local/dev defaults.
+address. `EMAIL_COMPANY_ADDRESS` must be an operator-verified physical postal
+address, such as a current street address, registered PO box, or registered
+private mailbox; never use an email address or URL. It is rendered in
+promotional email footers. Hosted readiness and promotional lifecycle sends
+fail closed when it is missing or structurally invalid. Structural validation
+does not prove that the address exists or is deliverable, so verify it before
+deployment or campaign activation. Authentication, receipt, and other
+transactional/service email does not use this promotional-address gate.
 `EMAIL_PREFERENCE_IDENTITY_SECRET` is the stable HMAC identity key for PII-free
 recipient hashes. Never rotate it without a coordinated migration of persisted
 preference identities. `EMAIL_PREFERENCE_SIGNING_SECRET` signs new durable
@@ -587,6 +620,25 @@ campaign email writes recipient choices to the canonical hosted database rather
 than a deployment-local database. Optional platform email fails closed when the
 required preference configuration is missing or invalid; security, receipt,
 and service email is unaffected.
+
+Subscription confirmation and cancellation notices use the durable
+`lifecycle_email_jobs` outbox. The Stripe webhook commits each job with the
+billing transition; `/api/cron/lifecycle-emails` leases and delivers jobs every
+five minutes with a stable Resend idempotency key. Monitor its dedicated
+heartbeat. A terminal `outcome_unknown` means the provider result could not be
+proved inside Resend's retry window and requires redacted operator review; do
+not replay it with a new key. Recovery-held clinics remain queued and unsent.
+Recipient identity is HMAC-bound with `EMAIL_PREFERENCE_IDENTITY_SECRET`; a
+missing key fails enqueue closed and the stored job contains no address or body.
+The worker holds a short practice-row eligibility lock only across the bounded
+provider request so contact, recovery, and subscription changes cannot race the
+final send decision.
+
+Rollback is forward-only: pause the lifecycle-email cron, roll back the full
+application change, and leave the additive schema and delivery evidence intact.
+Before re-enabling delivery, reconcile queued jobs or invalidate them by an
+authoritative subscription-generation change. Never replay an unresolved job
+with a new provider idempotency key.
 
 The daily `/api/cron/setup-recovery` sweep sends at most two optional setup
 emails to the clinic's earliest verified admin. The first is eligible only after
@@ -734,6 +786,7 @@ set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_ACTIVATION_DIGEST_URL`,
 `CRON_HEARTBEAT_SMS_OPERATIONS_URL`,
 `CRON_HEARTBEAT_SMS_PROVIDER_EVENTS_URL`,
+`CRON_HEARTBEAT_LIFECYCLE_EMAILS_URL`,
 `CRON_HEARTBEAT_CONVERSION_RECONCILE_URL`,
 `CRON_HEARTBEAT_PRESCRIPTION_EXPIRY_URL`) when your external monitor expects one URL
 per scheduled job. URL templates may include `{job}` and `{status}` tokens.

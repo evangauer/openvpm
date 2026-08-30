@@ -79,6 +79,16 @@ const recoveryTrialStyles: Record<string, string> = {
   no_trial: "bg-gray-100 text-gray-600",
 };
 
+const smsPilotStageLabels: Record<string, string> = {
+  deferred: "Safely deferred",
+  blocked: "Blocked",
+  provisioning_prepared: "Provisioning prepared",
+  scope_prepared: "Scope prepared",
+  inbound_prepared: "Inbound prepared",
+  provider_ready: "Provider ready",
+  active: "Active",
+};
+
 function recoveryLabel(value: string) {
   return value.replaceAll("_", " ");
 }
@@ -118,6 +128,10 @@ export default function AdminPage() {
     trpc.admin.smsOperationsHealth.useQuery(undefined, { retry: false });
   const { data: smsConfiguration, error: smsConfigurationError } =
     trpc.admin.hostedSmsConfiguration.useQuery(undefined, { retry: false });
+  const { data: smsPilotPreflight, error: smsPilotPreflightError } =
+    trpc.admin.hostedSmsPilotActivationPreflight.useQuery(undefined, {
+      retry: false,
+    });
   const [extendTrialError, setExtendTrialError] = useState<string | null>(null);
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [messagingError, setMessagingError] = useState<string | null>(null);
@@ -134,6 +148,7 @@ export default function AdminPage() {
       utils.admin.overview.invalidate();
       utils.admin.activationFunnel.invalidate();
       utils.admin.activationRecovery.invalidate();
+      utils.admin.journeyFunnel.invalidate();
     },
     onError: (err) => setAnalyticsError(err.message),
   });
@@ -326,6 +341,103 @@ export default function AdminPage() {
             </span>
           ) : null}
         </div>
+        {smsPilotPreflight ? (
+          <div className="mt-4 rounded-md border border-border bg-muted/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-medium">
+                Hosted SMS pilot activation preflight
+              </p>
+              <span
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                  smsPilotPreflight.stage === "blocked"
+                    ? "bg-red-100 text-red-800"
+                    : smsPilotPreflight.stage === "active"
+                      ? "bg-green-100 text-green-800"
+                      : smsPilotPreflight.stage === "deferred"
+                        ? "bg-gray-100 text-gray-700"
+                        : "bg-amber-100 text-amber-800"
+                }`}
+              >
+                {smsPilotStageLabels[smsPilotPreflight.stage] ??
+                  smsPilotPreflight.stage}
+              </span>
+            </div>
+            <p className="mt-2 text-sm">{smsPilotPreflight.detail}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Next: {smsPilotPreflight.nextAction}
+            </p>
+            {smsPilotPreflight.blockers.length > 0 ? (
+              <p className="mt-2 text-xs text-red-700">
+                Blocking checks: {smsPilotPreflight.blockers.join(", ")}
+              </p>
+            ) : null}
+            <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                ["Launch flags", smsPilotPreflight.checks.launchFlagsValid],
+                [
+                  "Credential shapes",
+                  smsPilotPreflight.checks.credentialsValid,
+                ],
+                [
+                  "Provisioning scope",
+                  smsPilotPreflight.checks.provisioningScopeExact,
+                ],
+                ["Sending scope", smsPilotPreflight.checks.sendingScopeExact],
+                ["Scopes match", smsPilotPreflight.checks.scopesMatch],
+                ["Practice active", smsPilotPreflight.checks.practiceActive],
+                ["Recovery clear", smsPilotPreflight.checks.recoveryClear],
+                [
+                  "Carrier identity",
+                  smsPilotPreflight.checks.carrierIdentityReady,
+                ],
+                [
+                  "Provider profile",
+                  smsPilotPreflight.checks.providerProfileReady,
+                ],
+                [
+                  "Provider events",
+                  smsPilotPreflight.checks.providerEventsClear,
+                ],
+                [
+                  "Heartbeat delivery",
+                  smsPilotPreflight.checks.heartbeatDeliveryConfigured,
+                ],
+              ].map(([label, ready]) => (
+                <div
+                  key={String(label)}
+                  className="flex items-center justify-between rounded border border-border bg-background px-2 py-1.5"
+                >
+                  <span>{label}</span>
+                  <span
+                    className={
+                      ready === true
+                        ? "font-medium text-green-700"
+                        : ready === null
+                          ? "font-medium text-muted-foreground"
+                          : "font-medium text-red-700"
+                    }
+                  >
+                    {ready === true
+                      ? "Ready"
+                      : ready === null
+                        ? "Not staged"
+                        : "Blocked"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              This check is read-only. It returns no secret, phone, clinic, or
+              provider identifier and never enables provisioning, inbound
+              projection, or sending. Configured heartbeat delivery does not
+              prove a fresh external receipt.
+            </p>
+          </div>
+        ) : smsPilotPreflightError ? (
+          <p className="mt-3 text-sm text-red-700">
+            Could not load the hosted SMS pilot activation preflight.
+          </p>
+        ) : null}
         {smsConfiguration ? (
           <div className="mt-4 rounded-md border border-border bg-muted/20 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1246,6 +1358,122 @@ export default function AdminPage() {
                   ) : null}
                 </tbody>
               </table>
+            </div>
+
+            <div className="mt-6">
+              <h3 className="font-heading text-base font-semibold">
+                Acquisition outcomes · registrations in the past {journey.days}
+                days
+              </h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Restricted aggregate cohorts use fixed product-owned channel
+                buckets and canonical milestones. Rates use registered practices
+                as the denominator; missing values stay Unknown and unrecognized
+                values become Other without being displayed.
+              </p>
+              <div className="mt-3 overflow-x-auto rounded-md border border-border">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                      <th className="px-3 py-2 font-medium">Source</th>
+                      <th className="px-3 py-2 font-medium">Medium</th>
+                      <th className="px-3 py-2 font-medium">Campaign</th>
+                      <th className="px-3 py-2 font-medium">Registered</th>
+                      <th className="px-3 py-2 font-medium">Activated</th>
+                      <th className="px-3 py-2 font-medium">Payment method</th>
+                      <th className="px-3 py-2 font-medium">
+                        Positive payment
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {journey.acquisitionOutcomes.map((outcome) => (
+                      <tr
+                        key={`${outcome.source}:${outcome.medium}:${outcome.campaign}`}
+                      >
+                        <td className="px-3 py-2 font-medium">
+                          {outcome.source}
+                        </td>
+                        <td className="px-3 py-2">{outcome.medium}</td>
+                        <td className="px-3 py-2">{outcome.campaign}</td>
+                        <td className="px-3 py-2 tabular-nums">
+                          {outcome.registrations}
+                        </td>
+                        <td className="px-3 py-2 tabular-nums">
+                          {outcome.activated}{" "}
+                          <span className="text-xs text-muted-foreground">
+                            {formatPct(outcome.activationRate)}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 tabular-nums">
+                          {outcome.paymentMethodCollected}{" "}
+                          <span className="text-xs text-muted-foreground">
+                            {formatPct(outcome.paymentMethodRate)}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 tabular-nums">
+                          {outcome.firstPositivePayment}{" "}
+                          <span className="text-xs text-muted-foreground">
+                            {formatPct(outcome.positivePaymentRate)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                    {journey.acquisitionOutcomes.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={7}
+                          className="px-3 py-6 text-center text-muted-foreground"
+                        >
+                          No registered acquisition cohorts in this window.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+              {journey.acquisitionOutcomesTruncated ? (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Showing the top {journey.acquisitionOutcomeRowLimit} bucket
+                  combinations in deterministic order; additional combinations
+                  are omitted.
+                </p>
+              ) : null}
+            </div>
+
+            <div className="mt-6">
+              <h3 className="font-heading text-base font-semibold">
+                Period activity · milestone events in the past {journey.days}
+                days
+              </h3>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {[
+                  ["Registered", journey.periodActivity.registrations],
+                  ["Activated", journey.periodActivity.activated],
+                  [
+                    "Payment method",
+                    journey.periodActivity.paymentMethodCollected,
+                  ],
+                  [
+                    "Positive payment",
+                    journey.periodActivity.firstPositivePayment,
+                  ],
+                ].map(([label, value]) => (
+                  <div
+                    key={String(label)}
+                    className="rounded-md bg-muted/30 p-3"
+                  >
+                    <p className="text-xs text-muted-foreground">{label}</p>
+                    <p className="mt-1 font-heading text-xl font-bold tabular-nums">
+                      {value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                These counts use the exact milestone occurrence time and are not
+                a signup cohort conversion rate.
+              </p>
             </div>
             <p className="mt-3 text-xs text-muted-foreground">
               Anonymous first touch is carried across openvpm.com, demo, and

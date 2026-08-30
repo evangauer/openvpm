@@ -230,6 +230,84 @@ Before enabling either canonical non-production branch:
 6. record the Vercel project, deployment, source SHA, variable-scope audit, and
    smoke-test evidence before lifting the quarantine.
 
+### Inert environment control plane
+
+The repository contains manual, explicit database jobs for `Development`,
+`Staging`, and `Demo`. Their presence does not mean those environments are
+provisioned or approved. They intentionally have no push trigger and cannot
+mutate a database until an operator supplies all of the following in the
+matching GitHub environment:
+
+- a dedicated `DATABASE_URL` and `OPENPIMS_APP_DB_PASSWORD` secret;
+- a `DATABASE_TARGET_FINGERPRINT` variable derived from that environment's
+  Supabase project ref; and
+- `FORBIDDEN_DATABASE_TARGET_FINGERPRINTS` containing at least Production's
+  fingerprint and every other environment that target must not share.
+
+The target check parses the connection locally and emits only a boolean result;
+it never prints a URL, host, username, project ref, credential, or fingerprint.
+Every manual run must be dispatched from the target's canonical branch and the
+typed 40-character SHA must equal both the workflow event SHA and checked-out
+HEAD. Fixed per-environment concurrency serializes database mutation.
+
+Derive a target fingerprint locally without placing the project ref in shell
+history:
+
+```sh
+printf 'Supabase project ref: '
+IFS= read -r project_ref
+printf 'supabase-project:%s' "$project_ref" | shasum -a 256 | awk '{print $1}'
+unset project_ref
+```
+
+Two reviewers must independently derive the value from the target shown in the
+Supabase Dashboard. They must verify that `DATABASE_TARGET_FINGERPRINT` is set
+on the matching GitHub Environment—not at repository or organization scope—and
+that `FORBIDDEN_DATABASE_TARGET_FINGERPRINTS` contains Production plus every
+other forbidden environment. Never paste a database URL into the derivation
+command. A fingerprint is not a credential, but it is a stable environment
+identifier and should not appear in workflow logs or review screenshots.
+
+The workflow's `Verify ... code contract (synthetic)` step validates the
+repository's intended environment/provider combination with fixed values. It
+does not inspect live Vercel configuration. The Vercel build gate and
+`/api/health` validate the actual target variables and remain the authority for
+deployment configuration.
+
+New nonproduction databases must have an empty Drizzle ledger or an exact
+prefix of the committed journal before mutation. A missing or empty ledger is
+accepted only when a read-only preflight finds no application table in
+`public`; `spatial_ref_sys` is the sole allowlist entry, and only when PostgreSQL
+records it as owned by the `postgis` extension. After migration, RLS reapply,
+and drift validation, the ledger must exactly match the commit. Do not enable
+this strict hash gate for Production until the historically divergent 0086
+entry has a separate reviewed reconciliation decision. Never point the Staging
+job at the populated legacy staging project or copy that project's migration
+registry into its replacement.
+
+On a new nonproduction database, the first `db:rls` run creates
+`openpims_app` with the environment-scoped GitHub
+`OPENPIMS_APP_DB_PASSWORD` secret. The Vercel runtime `DATABASE_URL` must use
+that role and the same password. An ordinary RLS reapply deliberately does not
+reconcile or rotate an existing password; a mismatch requires a separately
+approved coordinated rotation using `OPENPIMS_ROTATE_APP_DB_PASSWORD=true` and
+an immediate Vercel credential update.
+
+`OPENVPM_ENVIRONMENT` is mandatory for managed Vercel deployments and accepts
+only `development`, `staging`, `demo`, or `production`. It remains optional for
+local/self-hosted OSS compatibility. Development and Staging exercise the Cloud
+business tier, but automatic provider mutations, broad rollout scopes, live
+Stripe credentials, and non-zero platform fees fail the environment contract.
+Demo remains non-hosted and explicitly demo-mode. Production requires the Cloud
+tier and forbids demo mode and exposed authentication links.
+
+The code-only control plane must land before resource provisioning. Creating
+projects, installing or moving credentials, rotating Production values,
+lifting preview quarantine, and enabling automatic branch migrations are
+separate reviewed environment actions. Automatic Development and Staging
+migrations may be added only after a protected canary proves their credentials
+cannot reach Production.
+
 The placeholder `openvpm-docs` project is separately quarantined with an
 Ignored Build Step of `test ! -f .vercel-deploy-enabled`. Adding that sentinel
 is an explicit release decision requiring a focused docs pull request, build
@@ -315,6 +393,11 @@ cleanup summary. Enable automatic deletion only for merged topic branches, not
 canonical or release references. Repeat the inventory on a regular cadence so
 the backlog does not regrow.
 
+The versioned [repository retirement register](repository-retirement-register.md)
+is the owner-notice and execution-record surface. An entry in that register is
+a proposal, not deletion authorization; every preservation, promotion, review,
+grace, and final-drift gate in the register remains fail-closed.
+
 ## Retiring Orca as repository authority
 
 Orca worktrees and automation are not canonical repository state. Retire them
@@ -336,6 +419,66 @@ in a controlled handoff:
 Standard local clones and Git worktrees may still be used as working copies;
 the protected remote branches, reviewed pull requests, immutable artifacts, and
 release records remain authoritative.
+
+## Current transition checkpoint — 2026-08-26
+
+The transition note below is preserved as the historical 2026-08-25 starting
+state. In the completed live audit immediately before this amendment, the
+protected refs were `development` at
+`46a7c0636e91e6f1d1ce58362daa3a4a9487c613`; the protected `staging` ref and
+deployed `main` remain at `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`.
+This does not imply that Staging has a deployed artifact. PR #270 was the last
+completed Development merge at audit time; its reviewed head and merge commit
+have identical tree
+`f98d82ee4ec57387dfa487e9d615bbf8d18ba2e0`, and exact-SHA CI and CodeQL
+passed before and after merge. This proves the Development integration and
+publishes a retirement proposal, not a Staging or Production release or
+deletion authorization. PR #256 remains the latest product integration.
+The retirement grace clock has not started.
+
+This checkpoint is an immutable audit observation, not a branch pointer.
+Governance-only amendments advance Development after review. Release and
+cleanup operations must read the live protected refs and may not infer current
+Development from the SHA recorded above.
+
+The canonical migration tail is `0098_shallow_jackpot`. No pull request remained
+open at audit time. PRs #202, #203, and #222 are closed with their exact source branches
+retained as evidence-only; issues #257 through #268 carry their unresolved
+current-base outcomes. #256 subsumes #202's near-expiry and exact Checkout
+identity behavior, current Development owns the authoritative `past_due` versus
+`unpaid` entitlement contract and recovery UI, and only the receipt/dunning
+rebuild remains from #202 through #268. The dated
+[repository recovery and cleanup ledger](repository-recovery-ledger.md)
+contains the exact heads, issue routing, branch/worktree counts, and recovery
+sequencing decisions.
+
+Promotion remains **NO-GO**. Canonical refs have active no-bypass mutation and
+strict build, migration, RLS, and CodeQL controls, but branch rules still
+require zero approvals and the repository still has only one collaborator.
+Repository ruleset `20625373` covers exactly `development`, `staging`, and
+`main`, has no bypass actors, and requires pull requests, resolved threads,
+linear history, strict build/migration/RLS checks, and deletion/non-fast-forward
+protection. Classic protection enforces administrators and additionally requires
+both CodeQL analyses. The bootstrap `.github/CODEOWNERS` still names only
+`@evangauer`, and code-owner review, stale-review dismissal, and last-push
+approval are not enforced.
+Development, Staging, and Production environment branch policies name only
+`development`, `staging`, and `main`, respectively. Staging and Production name
+that same user as environment reviewer and allow self-review; Development has
+no environment reviewer. All three environments allow administrator bypass.
+Development and Staging have no environment secrets or variables, no isolated
+nonproduction credential canary has passed, and no build-once immutable artifact
+has completed the Development-to-Staging-to-Main path. Vercel confirms READY app
+and demo Production deployments sourced from
+Main `b2d07cd970dcb4b0fef276bcdeb0dbb105e6f6ca`; Development candidates remain
+CANCELED by quarantine, the placeholder docs deployment remains ERROR on old
+Main `676f0b09d30a0a6f8804736fc7475cbd1f408d1a`, and no Staging artifact is
+proven. GitHub Production deployment `6088849562` records Main `b2d07cd`, but
+GitHub has no Development or Staging environment deployment record. A READY
+Production deployment is not evidence that an immutable artifact passed
+Staging and was promoted unchanged. Independent branch/environment approval,
+isolated resources, exact artifact acceptance, and a governed promotion remain
+prerequisites.
 
 ## Transition note — 2026-08-25
 

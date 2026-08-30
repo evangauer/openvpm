@@ -81,6 +81,7 @@ describe("hosted deployment ordering", () => {
 
       expect(result.status).toBe(0);
       expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
+        "environment:validate",
         "db:drift",
         "build",
       ]);

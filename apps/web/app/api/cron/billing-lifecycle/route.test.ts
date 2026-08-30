@@ -32,6 +32,16 @@ const mocks = vi.hoisted(() => {
     billingEnforced: vi.fn(() => true),
     cronAuthError: vi.fn(() => null),
     reportCronHeartbeat: vi.fn(async () => undefined),
+    runDurableSubscriptionQuantitySyncBatch: vi.fn(async () => ({
+      candidates: 0,
+      completed: 0,
+      deferred: 0,
+    })),
+    runDurablePracticeSubscriptionQuantitySyncBatch: vi.fn(async () => ({
+      candidates: 0,
+      completed: 0,
+      deferred: 0,
+    })),
     sendTrialEndingEmail: vi.fn(async () => ({
       success: true,
       id: "email_123",
@@ -85,6 +95,13 @@ vi.mock("@/lib/email-lifecycle", () => ({
 
 vi.mock("@/lib/alerts", () => ({
   alertOps: mocks.alertOps,
+}));
+
+vi.mock("@/lib/billing/stripe-subscription-quantity-sync", () => ({
+  runDurableSubscriptionQuantitySyncBatch:
+    mocks.runDurableSubscriptionQuantitySyncBatch,
+  runDurablePracticeSubscriptionQuantitySyncBatch:
+    mocks.runDurablePracticeSubscriptionQuantitySyncBatch,
 }));
 
 const { GET } = await import("./route");

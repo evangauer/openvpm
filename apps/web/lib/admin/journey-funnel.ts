@@ -2,9 +2,11 @@ import { sql } from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
 import { withSystem } from "@/lib/tenant-db";
 import { funnelRate } from "@/lib/admin/activation-funnel";
+import { safeAcquisitionReportingBucket } from "@/lib/acquisition";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const ABANDONMENT_GRACE_DAYS = 7;
+export const ACQUISITION_OUTCOME_ROW_LIMIT = 20;
 
 export interface JourneyFunnelWeek {
   weekStart: string;
@@ -52,9 +54,33 @@ export interface JourneyFunnelTotals {
   positivePaymentRate: number;
 }
 
+export interface AcquisitionOutcome {
+  source: string;
+  medium: string;
+  campaign: string;
+  registrations: number;
+  activated: number;
+  paymentMethodCollected: number;
+  firstPositivePayment: number;
+  activationRate: number;
+  paymentMethodRate: number;
+  positivePaymentRate: number;
+}
+
+export interface JourneyFunnelPeriodActivity {
+  registrations: number;
+  activated: number;
+  paymentMethodCollected: number;
+  firstPositivePayment: number;
+}
+
 export interface JourneyFunnel {
   days: number;
   weeks: JourneyFunnelWeek[];
+  acquisitionOutcomes: AcquisitionOutcome[];
+  acquisitionOutcomeRowLimit: number;
+  acquisitionOutcomesTruncated: boolean;
+  periodActivity: JourneyFunnelPeriodActivity;
   totals: JourneyFunnelTotals;
 }
 
@@ -77,6 +103,23 @@ interface JourneyRow {
   paymentAbandoned: number | string;
 }
 
+interface AcquisitionOutcomeRow {
+  source: string;
+  medium: string;
+  campaign: string;
+  registrations: number | string;
+  activated: number | string;
+  paymentMethodCollected: number | string;
+  firstPositivePayment: number | string;
+}
+
+interface PeriodActivityRow {
+  registrations: number | string;
+  activated: number | string;
+  paymentMethodCollected: number | string;
+  firstPositivePayment: number | string;
+}
+
 function rowsFromExecute<T>(result: unknown): T[] {
   if (Array.isArray(result)) return result as T[];
   const rows = (result as { rows?: unknown[] } | null)?.rows;
@@ -93,10 +136,14 @@ export async function computeJourneyFunnel(
     now.getTime() - ABANDONMENT_GRACE_DAYS * DAY_MS,
   ).toISOString();
 
-  const { weeklyResult, unattributedResult, errorsResult } = await withSystem(
-    db,
-    async (tx) => {
-      const weeklyResult = await tx.execute(sql`
+  const {
+    weeklyResult,
+    unattributedResult,
+    errorsResult,
+    acquisitionResult,
+    periodActivityResult,
+  } = await withSystem(db, async (tx) => {
+    const weeklyResult = await tx.execute(sql`
       with first_touch_all_time as (
         select
           fe.anonymous_id,
@@ -262,7 +309,7 @@ export async function computeJourneyFunnel(
       order by s.week_start
     `);
 
-      const unattributedResult = await tx.execute(sql`
+    const unattributedResult = await tx.execute(sql`
       select
         count(*) filter (
           where not (
@@ -291,16 +338,188 @@ export async function computeJourneyFunnel(
         and p.deleted_at is null
         and p.settings ->> 'analyticsExcluded' is distinct from 'true'
     `);
-      const errorsResult = await tx.execute(sql`
+    const errorsResult = await tx.execute(sql`
       select count(*)::int as count
       from funnel_events
       where event_name = 'client_error'
         and deleted_at is null
         and created_at >= ${windowStart}::timestamptz
     `);
-      return { weeklyResult, unattributedResult, errorsResult };
-    },
-  );
+
+    // These are signup cohorts: the registration timestamp selects the
+    // cohort, while all later canonical milestones become its outcomes.
+    // Bucketing occurs before grouping so neither raw tokens nor a long tail
+    // of one-off values can escape through the result cardinality.
+    const acquisitionResult = await tx.execute(sql`
+      with raw_signup_cohort as (
+        select
+          p.id as practice_id,
+          lower(btrim(coalesce(
+            p.settings -> 'acquisition' ->> 'source', ''
+          ))) as raw_source,
+          lower(btrim(coalesce(
+            p.settings -> 'acquisition' ->> 'medium', ''
+          ))) as raw_medium,
+          lower(btrim(coalesce(
+            p.settings -> 'acquisition' ->> 'campaign', ''
+          ))) as raw_campaign
+        from practice_conversion_milestones registered
+        join practices p on p.id = registered.practice_id
+        where registered.milestone = 'registered'
+          and registered.occurred_at >= ${windowStart}::timestamptz
+          and p.deleted_at is null
+          and p.settings ->> 'analyticsExcluded' is distinct from 'true'
+      ), signup_cohort as (
+        select
+          practice_id,
+          case
+            when raw_source = ''
+              or raw_source !~ '^[a-z0-9._:/-]{1,80}$'
+              then 'Unknown'
+            when raw_source in (
+              'homepage_hero', 'homepage_start_small',
+              'homepage_pricing', 'homepage_closing', 'homepage_demo'
+            ) then 'homepage'
+            when raw_source in (
+              'nav', 'mobile_nav', 'resources_nav', 'footer'
+            ) then 'navigation'
+            when raw_source ~ '^cloud_(hero|founding_offer|closing)(_fit)?$'
+              then 'cloud'
+            when raw_source ~ '^feature_(schedule|records|billing|patients|communications|inventory|whiteboard|compliance|reports)_(hero|fit|hosting|hosting_fit|closing)$'
+              then 'feature'
+            when raw_source ~ '^solution_(general-practice|specialty-referral|emergency-critical-care|equine|mobile-house-call|multi-location|shelter-nonprofit|exotics-avian)_(hero|hosting|hosting_fit|closing)$'
+              or raw_source in (
+                'solutions_index_hosting', 'solutions_index_hosting_fit',
+                'solutions_index_closing'
+              )
+              then 'solution'
+            when raw_source ~ '^role_(practice-owners|practice-managers|veterinarians|veterinary-technicians|front-desk)_(hero|fit|hosting|hosting_fit|closing)$'
+              then 'role'
+            when raw_source ~ '^(compare|comparison)_openvpm-vs-(cornerstone|avimark|ezyvet|shepherd|provet-cloud|digitail|vetspire|idexx-neo|daysmart-vet|hippo-manager|navetor|impromed|openvpms)_(hero|fit|hosting|hosting_fit|closing)$'
+              or raw_source in (
+                'compare_index_hosting', 'compare_index_hosting_fit'
+              )
+              then 'comparison'
+            when raw_source = 'blog'
+              or raw_source ~ '^glossary_(pims|soap-notes|emr-vs-pims|controlled-substance-log|audit-trail|open-api|rest-api|webhook|vendor-lock-in|data-portability|open-source-veterinary-software|agplv3|self-hosting|managed-hosting|cloud-vs-on-premise|two-way-texting|appointment-reminder)_closing$'
+              then 'content'
+            when raw_source in ('install_demo', 'install_cloud')
+              then 'install'
+            when raw_source in (
+              'second_pims_hosting', 'second_pims_hosting_fit',
+              'second_pims_closing'
+            ) then 'second_pims'
+            when raw_source = 'why_closing' then 'why'
+            when raw_source = 'demo' then 'demo'
+            when raw_source = 'clinic_fit' then 'clinic_fit'
+            when raw_source = 'marketing' then 'marketing'
+            when raw_source = 'direct' then 'direct'
+            else 'Other'
+          end as source,
+          case
+            when raw_medium = ''
+              or raw_medium !~ '^[a-z0-9._:/-]{1,80}$'
+              then 'Unknown'
+            when raw_medium = 'product' then 'product'
+            when raw_medium = 'organic' then 'organic'
+            when raw_medium = 'cpc' then 'cpc'
+            when raw_medium in ('paid/social', 'paid_social')
+              then 'paid_social'
+            when raw_medium = 'email' then 'email'
+            when raw_medium = 'referral' then 'referral'
+            when raw_medium = 'direct' then 'direct'
+            else 'Other'
+          end as medium,
+          case
+            when raw_campaign = ''
+              or raw_campaign !~ '^[a-z0-9._:/-]{1,80}$'
+              then 'Unknown'
+            when raw_campaign in (
+              'demo_login', 'demo_dashboard', 'demo_ask_ai',
+              'demo_day_board', 'demo_whiteboard', 'demo_client_portal',
+              'demo_patients', 'demo_clients', 'demo_records',
+              'demo_billing', 'demo_inbox', 'demo_inventory',
+              'demo_reports', 'demo_settings', 'demo_other', 'demo_cta'
+            ) then raw_campaign
+            when raw_campaign in ('launch', 'clinic_launch-2026')
+              then 'launch'
+            when raw_campaign = 'direct' then 'direct'
+            else 'Other'
+          end as campaign
+        from raw_signup_cohort
+      ), outcomes as (
+        select
+          cohort.*,
+          exists (
+            select 1
+            from practice_conversion_milestones activated
+            where activated.practice_id = cohort.practice_id
+              and activated.milestone = 'activated'
+          ) as activated,
+          exists (
+            select 1
+            from practice_conversion_milestones payment_method
+            where payment_method.practice_id = cohort.practice_id
+              and payment_method.milestone = 'payment_method_collected'
+          ) as payment_method_collected,
+          exists (
+            select 1
+            from practice_conversion_milestones positive_payment
+            where positive_payment.practice_id = cohort.practice_id
+              and positive_payment.milestone = 'first_positive_payment'
+          ) as first_positive_payment
+        from signup_cohort cohort
+      )
+      select
+        source,
+        medium,
+        campaign,
+        count(*)::int as registrations,
+        count(*) filter (where activated)::int as activated,
+        count(*) filter (
+          where payment_method_collected
+        )::int as "paymentMethodCollected",
+        count(*) filter (
+          where first_positive_payment
+        )::int as "firstPositivePayment"
+      from outcomes
+      group by source, medium, campaign
+      order by registrations desc, source, medium, campaign
+      limit ${ACQUISITION_OUTCOME_ROW_LIMIT + 1}
+    `);
+
+    // This is intentionally not a registration cohort. It answers how many
+    // canonical events occurred in the period, including later outcomes for
+    // practices registered before it began.
+    const periodActivityResult = await tx.execute(sql`
+      select
+        count(*) filter (
+          where pcm.milestone = 'registered'
+        )::int as registrations,
+        count(*) filter (
+          where pcm.milestone = 'activated'
+        )::int as activated,
+        count(*) filter (
+          where pcm.milestone = 'payment_method_collected'
+        )::int as "paymentMethodCollected",
+        count(*) filter (
+          where pcm.milestone = 'first_positive_payment'
+        )::int as "firstPositivePayment"
+      from practice_conversion_milestones pcm
+      join practices p on p.id = pcm.practice_id
+      where pcm.occurred_at >= ${windowStart}::timestamptz
+        and p.deleted_at is null
+        and p.settings ->> 'analyticsExcluded' is distinct from 'true'
+    `);
+
+    return {
+      weeklyResult,
+      unattributedResult,
+      errorsResult,
+      acquisitionResult,
+      periodActivityResult,
+    };
+  });
 
   const rawWeeks = rowsFromExecute<JourneyRow>(weeklyResult);
   const weeks = rawWeeks.map((row) => ({
@@ -338,10 +557,44 @@ export async function computeJourneyFunnel(
   const repairableAttributionGaps =
     Number(unattributedRows[0]?.repairableGap) || 0;
   const errorRows = rowsFromExecute<{ count: number | string }>(errorsResult);
+  const rawAcquisitionOutcomes =
+    rowsFromExecute<AcquisitionOutcomeRow>(acquisitionResult);
+  const acquisitionOutcomesTruncated =
+    rawAcquisitionOutcomes.length > ACQUISITION_OUTCOME_ROW_LIMIT;
+  const acquisitionOutcomes = rawAcquisitionOutcomes
+    .slice(0, ACQUISITION_OUTCOME_ROW_LIMIT)
+    .map((row) => {
+      const registrations = Number(row.registrations) || 0;
+      const activated = Number(row.activated) || 0;
+      const paymentMethodCollected = Number(row.paymentMethodCollected) || 0;
+      const firstPositivePayment = Number(row.firstPositivePayment) || 0;
+      return {
+        source: safeAcquisitionReportingBucket("source", row.source),
+        medium: safeAcquisitionReportingBucket("medium", row.medium),
+        campaign: safeAcquisitionReportingBucket("campaign", row.campaign),
+        registrations,
+        activated,
+        paymentMethodCollected,
+        firstPositivePayment,
+        activationRate: funnelRate(activated, registrations),
+        paymentMethodRate: funnelRate(paymentMethodCollected, registrations),
+        positivePaymentRate: funnelRate(firstPositivePayment, registrations),
+      };
+    });
+  const periodRow = rowsFromExecute<PeriodActivityRow>(periodActivityResult)[0];
 
   return {
     days,
     weeks,
+    acquisitionOutcomes,
+    acquisitionOutcomeRowLimit: ACQUISITION_OUTCOME_ROW_LIMIT,
+    acquisitionOutcomesTruncated,
+    periodActivity: {
+      registrations: Number(periodRow?.registrations) || 0,
+      activated: Number(periodRow?.activated) || 0,
+      paymentMethodCollected: Number(periodRow?.paymentMethodCollected) || 0,
+      firstPositivePayment: Number(periodRow?.firstPositivePayment) || 0,
+    },
     totals: {
       visitors,
       demos,

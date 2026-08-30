@@ -7,10 +7,6 @@ describe("trial badge UI", () => {
     "app/(dashboard)/settings/page.tsx",
     "utf8",
   );
-  const addCardSource = readFileSync(
-    "components/onboarding/steps/add-a-card.tsx",
-    "utf8",
-  );
 
   it("surfaces subscription loading and failures before hiding the badge", () => {
     expect(source).toContain("const { data, isLoading, error }");
@@ -22,9 +18,7 @@ describe("trial badge UI", () => {
       source.indexOf("if (error || !data)"),
     );
     expect(source.indexOf("if (error || !data)")).toBeLessThan(
-      source.indexOf(
-        'if (!data.billingEnforced || data.billingStatus === "active")',
-      ),
+      source.indexOf("if (!data.billingEnforced) return null"),
     );
     expect(source).not.toContain(
       'if (!data || !data.billingEnforced || data.billingStatus === "active")',
@@ -39,21 +33,51 @@ describe("trial badge UI", () => {
     expect(source).not.toContain("window.location.href");
   });
 
-  it("routes card-on-file trialing accounts to billing instead of another Checkout", () => {
-    expect(source).toContain("if (data.hasSubscription)");
+  it("uses the authoritative setup state before lifecycle display or activation", () => {
+    expect(source).toContain("data.billingSetupCompleted");
+    expect(source).toContain('data.billingSetupState === "contradiction"');
+    expect(source).toContain('data.billingSetupState === "manual_review"');
+    expect(source).toContain('data.billingSetupState === "confirming"');
     expect(source).toContain('href="/settings?tab=billing"');
     expect(source).toContain("Billing connected · Manage billing");
+    expect(source).toContain("Billing setup needs review");
+    expect(source).toContain("Billing confirmation in progress");
     expect(source).toContain("Payment retrying · Review billing");
     expect(source).toContain("Payment unpaid · Read only");
-    expect(source.indexOf("if (data.hasSubscription)")).toBeLessThan(
+    expect(
+      source.indexOf('data.billingSetupState === "contradiction"'),
+    ).toBeLessThan(source.indexOf('if (data.billingStatus === "active")'));
+    expect(source.indexOf("if (data.billingSetupCompleted)")).toBeLessThan(
       source.indexOf("const trialing ="),
     );
     expect(settingsSource).toContain(
-      "const firstActivation = !data.hasSubscription",
+      "const firstActivation = !authoritativeSetup.billingSetupCompleted",
     );
-    expect(addCardSource).toContain(
-      "subscription.data?.hasSubscription || subscription.data?.hasBillingAccount",
+    expect(settingsSource).not.toContain("hasBillingAccount");
+    expect(source).not.toContain("data.hasStripeCustomer");
+  });
+
+  it("bounds Checkout-return polling without treating the URL as evidence", () => {
+    expect(settingsSource).toContain(
+      "trpc.subscription.getSetupStatus.useQuery",
     );
+    expect(settingsSource).toContain("subscriptionSetupPollInterval");
+    expect(settingsSource).toContain("subscriptionSetupPollingEligible");
+    expect(settingsSource).toContain("SUBSCRIPTION_SETUP_POLL_WINDOW_MS");
+    expect(settingsSource).toContain("if (!checkoutPollEligible)");
+    expect(settingsSource).toContain(
+      'checkoutStatus === "success" &&\n      authoritativeSetup.billingSetupCompleted',
+    );
+    expect(settingsSource).toContain(
+      "The return URL does not prove completion",
+    );
+    expect(settingsSource).toContain('role="status"');
+    expect(settingsSource).toContain('aria-live="polite"');
+    expect(settingsSource).toContain('role="alert"');
+    expect(settingsSource).toContain(
+      "Refresh this page or contact support before trying Checkout again.",
+    );
+    expect(settingsSource).not.toContain("setInterval(");
   });
 
   it("counts trial days from the practice timezone", () => {

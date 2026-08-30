@@ -50,38 +50,60 @@ export function TrialBadge() {
     );
   }
 
-  if (!data.billingEnforced || data.billingStatus === "active") {
-    return null;
-  }
+  if (!data.billingEnforced) return null;
 
-  if (data.billingStatus === "past_due") {
-    return (
-      <Link
-        href="/settings?tab=billing"
-        className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-100"
-      >
-        <CreditCard className="h-3.5 w-3.5" />
-        Payment retrying · Review billing
-      </Link>
-    );
-  }
-
-  if (data.billingStatus === "unpaid") {
+  if (
+    data.billingSetupState === "manual_review" ||
+    data.billingSetupState === "blocked_recovery" ||
+    data.billingSetupState === "contradiction"
+  ) {
     return (
       <Link
         href="/settings?tab=billing"
         className="inline-flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20"
       >
-        <CreditCard className="h-3.5 w-3.5" />
-        Payment unpaid · Read only
+        <AlertTriangle className="h-3.5 w-3.5" />
+        Billing setup needs review
       </Link>
     );
   }
 
-  // A Stripe subscription can legitimately remain `trialing` after Checkout
-  // while the saved card waits for the free trial to end. Never offer another
-  // Checkout in that state; it could create a duplicate subscription.
-  if (data.hasSubscription) {
+  if (data.billingSetupState === "confirming") {
+    return (
+      <Link
+        href="/settings?tab=billing"
+        className="inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-800 transition-colors hover:bg-blue-100"
+      >
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Billing confirmation in progress
+      </Link>
+    );
+  }
+
+  if (data.billingSetupCompleted) {
+    if (data.billingStatus === "active") return null;
+    if (data.billingStatus === "past_due") {
+      return (
+        <Link
+          href="/settings?tab=billing"
+          className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-100"
+        >
+          <CreditCard className="h-3.5 w-3.5" />
+          Payment retrying · Review billing
+        </Link>
+      );
+    }
+    if (data.billingStatus === "unpaid") {
+      return (
+        <Link
+          href="/settings?tab=billing"
+          className="inline-flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20"
+        >
+          <CreditCard className="h-3.5 w-3.5" />
+          Payment unpaid · Read only
+        </Link>
+      );
+    }
     return (
       <Link
         href="/settings?tab=billing"

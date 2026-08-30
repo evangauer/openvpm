@@ -23,6 +23,7 @@ describe("Vercel cron schedule", () => {
         "/api/cron/activation-digest",
         "/api/cron/sms-operations",
         "/api/cron/sms-provider-events",
+        "/api/cron/lifecycle-emails",
         "/api/cron/conversion-reconcile",
         "/api/cron/prescription-expiry",
       ]),
@@ -63,6 +64,11 @@ describe("Vercel cron schedule", () => {
       config.crons?.find(
         (cron) => cron.path === "/api/cron/sms-provider-events",
       )?.schedule,
+    ).toBe("*/5 * * * *");
+
+    expect(
+      config.crons?.find((cron) => cron.path === "/api/cron/lifecycle-emails")
+        ?.schedule,
     ).toBe("*/5 * * * *");
   });
 });

@@ -104,6 +104,32 @@ describe("admin UI", () => {
     expect(compactSource).toContain("active trial with a collected");
   });
 
+  it("separates privacy-bucketed acquisition outcomes from period activity", () => {
+    expect(source).toContain(
+      "Acquisition outcomes · registrations in the past",
+    );
+    expect(source).toContain("journey.acquisitionOutcomes.map");
+    expect(source).toContain("outcome.source");
+    expect(source).toContain("outcome.medium");
+    expect(source).toContain("outcome.campaign");
+    expect(source).toContain("formatPct(outcome.activationRate)");
+    expect(source).toContain("formatPct(outcome.paymentMethodRate)");
+    expect(source).toContain("formatPct(outcome.positivePaymentRate)");
+    expect(source).toContain("fixed product-owned channel");
+    expect(compactSource).toContain(
+      "missing values stay Unknown and unrecognized values become Other",
+    );
+    expect(source).toContain("journey.acquisitionOutcomesTruncated");
+    expect(source).toContain("journey.acquisitionOutcomeRowLimit");
+    expect(source).toContain("Period activity · milestone events in the past");
+    expect(source).toContain("journey.periodActivity.registrations");
+    expect(source).toContain("journey.periodActivity.activated");
+    expect(source).toContain("journey.periodActivity.paymentMethodCollected");
+    expect(source).toContain("journey.periodActivity.firstPositivePayment");
+    expect(source).toContain("utils.admin.journeyFunnel.invalidate()");
+    expect(compactSource).toContain("not a signup cohort conversion rate");
+  });
+
   it("shows trial source and setup stage for diagnosing individual drop-off", () => {
     expect(source).toContain("{p.acquisitionSource}");
     expect(source).toContain("{p.onboardingIntent}");
@@ -145,6 +171,27 @@ describe("admin UI", () => {
     expect(source).toContain("Sending scope exact");
     expect(source).toContain("smsConfiguration.sendingScopeExact");
     expect(source).toContain('"Needs attention"');
+  });
+
+  it("shows the sequenced read-only hosted SMS pilot activation preflight", () => {
+    expect(source).toContain(
+      "trpc.admin.hostedSmsPilotActivationPreflight.useQuery",
+    );
+    expect(source).toContain("Hosted SMS pilot activation preflight");
+    expect(source).toContain('scope_prepared: "Scope prepared"');
+    expect(source).toContain('inbound_prepared: "Inbound prepared"');
+    expect(source).toContain('provider_ready: "Provider ready"');
+    expect(source).toContain("smsPilotPreflight.checks.launchFlagsValid");
+    expect(source).toContain("smsPilotPreflight.checks.providerEventsClear");
+    expect(source).toContain(
+      "smsPilotPreflight.checks.heartbeatDeliveryConfigured",
+    );
+    expect(compactSource).toContain(
+      "This check is read-only. It returns no secret, phone, clinic, or provider identifier",
+    );
+    expect(compactSource).toContain(
+      "Configured heartbeat delivery does not prove a fresh external receipt",
+    );
   });
 
   it("shows bounded read-only redacted carrier lifecycle history", () => {

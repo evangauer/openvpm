@@ -80,6 +80,9 @@ describe("self-hosting operations docs", () => {
     expect(readme).not.toContain("| **Email/SMS** | Resend + Twilio |");
 
     expect(requiredHostedEnvBlock).toContain("MESSAGING_PROVIDER=telnyx");
+    expect(requiredHostedEnvBlock).toContain(
+      "OPENVPM_ENVIRONMENT=production",
+    );
     expect(requiredHostedEnvBlock).toContain("TELNYX_API_KEY=...");
     expect(requiredHostedEnvBlock).toContain("TELNYX_PUBLIC_KEY=...");
     expect(requiredHostedEnvBlock).toContain("RESEND_WEBHOOK_SECRET=...");
@@ -93,6 +96,9 @@ describe("self-hosting operations docs", () => {
     expect(requiredHostedEnvBlock).not.toContain("STRIPE_PRICE_CLOUD_USER");
 
     expect(hostedRunbook).toContain("Telnyx is the hosted SMS default");
+    expect(hostedRunbook).toContain(
+      "set and verify `OPENVPM_ENVIRONMENT=production`",
+    );
     expect(hostedRunbook).toContain("Twilio fallback deployment");
     expect(hostedRunbook).toContain(
       "`STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only",
@@ -206,7 +212,10 @@ describe("self-hosting operations docs", () => {
     expect(emailSection).toContain("RESEND_WEBHOOK_SECRET");
     expect(emailSection).toContain("EMAIL_SUPPORT_ADDRESS");
     expect(emailSection).toContain("EMAIL_COMPANY_ADDRESS");
-    expect(emailSection).toContain("production emails do not fall back");
+    expect(emailSection).toContain("operator-verified physical postal");
+    expect(emailSection).toContain("never use an email address or URL");
+    expect(emailSection).toContain("promotional lifecycle sends");
+    expect(emailSection).toContain("transactional/service email");
     expect(envExample).toContain("RESEND_WEBHOOK_SECRET=");
     expect(envExample).toContain("EMAIL_SUPPORT_ADDRESS=");
     expect(envExample).toContain("EMAIL_COMPANY_ADDRESS=");

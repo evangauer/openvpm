@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -137,7 +137,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -179,7 +179,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -191,6 +191,11 @@ jobs:
       # Apply committed migrations, apply RLS (+ least-priv role), then prove
       # tenant isolation against a real Postgres on every PR.
       - run: pnpm --filter @openpims/db db:migrate
+
+      - name: Verify migrated ledger exactly matches committed history
+        env:
+          MIGRATION_CONFORMANCE_MODE: exact
+        run: pnpm --filter @openpims/db db:migrations:conformance
 
       - name: Execute RLS ownership preflight contract
         run: pnpm --filter @openpims/db db:rls:preflight:test
@@ -235,6 +240,26 @@ jobs:
       - name: Execute account-recovery database contract
         run: pnpm --filter @openpims/db db:auth-recovery:test
 
+      - name: Execute subscription Checkout ownership database contract
+        env:
+          SUBSCRIPTION_CHECKOUT_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/db db:subscription-checkout:test
+
+      - name: Execute subscription Checkout service transition contract
+        env:
+          SUBSCRIPTION_CHECKOUT_SERVICE_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run lib/billing/__tests__/subscription-checkout-attempts.integration.test.ts
+
+      # Subscription notices cross Stripe transactions, a durable outbox,
+      # provider idempotency, and final-state suppression. Exercise atomic
+      # enqueue, SKIP LOCKED workers, lease/CAS recovery, immutable attempts,
+      # RLS, terminal outcomes, and the practice-row dispatch fence in the
+      # fully migrated disposable PostgreSQL service.
+      - name: Execute lifecycle-email outbox database contract
+        env:
+          LIFECYCLE_EMAIL_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/db db:lifecycle-email-outbox:test
+
       # Client treatment-plan decisions are legal record evidence. Prove the
       # sealed revision/response graph, signature hash binding, replay refusal,
       # immutable grants, and tenant/no-context isolation in real PostgreSQL.
@@ -258,6 +283,23 @@ jobs:
       # with the restricted application role under the current RLS contract.
       - name: Execute finance schema adoption contract
         run: pnpm --filter @openpims/db db:finance-adoption:test
+
+      # Platform acquisition outcomes aggregate across clinic tenants. Exercise
+      # the exact query as openpims_app and prove system-only access, no-context
+      # isolation, privacy filters, and cohort-versus-period semantics.
+      - name: Execute acquisition outcomes database contract
+        env:
+          JOURNEY_FUNNEL_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run lib/__tests__/journey-funnel.integration.test.ts
+
+      # Onboarding evidence is a tenant-owned CAS state machine stored in the
+      # existing practice JSONB document. Prove row-lock serialization,
+      # revision conflicts, terminal/idempotent behavior, rollback, and RLS
+      # context cleanup through the real protected router and app role.
+      - name: Execute onboarding journey writer database contract
+        env:
+          ONBOARDING_JOURNEY_WRITER_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/onboarding-journey-writer.integration.test.ts
 
       # Exercise the clinic-facing patient + owner search through the real
       # router and least-privilege RLS role. The fixture proves literal LIKE
@@ -292,6 +334,22 @@ jobs:
         env:
           PATIENT_MERGE_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/patient-merge-transaction.integration.test.ts
+
+      # A refill can belong to an older prescription while its dispense charge
+      # belongs to the current visit. Prove the queue row remains visible in
+      # closeout history and blocks checkout/financial handoff under RLS.
+      - name: Execute visit-dispense closure contract
+        env:
+          VISIT_DISPENSE_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/visit-dispense-closure.integration.test.ts
+
+      # Converting an estimate is one stock-owning state transition. Prove that
+      # concurrent visit billing converges, tracked stock changes once, and all
+      # stock/invoice/audit writes roll back together under least-privilege RLS.
+      - name: Execute estimate conversion database contract
+        env:
+          BILLING_CONVERSION_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/billing-estimate-conversion.integration.test.ts
 
       # Compile, bind, and execute the exact read-only SQL used by the shared
       # platform-admin and daily SMS operations queues. Unit tests cannot catch

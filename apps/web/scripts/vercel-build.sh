@@ -13,7 +13,13 @@ if [ "${VERCEL_ENV:-}" = "production" ]; then
     echo "::error::Production release approval is absent or does not match this exact commit; refusing production promotion."
     exit 1
   fi
+fi
 
+# Validate the exact Vercel target configuration before querying its database
+# or starting a build. The Production SHA approval remains the first gate.
+pnpm environment:validate
+
+if [ "${VERCEL_ENV:-}" = "production" ]; then
   schema_attempt=1
   schema_attempt_limit=30
 

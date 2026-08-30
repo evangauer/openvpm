@@ -5,7 +5,10 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import postgres from "postgres";
-import { assertRlsDeploymentCapability } from "./rls-preflight";
+import {
+  assertRlsDeploymentCapability,
+  RlsDeploymentCapabilityError,
+} from "./rls-preflight";
 
 function nonBlankEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
@@ -21,8 +24,9 @@ if (!url) {
 const here = dirname(fileURLToPath(import.meta.url));
 const sqlText = readFileSync(join(here, "rls", "enable-rls.sql"), "utf8");
 
-const sql = postgres(url, { max: 1 });
+let sql: ReturnType<typeof postgres> | undefined;
 try {
+  sql = postgres(url, { max: 1 });
   // Fail before role/password, grant, function, policy, or table mutations when
   // the deployment credential cannot manage every object touched below.
   await assertRlsDeploymentCapability(sql);
@@ -32,6 +36,8 @@ try {
   const [exists] =
     await sql`select 1 from pg_roles where rolname = 'openpims_app'`;
   const appPw = nonBlankEnv("OPENPIMS_APP_DB_PASSWORD");
+  const rotateExistingPassword =
+    process.env.OPENPIMS_ROTATE_APP_DB_PASSWORD?.trim() === "true";
   if (!exists) {
     if (!appPw) {
       console.error(
@@ -43,10 +49,20 @@ try {
     const q = appPw.replace(/'/g, "''"); // escape single quotes
     await sql.unsafe(`CREATE ROLE openpims_app LOGIN PASSWORD '${q}'`);
     console.log("✓ created openpims_app role");
-  } else if (appPw) {
+  } else if (rotateExistingPassword) {
+    if (!appPw) {
+      console.error(
+        "OPENPIMS_ROTATE_APP_DB_PASSWORD=true requires OPENPIMS_APP_DB_PASSWORD.",
+      );
+      process.exit(1);
+    }
     const q = appPw.replace(/'/g, "''");
     await sql.unsafe(`ALTER ROLE openpims_app PASSWORD '${q}'`);
     console.log("✓ rotated openpims_app password");
+  } else if (appPw) {
+    console.log(
+      "✓ openpims_app role exists; ordinary RLS reapply left its password unchanged",
+    );
   }
 
   // Simple protocol so the multi-statement / DO-block migration runs as one.
@@ -54,10 +70,17 @@ try {
   console.log("✓ RLS policies applied (run as the DB owner).");
 } catch (err) {
   console.error(
-    "✗ Failed to apply RLS policies:",
-    err instanceof Error ? err.message : err,
+    err instanceof RlsDeploymentCapabilityError
+      ? err.message
+      : "✗ Failed to apply RLS policies: database operation could not be safely completed.",
   );
   process.exitCode = 1;
 } finally {
-  await sql.end();
+  if (sql) {
+    try {
+      await sql.end();
+    } catch {
+      // Connection teardown details can contain the target hostname.
+    }
+  }
 }
