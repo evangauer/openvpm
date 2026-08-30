@@ -2343,6 +2343,10 @@ describe("committed Drizzle migrations", () => {
     );
     expect(migration).toContain("REVOKE ALL ON audit_log FROM openpims_app");
     expect(migration).toContain("GRANT SELECT ON audit_log TO openpims_app");
+    expect(migration).toContain("normalize_app_audit_log_insert");
+    expect(migration).toContain("NEW.id := gen_random_uuid()");
+    expect(migration).toContain("NEW.created_at := now()");
+    expect(migration).toContain("NEW.deleted_at := NULL");
     expect(migration).toContain("entity_id, changes");
     expect(migration).toContain("ip_address");
 

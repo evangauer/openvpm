@@ -172,15 +172,18 @@ GRANT UPDATE (
 REVOKE ALL ON FUNCTION validate_vaccination_record_write()
   FROM PUBLIC, openpims_app;
 
--- Audit rows are append-only evidence. Identity and timestamps are generated
--- by PostgreSQL; tenant code may read and append attributed events but cannot
--- rewrite, soft-delete, erase, or backdate the ledger.
+-- Audit rows are append-only evidence. The insert trigger overwrites system
+-- identity/timestamps and clears deleted_at for the app role, while preserving
+-- owner-only recovery. Tenant code cannot rewrite, soft-delete, erase, or
+-- backdate the ledger.
 REVOKE ALL ON audit_log FROM openpims_app;
 GRANT SELECT ON audit_log TO openpims_app;
 GRANT INSERT (
-  practice_id, user_id, action, entity_type, entity_id, changes,
-  ip_address
+  id, created_at, updated_at, deleted_at, practice_id, user_id, action,
+  entity_type, entity_id, changes, ip_address
 ) ON audit_log TO openpims_app;
+REVOKE ALL ON FUNCTION normalize_app_audit_log_insert()
+  FROM PUBLIC, openpims_app;
 
 -- SOAP addenda are immutable, attributed extensions to a finalized note.
 REVOKE ALL ON soap_note_addenda FROM openpims_app;

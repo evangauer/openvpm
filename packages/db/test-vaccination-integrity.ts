@@ -228,16 +228,26 @@ try {
     "app role can append attributed audit evidence",
     auditRows.length === 1,
   );
+  const forgedAuditId = randomUUID();
+  const normalizedAudit = await asTenant(
+    (tx) => tx<
+      Array<{ id: string; createdAt: Date; updatedAt: Date; deletedAt: Date | null }>
+    >`insert into audit_log
+      (id, created_at, updated_at, deleted_at, practice_id, action, entity_type)
+      values (${forgedAuditId}, now() - interval '1 year',
+        now() - interval '1 year', now(), ${practiceId}, 'forged',
+        'vaccination_record')
+      returning id, created_at as "createdAt", updated_at as "updatedAt",
+        deleted_at as "deletedAt"`,
+  );
   check(
-    "app role cannot forge audit identity or timestamps",
-    (await sqlState(() =>
-      asTenant(
-        (tx) => tx`insert into audit_log
-          (id, practice_id, action, entity_type, created_at)
-          values (${randomUUID()}, ${practiceId}, 'forged',
-            'vaccination_record', now() - interval '1 year')`,
-      ),
-    )) === "42501",
+    "database replaces forged audit identity, timestamps, and deletion state",
+    normalizedAudit.length === 1 &&
+      normalizedAudit[0]?.id !== forgedAuditId &&
+      normalizedAudit[0]!.createdAt.getTime() > Date.now() - 60_000 &&
+      normalizedAudit[0]!.updatedAt.getTime() ===
+        normalizedAudit[0]!.createdAt.getTime() &&
+      normalizedAudit[0]?.deletedAt === null,
   );
   check(
     "app role cannot rewrite audit evidence",

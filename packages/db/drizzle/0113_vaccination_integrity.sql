@@ -202,6 +202,42 @@ FOR EACH ROW EXECUTE FUNCTION validate_vaccination_record_write();--> statement-
 
 REVOKE ALL ON FUNCTION validate_vaccination_record_write()
   FROM PUBLIC;--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION normalize_app_audit_log_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = ''
+AS $function$
+BEGIN
+  IF current_user = 'openpims_app' THEN
+    IF NEW.user_id IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM public.users actor
+         WHERE actor.practice_id = NEW.practice_id
+           AND actor.id = NEW.user_id
+           AND actor.deleted_at IS NULL
+       ) THEN
+      RAISE EXCEPTION USING ERRCODE = '23514',
+        MESSAGE = 'Audit attribution must reference an active user in the same clinic.';
+    END IF;
+    NEW.id := gen_random_uuid();
+    NEW.created_at := now();
+    NEW.updated_at := NEW.created_at;
+    NEW.deleted_at := NULL;
+  END IF;
+  RETURN NEW;
+END
+$function$;--> statement-breakpoint
+
+DROP TRIGGER IF EXISTS audit_log_normalize_app_insert
+  ON audit_log;--> statement-breakpoint
+CREATE TRIGGER audit_log_normalize_app_insert
+BEFORE INSERT ON audit_log
+FOR EACH ROW EXECUTE FUNCTION normalize_app_audit_log_insert();--> statement-breakpoint
+
+REVOKE ALL ON FUNCTION normalize_app_audit_log_insert()
+  FROM PUBLIC;--> statement-breakpoint
 DO $privileges$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'openpims_app') THEN
@@ -222,10 +258,12 @@ BEGIN
     REVOKE ALL ON audit_log FROM openpims_app;
     GRANT SELECT ON audit_log TO openpims_app;
     GRANT INSERT (
-      practice_id, user_id, action, entity_type, entity_id, changes,
-      ip_address
+      id, created_at, updated_at, deleted_at, practice_id, user_id, action,
+      entity_type, entity_id, changes, ip_address
     ) ON audit_log TO openpims_app;
     REVOKE ALL ON FUNCTION validate_vaccination_record_write()
+      FROM openpims_app;
+    REVOKE ALL ON FUNCTION normalize_app_audit_log_insert()
       FROM openpims_app;
   END IF;
 END

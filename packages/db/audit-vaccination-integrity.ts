@@ -70,6 +70,7 @@ type ArchitectureState = {
   appRoleCanUpdateCertificateDetails: boolean;
   appRoleCanInsertSystemIdentity: boolean;
   certificateAuditEvidenceImmutable: boolean;
+  appAuditSystemFieldsDatabaseGenerated: boolean;
   certificateUpdatesAreDatabaseAudited: boolean;
 };
 
@@ -113,10 +114,19 @@ try {
           case when exists(select 1 from pg_roles where rolname = 'openpims_app')
             then not has_table_privilege('openpims_app', 'public.audit_log', 'UPDATE')
               and not has_table_privilege('openpims_app', 'public.audit_log', 'DELETE')
-              and not has_column_privilege('openpims_app', 'public.audit_log', 'id', 'INSERT')
-              and not has_column_privilege('openpims_app', 'public.audit_log', 'created_at', 'INSERT')
               and has_column_privilege('openpims_app', 'public.audit_log', 'action', 'INSERT')
             else false end as "certificateAuditEvidenceImmutable",
+          exists (
+            select 1
+            from pg_trigger trigger
+            join pg_proc procedure on procedure.oid = trigger.tgfoid
+            where trigger.tgrelid = 'public.audit_log'::regclass
+              and trigger.tgname = 'audit_log_normalize_app_insert'
+              and not trigger.tgisinternal
+              and pg_get_functiondef(procedure.oid) like '%NEW.id := gen_random_uuid()%'
+              and pg_get_functiondef(procedure.oid) like '%NEW.created_at := now()%'
+              and pg_get_functiondef(procedure.oid) like '%NEW.deleted_at := NULL%'
+          ) as "appAuditSystemFieldsDatabaseGenerated",
           exists (
             select 1
             from pg_trigger trigger
@@ -363,6 +373,9 @@ try {
       : []),
     ...(!architecture.certificateAuditEvidenceImmutable
       ? ["certificate_change_audit_evidence_is_mutable"]
+      : []),
+    ...(!architecture.appAuditSystemFieldsDatabaseGenerated
+      ? ["application_audit_system_fields_are_not_database_generated"]
       : []),
     ...(!architecture.certificateUpdatesAreDatabaseAudited
       ? ["certificate_changes_are_not_atomically_database_audited"]
