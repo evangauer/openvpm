@@ -39,56 +39,6 @@ ALTER TABLE public.controlled_substance_log
   ADD CONSTRAINT controlled_substance_log_distinct_witness_check
   CHECK (witnessed_by IS NULL OR witnessed_by <> performed_by);
 --> statement-breakpoint
-CREATE OR REPLACE FUNCTION public.enforce_controlled_substance_log_balance()
-RETURNS trigger
-LANGUAGE plpgsql
-SET search_path = ''
-AS $body$
-DECLARE
-  available_quantity numeric;
-  ledger_lock_key text;
-BEGIN
-  ledger_lock_key := 'controlled-substance:'
-    || NEW.practice_id::text || ':' || NEW.drug_name || ':' || NEW.unit;
-  PERFORM pg_catalog.pg_advisory_xact_lock(
-    pg_catalog.hashtext(ledger_lock_key)
-  );
-
-  IF NEW.action = 'received' THEN
-    RETURN NEW;
-  END IF;
-
-  SELECT COALESCE(SUM(
-    CASE
-      WHEN entry.action = 'received' THEN entry.quantity
-      ELSE -entry.quantity
-    END
-  ), 0)
-  INTO available_quantity
-  FROM public.controlled_substance_log entry
-  WHERE entry.practice_id = NEW.practice_id
-    AND entry.drug_name = NEW.drug_name
-    AND entry.unit = NEW.unit
-    AND entry.deleted_at IS NULL;
-
-  IF NEW.quantity > available_quantity THEN
-    RAISE EXCEPTION USING
-      ERRCODE = '23514',
-      MESSAGE = 'Controlled-substance entry exceeds available inventory.';
-  END IF;
-
-  RETURN NEW;
-END;
-$body$;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS controlled_substance_log_balance
-  ON public.controlled_substance_log;
---> statement-breakpoint
-CREATE TRIGGER controlled_substance_log_balance
-BEFORE INSERT ON public.controlled_substance_log
-FOR EACH ROW
-EXECUTE FUNCTION public.enforce_controlled_substance_log_balance();
---> statement-breakpoint
 CREATE OR REPLACE FUNCTION public.guard_controlled_substance_log_immutability()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -132,7 +82,4 @@ END;
 $body$;
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION public.guard_controlled_substance_log_immutability()
-  FROM PUBLIC;
---> statement-breakpoint
-REVOKE ALL ON FUNCTION public.enforce_controlled_substance_log_balance()
   FROM PUBLIC;

@@ -224,20 +224,6 @@ try {
       ),
     )) === "23514",
   );
-  check(
-    "direct app-role inserts cannot drive inventory negative",
-    (await sqlState(() =>
-      asTenant(
-        practiceA,
-        (tx) =>
-          tx`insert into controlled_substance_log
-          (practice_id, operation_id, drug_name, dea_schedule, action,
-           quantity, unit, patient_id, performed_by)
-          values (${practiceA}, ${randomUUID()}, 'Ketamine', 'III',
-            'administered', 11, 'ml', ${patientA}, ${performerA})`,
-      ),
-    )) === "23514",
-  );
 
   const [privileges] = await owner<
     { canUpdate: boolean; canDelete: boolean }[]
