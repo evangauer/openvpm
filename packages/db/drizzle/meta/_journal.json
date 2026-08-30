@@ -694,6 +694,13 @@
       "when": 1787715795778,
       "tag": "0098_shallow_jackpot",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1788064800490,
+      "tag": "0099_immutable_financial_close",
+      "breakpoints": true
     }
   ]
 }

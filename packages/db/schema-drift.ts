@@ -50,8 +50,9 @@ export type DeclaredDatabaseObject = {
  * Release-critical database controls that cannot be inferred from the mere
  * presence of a table or column. Keep this deliberately narrow: these are the
  * controls whose absence would let the attachment recovery worker cross a
- * tenant boundary, accept unverifiable recovery evidence, or expose its
- * operational state to a clinic session.
+ * tenant boundary, accept unverifiable recovery evidence, expose its
+ * operational state to a clinic session, or let closed clinic-day money
+ * records be rewritten.
  *
  * A constraint that exists but remains NOT VALID and an index that exists but
  * is not valid/ready both count as drift. This makes the application release
@@ -311,6 +312,16 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       name: "payment_processor_refunds_tenant_guard",
     },
     ...[
+      ["financial_closes", "financial_closes_validate_insert"],
+      ["financial_closes", "financial_closes_immutable"],
+      ["payments", "payments_financial_close_guard"],
+      ["invoices", "invoices_financial_close_guard"],
+    ].map(([table, name]) => ({
+      kind: "trigger" as const,
+      table,
+      name,
+    })),
+    ...[
       "financial_closes",
       "payment_disputes",
       "payment_processor_payouts",
@@ -358,6 +369,16 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       table: "validate_payment_processor_refund_tenant",
       name: "EXECUTE",
     },
+    ...[
+      "validate_financial_close_insert",
+      "guard_financial_close_immutability",
+      "guard_closed_financial_payment_mutation",
+      "guard_closed_financial_invoice_mutation",
+    ].map((table) => ({
+      kind: "forbidden_function_privilege" as const,
+      table,
+      name: "EXECUTE",
+    })),
     {
       kind: "constraint",
       table: "sms_provider_events",
@@ -858,7 +879,11 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
     where function_namespace.nspname = 'public'
       and function_object.proname in (
         'validate_sms_provider_event_resolution_insert',
-        'validate_payment_processor_refund_tenant'
+        'validate_payment_processor_refund_tenant',
+        'validate_financial_close_insert',
+        'guard_financial_close_immutability',
+        'guard_closed_financial_payment_mutation',
+        'guard_closed_financial_invoice_mutation'
       )
       and function_object.pronargs = 0
   `);

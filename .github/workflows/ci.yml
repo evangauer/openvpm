@@ -138,6 +138,11 @@ jobs:
 
       - run: pnpm --filter @openpims/db db:rls
 
+      - name: Execute immutable clinic-day close database contract
+        env:
+          FINANCIAL_CLOSE_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run lib/billing/__tests__/financial-close.integration.test.ts
+
       - name: Execute subscription Checkout ownership database contract
         env:
           SUBSCRIPTION_CHECKOUT_DB_INTEGRATION: "1"

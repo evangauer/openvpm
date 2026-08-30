@@ -264,6 +264,27 @@ try {
     throw new Error("no-context finance read was not denied by default");
   }
 
+  const [closeWindow] = await targetAdmin<
+    Array<{
+      businessDate: string;
+      cutoffAt: Date;
+      eventAt: Date;
+      timezone: string;
+    }>
+  >`select
+      ((clock_timestamp() at time zone p.timezone)::date - 1)::text
+        as "businessDate",
+      ((clock_timestamp() at time zone p.timezone)::date::timestamp
+        at time zone p.timezone) as "cutoffAt",
+      ((((clock_timestamp() at time zone p.timezone)::date - 1)::timestamp
+        + interval '12 hours') at time zone p.timezone) as "eventAt",
+      p.timezone
+    from practices p
+    where p.id = ${ids.practiceA}::uuid`;
+  if (!closeWindow) {
+    throw new Error("finance close fixture practice was not visible");
+  }
+
   await app.begin(async (tx) => {
     const scoped = tx as unknown as SqlClient;
     await scoped`select set_config('app.current_practice_id', ${ids.practiceA}, true)`;
@@ -272,33 +293,40 @@ try {
     if (visible.length !== 1 || visible[0]?.id !== ids.settlementA) {
       throw new Error("tenant A did not see exactly its own settlement");
     }
+    await scoped`update payments
+      set received_at = ${closeWindow.eventAt}
+      where id in (${ids.originalPaymentA}, ${ids.refundPaymentA})`;
     await scoped`insert into payment_disputes
       (practice_id, settlement_id, provider, external_dispute_id, charge_id,
        status, amount_cents, currency, provider_created_at, last_synced_at) values
       (${ids.practiceA}, ${ids.settlementA}, 'stripe_connect',
        ${`dispute-a-${suffix}`}, ${`charge-a-${suffix}`}, 'needs_response', 1000,
-       'usd', now(), now())`;
+       'usd', ${closeWindow.eventAt}, now())`;
     await scoped`insert into payment_processor_payouts
       (practice_id, provider, connected_account_id, external_payout_id,
-       currency, amount_cents, status, automatic, arrival_at,
+       currency, amount_cents, status, automatic, reconciliation_complete,
+       arrival_at,
        provider_created_at, last_synced_at) values
       (${ids.practiceA}, 'stripe_connect', ${accountA}, ${`payout-a-${suffix}`},
-       'usd', 9500, 'paid', true, now(), now(), now())`;
+       'usd', 9500, 'paid', true, true, ${closeWindow.eventAt},
+       ${closeWindow.eventAt}, now())`;
     await scoped`insert into payment_processor_refunds
       (practice_id, settlement_id, original_payment_id, refund_payment_id,
        provider, connected_account_id, external_refund_id, currency,
        amount_cents, status, provider_created_at, last_synced_at) values
       (${ids.practiceA}, ${ids.settlementA}, ${ids.originalPaymentA},
        ${ids.refundPaymentA}, 'stripe_connect', ${accountA},
-       ${`refund-a-${suffix}`}, 'usd', 1000, 'succeeded', now(), now())`;
+       ${`refund-a-${suffix}`}, 'usd', 1000, 'succeeded',
+       ${closeWindow.eventAt}, now())`;
     await scoped`insert into financial_closes
       (practice_id, business_date, timezone, cutoff_at, closed_by, payment_count,
        gross_receipts_cents, refunds_cents, net_receipts_cents, cash_cents,
        check_cents, card_and_online_cents, other_cents, processor_gross_cents,
        processor_fee_cents, application_fee_cents, clinic_net_cents,
        paid_out_cents, open_dispute_cents, unreconciled_count) values
-      (${ids.practiceA}, current_date, 'America/New_York', now(), ${ids.userA},
-       1, 10000, 1000, 9000, 0, 0, 9000, 0, 10000, 300, 200, 9500, 9500,
+      (${ids.practiceA}, ${closeWindow.businessDate}::date,
+       ${closeWindow.timezone}, ${closeWindow.cutoffAt}, ${ids.userA},
+       2, 10000, 1000, 9000, 0, 0, 9000, 0, 10000, 300, 200, 9500, 9500,
        1000, 0)`;
   });
 

@@ -595,6 +595,29 @@ const sections: Section[] = [
         response: `Payment[]`,
       },
       {
+        name: "billing.financialDayStatement",
+        method: "GET",
+        description:
+          "Read a database-clock, practice-timezone financial worksheet and its unresolved-evidence blockers.",
+        input: `{ businessDate?: "YYYY-MM-DD" }`,
+        response: `FinancialDayStatement`,
+      },
+      {
+        name: "billing.listFinancialCloses",
+        method: "GET",
+        description: "List recent immutable clinic-day close snapshots.",
+        input: `{ limit?: number // 1-31 }`,
+        response: `FinancialClose[]`,
+      },
+      {
+        name: "billing.closeFinancialDay",
+        method: "POST",
+        description:
+          "Admin-only idempotent close for an ended, fully reconciled clinic day.",
+        input: `{ businessDate: "YYYY-MM-DD" }`,
+        response: `{ created: boolean, close: FinancialClose }`,
+      },
+      {
         name: "billing.listAdjustments",
         method: "GET",
         description: "List credits and write-offs for an invoice.",

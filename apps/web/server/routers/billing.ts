@@ -50,6 +50,12 @@ import {
   loadClientReceipt,
 } from "@/lib/billing/client-receipts";
 import {
+  closeFinancialDay,
+  FinancialCloseBlockedError,
+  isFinancialBusinessDate,
+  loadFinancialDayStatement,
+} from "@/lib/billing/financial-close";
+import {
   BILLING_ADJUSTMENT_REASON_MAX_LENGTH,
   BILLING_CURRENCY_AMOUNT_PATTERN,
   BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH,
@@ -88,6 +94,7 @@ import {
   visitWorkItems,
   dispenseChargeQueue,
   auditLog,
+  financialCloses,
 } from "@openpims/db";
 import {
   clinicalDateInput,
@@ -186,6 +193,10 @@ function invoiceCheckoutReturnUrl({
 type PaymentAccountRow = typeof practicePaymentAccounts.$inferSelect;
 
 const billingAdminProcedure = protectedProcedure.use(requireRole("admin"));
+
+const financialBusinessDateSchema = z
+  .string()
+  .refine(isFinancialBusinessDate, "Date must be a real YYYY-MM-DD date.");
 
 const invoiceStatusSchema = z.enum([
   "draft",
@@ -1704,6 +1715,61 @@ export const billingRouter = createRouter({
       timezone: practice.timezone ?? null,
     };
   }),
+
+  financialDayStatement: protectedProcedure
+    .input(
+      z
+        .object({ businessDate: financialBusinessDateSchema.optional() })
+        .optional()
+    )
+    .query(({ ctx, input }) =>
+      loadFinancialDayStatement(
+        ctx.db,
+        ctx.practiceId,
+        input?.businessDate
+      )
+    ),
+
+  listFinancialCloses: protectedProcedure
+    .input(
+      z
+        .object({ limit: z.number().int().min(1).max(31).default(14) })
+        .optional()
+    )
+    .query(({ ctx, input }) =>
+      ctx.db
+        .select()
+        .from(financialCloses)
+        .where(
+          and(
+            eq(financialCloses.practiceId, ctx.practiceId),
+            isNull(financialCloses.deletedAt)
+          )
+        )
+        .orderBy(desc(financialCloses.businessDate))
+        .limit(input?.limit ?? 14)
+    ),
+
+  closeFinancialDay: billingAdminProcedure
+    .input(z.object({ businessDate: financialBusinessDateSchema }))
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await closeFinancialDay(ctx.db, {
+          practiceId: ctx.practiceId,
+          closedBy: ctx.user.id,
+          businessDate: input.businessDate,
+        });
+      } catch (error) {
+        if (error instanceof FinancialCloseBlockedError) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: error.message,
+            cause: error,
+          });
+        }
+        throw error;
+      }
+    }),
 
   paymentAccountStatus: protectedProcedure
     .use(requireRole("admin"))
