@@ -2233,6 +2233,9 @@ describe("committed Drizzle migrations", () => {
     expect(migration).toContain(
       'ALTER TABLE "prescriptions" ALTER COLUMN "operation_id" SET NOT NULL',
     );
+    expect(migration).toContain(
+      '"prescriptions"."product_id" is null or coalesce("prescriptions"."quantity", 0) > 0',
+    );
     for (const contract of [
       "prescriptions_practice_patient_fk",
       "prescriptions_practice_product_fk",

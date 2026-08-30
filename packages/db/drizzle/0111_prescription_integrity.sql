@@ -51,7 +51,7 @@ ALTER TABLE "prescriptions" ADD CONSTRAINT "prescriptions_integrity_check" CHECK
         and length(btrim("prescriptions"."dosage")) > 0
         and length(btrim("prescriptions"."frequency")) > 0
         and ("prescriptions"."quantity" is null or "prescriptions"."quantity" > 0)
-        and ("prescriptions"."product_id" is null or "prescriptions"."quantity" > 0)
+        and ("prescriptions"."product_id" is null or coalesce("prescriptions"."quantity", 0) > 0)
         and "prescriptions"."refills_remaining" >= 0
         and ("prescriptions"."end_date" is null or "prescriptions"."end_date" >= "prescriptions"."start_date"));--> statement-breakpoint
 DO $$

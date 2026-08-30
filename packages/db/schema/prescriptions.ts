@@ -114,7 +114,7 @@ export const prescriptions = pgTable(
         and length(btrim(${table.dosage})) > 0
         and length(btrim(${table.frequency})) > 0
         and (${table.quantity} is null or ${table.quantity} > 0)
-        and (${table.productId} is null or ${table.quantity} > 0)
+        and (${table.productId} is null or coalesce(${table.quantity}, 0) > 0)
         and ${table.refillsRemaining} >= 0
         and (${table.endDate} is null or ${table.endDate} >= ${table.startDate})`
     ),

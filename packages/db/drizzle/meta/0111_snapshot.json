@@ -10177,7 +10177,7 @@
       "checkConstraints": {
         "prescriptions_integrity_check": {
           "name": "prescriptions_integrity_check",
-          "value": "length(btrim(\"prescriptions\".\"medication_name\")) > 0\n        and length(btrim(\"prescriptions\".\"dosage\")) > 0\n        and length(btrim(\"prescriptions\".\"frequency\")) > 0\n        and (\"prescriptions\".\"quantity\" is null or \"prescriptions\".\"quantity\" > 0)\n        and (\"prescriptions\".\"product_id\" is null or \"prescriptions\".\"quantity\" > 0)\n        and \"prescriptions\".\"refills_remaining\" >= 0\n        and (\"prescriptions\".\"end_date\" is null or \"prescriptions\".\"end_date\" >= \"prescriptions\".\"start_date\")"
+          "value": "length(btrim(\"prescriptions\".\"medication_name\")) > 0\n        and length(btrim(\"prescriptions\".\"dosage\")) > 0\n        and length(btrim(\"prescriptions\".\"frequency\")) > 0\n        and (\"prescriptions\".\"quantity\" is null or \"prescriptions\".\"quantity\" > 0)\n        and (\"prescriptions\".\"product_id\" is null or coalesce(\"prescriptions\".\"quantity\", 0) > 0)\n        and \"prescriptions\".\"refills_remaining\" >= 0\n        and (\"prescriptions\".\"end_date\" is null or \"prescriptions\".\"end_date\" >= \"prescriptions\".\"start_date\")"
         }
       },
       "isRLSEnabled": false
@@ -34147,4 +34147,3 @@
     "schemas": {},
     "tables": {}
   }
-}
