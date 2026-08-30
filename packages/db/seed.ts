@@ -667,6 +667,7 @@ async function seed() {
     prescriptionValues.push({
       practiceId,
       patientId: patient.id,
+      operationId: crypto.randomUUID(),
       medicationName: rx.medicationName,
       dosage: rx.dosage,
       frequency: rx.frequency,
@@ -705,6 +706,7 @@ async function seed() {
         reason: null,
         actorId: prescription.prescribedBy,
         actorName,
+        operationId: prescription.operationId,
         createdAt: prescription.createdAt,
       };
       if (prescription.status !== "completed") return [created];

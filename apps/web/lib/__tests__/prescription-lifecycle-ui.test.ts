@@ -24,15 +24,21 @@ describe("prescription lifecycle UI safety", () => {
     expect(source).toContain("Billing: {event.dispenseChargeStatus}");
   });
 
-  it("resets the idempotency key when lifecycle intent changes", () => {
+  it("preserves an idempotency key per lifecycle payload across edits", () => {
     const source = readFileSync(
       "components/records/prescription-lifecycle-control.tsx",
       "utf8",
     );
-    const reasonChange = source.match(
-      /onChange=\{\(event\) => \{[\s\S]+?operationId\.current = null;[\s\S]+?\}\}/,
+    expect(source).toContain("useRef(new Map<string, string>())");
+    expect(source).toContain(
+      "const operationKey = JSON.stringify([mode, normalizedReason])",
     );
-    expect(reasonChange).not.toBeNull();
+    expect(source).toContain("operationIds.current.get(operationKey)");
+    expect(source).toContain(
+      "operationIds.current.set(operationKey, operationId)",
+    );
+    expect(source).toContain("disabled={isPending}");
+    expect(source).not.toContain("operationId.current = null");
   });
 
   it("uses effective status in patient medical-summary exports", () => {

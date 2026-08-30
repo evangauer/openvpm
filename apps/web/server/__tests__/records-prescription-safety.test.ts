@@ -775,6 +775,13 @@ describe("records prescription retry UX", () => {
     expect(source).toContain("prescriptionOperationId.current = null");
   });
 
+  it("does not present an empty interaction catalog as a clean safety result", () => {
+    expect(source).toContain("interactionCatalogConfigured");
+    expect(source).toContain("No drug-interaction catalog is configured.");
+    expect(source).toContain("Only recorded allergy-name");
+    expect(source).toContain("interactions clinically.");
+  });
+
   it("keeps URL-linked prescription creation behind a prerender-safe boundary", () => {
     expect(source).toContain("function RecordsPageContent()");
     expect(source).toContain(

@@ -1,4 +1,5 @@
 import {
+  check,
   pgTable,
   pgEnum,
   uuid,
@@ -11,7 +12,7 @@ import {
   foreignKey,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { baseColumns } from "./common";
 import { practices } from "./practices";
 import { users } from "./users";
@@ -48,7 +49,7 @@ export const prescriptions = pgTable(
     frequency: varchar("frequency", { length: 128 }).notNull(),
     quantity: integer("quantity"),
     productId: uuid("product_id").references((): AnyPgColumn => products.id),
-    operationId: uuid("operation_id"),
+    operationId: uuid("operation_id").notNull(),
     refillsRemaining: integer("refills_remaining").notNull().default(0),
     prescribedBy: uuid("prescribed_by")
       .notNull()
@@ -84,6 +85,21 @@ export const prescriptions = pgTable(
       foreignColumns: [appointments.practiceId, appointments.id],
       name: "prescriptions_practice_appointment_fk",
     }),
+    patientPracticeFk: foreignKey({
+      columns: [table.practiceId, table.patientId],
+      foreignColumns: [patients.practiceId, patients.id],
+      name: "prescriptions_practice_patient_fk",
+    }),
+    productPracticeFk: foreignKey({
+      columns: [table.practiceId, table.productId],
+      foreignColumns: [products.practiceId, products.id],
+      name: "prescriptions_practice_product_fk",
+    }),
+    prescriberPracticeFk: foreignKey({
+      columns: [table.practiceId, table.prescribedBy],
+      foreignColumns: [users.practiceId, users.id],
+      name: "prescriptions_practice_prescriber_fk",
+    }),
     operationUq: uniqueIndex("prescriptions_practice_operation_uq").on(
       table.practiceId,
       table.operationId
@@ -91,6 +107,16 @@ export const prescriptions = pgTable(
     practiceIdUq: uniqueIndex("prescriptions_practice_id_uq").on(
       table.practiceId,
       table.id
+    ),
+    integrityCheck: check(
+      "prescriptions_integrity_check",
+      sql`length(btrim(${table.medicationName})) > 0
+        and length(btrim(${table.dosage})) > 0
+        and length(btrim(${table.frequency})) > 0
+        and (${table.quantity} is null or ${table.quantity} > 0)
+        and (${table.productId} is null or ${table.quantity} > 0)
+        and ${table.refillsRemaining} >= 0
+        and (${table.endDate} is null or ${table.endDate} >= ${table.startDate})`
     ),
   })
 );

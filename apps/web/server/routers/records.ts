@@ -893,12 +893,15 @@ async function assessPrescriptionSafety(
       .where(isNull(drugInteractions.deletedAt)),
   ]);
 
-  return evaluatePrescriptionSafety({
-    medicationName,
-    allergies,
-    activePrescriptions,
-    interactions,
-  });
+  return {
+    ...evaluatePrescriptionSafety({
+      medicationName,
+      allergies,
+      activePrescriptions,
+      interactions,
+    }),
+    interactionCatalogConfigured: interactions.length > 0,
+  };
 }
 
 async function assertDispensedProductBelongsToPractice(

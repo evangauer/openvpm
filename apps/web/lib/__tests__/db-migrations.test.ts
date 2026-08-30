@@ -2206,4 +2206,51 @@ describe("committed Drizzle migrations", () => {
     const reset = readRepoFile("packages/db/reset.ts");
     expect(reset).toContain('"subscription_checkout_attempts"');
   });
+
+  it("adopts tenant-bound prescription integrity without rewriting clinical history", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries: Array<{ tag: string }> };
+    expect(journal.entries.at(-1)?.tag).toBe("0111_prescription_integrity");
+    const migration = readRepoFile(
+      "packages/db/drizzle/0111_prescription_integrity.sql",
+    );
+
+    expect(migration).toContain(
+      "Prescription integrity migration blocked: existing prescriptions violate tenant or clinical shape requirements",
+    );
+    expect(migration).toContain(
+      "Prescription integrity migration blocked: deterministic legacy operation IDs would collide",
+    );
+    expect(
+      migration.indexOf("deterministic legacy operation IDs"),
+    ).toBeLessThan(
+      migration.indexOf("UPDATE prescriptions SET operation_id = id"),
+    );
+    expect(migration).toContain(
+      "UPDATE prescriptions SET operation_id = id WHERE operation_id IS NULL",
+    );
+    expect(migration).toContain(
+      'ALTER TABLE "prescriptions" ALTER COLUMN "operation_id" SET NOT NULL',
+    );
+    for (const contract of [
+      "prescriptions_practice_patient_fk",
+      "prescriptions_practice_product_fk",
+      "prescriptions_practice_prescriber_fk",
+      "prescriptions_integrity_check",
+      "GRANT SELECT, INSERT ON prescriptions TO openpims_app",
+      "GRANT UPDATE (status, refills_remaining, updated_at) ON prescriptions TO openpims_app",
+    ]) {
+      expect(migration).toContain(contract);
+    }
+    expect(migration).not.toContain(
+      "GRANT SELECT, INSERT, UPDATE, DELETE ON prescriptions",
+    );
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(rls).toContain("REVOKE ALL ON prescriptions FROM openpims_app");
+    expect(rls).toContain(
+      "GRANT UPDATE (status, refills_remaining, updated_at) ON prescriptions",
+    );
+  });
 });

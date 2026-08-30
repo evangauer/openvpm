@@ -475,6 +475,7 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
         productId: templateRefillProduct,
         refillsRemaining: 1,
         prescribedBy: templateRefillFixture.userId,
+        operationId: randomUUID(),
         startDate: "2026-08-01",
         status: "active",
       });
@@ -610,6 +611,7 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
         productId: templateRefillProduct,
         refillsRemaining: 0,
         prescribedBy: templateRefillFixture.userId,
+        operationId: randomUUID(),
         startDate: "2026-08-01",
         status: "active",
         deletedAt: new Date(),
@@ -913,6 +915,7 @@ describeWithPostgres("atomic estimate conversion PostgreSQL contract", () => {
         productId: refillProduct,
         refillsRemaining: 1,
         prescribedBy: refillFixture.userId,
+        operationId: randomUUID(),
         startDate: "2026-08-01",
         status: "active",
       });

@@ -355,6 +355,13 @@ function controlledSubstanceOperationId(row: Row): unknown {
   return row.operationId === undefined ? row.id : row.operationId;
 }
 
+function prescriptionOperationId(row: Row): unknown {
+  // Migration 0111 gives pre-idempotency prescriptions the immutable row id
+  // as their deterministic operation identity. Keep portable recovery aligned
+  // with that adoption rule for both omitted and explicit legacy null values.
+  return row.operationId == null ? row.id : row.operationId;
+}
+
 export function sanitizePracticeExportRows(
   section: PracticeExportSection,
   rows: Row[],
@@ -405,6 +412,11 @@ export function sanitizePracticeExportRows(
         return {
           ...row,
           operationId: controlledSubstanceOperationId(row),
+        };
+      case "prescriptions":
+        return {
+          ...row,
+          operationId: prescriptionOperationId(row),
         };
       case "smsSendAttempts":
         return row.requestedByActorType === "platform_operator"
@@ -1586,6 +1598,55 @@ export function validatePracticeExportRestore(data: unknown): {
     });
   }
 
+  const prescriptionOperationIds = new Set<string>();
+  rowsFor(data, "prescriptions").forEach((row, index) => {
+    const label = `prescriptions[${rowLabel(row, index)}]`;
+    const operationId = prescriptionOperationId(row);
+    if (
+      typeof operationId !== "string" ||
+      !CANONICAL_LOWER_UUID.test(operationId)
+    ) {
+      pushError(`${label}.operationId must be a canonical lowercase UUID.`);
+    } else if (prescriptionOperationIds.has(operationId)) {
+      pushError(`${label}.operationId must be unique within its practice.`);
+    } else {
+      prescriptionOperationIds.add(operationId);
+    }
+    for (const field of ["medicationName", "dosage", "frequency"] as const) {
+      if (typeof row[field] !== "string" || row[field].trim().length === 0) {
+        pushError(`${label}.${field} must be a non-empty string.`);
+      }
+    }
+    if (
+      row.quantity != null &&
+      (!Number.isInteger(row.quantity) || Number(row.quantity) <= 0)
+    ) {
+      pushError(`${label}.quantity must be a positive integer or null.`);
+    }
+    if (row.productId != null && Number(row.quantity) <= 0) {
+      pushError(`${label}.quantity must be positive when productId is set.`);
+    }
+    if (
+      !Number.isInteger(row.refillsRemaining) ||
+      Number(row.refillsRemaining) < 0
+    ) {
+      pushError(`${label}.refillsRemaining must be a nonnegative integer.`);
+    }
+    if (!isValidCalendarDate(row.startDate) || row.startDate == null) {
+      pushError(`${label}.startDate must be a valid calendar date.`);
+    }
+    if (!isValidCalendarDate(row.endDate)) {
+      pushError(`${label}.endDate must be a valid calendar date or null.`);
+    }
+    if (
+      typeof row.startDate === "string" &&
+      typeof row.endDate === "string" &&
+      row.endDate < row.startDate
+    ) {
+      pushError(`${label}.endDate must be on or after startDate.`);
+    }
+  });
+
   if (Array.isArray(record.prescriptionEvents)) {
     const prescriptionRows = rowsFor(data, "prescriptions");
     const prescriptionById = new Map(
@@ -2326,7 +2387,7 @@ export function synthesizeLegacyPrescriptionEvents(data: unknown): Row[] {
     actorId: prescription.prescribedBy,
     actorName:
       actorNames.get(prescription.prescribedBy) ?? "Imported prescriber",
-    operationId: prescription.operationId ?? null,
+    operationId: prescriptionOperationId(prescription),
   }));
 }
 

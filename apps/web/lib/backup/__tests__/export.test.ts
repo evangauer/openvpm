@@ -2701,11 +2701,16 @@ describe("restorePracticeData", () => {
       patients: [{ id: "patient-1", clientId: "client-1" }],
       prescriptions: [
         {
-          id: "rx-1",
+          id: "00000000-0000-4000-8000-000000000091",
           patientId: "patient-1",
           prescribedBy: "user-1",
           productId: null,
+          medicationName: "Carprofen",
+          dosage: "75 mg",
+          frequency: "Every 12 hours",
           quantity: 30,
+          refillsRemaining: 0,
+          startDate: "2026-08-01",
         },
       ],
       prescriptionEvents: [],
@@ -2714,7 +2719,7 @@ describe("restorePracticeData", () => {
     expect(validatePracticeExportRestore(backup)).toMatchObject({
       valid: false,
       errors: [
-        "prescriptions[rx-1] must have exactly one created prescription event.",
+        "prescriptions[00000000-0000-4000-8000-000000000091] must have exactly one created prescription event.",
       ],
     });
   });
@@ -2727,16 +2732,19 @@ describe("restorePracticeData", () => {
       patients: [{ id: "patient-1", clientId: "client-1" }],
       prescriptions: [
         {
-          id: "rx-1",
+          id: "00000000-0000-4000-8000-000000000092",
           practiceId: "source-practice",
           createdAt: "2026-08-01T12:00:00.000Z",
           patientId: "patient-1",
           productId: null,
           medicationName: "Carprofen",
+          dosage: "75 mg",
+          frequency: "Every 12 hours",
           quantity: 30,
           refillsRemaining: 2,
+          startDate: "2026-08-01",
           prescribedBy: "user-1",
-          operationId: "00000000-0000-0000-0000-000000000009",
+          operationId: null,
         },
       ],
     };
@@ -2753,10 +2761,12 @@ describe("restorePracticeData", () => {
     });
     const createdEvent = inserted
       .flatMap(({ rows }) => rows)
-      .find((row) => row.prescriptionId === "rx-1");
+      .find(
+        (row) => row.prescriptionId === "00000000-0000-4000-8000-000000000092",
+      );
     expect(createdEvent).toMatchObject({
       practiceId: "target-practice",
-      prescriptionId: "rx-1",
+      prescriptionId: "00000000-0000-4000-8000-000000000092",
       patientId: "patient-1",
       productId: null,
       quantity: 30,
@@ -2769,7 +2779,7 @@ describe("restorePracticeData", () => {
         "Restored from pre-ledger backup; earlier refill history unavailable.",
       actorId: "user-1",
       actorName: "Dr. Rivera",
-      operationId: "00000000-0000-0000-0000-000000000009",
+      operationId: "00000000-0000-4000-8000-000000000092",
     });
     expect(createdEvent?.createdAt).toBeInstanceOf(Date);
   });

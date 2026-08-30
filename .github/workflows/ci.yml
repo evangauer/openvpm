@@ -277,6 +277,12 @@ jobs:
       - name: Execute controlled-substance ledger database contract
         run: pnpm --filter @openpims/db db:controlled-substance-ledger:test
 
+      # Prescription headers are mutable projections over an append-only
+      # lifecycle ledger. Prove tenant-bound clinical references, retry IDs,
+      # row shape, RLS, and restricted snapshot mutation in real PostgreSQL.
+      - name: Execute prescription integrity database contract
+        run: pnpm --filter @openpims/db db:prescription-integrity:test
+
       # Subscription notices cross Stripe transactions, a durable outbox,
       # provider idempotency, and final-state suppression. Exercise atomic
       # enqueue, SKIP LOCKED workers, lease/CAS recovery, immutable attempts,

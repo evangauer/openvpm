@@ -60,7 +60,7 @@ export function PrescriptionLifecycleControl({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [mode, setMode] = useState<ActionMode | null>(null);
   const [reason, setReason] = useState("");
-  const operationId = useRef<string | null>(null);
+  const operationIds = useRef(new Map<string, string>());
   const history = trpc.records.listPrescriptionEvents.useQuery(
     { prescriptionId: prescription.id },
     { enabled: historyOpen },
@@ -69,7 +69,7 @@ export function PrescriptionLifecycleControl({
   const resetAction = () => {
     setMode(null);
     setReason("");
-    operationId.current = null;
+    operationIds.current.clear();
   };
   const finishAction = async (message: string) => {
     toast.success(message);
@@ -106,24 +106,31 @@ export function PrescriptionLifecycleControl({
   const openAction = (nextMode: ActionMode) => {
     setMode(nextMode);
     setReason("");
-    operationId.current = null;
+    operationIds.current.clear();
   };
 
   const submitAction = () => {
-    operationId.current ??= crypto.randomUUID();
+    if (!mode) return;
+    const normalizedReason = reason.trim();
+    const operationKey = JSON.stringify([mode, normalizedReason]);
+    let operationId = operationIds.current.get(operationKey);
+    if (!operationId) {
+      operationId = crypto.randomUUID();
+      operationIds.current.set(operationKey, operationId);
+    }
     if (mode === "refill") {
       refill.mutate({
         id: prescription.id,
-        operationId: operationId.current,
-        note: reason.trim() || undefined,
+        operationId,
+        note: normalizedReason || undefined,
       });
       return;
     }
-    if (!mode || !isPrescriptionLifecycleReasonValid(reason)) return;
+    if (!isPrescriptionLifecycleReasonValid(reason)) return;
     const input = {
       id: prescription.id,
-      operationId: operationId.current,
-      reason: reason.trim(),
+      operationId,
+      reason: normalizedReason,
     };
     if (mode === "complete") complete.mutate(input);
     if (mode === "cancel") cancel.mutate(input);
@@ -211,6 +218,7 @@ export function PrescriptionLifecycleControl({
           <Textarea
             className="mt-2 min-h-16"
             value={reason}
+            disabled={isPending}
             maxLength={PRESCRIPTION_LIFECYCLE_REASON_MAX_LENGTH}
             aria-label={mode === "refill" ? "Refill note" : "Clinical reason"}
             aria-invalid={
@@ -223,10 +231,7 @@ export function PrescriptionLifecycleControl({
                 ? "Optional dispensing note"
                 : "Required clinical reason"
             }
-            onChange={(event) => {
-              setReason(event.target.value);
-              operationId.current = null;
-            }}
+            onChange={(event) => setReason(event.target.value)}
           />
           {mode === "refill" && !isExternalPrescription ? (
             <p className="mt-2 rounded bg-amber-50 px-2 py-1.5 text-xs text-amber-900">

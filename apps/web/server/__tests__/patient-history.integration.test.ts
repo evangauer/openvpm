@@ -351,6 +351,7 @@ describeWithPatientHistoryPostgres(
             dosage: "25 mg",
             frequency: "Twice daily",
             prescribedBy: userA.id,
+            operationId: randomUUID(),
             startDate: "2026-08-09",
             instructions: "Give with food; unified surface marker",
           })

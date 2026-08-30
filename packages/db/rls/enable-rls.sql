@@ -159,6 +159,10 @@ GRANT EXECUTE ON FUNCTION restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,
 -- Prescription lifecycle events are an append-only clinical ledger. Tenant
 -- users may read and append attributed events through the transactional app
 -- service, but even the application role cannot rewrite or remove history.
+REVOKE ALL ON prescriptions FROM openpims_app;
+GRANT SELECT, INSERT ON prescriptions TO openpims_app;
+GRANT UPDATE (status, refills_remaining, updated_at) ON prescriptions
+  TO openpims_app;
 REVOKE ALL ON prescription_events FROM openpims_app;
 GRANT SELECT, INSERT ON prescription_events TO openpims_app;
 

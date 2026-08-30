@@ -180,6 +180,7 @@ describeWithPostgres(
           productId,
           refillsRemaining: 1,
           prescribedBy: userId,
+          operationId: randomUUID(),
           startDate: "2026-08-01",
           status: "active",
         });

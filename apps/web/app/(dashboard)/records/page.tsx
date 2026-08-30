@@ -391,11 +391,13 @@ function PrescriptionSafetyPanel({
   isLoading,
   errorMessage,
   warnings,
+  interactionCatalogConfigured,
 }: {
   medicationName: string;
   isLoading: boolean;
   errorMessage?: string;
   warnings: PrescriptionSafetyWarning[];
+  interactionCatalogConfigured: boolean;
 }) {
   if (medicationName.trim().length < 2) return null;
 
@@ -417,11 +419,25 @@ function PrescriptionSafetyPanel({
     );
   }
 
-  if (warnings.length === 0) {
+  if (warnings.length === 0 && interactionCatalogConfigured) {
     return (
       <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
         <CheckCircle2 className="h-4 w-4" />
-        No allergy or active-medication warnings found.
+        No recorded allergy-name or configured interaction-catalog warnings
+        found. Verify dosing, contraindications, and interactions clinically.
+      </div>
+    );
+  }
+
+  if (warnings.length === 0) {
+    return (
+      <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+        <span>
+          No drug-interaction catalog is configured. Only recorded allergy-name
+          matches were checked; verify dosing, contraindications, and
+          interactions clinically.
+        </span>
       </div>
     );
   }
@@ -467,6 +483,10 @@ function PrescriptionSafetyPanel({
           </div>
         ))}
       </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Decision support is limited to recorded allergy names and the configured
+        interaction catalog. Verify dosing and contraindications clinically.
+      </p>
     </div>
   );
 }
@@ -2351,6 +2371,10 @@ function RecordsPageContent() {
                             : undefined)
                         }
                         warnings={verifiedPrescriptionSafety?.warnings ?? []}
+                        interactionCatalogConfigured={
+                          verifiedPrescriptionSafety
+                            ?.interactionCatalogConfigured ?? false
+                        }
                       />
 
                       {verifiedPrescriptionSafety?.requiresOverride && (
