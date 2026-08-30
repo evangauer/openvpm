@@ -33,6 +33,13 @@
 
 ---
 
+> [!IMPORTANT]
+> **Current release status: `NO_GO` for a new live clinic cutover.** Use the
+> hosted demo, synthetic data, or a parallel evaluation while the
+> [clinic pilot readiness gates](docs/clinic-pilot-readiness.md) remain open. A
+> feature list, green build, or downstream deployment does not establish that a
+> release is safe or authorized to become a clinic's system of record.
+
 ## The Problem
 
 The veterinary PIMS market is broken — and everyone knows it.
@@ -41,9 +48,9 @@ The veterinary PIMS market is broken — and everyone knows it.
 
 **For innovators:** AI agents are poised to disrupt the PIMS as the "system of record" — but only if there's an open system to build on. Today, most PIMS have closed or poorly documented APIs, making it nearly impossible for AI tools, voice agents, or third-party developers to read and write patient data. There is no widely adopted data interoperability standard in veterinary medicine.
 
-**The open-source gap:** OpenVPMS is Java-based, dated, and primarily Australian-focused. A few student projects exist on GitHub but none are production-ready. Until now, there has been **no modern, well-designed, open-source PIMS with an open API.**
+**The open-source gap:** OpenVPMS is Java-based, dated, and primarily Australian-focused. Other open-source veterinary projects exist, but a modern interface and open API do not by themselves establish production readiness. Every release and deployment needs evidence for data integrity, isolation, recovery, and real clinic workflow fit.
 
-OpenVPM fills that gap.
+OpenVPM is building into that gap with an explicit, public readiness boundary.
 
 ## What is OpenVPM?
 
@@ -51,7 +58,7 @@ OpenVPM is a modern, cloud-native veterinary practice information management sys
 
 - **Beautiful and intuitive** — Practice managers and front desk staff should be productive within a single shift, not a multi-week training program
 - **API-first** — Dashboard workflows use typed tRPC procedures, while external integrations use scoped `/api/v1` REST endpoints and signed webhooks for supported read/write workflows
-- **Cloud-native but self-hostable** — Run it on our cloud or deploy it on your own infrastructure
+- **Cloud-deployable and self-hostable** — Evaluate the hosted demo or deploy it on your own infrastructure; either path still requires the clinic-readiness gates before real clinic use
 - **Free and open source** — AGPLv3, forever. No per-provider pricing. No vendor lock-in. Your data is yours.
 
 > _"I would need to see the product benefit us by reducing our staff hours."_
@@ -297,7 +304,9 @@ OpenVPM's structured data models and signed webhook events make it the ideal fou
 - **Webhook subscribers** can react to appointment, patient, invoice, and SOAP-note events
 - **Reminder systems** can use current clients/patients/appointments endpoints and signed events, with broader campaign APIs tracked as explicit roadmap work
 
-The PIMS is the system of record. AI agents are first-class citizens.
+In any future authorized deployment, the PIMS—not an AI agent—remains the
+system of record. AI output requires staff review, and supported writes remain
+explicitly opted in.
 
 ### OpenVPM Agent
 
@@ -306,6 +315,11 @@ OpenVPM ships with a built-in AI agent that operates on practice data through a 
 ## OpenVPM Cloud
 
 Self-hosting stays fully unlocked and free. Leave `HOSTED_BILLING_ENABLED` unset and OpenVPM runs without Stripe gates, hosted metering, or paid-plan limits.
+
+The current audited live-cutover decision remains `NO_GO`. Cloud account,
+trial, and pricing availability do not override the release and clinic-pilot
+gates above; use synthetic data or a parallel evaluation until an exact release
+and clinic receive explicit authorization.
 
 OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day free trial with no credit card required — clinics land in the product immediately and add a card only to convert, then bills one simple plan:
 

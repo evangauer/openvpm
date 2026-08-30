@@ -6,6 +6,13 @@ describe("public capability claims", () => {
     const source = readFileSync("../../README.md", "utf8");
 
     expect(source).toContain("Clinic Pilot Readiness Guide");
+    expect(source).toContain(
+      "Current release status: `NO_GO` for a new live clinic cutover",
+    );
+    expect(source).toContain(
+      "feature list, green build, or downstream deployment does not establish",
+    );
+    expect(source).toContain("pricing availability do not override");
     expect(source).toContain("controlled, one-location clinic pilot");
     expect(source).toContain(
       "General-purpose bulk marketing campaigns are not included",
@@ -22,6 +29,11 @@ describe("public capability claims", () => {
     );
     expect(source).not.toContain("Costs go to zero");
     expect(source).not.toContain("apps/www");
+    expect(source).not.toContain("Run it on our cloud");
+    expect(source).not.toContain("OpenVPM fills that gap");
+    expect(source).not.toContain(
+      "The PIMS is the system of record. AI agents are first-class citizens.",
+    );
   });
 
   it("separates shipped workflows from configured and pilot services", () => {
