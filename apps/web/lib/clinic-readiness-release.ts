@@ -25,6 +25,7 @@ export const REQUIRED_RELEASE_CI_GATES = [
 
 const REQUIRED_HOSTED_CHECKS = [
   "hostedRelease",
+  "hostedDatabaseIdentity",
   "database",
   "schema",
   "hostedRlsRole",
@@ -84,6 +85,7 @@ function evaluateHostedHealthEvidence(
   label: "Hosted" | "Staging hosted",
   value: unknown,
   releaseSha: string | null,
+  expectedDatabaseFingerprint: string | null,
   nowMs: number,
 ) {
   const hosted = record(value);
@@ -113,6 +115,14 @@ function evaluateHostedHealthEvidence(
   if (releaseSha && body?.releaseSha !== releaseSha) {
     reasons.push(`${label} health body does not identify the release SHA.`);
   }
+  if (
+    !expectedDatabaseFingerprint ||
+    body?.databaseTargetFingerprint !== expectedDatabaseFingerprint
+  ) {
+    reasons.push(
+      `${label} health does not match the expected database target.`,
+    );
+  }
   const checks = record(body?.checks);
   for (const checkName of REQUIRED_HOSTED_CHECKS) {
     const check = record(checks?.[checkName]);
@@ -139,8 +149,8 @@ export function evaluateClinicReadinessRelease(
 ): ClinicReadinessDecision {
   const reasons: string[] = [];
   const root = record(input);
-  if (root?.evidenceFormatVersion !== 6) {
-    reasons.push("Clinic readiness evidence format version must be 6.");
+  if (root?.evidenceFormatVersion !== 7) {
+    reasons.push("Clinic readiness evidence format version must be 7.");
   }
   const releaseSha =
     root &&
@@ -390,11 +400,48 @@ export function evaluateClinicReadinessRelease(
     ) {
       reasons.push("Isolated staging migration run ID is missing or invalid.");
     }
+    if (
+      typeof staging.resetRunId !== "number" ||
+      !Number.isSafeInteger(staging.resetRunId) ||
+      staging.resetRunId <= 0
+    ) {
+      reasons.push("Isolated staging reset run ID is missing or invalid.");
+    }
+    if (staging.syntheticDataAudit !== "passed") {
+      reasons.push(
+        "Isolated staging synthetic-data and contact audit has not passed.",
+      );
+    }
+    const stagingDatabaseFingerprint =
+      typeof staging.databaseTargetFingerprint === "string" &&
+      /^[0-9a-f]{64}$/i.test(staging.databaseTargetFingerprint)
+        ? staging.databaseTargetFingerprint.toLowerCase()
+        : null;
+    if (!stagingDatabaseFingerprint) {
+      reasons.push(
+        "Isolated staging database fingerprint is missing or invalid.",
+      );
+    }
+    const clinicalDatabaseFingerprint =
+      typeof clinicalDataIntegrity?.databaseTargetFingerprint === "string" &&
+      /^[0-9a-f]{64}$/i.test(clinicalDataIntegrity.databaseTargetFingerprint)
+        ? clinicalDataIntegrity.databaseTargetFingerprint.toLowerCase()
+        : null;
+    if (
+      stagingDatabaseFingerprint &&
+      clinicalDatabaseFingerprint &&
+      stagingDatabaseFingerprint === clinicalDatabaseFingerprint
+    ) {
+      reasons.push(
+        "Isolated staging and clinical production use the same database target.",
+      );
+    }
     evaluateHostedHealthEvidence(
       reasons,
       "Staging hosted",
       staging.hostedHealth,
       releaseSha,
+      stagingDatabaseFingerprint,
       nowMs,
     );
   }
@@ -404,6 +451,9 @@ export function evaluateClinicReadinessRelease(
     "Hosted",
     root?.hostedHealth,
     releaseSha,
+    typeof clinicalDataIntegrity?.databaseTargetFingerprint === "string"
+      ? clinicalDataIntegrity.databaseTargetFingerprint.toLowerCase()
+      : null,
     nowMs,
   );
 

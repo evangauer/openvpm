@@ -14,6 +14,14 @@ function readRepoFile(path: string): string {
   return readFileSync(resolve(repoRoot, path), "utf8");
 }
 
+function expectSchemaDrivenApplicationReset(reset: string): void {
+  expect(reset).toContain("declaredSchema().keys()");
+  expect(reset).toContain('quoteIdentifier("public")');
+  expect(reset).toContain(
+    "TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE",
+  );
+}
+
 describe("committed Drizzle migrations", () => {
   it("exercises committed migrations in the CI RLS isolation job", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
@@ -239,12 +247,7 @@ describe("committed Drizzle migrations", () => {
     );
 
     const reset = readRepoFile("packages/db/reset.ts");
-    expect(reset.indexOf('"sms_provider_event_conflict_reviews"')).toBeLessThan(
-      reset.indexOf('"sms_provider_event_conflicts"'),
-    );
-    expect(reset.indexOf('"sms_provider_event_conflicts"')).toBeLessThan(
-      reset.indexOf('"sms_provider_events"'),
-    );
+    expectSchemaDrivenApplicationReset(reset);
   });
 
   it("revokes legacy portal credentials before enforcing one-time session state", () => {
@@ -1813,16 +1816,7 @@ describe("committed Drizzle migrations", () => {
     );
 
     const reset = readRepoFile("packages/db/reset.ts");
-    expect(reset).toContain('"auth_email_delivery_events"');
-    expect(reset).toContain('"auth_email_webhook_conflicts"');
-    expect(reset).toContain('"auth_email_provider_identity_conflicts"');
-    expect(reset).toContain('"auth_email_attempts"');
-    expect(reset.indexOf('"auth_email_webhook_conflicts"')).toBeLessThan(
-      reset.indexOf('"auth_email_delivery_events"'),
-    );
-    expect(reset.indexOf('"auth_email_delivery_events"')).toBeLessThan(
-      reset.indexOf('"auth_email_attempts"'),
-    );
+    expectSchemaDrivenApplicationReset(reset);
 
     const rls = readRepoFile("packages/db/rls/enable-rls.sql");
     expect(rls).toContain("CREATE POLICY system_only ON auth_email_attempts");
@@ -2051,10 +2045,7 @@ describe("committed Drizzle migrations", () => {
     );
 
     const reset = readRepoFile("packages/db/reset.ts");
-    expect(reset).toContain('"soap_note_replacements"');
-    expect(reset.indexOf('"soap_note_replacements"')).toBeLessThan(
-      reset.indexOf('"clinical_record_corrections"'),
-    );
+    expectSchemaDrivenApplicationReset(reset);
 
     const rls = readRepoFile("packages/db/rls/enable-rls.sql");
     expect(rls).toContain("'soap_note_replacements'");
@@ -2120,7 +2111,7 @@ describe("committed Drizzle migrations", () => {
     );
 
     const reset = readRepoFile("packages/db/reset.ts");
-    expect(reset).toContain('"messaging_registration_events"');
+    expectSchemaDrivenApplicationReset(reset);
 
     const rls = readRepoFile("packages/db/rls/enable-rls.sql");
     expect(rls).toContain("'messaging_registration_events'");
@@ -2204,7 +2195,7 @@ describe("committed Drizzle migrations", () => {
       "GRANT SELECT, INSERT, UPDATE ON subscription_checkout_attempts TO openpims_app",
     );
     const reset = readRepoFile("packages/db/reset.ts");
-    expect(reset).toContain('"subscription_checkout_attempts"');
+    expectSchemaDrivenApplicationReset(reset);
   });
 
   it("adopts tenant-bound prescription integrity without rewriting clinical history", () => {

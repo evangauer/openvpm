@@ -5,6 +5,7 @@ import { CLINICAL_DATA_AUDIT_SCHEMAS } from "../clinical-data-integrity-evidence
 const now = Date.parse("2026-08-29T21:00:00.000Z");
 const sha = "a".repeat(40);
 const clinicalDatabaseFingerprint = "d".repeat(64);
+const stagingDatabaseFingerprint = "e".repeat(64);
 
 function healthyClinicalDataIntegrityEvidence() {
   type AuditDomain = keyof typeof CLINICAL_DATA_AUDIT_SCHEMAS;
@@ -165,6 +166,7 @@ function healthyEvidence() {
     Object.fromEntries(
       [
         "hostedRelease",
+        "hostedDatabaseIdentity",
         "database",
         "schema",
         "hostedRlsRole",
@@ -180,7 +182,7 @@ function healthyEvidence() {
       ].map((name) => [name, { ok: true }]),
     );
   return {
-    evidenceFormatVersion: 6,
+    evidenceFormatVersion: 7,
     releaseSha: sha,
     clinicalDataIntegrity: healthyClinicalDataIntegrityEvidence(),
     ci: {
@@ -256,7 +258,10 @@ function healthyEvidence() {
     },
     staging: {
       releaseSha: sha,
+      databaseTargetFingerprint: stagingDatabaseFingerprint,
       migrationRunId: 151,
+      resetRunId: 171,
+      syntheticDataAudit: "passed",
       hostedHealth: {
         releaseSha: sha,
         checkedAt: "2026-08-29T20:55:00.000Z",
@@ -265,6 +270,7 @@ function healthyEvidence() {
           ok: true,
           mode: "hosted",
           releaseSha: sha,
+          databaseTargetFingerprint: stagingDatabaseFingerprint,
           checks: structuredClone(checks),
         },
       },
@@ -273,7 +279,13 @@ function healthyEvidence() {
       releaseSha: sha,
       checkedAt: "2026-08-29T20:55:00.000Z",
       statusCode: 200,
-      body: { ok: true, mode: "hosted", releaseSha: sha, checks },
+      body: {
+        ok: true,
+        mode: "hosted",
+        releaseSha: sha,
+        databaseTargetFingerprint: clinicalDatabaseFingerprint,
+        checks,
+      },
     },
     restoreDrill: {
       releaseSha: sha,
@@ -349,7 +361,7 @@ describe("clinic readiness release decision", () => {
     const evidence = healthyEvidence();
     evidence.evidenceFormatVersion = 5;
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
-      "Clinic readiness evidence format version must be 6.",
+      "Clinic readiness evidence format version must be 7.",
     );
   });
 
@@ -419,6 +431,36 @@ describe("clinic readiness release decision", () => {
         "Staging hosted health evidence is stale.",
         "Staging hosted health body does not identify the release SHA.",
       ]),
+    );
+  });
+
+  it("requires a successful isolated staging reset and synthetic-data audit", () => {
+    const evidence = healthyEvidence();
+    evidence.staging.resetRunId = 0;
+    evidence.staging.syntheticDataAudit = "failed";
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toEqual(
+      expect.arrayContaining([
+        "Isolated staging reset run ID is missing or invalid.",
+        "Isolated staging synthetic-data and contact audit has not passed.",
+      ]),
+    );
+  });
+
+  it("binds staging and production health to distinct expected databases", () => {
+    const evidence = healthyEvidence();
+    evidence.staging.hostedHealth.body.databaseTargetFingerprint =
+      clinicalDatabaseFingerprint;
+    evidence.staging.databaseTargetFingerprint = clinicalDatabaseFingerprint;
+    const reasons = evaluateClinicReadinessRelease(evidence, now).reasons;
+    expect(reasons).toEqual(
+      expect.arrayContaining([
+        "Isolated staging and clinical production use the same database target.",
+      ]),
+    );
+
+    evidence.staging.databaseTargetFingerprint = stagingDatabaseFingerprint;
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
+      "Staging hosted health does not match the expected database target.",
     );
   });
 

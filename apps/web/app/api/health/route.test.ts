@@ -360,9 +360,14 @@ describe("health route schema drift", () => {
 
     expect(response.status).toBe(200);
     expect(json.releaseSha).toBe("a".repeat(40));
+    expect(json.databaseTargetFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(json.checks.hostedRelease).toEqual({
       ok: true,
       detail: "Hosted deployment release SHA is available",
+    });
+    expect(json.checks.hostedDatabaseIdentity).toEqual({
+      ok: true,
+      detail: "Hosted database identity is available",
     });
   });
 

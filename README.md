@@ -230,6 +230,11 @@ pnpm db:seed
 pnpm dev
 ```
 
+`pnpm db:reset` is intentionally destructive and local-only. It refuses CI,
+Vercel, non-loopback hosts, unrelated database names, and calls without
+`RESET_DATABASE_CONFIRMATION=RESET_LOCAL_OPENVPM`. Hosted staging has a
+separate protected workflow; this developer command cannot reset it.
+
 Open [http://localhost:3000](http://localhost:3000) and sign in with the demo credentials:
 
 | Role         | Email                                     | Password    |

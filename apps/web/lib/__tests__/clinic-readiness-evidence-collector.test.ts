@@ -8,6 +8,7 @@ import { CLINICAL_DATA_AUDIT_SCHEMAS } from "../clinical-data-integrity-evidence
 
 const sha = "a".repeat(40);
 const clinicalDatabaseFingerprint = "d".repeat(64);
+const stagingDatabaseFingerprint = "e".repeat(64);
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
@@ -267,6 +268,7 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
   const checks = Object.fromEntries(
     [
       "hostedRelease",
+      "hostedDatabaseIdentity",
       "database",
       "schema",
       "hostedRlsRole",
@@ -331,6 +333,31 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
         "Apply migrations",
         "Re-apply row-level security",
         "Verify schema matches the code",
+      ]),
+    ],
+  };
+  const stagingResetRun = {
+    name: "Reset isolated staging",
+    event: "workflow_dispatch",
+    status: "completed",
+    conclusion: "success",
+    head_sha: sha,
+    head_branch: "staging",
+    html_url: "https://github.example/staging-reset",
+  };
+  const stagingResetJobs = {
+    total_count: 2,
+    jobs: [
+      successfulJob("validate staging reset request", [
+        "Require exact staging revision and destructive confirmation",
+      ]),
+      successfulJob("reset isolated staging", [
+        "Reject protected or mismatched staging project",
+        "Verify database target identity",
+        "Reset every staging application table",
+        "Seed repository-owned synthetic clinic",
+        "Verify exact schema and migration history",
+        "Prove synthetic-only staging data and contact boundaries",
       ]),
     ],
   };
@@ -436,6 +463,10 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
     if (url.endsWith("/actions/runs/151/jobs?per_page=100")) {
       return response(stagingMigrationJobs);
     }
+    if (url.endsWith("/actions/runs/171")) return response(stagingResetRun);
+    if (url.endsWith("/actions/runs/171/jobs?per_page=100")) {
+      return response(stagingResetJobs);
+    }
     if (url.endsWith("/actions/runs/202")) return response(migrationRun);
     if (url.endsWith("/actions/runs/202/jobs?per_page=100")) {
       return response(migrationJobs);
@@ -458,9 +489,17 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
     if (url.endsWith("/branches/staging/protection")) {
       return response(stagingProtection);
     }
-    if (url === "https://staging.example/api/health") return response(health);
+    if (url === "https://staging.example/api/health") {
+      return response({
+        ...health,
+        databaseTargetFingerprint: stagingDatabaseFingerprint,
+      });
+    }
     if (url === "https://production.example/api/health")
-      return response(health);
+      return response({
+        ...health,
+        databaseTargetFingerprint: clinicalDatabaseFingerprint,
+      });
     return response({ error: "unexpected URL" }, 404);
   }) as unknown as typeof fetch;
 }
@@ -471,6 +510,8 @@ function options(fetchFn: typeof fetch) {
     repository: "openvpm/openvpm",
     ciRunId: 101,
     stagingMigrationRunId: 151,
+    stagingResetRunId: 171,
+    stagingDatabaseFingerprint,
     migrationRunId: 202,
     stagingHealthUrl: "https://staging.example/api/health",
     hostedHealthUrl: "https://production.example/api/health",
@@ -491,7 +532,7 @@ describe("clinic readiness evidence collector", () => {
     );
 
     expect(evidence).toMatchObject({
-      evidenceFormatVersion: 6,
+      evidenceFormatVersion: 7,
       releaseSha: sha,
       ci: {
         releaseSha: sha,
@@ -529,7 +570,10 @@ describe("clinic readiness evidence collector", () => {
       },
       staging: {
         releaseSha: sha,
+        databaseTargetFingerprint: stagingDatabaseFingerprint,
         migrationRunId: 151,
+        resetRunId: 171,
+        syntheticDataAudit: "passed",
         hostedHealth: { releaseSha: sha, statusCode: 200 },
       },
       hostedHealth: { releaseSha: sha, statusCode: 200 },
@@ -670,6 +714,26 @@ describe("clinic readiness evidence collector", () => {
       collectClinicReadinessEvidence(options(wrapped)),
     ).rejects.toThrow(
       "Staging migration must be a successful exact-SHA Apply migrations run from staging.",
+    );
+  });
+
+  it("rejects a staging reset that is not exact-SHA staging evidence", async () => {
+    const fetchFn = authoritativeResponses();
+    const wrapped = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const result = await fetchFn(input, init);
+        if (String(input).endsWith("/actions/runs/171")) {
+          const body = await result.json();
+          return response({ ...body, head_sha: "d".repeat(40) });
+        }
+        return result;
+      },
+    ) as unknown as typeof fetch;
+
+    await expect(
+      collectClinicReadinessEvidence(options(wrapped)),
+    ).rejects.toThrow(
+      "Staging reset must be a successful exact-SHA Reset isolated staging run from staging.",
     );
   });
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
+import { databaseConnectionIdentityFingerprint } from "@openpims/db/deployment-target";
 import { isPlausiblePhysicalCompanyAddress } from "@openpims/email";
 import {
   describeDrift,
@@ -312,6 +313,17 @@ export async function GET() {
   const startedAt = Date.now();
   const releaseSha = deploymentReleaseSha();
   const hostedMode = billingEnforced();
+  let databaseTargetFingerprint: string | null = null;
+  try {
+    const databaseUrl = envValue("DATABASE_URL");
+    if (databaseUrl) {
+      databaseTargetFingerprint =
+        databaseConnectionIdentityFingerprint(databaseUrl);
+    }
+  } catch {
+    // The public response exposes only a credential-free fingerprint. Invalid
+    // connection identity remains null and fails the hosted readiness check.
+  }
   const checks: Record<
     string,
     { ok: boolean; detail?: string; advisory?: boolean }
@@ -363,6 +375,12 @@ export async function GET() {
       detail: releaseSha
         ? "Hosted deployment release SHA is available"
         : "Hosted deployment release SHA is missing or invalid",
+    };
+    checks.hostedDatabaseIdentity = {
+      ok: databaseTargetFingerprint !== null,
+      detail: databaseTargetFingerprint
+        ? "Hosted database identity is available"
+        : "Hosted database identity is missing or invalid",
     };
     if (shouldAssertHostedRlsRole()) {
       try {
@@ -520,6 +538,7 @@ export async function GET() {
       service: "openvpm-web",
       mode: hostedMode ? "hosted" : "self-host",
       releaseSha,
+      databaseTargetFingerprint,
       checks,
       latencyMs: Date.now() - startedAt,
     },

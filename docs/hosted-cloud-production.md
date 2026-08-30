@@ -182,7 +182,7 @@ PLATFORM_ADMIN_EMAILS=...
 
 ### Transitional production release gate
 
-Before production approval, collect one PHI-free, format-version `6` JSON
+Before production approval, collect one PHI-free, format-version `7` JSON
 evidence packet from authoritative sources. Export a read-only `GITHUB_TOKEN`
 in the secure operator environment. Immediately before collection, run all four
 aggregate-only audits against the same intended production database. Each audit
@@ -208,6 +208,8 @@ pnpm --filter @openpims/web release:clinic-readiness:collect -- \
   --repository evangauer/openvpm \
   --ci-run-id "$CI_RUN_ID" \
   --staging-migration-run-id "$STAGING_MIGRATION_RUN_ID" \
+  --staging-reset-run-id "$STAGING_RESET_RUN_ID" \
+  --staging-database-fingerprint "$STAGING_DATABASE_TARGET_FINGERPRINT" \
   --migration-run-id "$PRODUCTION_MIGRATION_RUN_ID" \
   --staging-health-url "$STAGING_HEALTH_URL" \
   --hosted-health-url https://app.openvpm.com/api/health \
@@ -223,8 +225,9 @@ pnpm --filter @openpims/web release:clinic-readiness:collect -- \
 ```
 
 The collector refuses to overwrite an existing packet. It verifies the
-successful exact-SHA `main` CI run, an exact-SHA migration from the canonical
-`staging` branch, and the manually confirmed exact-SHA production migration,
+successful exact-SHA `main` CI run, an exact-SHA migration and protected
+synthetic reset from the canonical `staging` branch, and the manually confirmed
+exact-SHA production migration,
 RLS, and drift steps directly through GitHub. It fetches both isolated staging
 and production HTTPS health, requires both deployments to identify the same
 release SHA, and rejects any required dependency that is unhealthy or advisory.
@@ -249,7 +252,8 @@ pnpm --filter @openpims/web release:clinic-readiness -- \
 
 The command returns `GO` only when migrations, RLS, tests, build, and the
 production dependency audit passed for that exact SHA; isolated staging
-migration and health passed for the same SHA before production; production
+migration, protected reset, synthetic contact audit, and health passed for the
+same SHA before production; production
 health is a fresh HTTP 200 hosted result whose response reports that same
 deployment SHA; backup freshness and 100% independent file coverage are
 affirmative (not advisory) in both hosted environments;
@@ -318,6 +322,16 @@ all committed migrations, full RLS reapplication, and a final exact-schema
 check. Run `pnpm db:seed` only with the documented synthetic seed and route all
 email/SMS/payment destinations to non-delivering or allowlisted sandbox
 providers.
+
+After migrations and before collecting staging health evidence, dispatch
+**Reset isolated staging** from the canonical `staging` branch. Supply its exact
+40-character head commit and type `RESET_STAGING_DATA`. The protected workflow
+shares the staging migration concurrency lock, re-verifies the project ref and
+target fingerprints, truncates every application table in `public`, applies
+the repository-owned seed, reapplies RLS, checks exact schema/history, and
+scans every email/phone/E.164 contact column. An extra fixture or a destination
+outside reserved example domains and the synthetic 555 range fails the run.
+This operation is destructive by design and is never available to Production.
 
 If Resend is configured in Development or Staging, set
 `NONPRODUCTION_EMAIL_RECIPIENT_HASHES` to 1-20 comma-separated SHA-256 hashes of

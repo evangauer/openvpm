@@ -1,0 +1,149 @@
+name: Reset isolated staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      reset_confirmation:
+        description: Type RESET_STAGING_DATA to destroy and reseed isolated staging
+        required: true
+        type: string
+      release_sha:
+        description: Exact 40-character commit at the head of staging
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate-staging-reset-request:
+    name: validate staging reset request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require exact staging revision and destructive confirmation
+        env:
+          REQUESTED_RELEASE_SHA: ${{ inputs.release_sha }}
+          RESET_CONFIRMATION: ${{ inputs.reset_confirmation }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/staging" ]; then
+            echo "::error::Staging reset must be dispatched from the staging branch."
+            exit 1
+          fi
+          if [[ ! "$REQUESTED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || [ "$REQUESTED_RELEASE_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::Staging reset release SHA must match the exact dispatched commit."
+            exit 1
+          fi
+          if [ "$RESET_CONFIRMATION" != "RESET_STAGING_DATA" ]; then
+            echo "::error::Staging reset confirmation did not match RESET_STAGING_DATA."
+            exit 1
+          fi
+
+  reset-staging:
+    name: reset isolated staging
+    needs: validate-staging-reset-request
+    environment: Staging
+    concurrency:
+      group: apply-migrations-staging
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.release_sha }}
+          persist-credentials: false
+      - name: Verify checked-out revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+
+      - name: Require environment-scoped staging controls
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+          STAGING_PROJECT_REF: ${{ vars.STAGING_PROJECT_REF }}
+          TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
+          FORBIDDEN_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
+        run: |
+          for value in "$DATABASE_URL" "$APP_DB_PASSWORD" "$STAGING_PROJECT_REF" "$TARGET_FINGERPRINT" "$FORBIDDEN_FINGERPRINTS"; do
+            if [[ -z "$value" || "$value" =~ ^[[:space:]]*$ ]]; then
+              echo "::error::Staging reset controls are not configured."
+              exit 1
+            fi
+          done
+
+      - name: Verify non-delivering staging code contract
+        env:
+          OPENVPM_ENVIRONMENT: staging
+          HOSTED_BILLING_ENABLED: "true"
+        run: pnpm --filter @openpims/web environment:validate
+
+      - name: Reject protected or mismatched staging project
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          STAGING_PROJECT_REF: ${{ vars.STAGING_PROJECT_REF }}
+        run: pnpm --filter @openpims/web staging:verify-database-target
+
+      - name: Verify database target identity
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DATABASE_TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
+          FORBIDDEN_DATABASE_TARGET_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
+        run: pnpm db:target:check
+
+      - name: Apply migrations before reset
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: pnpm db:migrate
+
+      - name: Re-apply row-level security before reset
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          OPENPIMS_APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+        run: pnpm db:rls
+
+      - name: Reset every staging application table
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          STAGING_PROJECT_REF: ${{ vars.STAGING_PROJECT_REF }}
+          DATABASE_TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
+          FORBIDDEN_DATABASE_TARGET_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
+          OPENVPM_ENVIRONMENT: staging
+          STAGING_RESET_CONFIRMATION: ${{ inputs.reset_confirmation }}
+        run: pnpm --filter @openpims/db db:reset:staging
+
+      - name: Seed repository-owned synthetic clinic
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: pnpm db:seed
+
+      - name: Re-apply row-level security after seed
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          OPENPIMS_APP_DB_PASSWORD: ${{ secrets.OPENPIMS_APP_DB_PASSWORD }}
+        run: pnpm db:rls
+
+      - name: Verify exact schema and migration history
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          MIGRATION_CONFORMANCE_MODE: exact
+        run: |
+          pnpm db:drift
+          pnpm db:migrations:conformance
+
+      - name: Prove synthetic-only staging data and contact boundaries
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          STAGING_PROJECT_REF: ${{ vars.STAGING_PROJECT_REF }}
+          DATABASE_TARGET_FINGERPRINT: ${{ vars.DATABASE_TARGET_FINGERPRINT }}
+          FORBIDDEN_DATABASE_TARGET_FINGERPRINTS: ${{ vars.FORBIDDEN_DATABASE_TARGET_FINGERPRINTS }}
+          OPENVPM_ENVIRONMENT: staging
+          STAGING_RESET_CONFIRMATION: ${{ inputs.reset_confirmation }}
+          STAGING_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: pnpm --filter @openpims/db db:staging:synthetic:audit

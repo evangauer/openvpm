@@ -1,96 +1,52 @@
 import { config } from "dotenv";
 config({ path: "../../.env" });
+import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import { db } from "./client";
+import { assertLocalResetPolicy } from "./reset-policy";
+import { declaredSchema } from "./schema-drift";
 
-// Order doesn't matter with CASCADE, but we TRUNCATE every table the seed touches.
-// RESTART IDENTITY resets any serial sequences (none in this schema, but cheap).
-const TABLES = [
-  "historical_documents",
-  "legacy_financial_allocations",
-  "legacy_financial_line_items",
-  "legacy_financial_payments",
-  "legacy_financial_documents",
-  "external_lab_observations",
-  "external_lab_reports",
-  "external_prescription_fills",
-  "external_prescriptions",
-  "historical_appointments",
-  "client_contacts",
-  "sms_provider_event_resolutions",
-  "messaging_registration_events",
-  "sms_provider_event_conflict_reviews",
-  "sms_provider_event_conflicts",
-  "sms_provider_events",
-  // Core / leaf tables first (purely defensive — CASCADE handles it)
-  "audit_log",
-  "rate_limit_buckets",
-  "stripe_events",
-  "subscription_cadence_operations",
-  "subscription_checkout_attempts",
-  "practice_conversion_milestones",
-  "auth_email_webhook_conflicts",
-  "auth_email_provider_identity_conflicts",
-  "auth_email_delivery_events",
-  "auth_email_attempts",
-  "lifecycle_email_attempts",
-  "lifecycle_email_jobs",
-  "usage_records",
-  "controlled_substance_log",
-  "payments",
-  "communications",
-  "care_reminders",
-  "webhooks",
-  "api_keys",
-  "treatment_template_items",
-  "treatment_templates",
-  "sms_delivery_event_history",
-  "sms_delivery_events",
-  "sms_send_attempt_events",
-  "sms_send_attempts",
-  "sms_consent_events",
-  "patient_merge_events",
-  "dispense_charge_queue",
-  "invoice_items",
-  "invoices",
-  "soap_note_replacements",
-  "lab_result_replacements",
-  "clinical_record_corrections",
-  "lab_result_events",
-  "lab_results",
-  "procedures",
-  "visit_closeouts",
-  "prescription_events",
-  "prescriptions",
-  "vaccination_records",
-  "soap_notes",
-  "appointments",
-  "rooms",
-  "appointment_types",
-  "patient_weights",
-  "patient_allergies",
-  "patients",
-  "clients",
-  "products",
-  "services",
-  "users",
-  "locations",
-  "practices",
-];
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
 
-async function reset() {
-  console.log("Truncating all tables...");
-  // Single statement — TRUNCATE ... CASCADE handles FK dependencies.
-  const tableList = TABLES.join(", ");
+/**
+ * Clear every application table declared by the current Drizzle schema,
+ * including tables added after this helper was written. Extension-managed
+ * public tables and the migration ledger remain intact. Callers must enforce a
+ * reset policy before invoking this function.
+ */
+export async function resetDatabase(): Promise<number> {
+  const tableNames = [...declaredSchema().keys()].sort();
+  if (tableNames.length === 0) {
+    throw new Error(
+      "Reset refused because the application schema has no tables.",
+    );
+  }
+  const tableList = tableNames
+    .map((name) => `${quoteIdentifier("public")}.${quoteIdentifier(name)}`)
+    .join(", ");
   await db.execute(
     sql.raw(`TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`),
   );
-  console.log(`Truncated ${TABLES.length} tables`);
+  return tableNames.length;
 }
 
-reset()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error("Reset failed:", err);
-    process.exit(1);
-  });
+async function main(): Promise<number> {
+  try {
+    assertLocalResetPolicy(process.env);
+    const count = await resetDatabase();
+    console.log(`Reset ${count} local public tables.`);
+    return 0;
+  } catch (error) {
+    console.error(
+      "Reset refused:",
+      error instanceof Error ? error.message : "invalid reset request",
+    );
+    return 1;
+  }
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  process.exitCode = await main();
+}

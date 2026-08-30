@@ -13,12 +13,16 @@
     "./rls-preflight": "./rls-preflight.ts"
   },
   "scripts": {
+    "test": "tsx --test reset-policy.test.ts",
     "type-check": "tsc --noEmit",
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx seed.ts",
     "db:reset": "tsx reset.ts",
+    "db:reset:staging": "tsx reset-staging.ts",
+    "db:reset:test": "tsx test-reset.ts",
+    "db:staging:synthetic:audit": "tsx audit-staging-synthetic-data.ts",
     "db:rls": "tsx apply-rls.ts",
     "db:rls:preflight": "tsx rls-preflight.ts",
     "db:rls:preflight:test": "tsx test-rls-preflight.ts",

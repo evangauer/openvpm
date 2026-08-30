@@ -432,3 +432,10 @@ jobs:
         run: pnpm --filter @openpims/db db:rls:test
 
       - run: pnpm --filter @openpims/db db:migration-runs:test
+
+      # This is intentionally last: it destroys every application row in the
+      # disposable CI database, then proves migration history remains intact.
+      - name: Execute safe reset database contract
+        env:
+          RESET_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/db db:reset:test

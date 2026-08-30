@@ -64,6 +64,8 @@ export type ClinicReadinessEvidenceCollectionOptions = {
   repository: string;
   ciRunId: number;
   stagingMigrationRunId: number;
+  stagingResetRunId: number;
+  stagingDatabaseFingerprint: string;
   migrationRunId: number;
   stagingHealthUrl: string;
   hostedHealthUrl: string;
@@ -87,11 +89,9 @@ function exactSha(value: string): string {
   return value.toLowerCase();
 }
 
-function exactFingerprint(value: string): string {
+function exactFingerprint(value: string, label = "Clinical database"): string {
   if (!/^[0-9a-f]{64}$/i.test(value)) {
-    throw new Error(
-      "Clinical database fingerprint must be an exact SHA-256 value.",
-    );
+    throw new Error(`${label} fingerprint must be an exact SHA-256 value.`);
   }
   return value.toLowerCase();
 }
@@ -477,6 +477,15 @@ export async function collectClinicReadinessEvidence(
   const clinicalDatabaseFingerprint = exactFingerprint(
     options.clinicalDatabaseFingerprint,
   );
+  const stagingDatabaseFingerprint = exactFingerprint(
+    options.stagingDatabaseFingerprint,
+    "Staging database",
+  );
+  if (stagingDatabaseFingerprint === clinicalDatabaseFingerprint) {
+    throw new Error(
+      "Staging and clinical production database fingerprints must be distinct.",
+    );
+  }
   if (!REPOSITORY_PATTERN.test(options.repository)) {
     throw new Error("GitHub repository must use the owner/name form.");
   }
@@ -484,6 +493,10 @@ export async function collectClinicReadinessEvidence(
   const stagingMigrationRunId = runId(
     options.stagingMigrationRunId,
     "Staging migration run ID",
+  );
+  const stagingResetRunId = runId(
+    options.stagingResetRunId,
+    "Staging reset run ID",
   );
   const migrationRunId = runId(
     options.migrationRunId,
@@ -497,6 +510,7 @@ export async function collectClinicReadinessEvidence(
   const [
     ci,
     stagingMigration,
+    stagingReset,
     migration,
     stagingHealthResponse,
     healthResponse,
@@ -515,6 +529,13 @@ export async function collectClinicReadinessEvidence(
       stagingMigrationRunId,
       options.githubToken,
       "Staging migration",
+    ),
+    githubRunAndJobs(
+      fetchFn,
+      options.repository,
+      stagingResetRunId,
+      options.githubToken,
+      "Staging reset",
     ),
     githubRunAndJobs(
       fetchFn,
@@ -555,6 +576,13 @@ export async function collectClinicReadinessEvidence(
     releaseSha,
     branch: "staging",
   });
+  verifyRun(stagingReset.run, {
+    label: "Staging reset",
+    name: "Reset isolated staging",
+    event: "workflow_dispatch",
+    releaseSha,
+    branch: "staging",
+  });
   verifyRun(migration.run, {
     label: "Production migration",
     name: "Apply migrations",
@@ -575,6 +603,14 @@ export async function collectClinicReadinessEvidence(
     "validate staging request",
   );
   const stagingMigrationJob = successfulJob(stagingMigration.jobs, "staging");
+  const stagingResetValidationJob = successfulJob(
+    stagingReset.jobs,
+    "validate staging reset request",
+  );
+  const stagingResetJob = successfulJob(
+    stagingReset.jobs,
+    "reset isolated staging",
+  );
   const validationJob = successfulJob(
     migration.jobs,
     "validate production request",
@@ -608,6 +644,31 @@ export async function collectClinicReadinessEvidence(
   requireSuccessfulStep(stagingMigrationJob, "Apply migrations");
   requireSuccessfulStep(stagingMigrationJob, "Re-apply row-level security");
   requireSuccessfulStep(stagingMigrationJob, "Verify schema matches the code");
+  requireSuccessfulStep(
+    stagingResetValidationJob,
+    "Require exact staging revision and destructive confirmation",
+  );
+  requireSuccessfulStep(
+    stagingResetJob,
+    "Reject protected or mismatched staging project",
+  );
+  requireSuccessfulStep(stagingResetJob, "Verify database target identity");
+  requireSuccessfulStep(
+    stagingResetJob,
+    "Reset every staging application table",
+  );
+  requireSuccessfulStep(
+    stagingResetJob,
+    "Seed repository-owned synthetic clinic",
+  );
+  requireSuccessfulStep(
+    stagingResetJob,
+    "Verify exact schema and migration history",
+  );
+  requireSuccessfulStep(
+    stagingResetJob,
+    "Prove synthetic-only staging data and contact boundaries",
+  );
   requireSuccessfulStep(validationJob, "Require exact revision confirmation");
   requireSuccessfulStep(productionMigrationJob, "Apply migrations");
   requireSuccessfulStep(productionMigrationJob, "Re-apply row-level security");
@@ -687,7 +748,7 @@ export async function collectClinicReadinessEvidence(
   }
 
   return {
-    evidenceFormatVersion: 6,
+    evidenceFormatVersion: 7,
     releaseSha,
     ci: {
       releaseSha,
@@ -711,11 +772,18 @@ export async function collectClinicReadinessEvidence(
     repositoryGovernance,
     staging: {
       releaseSha,
+      databaseTargetFingerprint: stagingDatabaseFingerprint,
       migrationRunId: stagingMigrationRunId,
       migrationRunUrl:
         typeof stagingMigration.run.html_url === "string"
           ? stagingMigration.run.html_url
           : undefined,
+      resetRunId: stagingResetRunId,
+      resetRunUrl:
+        typeof stagingReset.run.html_url === "string"
+          ? stagingReset.run.html_url
+          : undefined,
+      syntheticDataAudit: "passed",
       hostedHealth: {
         releaseSha,
         checkedAt,

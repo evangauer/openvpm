@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  collect: vi.fn(async () => ({ evidenceFormatVersion: 6 })),
+  collect: vi.fn(async () => ({ evidenceFormatVersion: 7 })),
   evaluate: vi.fn(() => ({
     decision: "GO",
     evaluatedAt: "2026-08-29T21:00:00.000Z",
@@ -47,6 +47,10 @@ function argumentsFor(output: string): string[] {
     "101",
     "--staging-migration-run-id",
     "151",
+    "--staging-reset-run-id",
+    "171",
+    "--staging-database-fingerprint",
+    "e".repeat(64),
     "--migration-run-id",
     "202",
     "--staging-health-url",
