@@ -19,7 +19,8 @@
     "release:clinic-readiness": "tsx scripts/clinic-readiness-release.ts",
     "staging:verify-database-target": "tsx scripts/verify-staging-database-target.ts",
     "files:recover-legacy": "tsx scripts/recover-legacy-file.ts",
-    "incident:verify-evidence": "tsx scripts/verify-incident-response-evidence.ts"
+    "incident:verify-evidence": "tsx scripts/verify-incident-response-evidence.ts",
+    "billing:recover-cadence": "tsx scripts/recover-subscription-cadence.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.86",
