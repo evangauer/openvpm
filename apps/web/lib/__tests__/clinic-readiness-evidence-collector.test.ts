@@ -151,6 +151,7 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
       "hostedBackupFreshness",
       "hostedFileReplica",
       "hostedMfa",
+      "hostedPrivilegedActionSigning",
       "hostedOpsAlerting",
       "hostedCronHeartbeat",
     ].map((name) => [name, { ok: true }]),

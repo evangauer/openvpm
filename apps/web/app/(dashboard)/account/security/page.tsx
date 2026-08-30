@@ -7,6 +7,12 @@ import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  isPrivilegedAction,
+  PRIVILEGED_ACTIONS,
+  PRIVILEGED_ACTION_LABELS,
+  type PrivilegedAction,
+} from "@/lib/privileged-actions";
 import { trpc } from "@/lib/trpc";
 
 type Enrollment = {
@@ -79,10 +85,26 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [action, setAction] = useState<PrivilegedAction | "">("");
 
   useEffect(() => {
+    const requestedAction = new URLSearchParams(window.location.search).get(
+      "action",
+    );
+    if (isPrivilegedAction(requestedAction)) setAction(requestedAction);
+  }, []);
+
+  useEffect(() => {
+    if (!action) {
+      setActive(false);
+      setLoading(false);
+      return;
+    }
     let mounted = true;
-    fetch("/api/auth/step-up", { cache: "no-store" })
+    setLoading(true);
+    fetch(`/api/auth/step-up?action=${encodeURIComponent(action)}`, {
+      cache: "no-store",
+    })
       .then(async (response) => {
         const body = (await response.json()) as { active?: boolean };
         if (mounted) setActive(response.ok && body.active === true);
@@ -94,7 +116,7 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [action]);
 
   async function confirm(event: React.FormEvent) {
     event.preventDefault();
@@ -104,7 +126,7 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
       const response = await fetch("/api/auth/step-up", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password, code }),
+        body: JSON.stringify({ action, password, code }),
       });
       const body = (await response.json()) as { message?: string };
       if (!response.ok) {
@@ -114,7 +136,7 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
       setPassword("");
       setCode("");
       setActive(true);
-      toast.success("Sensitive actions unlocked for 10 minutes");
+      toast.success("One attempt at the selected action is confirmed");
     } catch {
       setError("Identity confirmation is temporarily unavailable.");
     } finally {
@@ -123,7 +145,11 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
   }
 
   async function clear() {
-    await fetch("/api/auth/step-up", { method: "DELETE" });
+    if (action) {
+      await fetch(`/api/auth/step-up?action=${encodeURIComponent(action)}`, {
+        method: "DELETE",
+      });
+    }
     setActive(false);
   }
 
@@ -138,11 +164,33 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
             Sensitive actions
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Reconfirm your identity before refunds, payment-account changes,
-            staff access changes, bulk exports, or credential changes.
+            Choose one exact operation, then reconfirm your identity. The proof
+            can authorize that operation once and cannot unlock a different
+            operation type.
           </p>
         </div>
       </div>
+
+      <label className="mt-5 block max-w-lg text-sm font-medium">
+        Sensitive operation
+        <select
+          className="mt-1 block h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+          value={action}
+          onChange={(event) => {
+            const value = event.target.value;
+            setAction(isPrivilegedAction(value) ? value : "");
+            setActive(false);
+            setError(null);
+          }}
+        >
+          <option value="">Choose the operation you intend to perform</option>
+          {PRIVILEGED_ACTIONS.map((item) => (
+            <option key={item} value={item}>
+              {PRIVILEGED_ACTION_LABELS[item]}
+            </option>
+          ))}
+        </select>
+      </label>
 
       {loading ? (
         <p className="mt-5 flex items-center gap-2 text-sm text-muted-foreground">
@@ -152,11 +200,12 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
       ) : active ? (
         <div className="mt-5 rounded-lg border border-emerald-300 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/30">
           <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">
-            Identity recently confirmed
+            Confirmed for {PRIVILEGED_ACTION_LABELS[action as PrivilegedAction]}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Sensitive actions are available for up to 10 minutes in this
-            browser. The proof is tied to this account and session.
+            This browser can attempt that exact operation once within five
+            minutes. The proof is bound to this account, clinic, session, and
+            operation, and is consumed atomically with successful work.
           </p>
           <Button
             className="mt-3"
@@ -171,6 +220,10 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
         <p className="mt-5 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
           Enable two-step verification above before performing sensitive actions
           in hosted OpenVPM.
+        </p>
+      ) : !action ? (
+        <p className="mt-5 text-sm text-muted-foreground">
+          Choose the exact operation before confirming your identity.
         </p>
       ) : (
         <form className="mt-5 space-y-3 border-t pt-5" onSubmit={confirm}>
@@ -192,9 +245,12 @@ function SensitiveActionConfirmation({ mfaEnabled }: { mfaEnabled: boolean }) {
             required
           />
           <MutationError message={error ?? undefined} />
-          <Button type="submit" disabled={!password || !code || submitting}>
+          <Button
+            type="submit"
+            disabled={!action || !password || !code || submitting}
+          >
             {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Confirm for 10 minutes
+            Confirm one attempt for 5 minutes
           </Button>
         </form>
       )}

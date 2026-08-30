@@ -2,9 +2,10 @@ import type { Database } from "@openpims/db/client";
 import { auditLog } from "@openpims/db";
 
 /**
- * Audit logging for mutations. The pure helpers (path parsing, secret
- * redaction, entity-id extraction) are unit-tested; recordAuditLog performs the
- * best-effort insert and must never throw into the request path.
+ * Audit logging for mutations and explicitly privileged reads. The pure
+ * helpers (path parsing, secret redaction, entity-id extraction) are
+ * unit-tested; recordAuditLog performs the best-effort insert and must never
+ * throw into the request path.
  */
 
 const UUID_RE =

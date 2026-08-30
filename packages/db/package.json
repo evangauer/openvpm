@@ -21,6 +21,7 @@
     "db:rls:preflight": "tsx rls-preflight.ts",
     "db:rls:preflight:test": "tsx test-rls-preflight.ts",
     "db:rls:test": "tsx test-rls.ts",
+    "db:privileged-action-proofs:test": "tsx test-privileged-action-proofs.ts",
     "db:finance-adoption:test": "tsx test-finance-adoption.ts",
     "db:treatment-plan-evidence:test": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f test-treatment-plan-evidence.sql",
     "db:treatment-plan-concurrency:test": "tsx test-treatment-plan-concurrency.ts",

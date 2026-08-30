@@ -143,7 +143,9 @@ describe("patients query scoping", () => {
     expect(trpcSource).toMatch(
       /path === "patients\.merge"\s*\? \{ isolationLevel: "serializable" \}/,
     );
-    expect(trpcSource).toContain('path === "patients.merge" && !result.ok');
+    expect(trpcSource).toMatch(
+      /\(path === "patients\.merge" \|\| privilegedAction\) && !result\.ok/,
+    );
     expect(trpcSource).toContain("throw result.error");
     expect(source).toContain('.orderBy(asc(patients.id))\n    .for("update")');
     expect(source).toContain("sourceHasIncomingAliases");

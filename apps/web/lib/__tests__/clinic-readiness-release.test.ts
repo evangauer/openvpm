@@ -75,6 +75,7 @@ function healthyEvidence() {
         "hostedBackupFreshness",
         "hostedFileReplica",
         "hostedMfa",
+        "hostedPrivilegedActionSigning",
         "hostedOpsAlerting",
         "hostedCronHeartbeat",
       ].map((name) => [name, { ok: true }]),

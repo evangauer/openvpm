@@ -54,7 +54,7 @@ DECLARE
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
     'capture_sessions','care_reminders','cases','client_contacts','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
     'external_lab_observations','external_lab_reports','external_prescription_fills','external_prescriptions','files','financial_closes','historical_appointments','historical_documents','insurance_claims','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','legacy_financial_allocations','legacy_financial_documents','legacy_financial_line_items','legacy_financial_payments','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
-    'locations','patient_merge_events','patients','payment_disputes','payment_processor_payouts','payment_processor_refunds','payment_processor_settlements','portal_sessions','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
+    'locations','patient_merge_events','patients','payment_disputes','payment_processor_payouts','payment_processor_refunds','payment_processor_settlements','portal_sessions','practice_payment_accounts','prescription_events','prescriptions','privileged_action_proofs','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_note_replacements','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
     'visit_treatment_plan_response_lines','visit_treatment_plan_responses','visit_treatment_plan_revision_lines','visit_treatment_plan_revisions','visit_treatment_plans',
@@ -333,6 +333,13 @@ $$;
 -- snapshot changes and all deletion.
 REVOKE ALL ON dispense_charge_queue FROM openpims_app;
 GRANT SELECT, INSERT, UPDATE ON dispense_charge_queue TO openpims_app;
+
+-- Fresh-factor evidence is immutable except for its one-time consumption
+-- timestamp. Tenant sessions may issue/read/consume proofs but cannot delete
+-- them or invoke the protective trigger implementation directly.
+REVOKE ALL ON privileged_action_proofs FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON privileged_action_proofs TO openpims_app;
+REVOKE ALL ON FUNCTION protect_privileged_action_proof_update() FROM PUBLIC, openpims_app;
 
 -- 5) Child tables without their own practice_id are isolated by joining to the
 --    parent row, which carries practice_id and its own tenant RLS.

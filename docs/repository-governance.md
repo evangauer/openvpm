@@ -193,8 +193,9 @@ the release is declared successful.
 Pull-request code is untrusted until it has passed review. A preview deployment
 must never receive a credential that can mutate Production, even when the
 preview uses a separate database. Development and Staging require distinct
-databases, auth/session secrets, mail/provider credentials, webhook endpoints
-and signing secrets, object-storage credentials, billing test-mode keys, and
+databases, auth/session secrets, MFA encryption and privileged-action signing
+keys, mail/provider credentials, webhook endpoints and signing secrets,
+object-storage credentials, billing test-mode keys, and
 least-privilege cloud identities. Default-off provider and fee-bearing flags
 remain off in both environments.
 

@@ -6,10 +6,17 @@ const mocks = vi.hoisted(() => {
   const events: string[] = [];
   const executeErrors: unknown[] = [];
   const patientMergeResolverErrors: unknown[] = [];
+  const privilegedResolverErrors: unknown[] = [];
+  let proofConsumptionUpdates = 0;
   return {
     events,
     executeErrors,
     patientMergeResolverErrors,
+    privilegedResolverErrors,
+    billingEnforced: vi.fn(() => false),
+    get proofConsumptionUpdates() {
+      return proofConsumptionUpdates;
+    },
     get systemDepth() {
       return systemDepth;
     },
@@ -38,7 +45,7 @@ const mocks = vi.hoisted(() => {
         tenantDepth += 1;
         events.push("tenant:begin");
         try {
-          return await fn({
+          const result = await fn({
             scope: "tenant",
             root: database,
             execute: vi.fn(async () => {
@@ -47,9 +54,36 @@ const mocks = vi.hoisted(() => {
               if (error) throw error;
               return [];
             }),
+            update: vi.fn(() => ({
+              set: () => ({
+                where: () => ({
+                  returning: async () => {
+                    proofConsumptionUpdates += 1;
+                    return [{ id: "proof-id" }];
+                  },
+                }),
+              }),
+            })),
+            select: vi.fn(() => ({
+              from: () => ({
+                where: () => ({
+                  limit: async () => [
+                    {
+                      tier: "cloud",
+                      billingStatus: "active",
+                      trialEndsAt: null,
+                    },
+                  ],
+                }),
+              }),
+            })),
           });
-        } finally {
           events.push("tenant:commit");
+          return result;
+        } catch (error) {
+          events.push("tenant:rollback");
+          throw error;
+        } finally {
           tenantDepth -= 1;
         }
       },
@@ -72,7 +106,7 @@ vi.mock("@/lib/rls-assertion", () => ({
   assertHostedRlsRoleOnce: vi.fn(async () => undefined),
 }));
 vi.mock("@/lib/billing/plans", () => ({
-  billingEnforced: () => false,
+  billingEnforced: mocks.billingEnforced,
   hasHostedFullAccess: () => true,
   isEntitled: () => true,
   effectiveTier: () => "cloud",
@@ -81,6 +115,8 @@ vi.mock("@openpims/db/client", () => ({ db: mocks.db }));
 
 const { createRouter, protectedProcedure, publicProcedure } =
   await import("../trpc");
+const { issuePrivilegedActionProof } =
+  await import("@/lib/privileged-action-proof");
 
 const router = createRouter({
   publicEffect: publicProcedure.mutation(({ ctx }) => {
@@ -108,13 +144,26 @@ const router = createRouter({
       return { ok: true };
     }),
   }),
+  billing: createRouter({
+    refundPayment: protectedProcedure.mutation(() => {
+      const error = mocks.privilegedResolverErrors.shift();
+      if (error) throw error;
+      return { ok: true };
+    }),
+  }),
+  data: createRouter({
+    exportClients: protectedProcedure.query(() => ({ rows: 1 })),
+  }),
 });
 
 afterEach(() => {
   mocks.events.length = 0;
   mocks.executeErrors.length = 0;
   mocks.patientMergeResolverErrors.length = 0;
+  mocks.privilegedResolverErrors.length = 0;
+  mocks.billingEnforced.mockReturnValue(false);
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("tRPC post-commit effects", () => {
@@ -295,5 +344,87 @@ describe("tRPC post-commit effects", () => {
     });
     expect(mocks.events).not.toContain("protected:effect");
     expect(mocks.recordAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("rolls back one-time proof consumption when a privileged resolver fails", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    vi.stubEnv(
+      "PRIVILEGED_ACTION_SIGNING_KEY",
+      Buffer.alloc(32, 11).toString("base64"),
+    );
+    const user = {
+      id: "00000000-0000-0000-0000-000000000001",
+      email: "owner@example.com",
+      name: "Owner",
+      role: "admin",
+      practiceId: "00000000-0000-0000-0000-0000000000aa",
+      sessionVersion: 1,
+    };
+    const { proof } = issuePrivilegedActionProof({
+      action: "billing.refundPayment",
+      userId: user.id,
+      practiceId: user.practiceId,
+      sessionVersion: user.sessionVersion,
+    });
+    mocks.privilegedResolverErrors.push(
+      new Error("synthetic resolver failure"),
+    );
+    const caller = router.createCaller({
+      db: { kind: "root-tenant" },
+      session: { user },
+      privilegedActionProof: proof,
+    } as never);
+
+    await expect(caller.billing.refundPayment()).rejects.toMatchObject({
+      code: "INTERNAL_SERVER_ERROR",
+    });
+    expect(mocks.proofConsumptionUpdates).toBe(1);
+    expect(mocks.events).toContain("tenant:rollback");
+    expect(mocks.events).not.toContain("tenant:commit");
+    expect(mocks.recordAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("consumes and audits proof for sensitive exports modeled as queries", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    vi.stubEnv(
+      "PRIVILEGED_ACTION_SIGNING_KEY",
+      Buffer.alloc(32, 12).toString("base64"),
+    );
+    const user = {
+      id: "00000000-0000-0000-0000-000000000001",
+      email: "owner@example.com",
+      name: "Owner",
+      role: "admin",
+      practiceId: "00000000-0000-0000-0000-0000000000aa",
+      sessionVersion: 1,
+    };
+    const unconfirmed = router.createCaller({
+      db: { kind: "root-tenant" },
+      session: { user },
+    } as never);
+    await expect(unconfirmed.data.exportClients()).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+
+    const { proof } = issuePrivilegedActionProof({
+      action: "data.exportClients",
+      userId: user.id,
+      practiceId: user.practiceId,
+      sessionVersion: user.sessionVersion,
+    });
+    const before = mocks.proofConsumptionUpdates;
+    const confirmed = router.createCaller({
+      db: { kind: "root-tenant" },
+      session: { user },
+      privilegedActionProof: proof,
+    } as never);
+    await expect(confirmed.data.exportClients()).resolves.toEqual({ rows: 1 });
+
+    expect(mocks.proofConsumptionUpdates).toBe(before + 1);
+    expect(mocks.events).toContain("tenant:commit");
+    expect(mocks.recordAuditLog).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ path: "data.exportClients" }),
+    );
   });
 });

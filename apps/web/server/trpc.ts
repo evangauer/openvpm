@@ -3,7 +3,7 @@ import type { Session } from "next-auth";
 import { getServerSession } from "next-auth";
 import superjson from "superjson";
 import { ZodError } from "zod";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { authOptions } from "@/lib/auth";
 import { hasBlankConfiguredNextAuthSecret } from "@/lib/auth-secret";
 import { recordAuditLog } from "@/lib/audit";
@@ -13,7 +13,7 @@ import { withTenant, withSystem } from "@/lib/tenant-db";
 import { assertHostedRlsRoleOnce } from "@/lib/rls-assertion";
 import { clientIpFromRequest } from "@/lib/request-ip";
 import { externallyVisibleRequestOrigin } from "@/lib/request-origin";
-import { practices, users } from "@openpims/db";
+import { practices, privilegedActionProofs, users } from "@openpims/db";
 import {
   billingEnforced,
   hasHostedFullAccess,
@@ -25,8 +25,13 @@ import { readHostedAiAccess } from "@/lib/billing/ai-access";
 import {
   cookieValue,
   PRIVILEGED_ACTION_COOKIE,
-  verifyPrivilegedActionProof,
+  verifiedPrivilegedActionProof,
 } from "@/lib/privileged-action-proof";
+import {
+  PRIVILEGED_ACTIONS,
+  PRIVILEGED_ACTION_LABELS,
+  type PrivilegedAction,
+} from "@/lib/privileged-actions";
 import {
   portalSessionTokenFromCookie,
   resolvePortalSession,
@@ -214,38 +219,11 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "admin.reconcileSmsDeliveryEvent",
 ]);
 
-// Hosted actions that can move money, expose bulk clinic data, change access,
-// or rotate external credentials require a short-lived proof from password +
-// MFA reconfirmation. The proof is HttpOnly and bound to the session version.
-const HOSTED_PRIVILEGED_ACTION_PATHS = new Set([
-  "billing.createPaymentAccountOnboarding",
-  "billing.openPaymentAccountDashboard",
-  "billing.refundPayment",
-  "billing.applyInvoiceAdjustment",
-  "billing.voidInvoice",
-  "subscription.createCheckout",
-  "subscription.scheduleAnnualAtRenewal",
-  "subscription.openBillingPortal",
-  "settings.requestAccountDeletion",
-  "settings.clearDemoData",
-  "settings.reseedDemoData",
-  "settings.createUser",
-  "settings.inviteStaff",
-  "settings.updateUser",
-  "settings.deactivateUser",
-  "settings.restoreUser",
-  "data.exportFullBackup",
-  "data.exportClients",
-  "data.exportPatients",
-  "data.exportAppointments",
-  "data.exportInvoices",
-  "data.restoreBackup",
-  "apiKeys.create",
-  "apiKeys.revoke",
-  "webhooks.create",
-  "webhooks.toggle",
-  "webhooks.delete",
-]);
+// Hosted procedures that can move money, expose bulk clinic data, change
+// access, or mutate provider credentials require a short-lived proof from
+// password + MFA reconfirmation. Export procedures are intentionally included
+// even though tRPC models them as queries.
+const HOSTED_PRIVILEGED_ACTION_PATHS = new Set<string>(PRIVILEGED_ACTIONS);
 
 function practiceNotFound(): TRPCError {
   return new TRPCError({ code: "NOT_FOUND", message: "Practice not found" });
@@ -429,19 +407,22 @@ export const protectedProcedure = t.procedure.use(
       });
     }
     const user = ctx.session.user;
-    if (
-      billingEnforced() &&
-      HOSTED_PRIVILEGED_ACTION_PATHS.has(path) &&
-      !verifyPrivilegedActionProof(ctx.privilegedActionProof, {
-        userId: user.id,
-        practiceId: user.practiceId,
-        sessionVersion: user.sessionVersion,
-      })
-    ) {
+    const privilegedAction =
+      billingEnforced() && HOSTED_PRIVILEGED_ACTION_PATHS.has(path)
+        ? (path as PrivilegedAction)
+        : null;
+    const verifiedProof = privilegedAction
+      ? verifiedPrivilegedActionProof(ctx.privilegedActionProof, {
+          action: privilegedAction,
+          userId: user.id,
+          practiceId: user.practiceId,
+          sessionVersion: user.sessionVersion,
+        })
+      : null;
+    if (privilegedAction && !verifiedProof) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message:
-          "Confirm your password and authentication code in Account Security, then retry this sensitive action within 10 minutes.",
+        message: `Confirm your identity for “${PRIVILEGED_ACTION_LABELS[privilegedAction]}” at /account/security?action=${encodeURIComponent(privilegedAction)}, then retry this action once within 5 minutes.`,
       });
     }
     // Run the whole request in a tenant DB context so Postgres RLS scopes every
@@ -451,6 +432,41 @@ export const protectedProcedure = t.procedure.use(
       ctx.db,
       user.practiceId,
       async (tx) => {
+        // Consume fresh-factor proof in the same transaction as the protected
+        // operation. Successful work commits consumption exactly once; a
+        // failed operation rolls it back so a safe retry remains possible.
+        if (privilegedAction && verifiedProof) {
+          const consumedAt = new Date();
+          const [consumed] = await tx
+            .update(privilegedActionProofs)
+            .set({ consumedAt })
+            .where(
+              and(
+                eq(privilegedActionProofs.id, verifiedProof.id),
+                eq(privilegedActionProofs.practiceId, user.practiceId),
+                eq(privilegedActionProofs.userId, user.id),
+                eq(privilegedActionProofs.sessionVersion, user.sessionVersion),
+                eq(privilegedActionProofs.action, privilegedAction),
+                eq(privilegedActionProofs.nonceHash, verifiedProof.nonceHash),
+                isNull(privilegedActionProofs.consumedAt),
+                gt(privilegedActionProofs.expiresAt, consumedAt),
+                sql`exists (
+                  select 1 from ${users}
+                  where ${users.id} = ${user.id}
+                    and ${users.practiceId} = ${user.practiceId}
+                    and ${users.sessionVersion} = ${user.sessionVersion}
+                    and ${users.deletedAt} is null
+                )`,
+              ),
+            )
+            .returning({ id: privilegedActionProofs.id });
+          if (!consumed) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: `The confirmation for “${PRIVILEGED_ACTION_LABELS[privilegedAction]}” was already used or expired. Confirm it again and retry once.`,
+            });
+          }
+        }
         // Hosted read-only guard: block mutations unless the practice has an
         // active trial or subscription. This MUST run inside withTenant (via tx),
         // not on the raw connection — under the least-privilege production role
@@ -510,10 +526,12 @@ export const protectedProcedure = t.procedure.use(
           },
         });
 
-        if (path === "patients.merge" && !result.ok) {
+        if ((path === "patients.merge" || privilegedAction) && !result.ok) {
           // tRPC represents resolver exceptions as error results. Rethrowing
-          // here keeps the outer tenant transaction fail-closed and exposes
-          // the wrapped PostgreSQL cause to the narrow merge error mapper.
+          // here keeps the outer tenant transaction fail-closed. Patient merge
+          // needs the wrapped PostgreSQL cause for its narrow error mapper;
+          // privileged procedures must roll back proof consumption with every
+          // failed resolver operation so a safe retry remains possible.
           throw result.error;
         }
 
@@ -551,9 +569,10 @@ export const protectedProcedure = t.procedure.use(
       }
       throw error;
     });
-    // Audit every successful mutation after the tenant transaction committed.
-    // Runs in its own system-context tx and never blocks or fails the request.
-    if (type === "mutation" && result.ok) {
+    // Audit every successful mutation and protected export after the tenant
+    // transaction committed. Runs in its own system-context transaction and
+    // never blocks or fails the request.
+    if ((type === "mutation" || privilegedAction) && result.ok) {
       const rawInput = await getRawInput().catch(() => undefined);
       void withSystem(db, (sysTx) =>
         recordAuditLog(sysTx, {

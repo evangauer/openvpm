@@ -129,7 +129,10 @@ describe("viewer read-only guard", () => {
 
   it("requires recent step-up before a hosted lapsed admin requests account deletion review", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
-    vi.stubEnv("MFA_ENCRYPTION_KEY", Buffer.alloc(32, 7).toString("base64"));
+    vi.stubEnv(
+      "PRIVILEGED_ACTION_SIGNING_KEY",
+      Buffer.alloc(32, 7).toString("base64"),
+    );
 
     const selectResults = [
       [
@@ -158,6 +161,7 @@ describe("viewer read-only guard", () => {
     });
     const updateSet = vi.fn(() => ({
       where: () => ({
+        returning: async () => [{ id: "proof-id" }],
         then: (resolve: (value: undefined) => unknown) =>
           Promise.resolve(undefined).then(resolve),
       }),
@@ -181,7 +185,23 @@ describe("viewer read-only guard", () => {
       }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
-    const proof = issuePrivilegedActionProof({
+    const { proof: wrongActionProof } = issuePrivilegedActionProof({
+      action: "apiKeys.create",
+      userId: "00000000-0000-0000-0000-000000000001",
+      practiceId: "00000000-0000-0000-0000-0000000000aa",
+      sessionVersion: 1,
+    });
+    const wrongActionCaller = callerFor("admin", db, wrongActionProof);
+    await expect(
+      wrongActionCaller.settings.requestAccountDeletion({
+        contactEmail: "owner@example.com",
+        confirmExportDownloaded: true,
+        confirmManualReview: true,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const { proof } = issuePrivilegedActionProof({
+      action: "settings.requestAccountDeletion",
       userId: "00000000-0000-0000-0000-000000000001",
       practiceId: "00000000-0000-0000-0000-0000000000aa",
       sessionVersion: 1,

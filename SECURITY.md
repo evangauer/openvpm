@@ -43,5 +43,10 @@ If you deploy OpenVPM on your own infrastructure:
 - All dashboard routes require an authenticated session
 - Multi-tenant isolation combines tenant-scoped application queries with PostgreSQL row-level security
 - Role-based access control includes Admin, Veterinarian, Technician, Front Desk, and read-only Viewer roles
+- Hosted privileged procedures require a separately signed, five-minute proof bound to the exact action, user, tenant, and current database session generation; PostgreSQL consumes the proof once in the same transaction as the operation
 - Security headers are set on all responses (X-Frame-Options, X-Content-Type-Options, etc.)
 - Controlled substance logs are append-only with witness requirements
+
+## Known Authentication Limitation
+
+OpenVPM currently supports TOTP and single-use recovery codes. TOTP is a shared-secret factor and is not phishing-resistant. The exact-action, one-time privileged-action proof limits reuse after a fresh TOTP confirmation, but it does not make TOTP phishing-resistant. Clinic launch remains blocked on a reviewed WebAuthn/passkey primary-factor flow and recovery policy tracked in [issue #266](https://github.com/evangauer/openvpm/issues/266).

@@ -213,6 +213,12 @@ jobs:
 
       - run: pnpm --filter @openpims/db db:rls
 
+      # A step-up cookie is insufficient by itself: prove the exact-action row
+      # can be consumed only once under races and remains tenant/privilege
+      # constrained in the real least-privilege PostgreSQL role.
+      - name: Execute privileged-action proof database contract
+        run: pnpm --filter @openpims/db db:privileged-action-proofs:test
+
       # Client treatment-plan decisions are legal record evidence. Prove the
       # sealed revision/response graph, signature hash binding, replay refusal,
       # immutable grants, and tenant/no-context isolation in real PostgreSQL.

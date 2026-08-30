@@ -136,6 +136,10 @@ function stubHostedRequiredEnvs() {
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example");
   vi.stubEnv("NEXTAUTH_SECRET", "secret");
   vi.stubEnv("MFA_ENCRYPTION_KEY", Buffer.alloc(32, 9).toString("base64"));
+  vi.stubEnv(
+    "PRIVILEGED_ACTION_SIGNING_KEY",
+    Buffer.alloc(32, 10).toString("base64"),
+  );
   vi.stubEnv("DATABASE_URL", "postgres://app@db.example/openvpm");
   vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_123");
   vi.stubEnv("STRIPE_WEBHOOK_SECRET", "whsec_invoice");
@@ -441,6 +445,26 @@ describe("health route", () => {
       detail: "Heartbeat URL missing",
     });
     expect(mocks.checkObjectStorageHealth).not.toHaveBeenCalled();
+  });
+
+  it("rejects reuse of the MFA encryption key for proof signing", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    const shared = Buffer.alloc(32, 9).toString("base64");
+    vi.stubEnv("MFA_ENCRYPTION_KEY", shared);
+    vi.stubEnv("PRIVILEGED_ACTION_SIGNING_KEY", shared);
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedMfa.ok).toBe(true);
+    expect(json.checks.hostedPrivilegedActionSigning).toEqual({
+      ok: false,
+      detail:
+        "Hosted privileged-action signing is missing, invalid, or reuses an MFA/session key",
+    });
+    expect(JSON.stringify(json)).not.toContain(shared);
   });
 
   it("makes hosted SMS release-blocking as soon as provisioning is enabled", async () => {

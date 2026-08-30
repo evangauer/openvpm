@@ -41,6 +41,7 @@ import { platformEmailIdentityConfigurationReady } from "@/lib/platform-email-pr
 import { hostedSmsCredentialIssueCount } from "@/lib/messaging/hosted-sms-readiness";
 import { checkBackupRunFreshness } from "@/lib/backup/run-evidence";
 import { mfaEncryptionConfigured } from "@/lib/mfa";
+import { privilegedActionSigningConfigured } from "@/lib/privileged-action-proof";
 
 export const dynamic = "force-dynamic";
 
@@ -558,6 +559,12 @@ export async function GET() {
       detail: mfaEncryptionConfigured()
         ? "Hosted MFA encryption is configured"
         : "Hosted MFA encryption is missing or invalid",
+    };
+    checks.hostedPrivilegedActionSigning = {
+      ok: privilegedActionSigningConfigured(),
+      detail: privilegedActionSigningConfigured()
+        ? "Hosted privileged-action signing is separately configured"
+        : "Hosted privileged-action signing is missing, invalid, or reuses an MFA/session key",
     };
     checks.hostedAppUrls = hostedAppUrlCheck();
     checks.hostedBilling = hostedEnvCheck(

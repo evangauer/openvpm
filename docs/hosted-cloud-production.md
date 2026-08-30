@@ -77,6 +77,7 @@ NEXTAUTH_URL=https://app.openvpm.com
 NEXT_PUBLIC_APP_URL=https://app.openvpm.com
 NEXTAUTH_SECRET=...
 MFA_ENCRYPTION_KEY=... # dedicated `openssl rand -base64 32`; never reuse NEXTAUTH_SECRET
+PRIVILEGED_ACTION_SIGNING_KEY=... # independently generated; never reuse MFA_ENCRYPTION_KEY or NEXTAUTH_SECRET
 DATABASE_URL=...
 # Transitional production release lock. Set only to the exact approved
 # 40-character commit, redeploy that revision, then clear or rotate it.
@@ -269,15 +270,20 @@ return HTTP 200 before recording acceptance. Never copy the current
 patient-linked data and remains a protected recovery source until separately
 classified.
 
-Authentication deployments require `MFA_ENCRYPTION_KEY` before migration/code
-promotion. Hosted health rejects a missing or malformed key. Existing JWTs
+Authentication deployments require independently generated
+`MFA_ENCRYPTION_KEY` and `PRIVILEGED_ACTION_SIGNING_KEY` values before
+migration/code promotion. Hosted health rejects either missing/malformed key
+and rejects reuse of the MFA encryption or NextAuth session key for proof
+signing. Existing JWTs
 issued before session-generation enforcement are intentionally invalidated;
 operators and clinic staff sign in again. Exercise password sign-in, MFA
-enrollment, recovery-code sign-in, sign-out-everywhere, and one privileged
-step-up action in staging before production promotion. Treat the MFA key as
-durable encryption material: rotating or losing it invalidates every enrolled
-authenticator and recovery-code hash. Do not rotate it without a reviewed
-reenrollment/recovery plan and a retained, access-controlled prior key.
+enrollment, recovery-code sign-in, sign-out-everywhere, and two attempts at one
+privileged action in staging: the exact-action proof must authorize the first
+and reject replay. Treat the MFA key as durable encryption material: rotating
+or losing it invalidates every enrolled authenticator and recovery-code hash.
+Treat the signing key as independently rotatable authorization material:
+rotation invalidates every outstanding five-minute proof without affecting TOTP
+decryption. Do not rotate either without a reviewed recovery plan.
 
 `STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only. They must not be used for new checkout or required hosted readiness.
 
