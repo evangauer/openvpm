@@ -274,6 +274,31 @@ export async function syncPracticeSubscriptionQuantities(opts: {
       return state;
     }
 
+    const { aiOveragePriceId, smsOveragePriceId } = cloudMeteredPriceIds();
+    const meteredPriceIds = [aiOveragePriceId, smsOveragePriceId].filter(
+      (priceId): priceId is string => Boolean(priceId),
+    );
+    if (
+      billingCadence === "year" &&
+      meteredPriceIds.length > 0 &&
+      subscription.billing_mode?.type !== "flexible"
+    ) {
+      const state = buildState(
+        "error",
+        "Annual Stripe subscriptions must use flexible billing mode before monthly metered overage items can be synchronized.",
+        counts,
+        billingCadence,
+      );
+      await writeBillingSyncState(db, practiceId, state);
+      if (opts.alertOnError !== false) {
+        await alertOps(
+          "Annual subscription metering blocked",
+          `${state.message} practice=${practiceId} subscription=${subscriptionId}`,
+        );
+      }
+      return state;
+    }
+
     const updates: Promise<unknown>[] = [
       stripe.subscriptionItems.update(
         locationItem.id,
@@ -311,10 +336,7 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     // clinic); the metered overage items (AI + SMS) are attached here after
     // the subscription exists. Idempotent: only add what is missing, so this
     // also self-heals subscriptions created before overage prices existed.
-    const { aiOveragePriceId, smsOveragePriceId } = cloudMeteredPriceIds();
-    for (const meteredPriceId of billingCadence === "year"
-      ? []
-      : [aiOveragePriceId, smsOveragePriceId]) {
+    for (const meteredPriceId of meteredPriceIds) {
       if (
         meteredPriceId &&
         !items.some((item) => item.price?.id === meteredPriceId)

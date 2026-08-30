@@ -609,6 +609,14 @@ export function buildSubscriptionCheckoutSessionParams(data: {
     : undefined;
   const hasTrial = !!trialEnd || !!data.trialPeriodDays;
   const billingCadence = data.billingCadence ?? "month";
+  if (
+    billingCadence === "year" &&
+    data.lineItems.some((item) => item.metered)
+  ) {
+    throw new Error(
+      "Annual Checkout must contain only licensed items; attach monthly metered companions after Stripe creates the flexible subscription.",
+    );
+  }
   const metadata = {
     practiceId: data.practiceId,
     billingCadence,
@@ -642,6 +650,11 @@ export function buildSubscriptionCheckoutSessionParams(data: {
     metadata,
     ...subscriptionTaxCheckoutParams(data.customerId),
     subscription_data: {
+      // Make the provider contract explicit. Flexible mode is required before
+      // an annual licensed subscription can safely receive monthly metered
+      // companion items after Checkout, and before cadence schedules can be
+      // managed without a one-way migration of an existing subscription.
+      billing_mode: { type: "flexible" },
       description: `OpenVPM Cloud — ${
         billingCadence === "year" ? "annual" : "monthly"
       }`,

@@ -144,13 +144,14 @@ describe("billing sync practice scoping", () => {
     expect(syncState).toContain("stripe.subscriptionItems.create(");
   });
 
-  it("syncs annual quantity without attaching monthly metered items", async () => {
+  it("syncs annual quantity and attaches monthly metered items in flexible mode", async () => {
     vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
     vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_monthly");
     vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_annual");
     vi.stubEnv("STRIPE_PRICE_AI_OVERAGE", "price_ai");
     vi.stubEnv("STRIPE_PRICE_SMS_OVERAGE", "price_sms");
     mocks.retrieve.mockResolvedValue({
+      billing_mode: { type: "flexible" },
       items: {
         data: [{ id: "si_annual", price: { id: "price_annual" } }],
       },
@@ -204,6 +205,74 @@ describe("billing sync practice scoping", () => {
       { quantity: 1 },
       expect.objectContaining({ idempotencyKey: expect.any(String) }),
     );
+    expect(mocks.create).toHaveBeenCalledTimes(2);
+    expect(mocks.create).toHaveBeenCalledWith(
+      { subscription: "sub_annual", price: "price_ai" },
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
+    );
+    expect(mocks.create).toHaveBeenCalledWith(
+      { subscription: "sub_annual", price: "price_sms" },
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
+    );
+    expect(writeWhere).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed before mutating a classic annual subscription with metered prices", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_monthly");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_annual");
+    vi.stubEnv("STRIPE_PRICE_AI_OVERAGE", "price_ai");
+    mocks.retrieve.mockResolvedValue({
+      billing_mode: { type: "classic" },
+      items: {
+        data: [{ id: "si_annual", price: { id: "price_annual" } }],
+      },
+    });
+
+    const rows = [
+      {
+        stripeSubscriptionId: "sub_annual",
+        recoveryHold: false,
+        leaseToken: "lease-test",
+        leaseExpiresAt,
+      },
+      { c: 1 },
+      { c: 1 },
+    ];
+    const select = vi.fn(() => {
+      const result = [rows.shift()!];
+      const builder: Record<string, unknown> = {};
+      builder.from = () => builder;
+      builder.where = () => builder;
+      builder.limit = () => builder;
+      builder.for = async () => result;
+      builder.then = (
+        resolve: (value: unknown[]) => unknown,
+        reject?: (reason: unknown) => unknown,
+      ) => Promise.resolve(result).then(resolve, reject);
+      return builder;
+    });
+    const writeWhere = vi.fn(async () => []);
+    const dbUpdate = vi.fn(() => ({
+      set: () => ({ where: writeWhere }),
+    }));
+
+    await expect(
+      syncPracticeSubscriptionQuantities({
+        db: { select, update: dbUpdate } as never,
+        practiceId: "practice-annual",
+        ...durableOptions,
+        subscriptionId: "sub_annual",
+        alertOnError: false,
+      }),
+    ).resolves.toMatchObject({
+      status: "error",
+      billingCadence: "year",
+      message:
+        "Annual Stripe subscriptions must use flexible billing mode before monthly metered overage items can be synchronized.",
+    });
+
+    expect(mocks.update).not.toHaveBeenCalled();
     expect(mocks.create).not.toHaveBeenCalled();
     expect(writeWhere).toHaveBeenCalledOnce();
   });

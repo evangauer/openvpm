@@ -15,6 +15,15 @@ the feature behind the normal release, staging, and hosted-billing gates.
 - The monthly subscription must already use Stripe flexible billing mode.
   OpenVPM stops in `manual_review` for classic mode instead of performing the
   irreversible provider migration implicitly.
+- New OpenVPM Checkout subscriptions explicitly request flexible billing mode.
+  Stripe Checkout still receives only the licensed location item: it does not
+  support creating the mixed annual-location/monthly-usage subscription in one
+  Checkout request. The durable post-Checkout quantity sync attaches the
+  allowlisted metered AI/SMS items after Stripe creates the subscription.
+- If a direct annual subscription is not flexible while metered prices are
+  configured, quantity sync records an error and alerts operations before it
+  updates the location item or adds any companion. Never work around that stop
+  by deleting the metered prices or migrating the subscription implicitly.
 - The annual phase must preserve every explicitly allowlisted metered AI/SMS
   companion item. Missing, duplicated, or changed companion billing evidence
   is a provider mismatch; do not repair it by deleting the usage price.

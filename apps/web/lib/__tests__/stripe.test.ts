@@ -148,6 +148,7 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
 
     expect(params.payment_method_collection).toBe("always");
     expect(params.subscription_data).toEqual({
+      billing_mode: { type: "flexible" },
       description: "OpenVPM Cloud — monthly",
       metadata: {
         practiceId: "practice_123",
@@ -190,9 +191,28 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
       source: "settings",
     });
     expect(params.subscription_data).toMatchObject({
+      billing_mode: { type: "flexible" },
       description: "OpenVPM Cloud — annual",
       metadata: { billingCadence: "year" },
     });
+  });
+
+  it("rejects mixed annual and metered items in Checkout", () => {
+    expect(() =>
+      buildSubscriptionCheckoutSessionParams({
+        practiceId: "practice_123",
+        customerId: "cus_123",
+        billingCadence: "year",
+        lineItems: [
+          { priceId: "price_annual", quantity: 1 },
+          { priceId: "price_monthly_metered", metered: true },
+        ],
+        successUrl: "https://app.example.com/success",
+        cancelUrl: "https://app.example.com/cancel",
+      }),
+    ).toThrow(
+      "Annual Checkout must contain only licensed items; attach monthly metered companions after Stripe creates the flexible subscription.",
+    );
   });
 
   it("enables Stripe Tax for hosted subscriptions when configured", () => {
