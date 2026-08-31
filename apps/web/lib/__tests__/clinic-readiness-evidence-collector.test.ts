@@ -7,6 +7,7 @@ import { evaluateClinicReadinessRelease } from "../clinic-readiness-release";
 import { CLINICAL_DATA_AUDIT_SCHEMAS } from "../clinical-data-integrity-evidence";
 
 const sha = "a".repeat(40);
+const reviewedHeadSha = "f".repeat(40);
 const clinicalDatabaseFingerprint = "d".repeat(64);
 const stagingDatabaseFingerprint = "e".repeat(64);
 const temporaryDirectories: string[] = [];
@@ -450,6 +451,30 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
       required_approving_review_count: 1,
     },
   };
+  const releasePullRequest = {
+    number: 88,
+    state: "closed",
+    merged_at: "2026-08-29T20:45:00.000Z",
+    merge_commit_sha: sha,
+    html_url: "https://github.example/pulls/88",
+    user: { login: "release-author" },
+    head: { sha: reviewedHeadSha },
+    base: { ref: "main" },
+  };
+  const releaseReviews = [
+    {
+      state: "APPROVED",
+      submitted_at: "2026-08-29T20:40:00.000Z",
+      commit_id: reviewedHeadSha,
+      user: { login: "reviewer-one" },
+    },
+    {
+      state: "APPROVED",
+      submitted_at: "2026-08-29T20:41:00.000Z",
+      commit_id: reviewedHeadSha,
+      user: { login: "reviewer-two" },
+    },
+  ];
 
   return vi.fn(async (input: string | URL | Request) => {
     const url = String(input);
@@ -488,6 +513,12 @@ function authoritativeResponses(options: { missingBuildStep?: string } = {}) {
     }
     if (url.endsWith("/branches/staging/protection")) {
       return response(stagingProtection);
+    }
+    if (url.endsWith(`/commits/${sha}/pulls?per_page=100`)) {
+      return response([releasePullRequest]);
+    }
+    if (url.endsWith("/pulls/88/reviews?per_page=100")) {
+      return response(releaseReviews);
     }
     if (url === "https://staging.example/api/health") {
       return response({
@@ -532,8 +563,19 @@ describe("clinic readiness evidence collector", () => {
     );
 
     expect(evidence).toMatchObject({
-      evidenceFormatVersion: 7,
+      evidenceFormatVersion: 8,
       releaseSha: sha,
+      releaseApproval: {
+        releaseSha: sha,
+        pullRequestNumber: 88,
+        authorLogin: "release-author",
+        reviewedHeadSha,
+        approvalCount: 2,
+        approvals: [
+          { reviewerLogin: "reviewer-one", reviewedHeadSha },
+          { reviewerLogin: "reviewer-two", reviewedHeadSha },
+        ],
+      },
       ci: {
         releaseSha: sha,
         ciRunId: 101,
@@ -619,6 +661,49 @@ describe("clinic readiness evidence collector", () => {
     await expect(
       collectClinicReadinessEvidence(options(wrapped)),
     ).rejects.toThrow("CI must be a successful exact-SHA CI run from main.");
+  });
+
+  it("rejects a release commit without two exact-head non-author approvals", async () => {
+    const fetchFn = authoritativeResponses();
+    const wrapped = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const result = await fetchFn(input, init);
+        if (String(input).endsWith("/pulls/88/reviews?per_page=100")) {
+          const reviews = (await result.json()) as Array<
+            Record<string, unknown>
+          >;
+          return response([
+            reviews[0],
+            { ...reviews[1], commit_id: "c".repeat(40) },
+          ]);
+        }
+        return result;
+      },
+    ) as unknown as typeof fetch;
+
+    await expect(
+      collectClinicReadinessEvidence(options(wrapped)),
+    ).rejects.toThrow(
+      "Release pull request requires two distinct non-author approvals on its exact head.",
+    );
+  });
+
+  it("rejects a direct-push release SHA with no merged main pull request", async () => {
+    const fetchFn = authoritativeResponses();
+    const wrapped = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        if (String(input).endsWith(`/commits/${sha}/pulls?per_page=100`)) {
+          return response([]);
+        }
+        return fetchFn(input, init);
+      },
+    ) as unknown as typeof fetch;
+
+    await expect(
+      collectClinicReadinessEvidence(options(wrapped)),
+    ).rejects.toThrow(
+      "Release SHA must identify exactly one merged pull request to main.",
+    );
   });
 
   it("rejects a green job whose required dependency audit step is absent", async () => {

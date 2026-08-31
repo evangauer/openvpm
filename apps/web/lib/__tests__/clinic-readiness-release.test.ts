@@ -182,8 +182,30 @@ function healthyEvidence() {
       ].map((name) => [name, { ok: true }]),
     );
   return {
-    evidenceFormatVersion: 7,
+    evidenceFormatVersion: 8,
     releaseSha: sha,
+    releaseApproval: {
+      releaseSha: sha,
+      pullRequestNumber: 88,
+      pullRequestUrl: "https://github.example/pulls/88",
+      baseBranch: "main",
+      authorLogin: "release-author",
+      reviewedHeadSha: "f".repeat(40),
+      mergedAt: "2026-08-29T20:45:00.000Z",
+      approvalCount: 2,
+      approvals: [
+        {
+          reviewerLogin: "reviewer-one",
+          submittedAt: "2026-08-29T20:40:00.000Z",
+          reviewedHeadSha: "f".repeat(40),
+        },
+        {
+          reviewerLogin: "reviewer-two",
+          submittedAt: "2026-08-29T20:41:00.000Z",
+          reviewedHeadSha: "f".repeat(40),
+        },
+      ],
+    },
     clinicalDataIntegrity: healthyClinicalDataIntegrityEvidence(),
     ci: {
       releaseSha: sha,
@@ -361,7 +383,22 @@ describe("clinic readiness release decision", () => {
     const evidence = healthyEvidence();
     evidence.evidenceFormatVersion = 5;
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
-      "Clinic readiness evidence format version must be 7.",
+      "Clinic readiness evidence format version must be 8.",
+    );
+  });
+
+  it("rejects missing, stale-head, duplicate, or self release approvals", () => {
+    const evidence = healthyEvidence();
+    evidence.releaseApproval.approvals[0]!.reviewerLogin = "release-author";
+    evidence.releaseApproval.approvals[1]!.reviewedHeadSha = "c".repeat(40);
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
+      "Release pull request lacks two distinct non-author exact-head approvals.",
+    );
+
+    delete (evidence as Partial<ReturnType<typeof healthyEvidence>>)
+      .releaseApproval;
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
+      "Exact release pull request approval evidence is missing.",
     );
   });
 

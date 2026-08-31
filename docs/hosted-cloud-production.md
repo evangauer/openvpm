@@ -231,11 +231,15 @@ exact-SHA production migration,
 RLS, and drift steps directly through GitHub. It fetches both isolated staging
 and production HTTPS health, requires both deployments to identify the same
 release SHA, and rejects any required dependency that is unhealthy or advisory.
-It also reads the live `Staging` and `Production` environments plus their
-canonical branch protections. A release remains `NO_GO` while administrators
-can bypass either environment, the workflow actor can self-approve, environment
-branch scope is wrong, `staging` lacks independent approval, `main` needs fewer
-than two approvals, code-owner or last-push review is disabled, or any required
+It also resolves the exact release commit to one merged pull request targeting
+`main` and requires two distinct, non-author approvals on that pull request's
+exact final head; current protection settings alone cannot retroactively prove
+review provenance. It reads the live `Staging` and `Production` environments
+plus their canonical branch protections. A release remains `NO_GO` while
+administrators can bypass either environment, the workflow actor can
+self-approve, environment branch scope is wrong, `staging` lacks independent
+approval, `main` needs fewer than two approvals, code-owner or last-push review
+is disabled, the exact merge/review provenance is absent, or any required
 clinic-readiness/security check is optional. It fetches the HTTPS health
 response itself and requires bounded local provider-restore and incident-
 tabletop packets. It also requires fresh, aggregate-only controlled-substance,

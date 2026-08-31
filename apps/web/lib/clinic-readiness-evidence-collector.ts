@@ -59,6 +59,24 @@ type BranchProtectionResponse = {
   allow_deletions?: unknown;
 };
 
+type PullRequestResponse = {
+  number?: unknown;
+  state?: unknown;
+  merged_at?: unknown;
+  merge_commit_sha?: unknown;
+  html_url?: unknown;
+  user?: unknown;
+  head?: unknown;
+  base?: unknown;
+};
+
+type PullReviewResponse = {
+  state?: unknown;
+  submitted_at?: unknown;
+  commit_id?: unknown;
+  user?: unknown;
+};
+
 export type ClinicReadinessEvidenceCollectionOptions = {
   releaseSha: string;
   repository: string;
@@ -249,6 +267,164 @@ async function githubJson(
     throw new Error(`${label} request failed with HTTP ${response.status}.`);
   }
   return boundedJsonResponse(response, label);
+}
+
+function githubLogin(value: unknown, label: string): string {
+  const login = record(value)?.login;
+  if (
+    typeof login !== "string" ||
+    !/^[a-z0-9](?:[a-z0-9-]{0,38})$/i.test(login)
+  ) {
+    throw new Error(`${label} identity is invalid.`);
+  }
+  return login;
+}
+
+export async function releaseApprovalEvidence(
+  fetchFn: typeof fetch,
+  repository: string,
+  releaseSha: string,
+  token: string | undefined,
+) {
+  const root = `https://api.github.com/repos/${repository}`;
+  const associated = await githubJson(
+    fetchFn,
+    `${root}/commits/${releaseSha}/pulls?per_page=100`,
+    token,
+    "Release pull requests",
+  );
+  if (!Array.isArray(associated) || associated.length >= 100) {
+    throw new Error("Release pull request evidence is incomplete.");
+  }
+  const candidates = associated.filter((value) => {
+    const pull = record(value) as PullRequestResponse | null;
+    const base = record(pull?.base);
+    return (
+      pull?.state === "closed" &&
+      typeof pull.merged_at === "string" &&
+      typeof pull.merge_commit_sha === "string" &&
+      pull.merge_commit_sha.toLowerCase() === releaseSha &&
+      base?.ref === "main"
+    );
+  });
+  if (candidates.length !== 1) {
+    throw new Error(
+      "Release SHA must identify exactly one merged pull request to main.",
+    );
+  }
+
+  const pull = candidates[0] as PullRequestResponse;
+  const pullNumber = pull.number;
+  const headSha = record(pull.head)?.sha;
+  const mergedAtMs = Date.parse(String(pull.merged_at));
+  if (
+    !Number.isSafeInteger(pullNumber) ||
+    Number(pullNumber) <= 0 ||
+    typeof headSha !== "string" ||
+    !SHA_PATTERN.test(headSha) ||
+    !Number.isFinite(mergedAtMs) ||
+    typeof pull.html_url !== "string"
+  ) {
+    throw new Error("Release pull request evidence is invalid.");
+  }
+  const authorLogin = githubLogin(pull.user, "Release pull request author");
+  const rawReviews = await githubJson(
+    fetchFn,
+    `${root}/pulls/${pullNumber}/reviews?per_page=100`,
+    token,
+    "Release pull request reviews",
+  );
+  if (!Array.isArray(rawReviews) || rawReviews.length >= 100) {
+    throw new Error("Release pull request review evidence is incomplete.");
+  }
+
+  const latestDecisiveByReviewer = new Map<
+    string,
+    {
+      reviewerLogin: string;
+      state: string;
+      submittedAt: string;
+      submittedAtMs: number;
+      reviewedHeadSha: string;
+    }
+  >();
+  for (const value of rawReviews) {
+    const review = record(value) as PullReviewResponse | null;
+    if (
+      review?.state !== "APPROVED" &&
+      review?.state !== "CHANGES_REQUESTED" &&
+      review?.state !== "DISMISSED"
+    ) {
+      continue;
+    }
+    const reviewerLogin = githubLogin(
+      review.user,
+      "Release pull request reviewer",
+    );
+    const submittedAt = review.submitted_at;
+    const reviewedHeadSha = review.commit_id;
+    const submittedAtMs = Date.parse(String(submittedAt));
+    if (
+      typeof submittedAt !== "string" ||
+      !Number.isFinite(submittedAtMs) ||
+      submittedAtMs > mergedAtMs ||
+      typeof reviewedHeadSha !== "string" ||
+      !SHA_PATTERN.test(reviewedHeadSha)
+    ) {
+      throw new Error("Release pull request review evidence is invalid.");
+    }
+    const key = reviewerLogin.toLowerCase();
+    const current = latestDecisiveByReviewer.get(key);
+    if (!current || current.submittedAtMs < submittedAtMs) {
+      latestDecisiveByReviewer.set(key, {
+        reviewerLogin,
+        state: review.state,
+        submittedAt,
+        submittedAtMs,
+        reviewedHeadSha: reviewedHeadSha.toLowerCase(),
+      });
+    }
+  }
+
+  if (
+    [...latestDecisiveByReviewer.values()].some(
+      (review) => review.state === "CHANGES_REQUESTED",
+    )
+  ) {
+    throw new Error("Release pull request has an unresolved change request.");
+  }
+  const approvals = [...latestDecisiveByReviewer.values()]
+    .filter(
+      (review) =>
+        review.state === "APPROVED" &&
+        review.reviewedHeadSha === headSha.toLowerCase() &&
+        review.reviewerLogin.toLowerCase() !== authorLogin.toLowerCase(),
+    )
+    .sort((left, right) =>
+      left.reviewerLogin.localeCompare(right.reviewerLogin),
+    )
+    .map(({ reviewerLogin, submittedAt, reviewedHeadSha }) => ({
+      reviewerLogin,
+      submittedAt,
+      reviewedHeadSha,
+    }));
+  if (approvals.length < 2) {
+    throw new Error(
+      "Release pull request requires two distinct non-author approvals on its exact head.",
+    );
+  }
+
+  return {
+    releaseSha,
+    pullRequestNumber: pullNumber as number,
+    pullRequestUrl: pull.html_url,
+    baseBranch: "main",
+    authorLogin,
+    reviewedHeadSha: headSha.toLowerCase(),
+    mergedAt: pull.merged_at as string,
+    approvalCount: approvals.length,
+    approvals,
+  };
 }
 
 async function githubRunAndJobs(
@@ -515,6 +691,7 @@ export async function collectClinicReadinessEvidence(
     stagingHealthResponse,
     healthResponse,
     repositoryGovernance,
+    releaseApproval,
   ] = await Promise.all([
     githubRunAndJobs(
       fetchFn,
@@ -559,6 +736,12 @@ export async function collectClinicReadinessEvidence(
       options.repository,
       options.githubToken,
       checkedAt,
+    ),
+    releaseApprovalEvidence(
+      fetchFn,
+      options.repository,
+      releaseSha,
+      options.githubToken,
     ),
   ]);
 
@@ -748,8 +931,9 @@ export async function collectClinicReadinessEvidence(
   }
 
   return {
-    evidenceFormatVersion: 7,
+    evidenceFormatVersion: 8,
     releaseSha,
+    releaseApproval,
     ci: {
       releaseSha,
       repository: options.repository,

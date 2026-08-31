@@ -3,6 +3,7 @@ import { evaluateAuthRecoveryEvidence } from "./auth-recovery-evidence";
 import { evaluateClinicalDataIntegrityEvidence } from "./clinical-data-integrity-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
+const GITHUB_LOGIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38})$/i;
 const HEALTH_MAX_AGE_MS = 15 * 60 * 1000;
 const RESTORE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const REQUIRED_MAIN_CHECKS = [
@@ -149,8 +150,8 @@ export function evaluateClinicReadinessRelease(
 ): ClinicReadinessDecision {
   const reasons: string[] = [];
   const root = record(input);
-  if (root?.evidenceFormatVersion !== 7) {
-    reasons.push("Clinic readiness evidence format version must be 7.");
+  if (root?.evidenceFormatVersion !== 8) {
+    reasons.push("Clinic readiness evidence format version must be 8.");
   }
   const releaseSha =
     root &&
@@ -189,6 +190,65 @@ export function evaluateClinicReadinessRelease(
       if (gates?.[gate] !== "passed") {
         reasons.push(`CI gate ${gate} has not passed.`);
       }
+    }
+  }
+
+  const releaseApproval = record(root?.releaseApproval);
+  if (!releaseApproval) {
+    reasons.push("Exact release pull request approval evidence is missing.");
+  } else {
+    if (releaseSha && releaseApproval.releaseSha !== releaseSha) {
+      reasons.push(
+        "Release pull request approval does not match the release SHA.",
+      );
+    }
+    if (
+      !Number.isSafeInteger(releaseApproval.pullRequestNumber) ||
+      Number(releaseApproval.pullRequestNumber) <= 0 ||
+      releaseApproval.baseBranch !== "main" ||
+      typeof releaseApproval.authorLogin !== "string" ||
+      !GITHUB_LOGIN_PATTERN.test(releaseApproval.authorLogin) ||
+      typeof releaseApproval.reviewedHeadSha !== "string" ||
+      !SHA_PATTERN.test(releaseApproval.reviewedHeadSha)
+    ) {
+      reasons.push("Release pull request provenance is invalid.");
+    }
+    const mergedAtMs = timestamp(releaseApproval.mergedAt);
+    if (mergedAtMs == null || mergedAtMs > nowMs + 60_000) {
+      reasons.push("Release pull request merge timestamp is invalid.");
+    }
+    const approvals = Array.isArray(releaseApproval.approvals)
+      ? releaseApproval.approvals.map(record).filter((item) => item !== null)
+      : [];
+    const reviewerLogins = new Set<string>();
+    let approvalsValid =
+      approvals.length >= 2 &&
+      releaseApproval.approvalCount === approvals.length &&
+      typeof releaseApproval.authorLogin === "string" &&
+      typeof releaseApproval.reviewedHeadSha === "string";
+    for (const approval of approvals) {
+      const reviewerLogin = approval.reviewerLogin;
+      const submittedAtMs = timestamp(approval.submittedAt);
+      if (
+        typeof reviewerLogin !== "string" ||
+        !GITHUB_LOGIN_PATTERN.test(reviewerLogin) ||
+        reviewerLogin.toLowerCase() ===
+          String(releaseApproval.authorLogin).toLowerCase() ||
+        reviewerLogins.has(reviewerLogin.toLowerCase()) ||
+        approval.reviewedHeadSha !== releaseApproval.reviewedHeadSha ||
+        submittedAtMs == null ||
+        (mergedAtMs != null && submittedAtMs > mergedAtMs)
+      ) {
+        approvalsValid = false;
+      }
+      if (typeof reviewerLogin === "string") {
+        reviewerLogins.add(reviewerLogin.toLowerCase());
+      }
+    }
+    if (!approvalsValid) {
+      reasons.push(
+        "Release pull request lacks two distinct non-author exact-head approvals.",
+      );
     }
   }
 
