@@ -5,6 +5,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { files } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import {
+  assertLegacyRecoveryDatabaseIdentity,
   assertLegacyRecoveryStorageSeparation,
   bytesMatch,
   inspectLegacyFileBytes,
@@ -223,7 +224,12 @@ async function putAndVerifyPrimary(input: {
 async function main() {
   const args = parseLegacyFileRecoveryArgs(process.argv.slice(2));
   if (args.execute) {
-    process.env.DATABASE_URL = requiredEnv("OWNER_RECOVERY_DATABASE_URL");
+    const ownerDatabaseUrl = requiredEnv("OWNER_RECOVERY_DATABASE_URL");
+    assertLegacyRecoveryDatabaseIdentity({
+      databaseUrl: ownerDatabaseUrl,
+      expectedFingerprint: process.env.OWNER_RECOVERY_DATABASE_FINGERPRINT,
+    });
+    process.env.DATABASE_URL = ownerDatabaseUrl;
   }
 
   const [{ db }, storage, replication] = await Promise.all([
@@ -385,15 +391,17 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  const safeMessage =
-    error instanceof OperatorSafeError ||
-    (error instanceof Error &&
-      /^(First argument|--file-id|--confirmation|--expected-sha256|audit is always|Recorded manifest checksum|Reviewed checksum|Checksum-less manifests)/.test(
-        error.message,
-      ))
-      ? error.message
-      : "Legacy file recovery failed; inspect provider access privately.";
-  console.error(JSON.stringify({ ok: false, error: safeMessage }));
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    const safeMessage =
+      error instanceof OperatorSafeError ||
+      (error instanceof Error &&
+        /^(First argument|--file-id|--confirmation|--expected-sha256|audit is always|Recorded manifest checksum|Reviewed checksum|Checksum-less manifests|Owner recovery database)/.test(
+          error.message,
+        ))
+        ? error.message
+        : "Legacy file recovery failed; inspect provider access privately.";
+    console.error(JSON.stringify({ ok: false, error: safeMessage }));
+    process.exit(1);
+  });

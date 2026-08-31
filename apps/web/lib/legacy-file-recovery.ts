@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { databaseConnectionIdentityFingerprint } from "@openpims/db/deployment-target";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -52,6 +53,21 @@ export function assertLegacyRecoveryStorageSeparation(input: {
       );
     }
   }
+}
+
+export function assertLegacyRecoveryDatabaseIdentity(input: {
+  databaseUrl: string;
+  expectedFingerprint: string | undefined;
+}): string {
+  const expected = input.expectedFingerprint?.trim().toLowerCase() ?? "";
+  if (!SHA256_PATTERN.test(expected)) {
+    throw new Error("Owner recovery database fingerprint is not configured.");
+  }
+  const actual = databaseConnectionIdentityFingerprint(input.databaseUrl);
+  if (actual !== expected) {
+    throw new Error("Owner recovery database fingerprint does not match.");
+  }
+  return actual;
 }
 
 export type LegacyFileRecoveryArgs = {

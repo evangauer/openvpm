@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  assertLegacyRecoveryDatabaseIdentity,
   assertLegacyRecoveryStorageSeparation,
   bytesMatch,
   inspectLegacyFileBytes,
@@ -14,6 +15,32 @@ const FILE_ID = "123e4567-e89b-42d3-a456-426614174000";
 const CHECKSUM = "a".repeat(64);
 
 describe("legacy file recovery", () => {
+  it("binds executed recovery to an independently expected database identity", () => {
+    const databaseUrl =
+      "postgresql://recovery_owner:secret@db.example.test:5432/openpims";
+    const expectedFingerprint =
+      "ce8185206ff644bc44614a3f67020bac52693e7244daa62c350a0b423df3a722";
+
+    expect(
+      assertLegacyRecoveryDatabaseIdentity({
+        databaseUrl,
+        expectedFingerprint,
+      }),
+    ).toBe(expectedFingerprint);
+    expect(() =>
+      assertLegacyRecoveryDatabaseIdentity({
+        databaseUrl,
+        expectedFingerprint: "b".repeat(64),
+      }),
+    ).toThrow("does not match");
+    expect(() =>
+      assertLegacyRecoveryDatabaseIdentity({
+        databaseUrl,
+        expectedFingerprint: undefined,
+      }),
+    ).toThrow("not configured");
+  });
+
   it("rejects a legacy source that is also the primary or replica target", () => {
     expect(() =>
       assertLegacyRecoveryStorageSeparation({
@@ -59,9 +86,11 @@ describe("legacy file recovery", () => {
       "const expectedChecksumSha256 = resolveLegacyRecoveryChecksum",
     );
     const providerRead = script.indexOf("const legacy = legacyClient()");
+    const cleanExit = script.indexOf(".then(() => process.exit(0))");
 
     expect(evidenceGate).toBeGreaterThan(0);
     expect(providerRead).toBeGreaterThan(evidenceGate);
+    expect(cleanExit).toBeGreaterThan(providerRead);
   });
 
   it("keeps audit read-only and scoped to one UUID", () => {

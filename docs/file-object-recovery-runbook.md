@@ -148,8 +148,12 @@ that exact digest. Do not manufacture approval by copying the observed digest
 without reviewing the artifact, and do not paste the digest or file identifier
 into a public issue.
 
-An executed restore requires the owner database URL, the reviewed exact
-SHA-256, and a confirmation bound to both the manifest and checksum:
+An executed restore requires `OWNER_RECOVERY_DATABASE_URL` plus an independently
+recorded credential-free `OWNER_RECOVERY_DATABASE_FINGERPRINT`, the reviewed
+exact SHA-256, and a confirmation bound to both the manifest and checksum. Use
+the database fingerprint from the approved health/audit evidence for the target
+environment; do not derive and approve it from the same ad hoc command that
+will perform recovery.
 
 ```bash
 pnpm --filter @openpims/web files:recover-legacy -- \
@@ -168,13 +172,15 @@ canonicalizes endpoint/bucket identity and refuses if the legacy source is the
 same target as either current primary or independent replica storage. Different
 buckets or endpoints are not proof of different provider accounts; retain the
 provider-console account, IAM, versioning, retention, and deletion-denial
-evidence required above. The command writes and reads back the independent
-replica first, then writes and reads back the primary key, performs a
-compare-and-set manifest transition, and queues append-only recovery evidence.
-A retry converges on already-written exact bytes. After every restore, run the
-normal replica reconciler so it writes the immutable recovery catalog and
-require the release-gate metrics to return to 100% coverage with no missing,
-corrupt, failed, or backlog rows.
+evidence required above. Before importing the database client, execute mode
+verifies that the owner URL resolves to the independently expected database
+fingerprint. The command writes and reads back the independent replica first,
+then writes and reads back the primary key, performs a compare-and-set manifest
+transition, and queues append-only recovery evidence. A retry converges on
+already-written exact bytes. After every restore, run the normal replica
+reconciler so it writes the immutable recovery catalog and require the
+release-gate metrics to return to 100% coverage with no missing, corrupt,
+failed, or backlog rows.
 
 ### Database healthy, primary provider unavailable
 
