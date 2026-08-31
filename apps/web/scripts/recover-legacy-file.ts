@@ -8,6 +8,7 @@ import {
   bytesMatch,
   inspectLegacyFileBytes,
   parseLegacyFileRecoveryArgs,
+  resolveLegacyRecoveryChecksum,
 } from "../lib/legacy-file-recovery";
 import { UPLOAD_FILE_MAX_BYTES } from "../lib/upload-limits";
 import { isAllowedUploadCategory } from "../lib/upload-security";
@@ -224,6 +225,11 @@ async function main() {
     import("../lib/file-replication"),
   ]);
   const candidate = await loadCandidate(db, args.fileId);
+  const expectedChecksumSha256 = resolveLegacyRecoveryChecksum({
+    recordedChecksumSha256: candidate.checksumSha256,
+    reviewedChecksumSha256: args.expectedChecksumSha256,
+    execute: args.execute,
+  });
   const legacy = legacyClient();
   const body = await readLegacyObject({
     client: legacy.client,
@@ -233,9 +239,12 @@ async function main() {
   const inspected = inspectLegacyFileBytes({
     body,
     expectedFileSizeBytes: candidate.fileSizeBytes,
-    expectedChecksumSha256: candidate.checksumSha256,
+    expectedChecksumSha256,
   });
-  if (!inspected.sizeMatches || !inspected.checksumMatches) {
+  if (
+    !inspected.sizeMatches ||
+    (expectedChecksumSha256 !== null && !inspected.checksumMatches)
+  ) {
     throw new OperatorSafeError(
       "Legacy object does not match the recorded manifest.",
     );
@@ -270,7 +279,10 @@ async function main() {
         mode: "dry_run",
         sourceAvailable: true,
         manifestSizeMatches: inspected.sizeMatches,
-        manifestChecksumMatches: inspected.checksumMatches,
+        recordedChecksumPresent: candidate.checksumSha256 !== null,
+        reviewedChecksumProvided: args.expectedChecksumSha256 !== undefined,
+        exactChecksumVerified: inspected.checksumMatches,
+        observedChecksumSha256: inspected.checksumSha256,
         primaryState:
           primary.status === "available"
             ? primaryExact
@@ -285,12 +297,17 @@ async function main() {
             : replica.status,
         replicaConfigured: storage.replicaStorageReadiness().ready,
         readyToExecute:
+          inspected.checksumMatches &&
           storage.replicaStorageReadiness().ready &&
           (primary.status === "missing" || primaryExact) &&
           (replica.status === "missing" || replicaExact),
       }),
     );
     return;
+  }
+
+  if (!inspected.checksumMatches) {
+    throw new OperatorSafeError("Legacy object checksum is not verified.");
   }
 
   if (!storage.replicaStorageReadiness().ready) {
@@ -365,7 +382,7 @@ main().catch((error) => {
   const safeMessage =
     error instanceof OperatorSafeError ||
     (error instanceof Error &&
-      /^(First argument|--file-id|--confirmation|audit is always)/.test(
+      /^(First argument|--file-id|--confirmation|--expected-sha256|audit is always|Recorded manifest checksum|Reviewed checksum|Checksum-less manifests)/.test(
         error.message,
       ))
       ? error.message

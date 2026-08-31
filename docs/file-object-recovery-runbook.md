@@ -140,23 +140,36 @@ pnpm --filter @openpims/web files:recover-legacy -- \
   audit --file-id <file-uuid>
 ```
 
-An executed restore requires the owner database URL and an exact, per-file
-confirmation:
+The audit emits the observed SHA-256 for the authorized private recovery
+record. If the legacy manifest has no recorded checksum, byte length alone is
+not identity evidence: an authorized reviewer must compare the source against
+an approved export or privately inspect the clinical artifact, then approve
+that exact digest. Do not manufacture approval by copying the observed digest
+without reviewing the artifact, and do not paste the digest or file identifier
+into a public issue.
+
+An executed restore requires the owner database URL, the reviewed exact
+SHA-256, and a confirmation bound to both the manifest and checksum:
 
 ```bash
 pnpm --filter @openpims/web files:recover-legacy -- \
   restore --file-id <file-uuid> --execute \
-  --confirmation RESTORE-LEGACY-FILE:<file-uuid>
+  --expected-sha256 <reviewed-lowercase-sha256> \
+  --confirmation RESTORE-LEGACY-FILE:<file-uuid>:<reviewed-lowercase-sha256>
 ```
 
 The command reads only that manifest key, checks the recorded length and any
-existing checksum, computes SHA-256 in memory, and refuses conflicting bytes.
-It writes and reads back the independent replica first, then writes and reads
-back the primary key, performs a compare-and-set manifest transition, and
-queues append-only recovery evidence. A retry converges on already-written
-exact bytes. After every restore, run the normal replica reconciler so it writes
-the immutable recovery catalog and require the release-gate metrics to return
-to 100% coverage with no missing, corrupt, failed, or backlog rows.
+existing checksum, computes SHA-256 in memory, and refuses missing or
+conflicting exact-byte evidence. For a checksum-less manifest it refuses the
+restore before reading provider bytes unless `--expected-sha256` is present.
+Supplying that flag also extends the typed confirmation, preventing a reviewed
+digest from being accidentally applied to another invocation. The command
+writes and reads back the independent replica first, then writes and reads back
+the primary key, performs a compare-and-set manifest transition, and queues
+append-only recovery evidence. A retry converges on already-written exact
+bytes. After every restore, run the normal replica reconciler so it writes the
+immutable recovery catalog and require the release-gate metrics to return to
+100% coverage with no missing, corrupt, failed, or backlog rows.
 
 ### Database healthy, primary provider unavailable
 

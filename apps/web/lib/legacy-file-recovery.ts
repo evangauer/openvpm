@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export const LEGACY_FILE_RECOVERY_CONFIRMATION = "RESTORE-LEGACY-FILE";
 
@@ -10,6 +11,7 @@ export type LegacyFileRecoveryArgs = {
   fileId: string;
   execute: boolean;
   confirmation?: string;
+  expectedChecksumSha256?: string;
 };
 
 function flagValue(args: string[], name: string): string | undefined {
@@ -33,21 +35,79 @@ export function parseLegacyFileRecoveryArgs(
 
   const execute = normalizedArgs.includes("--execute");
   const confirmation = flagValue(normalizedArgs, "confirmation")?.trim();
+  const expectedChecksumSha256 = flagValue(
+    normalizedArgs,
+    "expected-sha256",
+  )?.trim();
+  if (
+    expectedChecksumSha256 !== undefined &&
+    !SHA256_PATTERN.test(expectedChecksumSha256)
+  ) {
+    throw new Error("--expected-sha256 must be a lowercase SHA-256 digest.");
+  }
   if (command === "audit" && execute) {
     throw new Error("audit is always read-only and does not accept --execute.");
   }
   if (command === "restore" && execute) {
-    const expected = `${LEGACY_FILE_RECOVERY_CONFIRMATION}:${fileId}`;
+    const expected = [
+      LEGACY_FILE_RECOVERY_CONFIRMATION,
+      fileId,
+      expectedChecksumSha256,
+    ]
+      .filter(Boolean)
+      .join(":");
     if (confirmation !== expected) {
       throw new Error(`--confirmation must exactly equal ${expected}.`);
     }
   }
 
-  return { command, fileId, execute, confirmation };
+  return {
+    command,
+    fileId,
+    execute,
+    confirmation,
+    expectedChecksumSha256,
+  };
 }
 
 export function sha256Hex(body: Uint8Array): string {
   return createHash("sha256").update(body).digest("hex");
+}
+
+export function resolveLegacyRecoveryChecksum(input: {
+  recordedChecksumSha256: string | null;
+  reviewedChecksumSha256?: string;
+  execute: boolean;
+}): string | null {
+  if (
+    input.recordedChecksumSha256 !== null &&
+    !SHA256_PATTERN.test(input.recordedChecksumSha256)
+  ) {
+    throw new Error("Recorded manifest checksum is invalid.");
+  }
+  if (
+    input.reviewedChecksumSha256 !== undefined &&
+    !SHA256_PATTERN.test(input.reviewedChecksumSha256)
+  ) {
+    throw new Error("Reviewed checksum is invalid.");
+  }
+  if (
+    input.recordedChecksumSha256 &&
+    input.reviewedChecksumSha256 &&
+    input.recordedChecksumSha256 !== input.reviewedChecksumSha256
+  ) {
+    throw new Error(
+      "Reviewed checksum does not match the recorded manifest checksum.",
+    );
+  }
+  const expected =
+    input.recordedChecksumSha256 ?? input.reviewedChecksumSha256 ?? null;
+  if (input.execute && expected === null) {
+    throw new Error(
+      "Checksum-less manifests require a separately reviewed --expected-sha256 before restore.",
+    );
+  }
+  return expected;
 }
 
 export function inspectLegacyFileBytes(input: {
@@ -69,7 +129,7 @@ export function inspectLegacyFileBytes(input: {
       input.expectedFileSizeBytes === null ||
       input.expectedFileSizeBytes === fileSizeBytes,
     checksumMatches:
-      input.expectedChecksumSha256 === null ||
+      input.expectedChecksumSha256 !== null &&
       input.expectedChecksumSha256 === checksumSha256,
   };
 }
