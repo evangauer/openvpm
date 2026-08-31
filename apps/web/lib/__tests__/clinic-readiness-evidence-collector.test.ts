@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { collectClinicReadinessEvidence } from "../clinic-readiness-evidence-collector";
 import { evaluateClinicReadinessRelease } from "../clinic-readiness-release";
 import { CLINICAL_DATA_AUDIT_SCHEMAS } from "../clinical-data-integrity-evidence";
+import { clinicPilotActorHash } from "../clinic-pilot-projection-evidence";
 
 const sha = "a".repeat(40);
 const reviewedHeadSha = "f".repeat(40);
@@ -285,6 +286,61 @@ function clinicPilotEvidencePath() {
         highCount: 0,
         openReleaseBlockingCount: 0,
       },
+    }),
+  );
+  return file;
+}
+
+function clinicPilotProjectionAuditPath() {
+  const directory = mkdtempSync(
+    path.join(tmpdir(), "openvpm-clinic-pilot-projection-evidence-"),
+  );
+  temporaryDirectories.push(directory);
+  const file = path.join(directory, "clinic-pilot-projection.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      evidenceFormatVersion: 1,
+      mode: "read_only_aggregate",
+      checkedAt: "2026-08-29T20:58:00.000Z",
+      databaseTargetFingerprint: clinicalDatabaseFingerprint,
+      clinicUseValidatedHash: "b".repeat(64),
+      pilotProjectionVersion: 7,
+      clinicAdministratorActorHash: clinicPilotActorHash(
+        "user:5f55c40b-0e87-4af2-94a8-fbe97ff5ca15",
+      ),
+      projection: {
+        matchedPilotCount: 1,
+        immutableEventMatch: true,
+        workflow: "general_practice",
+        stage: "completed",
+        decision: "graduated",
+        blockerCount: 0,
+        qualificationComplete: true,
+        readinessComplete: true,
+      },
+      outcomes: {
+        verifiedAdministrator: true,
+        activeLocationCount: 1,
+        setupComplete: true,
+        communicationTested: true,
+        firstVisitValidated: true,
+        distinctClinicDays: 5,
+        clinicUseValidated: true,
+        paymentMethodCollected: true,
+        positivePaymentRecorded: true,
+        hostedFullAccess: true,
+        jurisdictionConfirmed: true,
+        clinicAcceptanceRecorded: true,
+      },
+      evidenceSafety: {
+        phiFree: true,
+        secretsFree: true,
+        patientIdentifiersFree: true,
+        contactDestinationsFree: true,
+        localPathsFree: true,
+      },
+      releaseSafe: true,
     }),
   );
   return file;
@@ -650,6 +706,7 @@ function options(fetchFn: typeof fetch) {
     incidentEvidencePath: incidentEvidencePath(),
     authRecoveryEvidencePath: authRecoveryEvidencePath(),
     clinicPilotEvidencePath: clinicPilotEvidencePath(),
+    clinicPilotProjectionAuditPath: clinicPilotProjectionAuditPath(),
     clinicalDatabaseFingerprint,
     ...clinicalAuditPaths(),
     now: new Date("2026-08-29T21:00:00.000Z"),
@@ -664,7 +721,7 @@ describe("clinic readiness evidence collector", () => {
     );
 
     expect(evidence).toMatchObject({
-      evidenceFormatVersion: 10,
+      evidenceFormatVersion: 11,
       releaseSha: sha,
       releaseApproval: {
         releaseSha: sha,
@@ -725,6 +782,11 @@ describe("clinic readiness evidence collector", () => {
       },
       authRecovery: {
         drillId: "auth-recovery-2026-08-29-deadbeef",
+      },
+      clinicPilotProjection: {
+        clinicUseValidatedHash: "b".repeat(64),
+        pilotProjectionVersion: 7,
+        releaseSafe: true,
       },
       clinicalDataIntegrity: {
         releaseSha: sha,
@@ -821,6 +883,24 @@ describe("clinic readiness evidence collector", () => {
     await expect(
       collectClinicReadinessEvidence(collectionOptions),
     ).rejects.toThrow("Clinic-pilot evidence does not match the release SHA.");
+  });
+
+  it("rejects a clinic-pilot packet detached from its database projection", async () => {
+    const collectionOptions = options(authoritativeResponses());
+    const projection = JSON.parse(
+      readFileSync(collectionOptions.clinicPilotProjectionAuditPath, "utf8"),
+    ) as Record<string, unknown>;
+    projection.clinicUseValidatedHash = "c".repeat(64);
+    writeFileSync(
+      collectionOptions.clinicPilotProjectionAuditPath,
+      JSON.stringify(projection),
+    );
+
+    await expect(
+      collectClinicReadinessEvidence(collectionOptions),
+    ).rejects.toThrow(
+      "Clinic-pilot packet does not match the configured immutable projection.",
+    );
   });
 
   it("rejects a green job whose required dependency audit step is absent", async () => {

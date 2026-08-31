@@ -46,6 +46,7 @@
     "db:lab-result-integrity:audit": "tsx audit-lab-result-integrity.ts",
     "db:lab-result-integrity:test": "tsx test-lab-result-integrity.ts",
     "db:vaccination-integrity:audit": "tsx audit-vaccination-integrity.ts",
+    "db:clinic-pilot-release:audit": "tsx audit-clinic-pilot-release.ts",
     "db:vaccination-integrity:test": "tsx test-vaccination-integrity.ts",
     "db:migrations:check": "pnpm --filter @openpims/web exec vitest run lib/__tests__/migration-journal-integrity.test.ts lib/__tests__/db-migrations.test.ts",
     "db:migrations:conformance": "tsx migration-conformance.ts",

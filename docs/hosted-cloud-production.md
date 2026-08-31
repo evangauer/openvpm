@@ -182,9 +182,9 @@ PLATFORM_ADMIN_EMAILS=...
 
 ### Transitional production release gate
 
-Before production approval, collect one PHI-free, format-version `7` JSON
+Before production approval, collect one PHI-free, format-version `11` JSON
 evidence packet from authoritative sources. Export a read-only `GITHUB_TOKEN`
-in the secure operator environment. Immediately before collection, run all four
+in the secure operator environment. Immediately before collection, run all five
 aggregate-only audits against the same intended production database. Each audit
 requires its explicit read-only confirmation and writes no database data:
 
@@ -194,10 +194,16 @@ export CONTROLLED_SUBSTANCE_LEDGER_READ_ONLY_CONFIRMATION=OPENVPM_CONTROLLED_SUB
 export PRESCRIPTION_INTEGRITY_READ_ONLY_CONFIRMATION=OPENVPM_PRESCRIPTION_INTEGRITY_READ_ONLY
 export LAB_RESULT_INTEGRITY_READ_ONLY_CONFIRMATION=OPENVPM_LAB_RESULT_INTEGRITY_READ_ONLY
 export VACCINATION_INTEGRITY_READ_ONLY_CONFIRMATION=OPENVPM_VACCINATION_INTEGRITY_READ_ONLY
+export CLINIC_PILOT_RELEASE_READ_ONLY_CONFIRMATION=OPENVPM_CLINIC_PILOT_RELEASE_READ_ONLY
 pnpm --filter @openpims/db db:controlled-substance-ledger:audit -- --allow-live-read-only > /secure/path/controlled-substances.json
 pnpm --filter @openpims/db db:prescription-integrity:audit -- --allow-live-read-only > /secure/path/prescriptions.json
 pnpm --filter @openpims/db db:lab-result-integrity:audit -- --allow-live-read-only > /secure/path/lab-results.json
 pnpm --filter @openpims/db db:vaccination-integrity:audit -- --allow-live-read-only > /secure/path/vaccinations.json
+pnpm --filter @openpims/db db:clinic-pilot-release:audit -- \
+  --allow-live-read-only \
+  --clinic-use-hash "$CLINIC_USE_VALIDATED_HASH" \
+  --projection-version "$PILOT_PROJECTION_VERSION" \
+  > /secure/path/clinic-pilot-projection.json
 ```
 
 Then assemble the release packet while those reports are still fresh:
@@ -217,6 +223,7 @@ pnpm --filter @openpims/web release:clinic-readiness:collect -- \
   --incident-evidence /secure/path/incident-tabletop-evidence.json \
   --auth-recovery-evidence /secure/path/auth-recovery-drill-evidence.json \
   --clinic-pilot-evidence /secure/path/clinic-pilot-release-evidence.json \
+  --clinic-pilot-projection-audit /secure/path/clinic-pilot-projection.json \
   --clinical-database-fingerprint "$DATABASE_TARGET_FINGERPRINT" \
   --controlled-substance-audit /secure/path/controlled-substances.json \
   --prescription-audit /secure/path/prescriptions.json \
@@ -224,6 +231,15 @@ pnpm --filter @openpims/web release:clinic-readiness:collect -- \
   --vaccination-audit /secure/path/vaccinations.json \
   --output /secure/path/clinic-readiness-evidence.json
 ```
+
+The clinic-pilot projection audit selects only the packet's validated-use hash
+and projection version, recomputes the first five clinic-day evidence hash,
+requires one matching graduated projection plus its exact immutable event, and
+emits only aggregate booleans, counts, a database fingerprint, and a one-way
+hash of the accepting administrator ID. It never emits a clinic, staff, client,
+patient, contact, or visit identifier. The collector binds that database output
+to the packet's source hash/version, accepting administrator, and independently
+configured clinical database fingerprint.
 
 The collector refuses to overwrite an existing packet. It verifies the
 successful exact-SHA `main` CI run, an exact-SHA migration and protected
@@ -270,7 +286,8 @@ same SHA before production; production
 health is a fresh HTTP 200 hosted result whose response reports that same
 deployment SHA; backup freshness and 100% independent file coverage are
 affirmative (not advisory) in both hosted environments;
-and a recent provider-backed, non-synthetic restore drill for the same SHA
+the fresh immutable clinic-pilot projection audit; and a recent provider-backed,
+non-synthetic restore drill for the same SHA
 proves dual control before execution, an exact database-backup version and
 SHA-256, a fresh backup/RPO, a bounded RTO, the isolated-staging target
 fingerprint, the hold/release workflow, an exact independently replicated

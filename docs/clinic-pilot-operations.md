@@ -188,7 +188,12 @@ provider payloads, credentials, and local paths are prohibited.
 
 The evidence JSON has no optional or free-form fields. Use this exact shape,
 substituting reviewed values from the immutable pilot projection and the exact
-release candidate:
+release candidate. Immediately before final collection, run the read-only
+`db:clinic-pilot-release:audit` command documented in
+`hosted-cloud-production.md` with this packet's `clinicUseValidatedHash` and
+`pilotProjectionVersion`. Release format v11 requires that fresh audit to match
+the packet, the accepting clinic administrator, and the configured clinical
+database; a hand-authored hash alone cannot produce `GO`.
 
 ```json
 {

@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  collect: vi.fn(async () => ({ evidenceFormatVersion: 10 })),
+  collect: vi.fn(async () => ({ evidenceFormatVersion: 11 })),
   evaluate: vi.fn(() => ({
     decision: "GO",
     evaluatedAt: "2026-08-29T21:00:00.000Z",
@@ -65,6 +65,8 @@ function argumentsFor(output: string): string[] {
     "private/auth-recovery.json",
     "--clinic-pilot-evidence",
     "private/clinic-pilot.json",
+    "--clinic-pilot-projection-audit",
+    "private/clinic-pilot-projection.json",
     "--clinical-database-fingerprint",
     "d".repeat(64),
     "--controlled-substance-audit",
@@ -103,6 +105,10 @@ describe("clinic readiness evidence collector CLI", () => {
         clinicPilotEvidencePath: path.join(
           directory,
           "private/clinic-pilot.json",
+        ),
+        clinicPilotProjectionAuditPath: path.join(
+          directory,
+          "private/clinic-pilot-projection.json",
         ),
         clinicalDatabaseFingerprint: "d".repeat(64),
         controlledSubstanceAuditPath: path.join(

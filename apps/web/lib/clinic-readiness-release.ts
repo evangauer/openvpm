@@ -2,6 +2,10 @@ import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
 import { evaluateAuthRecoveryEvidence } from "./auth-recovery-evidence";
 import { evaluateClinicalDataIntegrityEvidence } from "./clinical-data-integrity-evidence";
 import { evaluateClinicPilotReleaseEvidence } from "./clinic-pilot-release-evidence";
+import {
+  clinicPilotActorHash,
+  evaluateClinicPilotProjectionEvidence,
+} from "./clinic-pilot-projection-evidence";
 import { evaluateProviderRestoreReleaseEvidence } from "./provider-restore-release-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
@@ -151,8 +155,8 @@ export function evaluateClinicReadinessRelease(
 ): ClinicReadinessDecision {
   const reasons: string[] = [];
   const root = record(input);
-  if (root?.evidenceFormatVersion !== 10) {
-    reasons.push("Clinic readiness evidence format version must be 10.");
+  if (root?.evidenceFormatVersion !== 11) {
+    reasons.push("Clinic readiness evidence format version must be 11.");
   }
   const releaseSha =
     root &&
@@ -286,6 +290,56 @@ export function evaluateClinicReadinessRelease(
     reasons.push(...clinicPilotDecision.reasons);
     if (releaseSha && clinicPilotDecision.releaseSha !== releaseSha) {
       reasons.push("Clinic-pilot evidence does not match the release SHA.");
+    }
+  }
+
+  const clinicPilotProjection = record(root?.clinicPilotProjection);
+  if (!clinicPilotProjection) {
+    reasons.push("Clinic-pilot projection evidence is missing.");
+  } else {
+    const projectionDecision = evaluateClinicPilotProjectionEvidence(
+      clinicPilotProjection,
+      nowMs,
+    );
+    reasons.push(...projectionDecision.reasons);
+    const pilotSource = record(clinicPilot?.sourceEvidence);
+    const pilotApprovals = record(clinicPilot?.approvals);
+    const clinicAdministrator = record(pilotApprovals?.clinicAdministrator);
+    const administratorActorId =
+      typeof clinicAdministrator?.actorId === "string"
+        ? clinicAdministrator.actorId
+        : null;
+    if (
+      projectionDecision.clinicUseValidatedHash !==
+        pilotSource?.clinicUseValidatedHash ||
+      projectionDecision.pilotProjectionVersion !==
+        pilotSource?.pilotProjectionVersion
+    ) {
+      reasons.push(
+        "Clinic-pilot packet does not match the immutable projection version.",
+      );
+    }
+    if (
+      !administratorActorId ||
+      projectionDecision.clinicAdministratorActorHash !==
+        clinicPilotActorHash(administratorActorId)
+    ) {
+      reasons.push(
+        "Clinic-pilot administrator approval does not match the projection.",
+      );
+    }
+    const clinicalDatabaseFingerprint =
+      typeof clinicalDataIntegrity?.databaseTargetFingerprint === "string" &&
+      /^[0-9a-f]{64}$/i.test(clinicalDataIntegrity.databaseTargetFingerprint)
+        ? clinicalDataIntegrity.databaseTargetFingerprint.toLowerCase()
+        : null;
+    if (
+      projectionDecision.databaseTargetFingerprint !==
+      clinicalDatabaseFingerprint
+    ) {
+      reasons.push(
+        "Clinic-pilot projection does not match the clinical database.",
+      );
     }
   }
 

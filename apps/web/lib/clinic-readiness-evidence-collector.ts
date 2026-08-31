@@ -3,6 +3,10 @@ import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
 import { evaluateAuthRecoveryEvidence } from "./auth-recovery-evidence";
 import { evaluateClinicalDataIntegrityEvidence } from "./clinical-data-integrity-evidence";
 import { evaluateClinicPilotReleaseEvidence } from "./clinic-pilot-release-evidence";
+import {
+  clinicPilotActorHash,
+  evaluateClinicPilotProjectionEvidence,
+} from "./clinic-pilot-projection-evidence";
 import { evaluateProviderRestoreReleaseEvidence } from "./provider-restore-release-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
@@ -93,6 +97,7 @@ export type ClinicReadinessEvidenceCollectionOptions = {
   incidentEvidencePath: string;
   authRecoveryEvidencePath: string;
   clinicPilotEvidencePath: string;
+  clinicPilotProjectionAuditPath: string;
   clinicalDatabaseFingerprint: string;
   controlledSubstanceAuditPath: string;
   prescriptionAuditPath: string;
@@ -906,6 +911,10 @@ export async function collectClinicReadinessEvidence(
     options.clinicPilotEvidencePath,
     "Clinic-pilot evidence",
   );
+  const clinicPilotProjection = regularBoundedJsonFile(
+    options.clinicPilotProjectionAuditPath,
+    "Clinic-pilot projection audit",
+  );
   const clinicalDataIntegrity = {
     evidenceFormatVersion: 1,
     releaseSha,
@@ -955,6 +964,40 @@ export async function collectClinicReadinessEvidence(
   if (clinicPilotDecision.releaseSha !== releaseSha) {
     throw new Error("Clinic-pilot evidence does not match the release SHA.");
   }
+  const clinicPilotProjectionDecision = evaluateClinicPilotProjectionEvidence(
+    clinicPilotProjection,
+    Date.parse(checkedAt),
+  );
+  if (!clinicPilotProjectionDecision.ready) {
+    throw new Error(
+      "Clinic-pilot projection audit is incomplete, stale, or unsafe.",
+    );
+  }
+  const clinicPilotRecord = record(clinicPilot);
+  const clinicPilotSource = record(clinicPilotRecord?.sourceEvidence);
+  const clinicPilotApprovals = record(clinicPilotRecord?.approvals);
+  const clinicAdministratorApproval = record(
+    clinicPilotApprovals?.clinicAdministrator,
+  );
+  const clinicAdministratorActorId =
+    typeof clinicAdministratorApproval?.actorId === "string"
+      ? clinicAdministratorApproval.actorId
+      : null;
+  if (
+    clinicPilotProjectionDecision.clinicUseValidatedHash !==
+      clinicPilotSource?.clinicUseValidatedHash ||
+    clinicPilotProjectionDecision.pilotProjectionVersion !==
+      clinicPilotSource?.pilotProjectionVersion ||
+    clinicPilotProjectionDecision.databaseTargetFingerprint !==
+      clinicalDatabaseFingerprint ||
+    !clinicAdministratorActorId ||
+    clinicPilotProjectionDecision.clinicAdministratorActorHash !==
+      clinicPilotActorHash(clinicAdministratorActorId)
+  ) {
+    throw new Error(
+      "Clinic-pilot packet does not match the configured immutable projection.",
+    );
+  }
   if (
     !evaluateClinicalDataIntegrityEvidence(
       clinicalDataIntegrity,
@@ -967,7 +1010,7 @@ export async function collectClinicReadinessEvidence(
   }
 
   return {
-    evidenceFormatVersion: 10,
+    evidenceFormatVersion: 11,
     releaseSha,
     releaseApproval,
     ci: {
@@ -1022,6 +1065,7 @@ export async function collectClinicReadinessEvidence(
     incidentResponse,
     authRecovery,
     clinicPilot,
+    clinicPilotProjection,
     clinicalDataIntegrity,
     restoreDrill,
   };

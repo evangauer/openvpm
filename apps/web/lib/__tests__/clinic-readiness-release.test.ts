@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { evaluateClinicReadinessRelease } from "../clinic-readiness-release";
 import { CLINICAL_DATA_AUDIT_SCHEMAS } from "../clinical-data-integrity-evidence";
 import { CLINIC_PILOT_OUTCOMES } from "../clinic-pilot-release-evidence";
+import { clinicPilotActorHash } from "../clinic-pilot-projection-evidence";
 
 const now = Date.parse("2026-08-29T21:00:00.000Z");
 const sha = "a".repeat(40);
@@ -236,7 +237,7 @@ function healthyEvidence() {
       ].map((name) => [name, { ok: true }]),
     );
   return {
-    evidenceFormatVersion: 10,
+    evidenceFormatVersion: 11,
     releaseSha: sha,
     releaseApproval: {
       releaseSha: sha,
@@ -274,6 +275,49 @@ function healthyEvidence() {
     incidentResponse: healthyIncidentResponseEvidence(),
     authRecovery: healthyAuthRecoveryEvidence(),
     clinicPilot: healthyClinicPilotEvidence(),
+    clinicPilotProjection: {
+      evidenceFormatVersion: 1,
+      mode: "read_only_aggregate",
+      checkedAt: "2026-08-29T20:55:00.000Z",
+      databaseTargetFingerprint: clinicalDatabaseFingerprint,
+      clinicUseValidatedHash: "b".repeat(64),
+      pilotProjectionVersion: 7,
+      clinicAdministratorActorHash: clinicPilotActorHash(
+        "user:5f55c40b-0e87-4af2-94a8-fbe97ff5ca15",
+      ),
+      projection: {
+        matchedPilotCount: 1,
+        immutableEventMatch: true,
+        workflow: "general_practice",
+        stage: "completed",
+        decision: "graduated",
+        blockerCount: 0,
+        qualificationComplete: true,
+        readinessComplete: true,
+      },
+      outcomes: {
+        verifiedAdministrator: true,
+        activeLocationCount: 1,
+        setupComplete: true,
+        communicationTested: true,
+        firstVisitValidated: true,
+        distinctClinicDays: 5,
+        clinicUseValidated: true,
+        paymentMethodCollected: true,
+        positivePaymentRecorded: true,
+        hostedFullAccess: true,
+        jurisdictionConfirmed: true,
+        clinicAcceptanceRecorded: true,
+      },
+      evidenceSafety: {
+        phiFree: true,
+        secretsFree: true,
+        patientIdentifiersFree: true,
+        contactDestinationsFree: true,
+        localPathsFree: true,
+      },
+      releaseSafe: true,
+    },
     repositoryGovernance: {
       checkedAt: "2026-08-29T20:55:00.000Z",
       productionEnvironment: {
@@ -467,7 +511,7 @@ describe("clinic readiness release decision", () => {
     const evidence = healthyEvidence();
     evidence.evidenceFormatVersion = 5;
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
-      "Clinic readiness evidence format version must be 10.",
+      "Clinic readiness evidence format version must be 11.",
     );
   });
 
@@ -532,6 +576,23 @@ describe("clinic readiness release decision", () => {
       .clinicPilot;
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
       "Controlled clinic-pilot evidence is missing.",
+    );
+  });
+
+  it("binds clinic-pilot assertions to the configured immutable projection", () => {
+    const evidence = healthyEvidence();
+    evidence.clinicPilotProjection.clinicUseValidatedHash = "c".repeat(64);
+    evidence.clinicPilotProjection.clinicAdministratorActorHash = "e".repeat(
+      64,
+    );
+    evidence.clinicPilotProjection.databaseTargetFingerprint = "f".repeat(64);
+
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toEqual(
+      expect.arrayContaining([
+        "Clinic-pilot packet does not match the immutable projection version.",
+        "Clinic-pilot administrator approval does not match the projection.",
+        "Clinic-pilot projection does not match the clinical database.",
+      ]),
     );
   });
 
