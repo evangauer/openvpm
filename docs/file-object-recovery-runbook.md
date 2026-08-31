@@ -163,13 +163,18 @@ existing checksum, computes SHA-256 in memory, and refuses missing or
 conflicting exact-byte evidence. For a checksum-less manifest it refuses the
 restore before reading provider bytes unless `--expected-sha256` is present.
 Supplying that flag also extends the typed confirmation, preventing a reviewed
-digest from being accidentally applied to another invocation. The command
-writes and reads back the independent replica first, then writes and reads back
-the primary key, performs a compare-and-set manifest transition, and queues
-append-only recovery evidence. A retry converges on already-written exact
-bytes. After every restore, run the normal replica reconciler so it writes the
-immutable recovery catalog and require the release-gate metrics to return to
-100% coverage with no missing, corrupt, failed, or backlog rows.
+digest from being accidentally applied to another invocation. It also
+canonicalizes endpoint/bucket identity and refuses if the legacy source is the
+same target as either current primary or independent replica storage. Different
+buckets or endpoints are not proof of different provider accounts; retain the
+provider-console account, IAM, versioning, retention, and deletion-denial
+evidence required above. The command writes and reads back the independent
+replica first, then writes and reads back the primary key, performs a
+compare-and-set manifest transition, and queues append-only recovery evidence.
+A retry converges on already-written exact bytes. After every restore, run the
+normal replica reconciler so it writes the immutable recovery catalog and
+require the release-gate metrics to return to 100% coverage with no missing,
+corrupt, failed, or backlog rows.
 
 ### Database healthy, primary provider unavailable
 

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  assertLegacyRecoveryStorageSeparation,
   bytesMatch,
   inspectLegacyFileBytes,
   parseLegacyFileRecoveryArgs,
@@ -13,6 +14,42 @@ const FILE_ID = "123e4567-e89b-42d3-a456-426614174000";
 const CHECKSUM = "a".repeat(64);
 
 describe("legacy file recovery", () => {
+  it("rejects a legacy source that is also the primary or replica target", () => {
+    expect(() =>
+      assertLegacyRecoveryStorageSeparation({
+        legacyEndpoint: "https://s3.example.test/",
+        legacyBucket: "Clinic-Objects",
+        primaryProvider: "s3",
+        primaryEndpoint: "https://S3.EXAMPLE.TEST",
+        primaryBucket: "clinic-objects",
+      }),
+    ).toThrow("distinct from primary storage");
+
+    expect(() =>
+      assertLegacyRecoveryStorageSeparation({
+        legacyEndpoint: "https://legacy.example.test",
+        legacyBucket: "legacy-files",
+        primaryProvider: "vercel_blob",
+        replicaProvider: "s3",
+        replicaEndpoint: "https://legacy.example.test/",
+        replicaBucket: "LEGACY-FILES",
+      }),
+    ).toThrow("distinct from independent replica storage");
+  });
+
+  it("accepts distinct legacy, primary, and replica targets", () => {
+    expect(() =>
+      assertLegacyRecoveryStorageSeparation({
+        legacyEndpoint: "https://legacy.example.test",
+        legacyBucket: "legacy-files",
+        primaryProvider: "vercel_blob",
+        replicaProvider: "s3",
+        replicaEndpoint: "https://replica.example.test",
+        replicaBucket: "recovery-files",
+      }),
+    ).not.toThrow();
+  });
+
   it("checks exact-byte authorization before reading legacy provider bytes", () => {
     const script = readFileSync(
       resolve("scripts/recover-legacy-file.ts"),

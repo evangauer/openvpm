@@ -6,6 +6,54 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export const LEGACY_FILE_RECOVERY_CONFIRMATION = "RESTORE-LEGACY-FILE";
 
+function canonicalS3Target(
+  endpoint: string | undefined,
+  bucket: string | undefined,
+): string | null {
+  const normalizedBucket = bucket?.trim().toLowerCase();
+  if (!normalizedBucket) return null;
+  const normalizedEndpoint = (endpoint?.trim() || "https://s3.amazonaws.com")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+  return `${normalizedEndpoint}/${normalizedBucket}`;
+}
+
+export function assertLegacyRecoveryStorageSeparation(input: {
+  legacyEndpoint: string;
+  legacyBucket: string;
+  primaryProvider?: string;
+  primaryEndpoint?: string;
+  primaryBucket?: string;
+  replicaProvider?: string;
+  replicaEndpoint?: string;
+  replicaBucket?: string;
+}): void {
+  const legacy = canonicalS3Target(input.legacyEndpoint, input.legacyBucket);
+  if (!legacy) throw new Error("Legacy source target is invalid.");
+
+  if (input.primaryProvider?.trim() !== "vercel_blob") {
+    const primary = canonicalS3Target(
+      input.primaryEndpoint,
+      input.primaryBucket ?? "openpims",
+    );
+    if (primary === legacy) {
+      throw new Error("Legacy source must be distinct from primary storage.");
+    }
+  }
+
+  if ((input.replicaProvider?.trim() || "s3") === "s3") {
+    const replica = canonicalS3Target(
+      input.replicaEndpoint,
+      input.replicaBucket,
+    );
+    if (replica === legacy) {
+      throw new Error(
+        "Legacy source must be distinct from independent replica storage.",
+      );
+    }
+  }
+}
+
 export type LegacyFileRecoveryArgs = {
   command: "audit" | "restore";
   fileId: string;

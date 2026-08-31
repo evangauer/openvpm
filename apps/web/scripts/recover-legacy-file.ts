@@ -5,6 +5,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { files } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import {
+  assertLegacyRecoveryStorageSeparation,
   bytesMatch,
   inspectLegacyFileBytes,
   parseLegacyFileRecoveryArgs,
@@ -40,14 +41,20 @@ function legacyClient(): { client: S3Client; bucket: string } {
   const secretAccessKey = requiredEnv("LEGACY_FILE_S3_SECRET_KEY");
   const bucket = requiredEnv("LEGACY_FILE_S3_BUCKET");
 
-  if (
-    process.env.FILE_STORAGE_PROVIDER?.trim() !== "vercel_blob" &&
-    process.env.S3_ENDPOINT?.trim().replace(/\/+$/, "") ===
-      endpoint.replace(/\/+$/, "") &&
-    process.env.S3_BUCKET?.trim() === bucket
-  ) {
+  try {
+    assertLegacyRecoveryStorageSeparation({
+      legacyEndpoint: endpoint,
+      legacyBucket: bucket,
+      primaryProvider: process.env.FILE_STORAGE_PROVIDER,
+      primaryEndpoint: process.env.S3_ENDPOINT,
+      primaryBucket: process.env.S3_BUCKET,
+      replicaProvider: process.env.FILE_REPLICA_PROVIDER,
+      replicaEndpoint: process.env.FILE_REPLICA_S3_ENDPOINT,
+      replicaBucket: process.env.FILE_REPLICA_S3_BUCKET,
+    });
+  } catch (error) {
     throw new OperatorSafeError(
-      "Legacy source must be distinct from primary storage.",
+      error instanceof Error ? error.message : "Storage targets are invalid.",
     );
   }
 
