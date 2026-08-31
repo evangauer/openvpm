@@ -78,6 +78,33 @@ describe("provider-restore release evidence", () => {
     });
   });
 
+  it("accepts bounded opaque provider version identifiers", () => {
+    const evidence = healthyProviderRestoreEvidence();
+    evidence.databaseBackup.backupVersionId = "3Lg+provider/version==";
+    evidence.independentObject.objectVersionId = "01J_uuid~provider:value";
+
+    expect(evaluateProviderRestoreReleaseEvidence(evidence, now)).toMatchObject(
+      { ready: true, reasons: [] },
+    );
+  });
+
+  it("rejects control characters and command-like version identifiers", () => {
+    const evidence = healthyProviderRestoreEvidence();
+    evidence.databaseBackup.backupVersionId = "provider-version\nsecond-line";
+    evidence.independentObject.objectVersionId = "provider-version;rm";
+
+    const reasons = evaluateProviderRestoreReleaseEvidence(
+      evidence,
+      now,
+    ).reasons;
+    expect(reasons).toEqual(
+      expect.arrayContaining([
+        "Provider database-backup identity is incomplete.",
+        "Independent object restore identity is incomplete.",
+      ]),
+    );
+  });
+
   it("rejects synthetic, stale, or cross-release evidence", () => {
     const evidence = healthyProviderRestoreEvidence();
     evidence.synthetic = true;

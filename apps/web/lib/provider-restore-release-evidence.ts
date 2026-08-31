@@ -8,7 +8,10 @@ const DRILL_ID = /^restore-(\d{4}-\d{2}-\d{2})-[a-f0-9]{8}$/;
 const SHA = /^[0-9a-f]{40}$/i;
 const SHA256 = /^[0-9a-f]{64}$/i;
 const GITHUB_HANDLE = /^@[A-Za-z0-9](?:[A-Za-z0-9-]{0,36}[A-Za-z0-9])?$/;
-const VERSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+// Provider version identifiers are opaque. S3-compatible stores commonly use
+// base64-like IDs containing `+`, `/`, or `=`, while other providers use UUIDs.
+// Keep the field single-line and bounded without rewriting the provider value.
+const VERSION_ID = /^[A-Za-z0-9][A-Za-z0-9._~+/=:-]{0,255}$/;
 
 const ROOT_KEYS = [
   "completedAt",
