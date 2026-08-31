@@ -11,6 +11,12 @@ const source = readFileSync(
   ),
   "utf8",
 );
+const ci = readFileSync(
+  fileURLToPath(
+    new URL("../../../../.github/workflows/ci.yml", import.meta.url),
+  ),
+  "utf8",
+);
 
 describe("clinic-pilot projection audit source", () => {
   it("requires explicit read-only authority and a narrow evidence selector", () => {
@@ -33,5 +39,13 @@ describe("clinic-pilot projection audit source", () => {
     expect(source).not.toContain("practiceName");
     expect(source).not.toContain("patient_id");
     expect(source).not.toContain("email");
+  });
+
+  it("executes a fail-closed query against the fully migrated CI schema", () => {
+    expect(ci).toContain("Execute clinic-pilot release audit refusal contract");
+    expect(ci).toContain(
+      "CLINIC_PILOT_RELEASE_READ_ONLY_CONFIRMATION: OPENVPM_CLINIC_PILOT_RELEASE_READ_ONLY",
+    );
+    expect(ci).toContain(".projection.matchedPilotCount == 0");
   });
 });

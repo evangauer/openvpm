@@ -198,6 +198,26 @@ jobs:
           MIGRATION_CONFORMANCE_MODE: exact
         run: pnpm --filter @openpims/db db:migrations:conformance
 
+      # Compile and execute the real projection audit against the fully
+      # migrated disposable schema. A nonexistent opaque selector must produce
+      # bounded JSON, releaseSafe=false, and the documented refusal exit code.
+      - name: Execute clinic-pilot release audit refusal contract
+        env:
+          CLINIC_PILOT_RELEASE_READ_ONLY_CONFIRMATION: OPENVPM_CLINIC_PILOT_RELEASE_READ_ONLY
+        run: |
+          set +e
+          pnpm --filter @openpims/db exec tsx audit-clinic-pilot-release.ts \
+            --allow-live-read-only \
+            --clinic-use-hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --projection-version 1 \
+            > "$RUNNER_TEMP/clinic-pilot-projection-refusal.json"
+          audit_status=$?
+          set -e
+          test "$audit_status" -eq 2
+          jq --exit-status \
+            '.releaseSafe == false and .projection.matchedPilotCount == 0 and .clinicAdministratorActorHash == null' \
+            "$RUNNER_TEMP/clinic-pilot-projection-refusal.json" > /dev/null
+
       - name: Execute RLS ownership preflight contract
         run: pnpm --filter @openpims/db db:rls:preflight:test
 
