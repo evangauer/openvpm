@@ -76,6 +76,63 @@ try {
     "isolation level repeatable read read only",
     async (tx) =>
       tx.unsafe<PilotRow[]>(`
+        with eligible_closeouts as (
+          select
+            cp.id as clinic_pilot_id,
+            closeout.id as closeout_id,
+            closeout.completed_at,
+            (closeout.completed_at at time zone practice.timezone)::date as local_date
+          from clinic_pilots cp
+          join practices practice
+            on practice.id = cp.practice_id
+           and practice.deleted_at is null
+           and practice.settings ->> 'analyticsExcluded' is distinct from 'true'
+          join visit_closeouts closeout
+            on closeout.practice_id = cp.practice_id
+           and closeout.status = 'completed'
+           and closeout.completed_at is not null
+           and closeout.completed_at >= cp.created_at
+           and closeout.deleted_at is null
+          join appointments appointment
+            on appointment.id = closeout.appointment_id
+           and appointment.practice_id = cp.practice_id
+           and appointment.deleted_at is null
+          where cp.clinic_use_validated_hash = '${clinicUseValidatedHash}'
+            and cp.version = ${pilotProjectionVersion}
+            and not (
+              coalesce(
+                practice.settings -> 'demoData' -> 'appointmentIds',
+                '[]'::jsonb
+              ) @> to_jsonb(appointment.id::text)
+            )
+        ), clinic_use_days as (
+          select distinct on (clinic_pilot_id, local_date)
+            clinic_pilot_id, closeout_id, completed_at, local_date
+          from eligible_closeouts
+          order by clinic_pilot_id, local_date, completed_at, closeout_id
+        ), ranked_clinic_use_days as (
+          select
+            clinic_use_days.*,
+            row_number() over (
+              partition by clinic_pilot_id order by completed_at, closeout_id
+            ) as day_rank
+          from clinic_use_days
+        ), current_use as (
+          select
+            clinic_pilot_id,
+            (array_agg(closeout_id order by completed_at, closeout_id))[1]
+              as first_visit_closeout_id,
+            count(*)::int as distinct_clinic_days,
+            jsonb_agg(
+              jsonb_build_object(
+                'closeoutId', closeout_id,
+                'completedAt', completed_at,
+                'localDate', local_date
+              ) order by completed_at, closeout_id
+            ) filter (where day_rank <= 5) as clinic_use_days
+          from ranked_clinic_use_days
+          group by clinic_pilot_id
+        )
         select
           cp.workflow::text as workflow,
           cp.stage::text as stage,
@@ -93,7 +150,7 @@ try {
           cp.first_visit_validated_at is not null
             and cp.first_visit_validated_closeout_id is not null
             and cp.first_visit_validated_closeout_id =
-              nullif(event.evidence_snapshot ->> 'firstVisitCloseoutId', '')::uuid
+              current_use.first_visit_closeout_id
             as "firstVisitValidated",
           cp.clinic_use_validated_at is not null
             and cp.clinic_use_validated_hash = '${clinicUseValidatedHash}'
@@ -103,28 +160,66 @@ try {
             as "clinicAcceptanceRecorded",
           cp.clinic_acceptance_by_user_id::text as "clinicAdministratorUserId",
           cp.clinic_acceptance_by_user_id is not null
-            and jsonb_typeof(event.evidence_snapshot -> 'verifiedAdminUserIds') = 'array'
-            and event.evidence_snapshot -> 'verifiedAdminUserIds'
-              @> jsonb_build_array(cp.clinic_acceptance_by_user_id::text)
+            and exists (
+              select 1 from users administrator
+              where administrator.practice_id = cp.practice_id
+                and administrator.id = cp.clinic_acceptance_by_user_id
+                and administrator.role = 'admin'
+                and administrator.email_verified_at is not null
+                and administrator.deleted_at is null
+            )
             as "verifiedAdministrator",
-          jsonb_array_length(event.evidence_snapshot -> 'activeLocationIds')::int
-            as "activeLocationCount",
-          nullif(event.evidence_snapshot ->> 'setupCompletedAt', '') is not null
-            and nullif(event.evidence_snapshot ->> 'activatedAt', '') is not null
+          (
+            select count(*)::int from locations location
+            where location.practice_id = cp.practice_id
+              and location.deleted_at is null
+          ) as "activeLocationCount",
+          nullif(practice.settings ->> 'onboardingCompletedAt', '') is not null
+            and exists (
+              select 1 from practice_conversion_milestones milestone
+              where milestone.practice_id = cp.practice_id
+                and milestone.milestone = 'activated'
+            )
             as "setupComplete",
-          jsonb_array_length(event.evidence_snapshot -> 'clinicUseDays')::int
+          coalesce(current_use.distinct_clinic_days, 0)::int
             as "distinctClinicDays",
-          event.evidence_snapshot -> 'clinicUseDays' as "clinicUseDays",
-          nullif(event.evidence_snapshot ->> 'paymentMethodCollectedAt', '') is not null
+          coalesce(current_use.clinic_use_days, '[]'::jsonb)
+            as "clinicUseDays",
+          exists (
+            select 1 from practice_conversion_milestones milestone
+            where milestone.practice_id = cp.practice_id
+              and milestone.milestone = 'payment_method_collected'
+          )
             as "paymentMethodCollected",
-          nullif(event.evidence_snapshot ->> 'firstPositivePaymentAt', '') is not null
+          exists (
+            select 1 from practice_conversion_milestones milestone
+            where milestone.practice_id = cp.practice_id
+              and milestone.milestone = 'first_positive_payment'
+          )
             as "positivePaymentRecorded",
-          (event.evidence_snapshot ->> 'hostedFullAccess')::boolean
+          (
+            (practice.billing_status = 'trialing'
+              and practice.trial_ends_at > now())
+            or (
+              practice.billing_status in ('active', 'past_due')
+              and practice.subscription_tier in (
+                'cloud', 'enterprise', 'starter', 'pro', 'professional'
+              )
+            )
+          )
             as "hostedFullAccess",
-          (event.evidence_snapshot ->> 'jurisdictionConfirmed')::boolean
-            and event.evidence_snapshot ->> 'country' = 'US'
+          practice.country = 'US'
+            and practice.settings -> 'onboardingState' ->> 'jurisdictionCountry' = 'US'
+            and length(btrim(coalesce(
+              practice.settings -> 'onboardingState' ->> 'jurisdictionSelectedAt',
+              ''
+            ))) > 0
             as "jurisdictionConfirmed"
         from clinic_pilots cp
+        join practices practice
+          on practice.id = cp.practice_id
+         and practice.deleted_at is null
+         and practice.settings ->> 'analyticsExcluded' is distinct from 'true'
         join clinic_pilot_events event
           on event.clinic_pilot_id = cp.id
          and event.practice_id = cp.practice_id
@@ -150,6 +245,7 @@ try {
          and event.last_contact_outcome is not distinct from cp.last_contact_outcome
          and event.target_start_on is not distinct from cp.target_start_on
          and event.next_review_at is not distinct from cp.next_review_at
+        left join current_use on current_use.clinic_pilot_id = cp.id
         where cp.clinic_use_validated_hash = '${clinicUseValidatedHash}'
           and cp.version = ${pilotProjectionVersion}
       `),

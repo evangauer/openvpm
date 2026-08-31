@@ -233,13 +233,16 @@ pnpm --filter @openpims/web release:clinic-readiness:collect -- \
 ```
 
 The clinic-pilot projection audit selects only the packet's validated-use hash
-and projection version, recomputes the first five clinic-day evidence hash,
-requires one matching graduated projection plus its exact immutable event, and
-emits only aggregate booleans, counts, a database fingerprint, and a one-way
-hash of the accepting administrator ID. It never emits a clinic, staff, client,
-patient, contact, or visit identifier. The collector binds that database output
-to the packet's source hash/version, accepting administrator, and independently
-configured clinical database fingerprint.
+and projection version, recomputes the first five clinic-day evidence hash from
+current non-demo closeouts, and requires one matching graduated projection plus
+its exact immutable event. It also rechecks the accepting administrator,
+location count, setup, conversion milestones, billing access, and jurisdiction
+against current rows. It emits only aggregate booleans, counts, a database
+fingerprint, and a one-way hash of the accepting administrator ID. It never
+emits a clinic, staff, client, patient, contact, or visit identifier. The
+collector binds that database output to the packet's source hash/version,
+accepting administrator, and independently configured clinical database
+fingerprint.
 
 The collector refuses to overwrite an existing packet. It verifies the
 successful exact-SHA `main` CI run, an exact-SHA migration and protected

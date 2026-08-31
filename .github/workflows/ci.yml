@@ -206,7 +206,7 @@ jobs:
           CLINIC_PILOT_RELEASE_READ_ONLY_CONFIRMATION: OPENVPM_CLINIC_PILOT_RELEASE_READ_ONLY
         run: |
           set +e
-          pnpm --filter @openpims/db exec tsx audit-clinic-pilot-release.ts \
+          packages/db/node_modules/.bin/tsx packages/db/audit-clinic-pilot-release.ts \
             --allow-live-read-only \
             --clinic-use-hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
             --projection-version 1 \

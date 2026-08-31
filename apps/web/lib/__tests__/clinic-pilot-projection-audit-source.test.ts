@@ -35,10 +35,15 @@ describe("clinic-pilot projection audit source", () => {
       "event.next_review_at is not distinct from cp.next_review_at",
     );
     expect(source).toContain("recomputedClinicUseHash");
+    expect(source).toContain("join visit_closeouts closeout");
+    expect(source).toContain("from users administrator");
+    expect(source).toContain("from locations location");
+    expect(source).toContain("from practice_conversion_milestones milestone");
     expect(source).toContain("clinicAdministratorActorHash");
     expect(source).not.toContain("practiceName");
     expect(source).not.toContain("patient_id");
-    expect(source).not.toContain("email");
+    expect(source).not.toContain('as "email"');
+    expect(source).not.toContain("administrator.email,");
   });
 
   it("executes a fail-closed query against the fully migrated CI schema", () => {
