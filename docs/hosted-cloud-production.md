@@ -294,7 +294,8 @@ non-synthetic restore drill for the same SHA
 proves dual control before execution, an exact database-backup version and
 SHA-256, a fresh backup/RPO, a bounded RTO, the isolated-staging target
 fingerprint, the hold/release workflow, an exact independently replicated
-object version and SHA-256, and authentication, tenant, scheduling, clinical,
+non-empty object version, positive byte size and SHA-256, a positive measured
+RTO, and authentication, tenant, scheduling, clinical,
 invoice, payment, and file smokes. The restore packet has a strict
 identifier-free shape and must attest that it contains no PHI, patient IDs,
 contact destinations, provider payloads, local paths, or secrets; any extra

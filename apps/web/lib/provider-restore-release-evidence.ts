@@ -116,6 +116,10 @@ function nonNegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
+function positiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
 /** Strict, identifier-free evidence for a real provider-backed restore drill. */
 export function evaluateProviderRestoreReleaseEvidence(
   input: unknown,
@@ -234,7 +238,7 @@ export function evaluateProviderRestoreReleaseEvidence(
     !VERSION_ID.test(object.objectVersionId) ||
     typeof object.checksumSha256 !== "string" ||
     !SHA256.test(object.checksumSha256) ||
-    !nonNegativeInteger(object.fileSizeBytes) ||
+    !positiveInteger(object.fileSizeBytes) ||
     object.exactVersionVerified !== true
   ) {
     reasons.push("Independent object restore identity is incomplete.");
@@ -289,7 +293,7 @@ export function evaluateProviderRestoreReleaseEvidence(
       reasons.push("Provider-restore RPO evidence is invalid.");
     }
     if (
-      !nonNegativeInteger(metrics.rtoMs) ||
+      !positiveInteger(metrics.rtoMs) ||
       duration == null ||
       metrics.rtoMs > duration ||
       metrics.rtoMs > MAX_DRILL_DURATION_MS

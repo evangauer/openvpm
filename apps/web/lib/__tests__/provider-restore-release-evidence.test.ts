@@ -161,6 +161,23 @@ describe("provider-restore release evidence", () => {
     );
   });
 
+  it("rejects empty-object and zero-duration recovery claims", () => {
+    const evidence = healthyProviderRestoreEvidence();
+    evidence.independentObject.fileSizeBytes = 0;
+    evidence.metrics.rtoMs = 0;
+
+    const reasons = evaluateProviderRestoreReleaseEvidence(
+      evidence,
+      now,
+    ).reasons;
+    expect(reasons).toEqual(
+      expect.arrayContaining([
+        "Independent object restore identity is incomplete.",
+        "Provider-restore RTO evidence is invalid.",
+      ]),
+    );
+  });
+
   it("rejects missing recovery smokes and release-blocking findings", () => {
     const evidence = healthyProviderRestoreEvidence();
     evidence.recoveryHold.releasedAfterChecklistAndDatabaseGate = false;
