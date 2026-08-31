@@ -2,11 +2,11 @@ import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
 import { evaluateAuthRecoveryEvidence } from "./auth-recovery-evidence";
 import { evaluateClinicalDataIntegrityEvidence } from "./clinical-data-integrity-evidence";
 import { evaluateClinicPilotReleaseEvidence } from "./clinic-pilot-release-evidence";
+import { evaluateProviderRestoreReleaseEvidence } from "./provider-restore-release-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const GITHUB_LOGIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38})$/i;
 const HEALTH_MAX_AGE_MS = 15 * 60 * 1000;
-const RESTORE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const REQUIRED_MAIN_CHECKS = [
   "build",
   "Golden clinic workflow",
@@ -151,8 +151,8 @@ export function evaluateClinicReadinessRelease(
 ): ClinicReadinessDecision {
   const reasons: string[] = [];
   const root = record(input);
-  if (root?.evidenceFormatVersion !== 9) {
-    reasons.push("Clinic readiness evidence format version must be 9.");
+  if (root?.evidenceFormatVersion !== 10) {
+    reasons.push("Clinic readiness evidence format version must be 10.");
   }
   const releaseSha =
     root &&
@@ -536,57 +536,25 @@ export function evaluateClinicReadinessRelease(
   if (!restore) {
     reasons.push("Restore drill evidence is missing.");
   } else {
-    if (releaseSha && restore.releaseSha !== releaseSha) {
-      reasons.push("Restore drill does not match the release SHA.");
-    }
-    requireFreshTimestamp(
-      reasons,
-      "Restore drill",
-      restore.completedAt,
+    const restoreDecision = evaluateProviderRestoreReleaseEvidence(
+      restore,
       nowMs,
-      RESTORE_MAX_AGE_MS,
     );
-    if (restore.status !== "passed") {
-      reasons.push("Restore drill has not passed.");
+    reasons.push(...restoreDecision.reasons);
+    if (releaseSha && restoreDecision.releaseSha !== releaseSha) {
+      reasons.push("Provider-restore evidence does not match the release SHA.");
     }
-    if (restore.synthetic !== false) {
-      reasons.push(
-        "A provider-backed non-synthetic restore drill is required.",
-      );
-    }
-    const recoveryHold = record(restore.recoveryHold);
+    const stagingTargetFingerprint =
+      typeof staging?.databaseTargetFingerprint === "string" &&
+      /^[0-9a-f]{64}$/i.test(staging.databaseTargetFingerprint)
+        ? staging.databaseTargetFingerprint.toLowerCase()
+        : null;
     if (
-      recoveryHold?.observedBeforeReconciliation !== true ||
-      recoveryHold?.releasedAfterChecklistAndDatabaseGate !== true
-    ) {
-      reasons.push("Restore recovery-hold evidence is incomplete.");
-    }
-    const object = record(restore.independentObject);
-    if (
-      object?.exactVersionVerified !== true ||
-      typeof object.objectVersionId !== "string" ||
-      !object.objectVersionId.trim() ||
-      typeof object.checksumSha256 !== "string" ||
-      !/^[0-9a-f]{64}$/i.test(object.checksumSha256) ||
-      typeof object.fileSizeBytes !== "number" ||
-      object.fileSizeBytes < 0
-    ) {
-      reasons.push("Independent object restore evidence is incomplete.");
-    }
-    const smoke = record(restore.smoke);
-    if (
-      smoke?.authenticationResetRequired !== true ||
-      smoke?.tenantIsolation !== true ||
-      ![
-        "schedulingRows",
-        "clinicalRows",
-        "invoiceRows",
-        "paymentRows",
-        "fileAccessRows",
-      ].every((name) => typeof smoke?.[name] === "number" && smoke[name] > 0)
+      !stagingTargetFingerprint ||
+      restoreDecision.restoreTargetFingerprint !== stagingTargetFingerprint
     ) {
       reasons.push(
-        "Post-restore clinic workflow smoke evidence is incomplete.",
+        "Provider-restore evidence does not match the isolated staging database.",
       );
     }
   }

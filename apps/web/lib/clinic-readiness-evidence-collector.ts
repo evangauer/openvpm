@@ -3,6 +3,7 @@ import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
 import { evaluateAuthRecoveryEvidence } from "./auth-recovery-evidence";
 import { evaluateClinicalDataIntegrityEvidence } from "./clinical-data-integrity-evidence";
 import { evaluateClinicPilotReleaseEvidence } from "./clinic-pilot-release-evidence";
+import { evaluateProviderRestoreReleaseEvidence } from "./provider-restore-release-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const REPOSITORY_PATTERN = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i;
@@ -874,6 +875,25 @@ export async function collectClinicReadinessEvidence(
     options.restoreEvidencePath,
     "Restore evidence",
   );
+  const restoreDecision = evaluateProviderRestoreReleaseEvidence(
+    restoreDrill,
+    Date.parse(checkedAt),
+  );
+  if (!restoreDecision.ready) {
+    throw new Error(
+      "Provider-restore evidence is incomplete, stale, or unsafe.",
+    );
+  }
+  if (restoreDecision.releaseSha !== releaseSha) {
+    throw new Error(
+      "Provider-restore evidence does not match the release SHA.",
+    );
+  }
+  if (restoreDecision.restoreTargetFingerprint !== stagingDatabaseFingerprint) {
+    throw new Error(
+      "Provider-restore evidence does not match the isolated staging database.",
+    );
+  }
   const incidentResponse = regularBoundedJsonFile(
     options.incidentEvidencePath,
     "Incident-response evidence",
@@ -947,7 +967,7 @@ export async function collectClinicReadinessEvidence(
   }
 
   return {
-    evidenceFormatVersion: 9,
+    evidenceFormatVersion: 10,
     releaseSha,
     releaseApproval,
     ci: {

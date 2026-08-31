@@ -236,7 +236,7 @@ function healthyEvidence() {
       ].map((name) => [name, { ok: true }]),
     );
   return {
-    evidenceFormatVersion: 9,
+    evidenceFormatVersion: 10,
     releaseSha: sha,
     releaseApproval: {
       releaseSha: sha,
@@ -365,10 +365,25 @@ function healthyEvidence() {
       },
     },
     restoreDrill: {
+      evidenceFormatVersion: 1,
+      drillId: "restore-2026-08-29-deadbeef",
       releaseSha: sha,
+      startedAt: "2026-08-29T19:30:00.000Z",
       completedAt: "2026-08-29T20:30:00.000Z",
       status: "passed",
       synthetic: false,
+      operators: {
+        requester: "@restore-operator",
+        approver: "@restore-approver",
+        approvedAt: "2026-08-29T19:00:00.000Z",
+      },
+      databaseBackup: {
+        backupVersionId: "backup-provider-version-42",
+        checksumSha256: "c".repeat(64),
+        exportedAt: "2026-08-29T18:30:00.000Z",
+        restoreTargetFingerprint: stagingDatabaseFingerprint,
+        exactVersionVerified: true,
+      },
       recoveryHold: {
         observedBeforeReconciliation: true,
         releasedAfterChecklistAndDatabaseGate: true,
@@ -387,6 +402,20 @@ function healthyEvidence() {
         invoiceRows: 1,
         paymentRows: 1,
         fileAccessRows: 1,
+      },
+      metrics: { rpoMs: 3_600_000, rtoMs: 3_000_000 },
+      evidenceSafety: {
+        phiFree: true,
+        secretsFree: true,
+        providerPayloadsFree: true,
+        localPathsFree: true,
+        patientIdentifiersFree: true,
+        contactDestinationsFree: true,
+      },
+      findings: {
+        criticalCount: 0,
+        highCount: 0,
+        openReleaseBlockingCount: 0,
       },
     },
   };
@@ -438,7 +467,7 @@ describe("clinic readiness release decision", () => {
     const evidence = healthyEvidence();
     evidence.evidenceFormatVersion = 5;
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
-      "Clinic readiness evidence format version must be 9.",
+      "Clinic readiness evidence format version must be 10.",
     );
   });
 
@@ -634,7 +663,7 @@ describe("clinic readiness release decision", () => {
     expect(decision.reasons).toEqual(
       expect.arrayContaining([
         "Hosted health evidence is stale.",
-        "A provider-backed non-synthetic restore drill is required.",
+        "A passed, non-synthetic provider restore is required.",
       ]),
     );
   });
@@ -642,8 +671,14 @@ describe("clinic readiness release decision", () => {
   it("rejects evidence from another release SHA", () => {
     const evidence = healthyEvidence();
     evidence.restoreDrill.releaseSha = "c".repeat(40);
-    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
-      "Restore drill does not match the release SHA.",
+    evidence.restoreDrill.databaseBackup.restoreTargetFingerprint = "d".repeat(
+      64,
+    );
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toEqual(
+      expect.arrayContaining([
+        "Provider-restore evidence does not match the release SHA.",
+        "Provider-restore evidence does not match the isolated staging database.",
+      ]),
     );
   });
 

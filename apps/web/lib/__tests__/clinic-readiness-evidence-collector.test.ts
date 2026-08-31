@@ -41,10 +41,24 @@ function restoreEvidencePath() {
     file,
     JSON.stringify({
       evidenceFormatVersion: 1,
+      drillId: "restore-2026-08-29-deadbeef",
       releaseSha: sha,
+      startedAt: "2026-08-29T19:30:00.000Z",
       completedAt: "2026-08-29T20:30:00.000Z",
       status: "passed",
       synthetic: false,
+      operators: {
+        requester: "@restore-operator",
+        approver: "@restore-approver",
+        approvedAt: "2026-08-29T19:00:00.000Z",
+      },
+      databaseBackup: {
+        backupVersionId: "backup-provider-version-42",
+        checksumSha256: "c".repeat(64),
+        exportedAt: "2026-08-29T18:30:00.000Z",
+        restoreTargetFingerprint: stagingDatabaseFingerprint,
+        exactVersionVerified: true,
+      },
       recoveryHold: {
         observedBeforeReconciliation: true,
         releasedAfterChecklistAndDatabaseGate: true,
@@ -63,6 +77,20 @@ function restoreEvidencePath() {
         invoiceRows: 1,
         paymentRows: 1,
         fileAccessRows: 1,
+      },
+      metrics: { rpoMs: 3_600_000, rtoMs: 3_000_000 },
+      evidenceSafety: {
+        phiFree: true,
+        secretsFree: true,
+        providerPayloadsFree: true,
+        localPathsFree: true,
+        patientIdentifiersFree: true,
+        contactDestinationsFree: true,
+      },
+      findings: {
+        criticalCount: 0,
+        highCount: 0,
+        openReleaseBlockingCount: 0,
       },
     }),
   );
@@ -636,7 +664,7 @@ describe("clinic readiness evidence collector", () => {
     );
 
     expect(evidence).toMatchObject({
-      evidenceFormatVersion: 9,
+      evidenceFormatVersion: 10,
       releaseSha: sha,
       releaseApproval: {
         releaseSha: sha,

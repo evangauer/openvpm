@@ -271,8 +271,14 @@ health is a fresh HTTP 200 hosted result whose response reports that same
 deployment SHA; backup freshness and 100% independent file coverage are
 affirmative (not advisory) in both hosted environments;
 and a recent provider-backed, non-synthetic restore drill for the same SHA
-proves the hold/release workflow, exact object version, and authentication,
-tenant, scheduling, clinical, invoice, payment, and file smokes; and a fresh,
+proves dual control before execution, an exact database-backup version and
+SHA-256, a fresh backup/RPO, a bounded RTO, the isolated-staging target
+fingerprint, the hold/release workflow, an exact independently replicated
+object version and SHA-256, and authentication, tenant, scheduling, clinical,
+invoice, payment, and file smokes. The restore packet has a strict
+identifier-free shape and must attest that it contains no PHI, patient IDs,
+contact destinations, provider payloads, local paths, or secrets; any extra
+field fails closed. A fresh,
 approved incident tabletop covers all five required scenarios with three
 distinct named authorities. Missing, stale, cross-SHA, synthetic-only,
 unhealthy, incomplete-incident, absent clinic acceptance, cross-database,

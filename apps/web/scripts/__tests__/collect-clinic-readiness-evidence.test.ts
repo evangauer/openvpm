@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  collect: vi.fn(async () => ({ evidenceFormatVersion: 9 })),
+  collect: vi.fn(async () => ({ evidenceFormatVersion: 10 })),
   evaluate: vi.fn(() => ({
     decision: "GO",
     evaluatedAt: "2026-08-29T21:00:00.000Z",
