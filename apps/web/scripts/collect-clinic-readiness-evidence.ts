@@ -19,6 +19,7 @@ const VALUE_ARGS = new Set([
   "--restore-evidence",
   "--incident-evidence",
   "--auth-recovery-evidence",
+  "--clinic-pilot-evidence",
   "--clinical-database-fingerprint",
   "--controlled-substance-audit",
   "--prescription-audit",
@@ -35,7 +36,7 @@ function argumentsMap(args: string[]): Map<string, string> {
     const value = normalized[index + 1]?.trim();
     if (!name || !VALUE_ARGS.has(name) || !value || values.has(name)) {
       throw new Error(
-        "Usage: release:clinic-readiness:collect -- --release-sha <sha> --repository <owner/name> --ci-run-id <id> --staging-migration-run-id <id> --staging-reset-run-id <id> --staging-database-fingerprint <sha256> --migration-run-id <id> --staging-health-url <https-url> --hosted-health-url <https-url> --restore-evidence <path> --incident-evidence <path> --auth-recovery-evidence <path> --clinical-database-fingerprint <sha256> --controlled-substance-audit <path> --prescription-audit <path> --lab-result-audit <path> --vaccination-audit <path> --output <path>",
+        "Usage: release:clinic-readiness:collect -- --release-sha <sha> --repository <owner/name> --ci-run-id <id> --staging-migration-run-id <id> --staging-reset-run-id <id> --staging-database-fingerprint <sha256> --migration-run-id <id> --staging-health-url <https-url> --hosted-health-url <https-url> --restore-evidence <path> --incident-evidence <path> --auth-recovery-evidence <path> --clinic-pilot-evidence <path> --clinical-database-fingerprint <sha256> --controlled-substance-audit <path> --prescription-audit <path> --lab-result-audit <path> --vaccination-audit <path> --output <path>",
       );
     }
     values.set(name, value);
@@ -87,6 +88,9 @@ export async function main(args = process.argv.slice(2)) {
     incidentEvidencePath: operatorPath(values.get("--incident-evidence")!),
     authRecoveryEvidencePath: operatorPath(
       values.get("--auth-recovery-evidence")!,
+    ),
+    clinicPilotEvidencePath: operatorPath(
+      values.get("--clinic-pilot-evidence")!,
     ),
     clinicalDatabaseFingerprint: values.get("--clinical-database-fingerprint")!,
     controlledSubstanceAuditPath: operatorPath(

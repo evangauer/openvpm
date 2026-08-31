@@ -2,6 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
 import { evaluateAuthRecoveryEvidence } from "./auth-recovery-evidence";
 import { evaluateClinicalDataIntegrityEvidence } from "./clinical-data-integrity-evidence";
+import { evaluateClinicPilotReleaseEvidence } from "./clinic-pilot-release-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const REPOSITORY_PATTERN = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i;
@@ -90,6 +91,7 @@ export type ClinicReadinessEvidenceCollectionOptions = {
   restoreEvidencePath: string;
   incidentEvidencePath: string;
   authRecoveryEvidencePath: string;
+  clinicPilotEvidencePath: string;
   clinicalDatabaseFingerprint: string;
   controlledSubstanceAuditPath: string;
   prescriptionAuditPath: string;
@@ -880,6 +882,10 @@ export async function collectClinicReadinessEvidence(
     options.authRecoveryEvidencePath,
     "Account-recovery evidence",
   );
+  const clinicPilot = regularBoundedJsonFile(
+    options.clinicPilotEvidencePath,
+    "Clinic-pilot evidence",
+  );
   const clinicalDataIntegrity = {
     evidenceFormatVersion: 1,
     releaseSha,
@@ -919,6 +925,16 @@ export async function collectClinicReadinessEvidence(
       "Account-recovery evidence is incomplete, stale, or unsafe.",
     );
   }
+  const clinicPilotDecision = evaluateClinicPilotReleaseEvidence(
+    clinicPilot,
+    Date.parse(checkedAt),
+  );
+  if (!clinicPilotDecision.ready) {
+    throw new Error("Clinic-pilot evidence is incomplete, stale, or unsafe.");
+  }
+  if (clinicPilotDecision.releaseSha !== releaseSha) {
+    throw new Error("Clinic-pilot evidence does not match the release SHA.");
+  }
   if (
     !evaluateClinicalDataIntegrityEvidence(
       clinicalDataIntegrity,
@@ -931,7 +947,7 @@ export async function collectClinicReadinessEvidence(
   }
 
   return {
-    evidenceFormatVersion: 8,
+    evidenceFormatVersion: 9,
     releaseSha,
     releaseApproval,
     ci: {
@@ -985,6 +1001,7 @@ export async function collectClinicReadinessEvidence(
     },
     incidentResponse,
     authRecovery,
+    clinicPilot,
     clinicalDataIntegrity,
     restoreDrill,
   };

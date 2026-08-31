@@ -176,3 +176,82 @@ sessions cannot read any pilot-cohort state.
 No dashboard can replace clinic sign-off. Graduation is a documented operating
 decision supported by exact product evidence, an accepted workflow, recoverable
 data, and a team that knows the fallback.
+
+Graduation in the pilot workspace is not by itself a production release. The
+clinic-readiness collector also requires a bounded, PHI-free pilot evidence
+packet for the exact release SHA. That packet records only the supported
+workflow/jurisdiction, counts and boolean outcomes, opaque clinic-admin user ID,
+the validated clinic-use hash and pilot projection version, named
+clinical/release/security approvers, timestamps, and zero release-blocking
+finding counts. Free-form notes, clinic or patient names, contact destinations,
+provider payloads, credentials, and local paths are prohibited.
+
+The evidence JSON has no optional or free-form fields. Use this exact shape,
+substituting reviewed values from the immutable pilot projection and the exact
+release candidate:
+
+```json
+{
+  "evidenceFormatVersion": 1,
+  "pilotId": "pilot-2026-08-30-deadbeef",
+  "releaseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "startedAt": "2026-08-25T14:00:00.000Z",
+  "completedAt": "2026-08-30T19:00:00.000Z",
+  "pilotScope": {
+    "workflow": "general_practice",
+    "jurisdiction": "US",
+    "activeLocationCount": 1,
+    "distinctClinicDays": 5
+  },
+  "outcomes": {
+    "clinicAcceptanceRecorded": true,
+    "clinicUseValidated": true,
+    "communicationTested": true,
+    "exportAndRollbackConfirmed": true,
+    "firstVisitValidated": true,
+    "hostedFullAccess": true,
+    "incidentAndDowntimeProcedureExercised": true,
+    "parallelPimsRetained": true,
+    "paymentMethodCollected": true,
+    "setupComplete": true,
+    "verifiedAdministrator": true
+  },
+  "sourceEvidence": {
+    "clinicUseValidatedHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "pilotProjectionVersion": 7
+  },
+  "approvals": {
+    "clinicAdministrator": {
+      "actorId": "user:5f55c40b-0e87-4af2-94a8-fbe97ff5ca15",
+      "approvedAt": "2026-08-30T19:10:00.000Z"
+    },
+    "veterinaryClinicalOwner": {
+      "actorId": "github:@clinical-owner",
+      "approvedAt": "2026-08-30T19:20:00.000Z"
+    },
+    "releaseOwner": {
+      "actorId": "github:@release-owner",
+      "approvedAt": "2026-08-30T19:30:00.000Z"
+    },
+    "securityOwner": {
+      "actorId": "github:@security-owner",
+      "approvedAt": "2026-08-30T19:40:00.000Z"
+    }
+  },
+  "evidenceSafety": {
+    "contactDestinationsFree": true,
+    "localPathsFree": true,
+    "patientIdentifiersFree": true,
+    "phiFree": true,
+    "secretsFree": true
+  },
+  "findings": {
+    "criticalCount": 0,
+    "highCount": 0,
+    "openReleaseBlockingCount": 0
+  }
+}
+```
+
+The example identifiers and hashes are synthetic placeholders and are not valid
+release evidence.

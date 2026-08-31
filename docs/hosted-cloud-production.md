@@ -216,6 +216,7 @@ pnpm --filter @openpims/web release:clinic-readiness:collect -- \
   --restore-evidence /secure/path/provider-restore-evidence.json \
   --incident-evidence /secure/path/incident-tabletop-evidence.json \
   --auth-recovery-evidence /secure/path/auth-recovery-drill-evidence.json \
+  --clinic-pilot-evidence /secure/path/clinic-pilot-release-evidence.json \
   --clinical-database-fingerprint "$DATABASE_TARGET_FINGERPRINT" \
   --controlled-substance-audit /secure/path/controlled-substances.json \
   --prescription-audit /secure/path/prescriptions.json \
@@ -241,8 +242,16 @@ self-approve, environment branch scope is wrong, `staging` lacks independent
 approval, `main` needs fewer than two approvals, code-owner or last-push review
 is disabled, the exact merge/review provenance is absent, or any required
 clinic-readiness/security check is optional. It fetches the HTTPS health
-response itself and requires bounded local provider-restore and incident-
-tabletop packets. It also requires fresh, aggregate-only controlled-substance,
+response itself and requires bounded local provider-restore, incident-tabletop,
+account-recovery, and controlled clinic-pilot packets. Clinic-pilot evidence is
+bound to the exact release SHA and must prove five distinct clinic days, one
+supported US location, validated clinic use and acceptance, retained parallel
+PIMS/rollback paths, communications, billing access, four independent
+role-appropriate approvals, an immutable validated-use hash plus pilot
+projection version, and zero critical, high, or release-blocking open
+findings. The strict packet shape rejects free-form fields that could carry PHI,
+contact destinations, local paths, or secrets. It also requires fresh,
+aggregate-only controlled-substance,
 prescription, lab-result, and vaccination reports from the same independently
 configured database fingerprint; every report must have valid counts, empty
 finding lists, and `releaseSafe: true`. It writes the combined packet with
@@ -266,8 +275,9 @@ proves the hold/release workflow, exact object version, and authentication,
 tenant, scheduling, clinical, invoice, payment, and file smokes; and a fresh,
 approved incident tabletop covers all five required scenarios with three
 distinct named authorities. Missing, stale, cross-SHA, synthetic-only,
-unhealthy, incomplete-incident, cross-database, unsafe-clinical-data, or
-weak-governance evidence returns `NO_GO` and a nonzero exit. The synthetic CI
+unhealthy, incomplete-incident, absent clinic acceptance, cross-database,
+unsafe-clinical-data, or weak-governance evidence returns `NO_GO` and a nonzero
+exit. The synthetic CI
 drill is necessary regression proof, but it
 cannot authorize production. Keep the packet access-controlled; it contains
 only bounded status evidence and safe role handles, never credentials, private

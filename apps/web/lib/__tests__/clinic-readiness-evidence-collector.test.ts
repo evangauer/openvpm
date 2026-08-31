@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -184,6 +184,78 @@ function authRecoveryEvidencePath() {
         criticalCount: 0,
         highCount: 0,
         followUpIssueNumbers: [],
+      },
+    }),
+  );
+  return file;
+}
+
+function clinicPilotEvidencePath() {
+  const directory = mkdtempSync(
+    path.join(tmpdir(), "openvpm-clinic-pilot-evidence-"),
+  );
+  temporaryDirectories.push(directory);
+  const file = path.join(directory, "clinic-pilot.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      evidenceFormatVersion: 1,
+      pilotId: "pilot-2026-08-29-deadbeef",
+      releaseSha: sha,
+      startedAt: "2026-08-24T14:00:00.000Z",
+      completedAt: "2026-08-29T20:00:00.000Z",
+      pilotScope: {
+        workflow: "general_practice",
+        jurisdiction: "US",
+        activeLocationCount: 1,
+        distinctClinicDays: 5,
+      },
+      outcomes: {
+        clinicAcceptanceRecorded: true,
+        clinicUseValidated: true,
+        communicationTested: true,
+        exportAndRollbackConfirmed: true,
+        firstVisitValidated: true,
+        hostedFullAccess: true,
+        incidentAndDowntimeProcedureExercised: true,
+        parallelPimsRetained: true,
+        paymentMethodCollected: true,
+        setupComplete: true,
+        verifiedAdministrator: true,
+      },
+      sourceEvidence: {
+        clinicUseValidatedHash: "b".repeat(64),
+        pilotProjectionVersion: 7,
+      },
+      approvals: {
+        clinicAdministrator: {
+          actorId: "user:5f55c40b-0e87-4af2-94a8-fbe97ff5ca15",
+          approvedAt: "2026-08-29T20:01:00.000Z",
+        },
+        veterinaryClinicalOwner: {
+          actorId: "github:@clinical-owner",
+          approvedAt: "2026-08-29T20:02:00.000Z",
+        },
+        releaseOwner: {
+          actorId: "github:@release-owner",
+          approvedAt: "2026-08-29T20:03:00.000Z",
+        },
+        securityOwner: {
+          actorId: "github:@security-owner",
+          approvedAt: "2026-08-29T20:04:00.000Z",
+        },
+      },
+      evidenceSafety: {
+        phiFree: true,
+        secretsFree: true,
+        patientIdentifiersFree: true,
+        contactDestinationsFree: true,
+        localPathsFree: true,
+      },
+      findings: {
+        criticalCount: 0,
+        highCount: 0,
+        openReleaseBlockingCount: 0,
       },
     }),
   );
@@ -549,6 +621,7 @@ function options(fetchFn: typeof fetch) {
     restoreEvidencePath: restoreEvidencePath(),
     incidentEvidencePath: incidentEvidencePath(),
     authRecoveryEvidencePath: authRecoveryEvidencePath(),
+    clinicPilotEvidencePath: clinicPilotEvidencePath(),
     clinicalDatabaseFingerprint,
     ...clinicalAuditPaths(),
     now: new Date("2026-08-29T21:00:00.000Z"),
@@ -563,7 +636,7 @@ describe("clinic readiness evidence collector", () => {
     );
 
     expect(evidence).toMatchObject({
-      evidenceFormatVersion: 8,
+      evidenceFormatVersion: 9,
       releaseSha: sha,
       releaseApproval: {
         releaseSha: sha,
@@ -704,6 +777,22 @@ describe("clinic readiness evidence collector", () => {
     ).rejects.toThrow(
       "Release SHA must identify exactly one merged pull request to main.",
     );
+  });
+
+  it("rejects clinic-pilot evidence from a different release", async () => {
+    const collectionOptions = options(authoritativeResponses());
+    const pilot = JSON.parse(
+      readFileSync(collectionOptions.clinicPilotEvidencePath, "utf8"),
+    ) as Record<string, unknown>;
+    pilot.releaseSha = "c".repeat(40);
+    writeFileSync(
+      collectionOptions.clinicPilotEvidencePath,
+      JSON.stringify(pilot),
+    );
+
+    await expect(
+      collectClinicReadinessEvidence(collectionOptions),
+    ).rejects.toThrow("Clinic-pilot evidence does not match the release SHA.");
   });
 
   it("rejects a green job whose required dependency audit step is absent", async () => {

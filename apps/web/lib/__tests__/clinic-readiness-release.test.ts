@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { evaluateClinicReadinessRelease } from "../clinic-readiness-release";
 import { CLINICAL_DATA_AUDIT_SCHEMAS } from "../clinical-data-integrity-evidence";
+import { CLINIC_PILOT_OUTCOMES } from "../clinic-pilot-release-evidence";
 
 const now = Date.parse("2026-08-29T21:00:00.000Z");
 const sha = "a".repeat(40);
@@ -161,6 +162,59 @@ function healthyAuthRecoveryEvidence() {
   };
 }
 
+function healthyClinicPilotEvidence() {
+  return {
+    evidenceFormatVersion: 1,
+    pilotId: "pilot-2026-08-29-deadbeef",
+    releaseSha: sha,
+    startedAt: "2026-08-24T14:00:00.000Z",
+    completedAt: "2026-08-29T20:00:00.000Z",
+    pilotScope: {
+      workflow: "general_practice",
+      jurisdiction: "US",
+      activeLocationCount: 1,
+      distinctClinicDays: 5,
+    },
+    outcomes: Object.fromEntries(
+      CLINIC_PILOT_OUTCOMES.map((outcome) => [outcome, true]),
+    ) as Record<(typeof CLINIC_PILOT_OUTCOMES)[number], boolean>,
+    sourceEvidence: {
+      clinicUseValidatedHash: "b".repeat(64),
+      pilotProjectionVersion: 7,
+    },
+    approvals: {
+      clinicAdministrator: {
+        actorId: "user:5f55c40b-0e87-4af2-94a8-fbe97ff5ca15",
+        approvedAt: "2026-08-29T20:01:00.000Z",
+      },
+      veterinaryClinicalOwner: {
+        actorId: "github:@clinical-owner",
+        approvedAt: "2026-08-29T20:02:00.000Z",
+      },
+      releaseOwner: {
+        actorId: "github:@release-owner",
+        approvedAt: "2026-08-29T20:03:00.000Z",
+      },
+      securityOwner: {
+        actorId: "github:@security-owner",
+        approvedAt: "2026-08-29T20:04:00.000Z",
+      },
+    },
+    evidenceSafety: {
+      phiFree: true,
+      secretsFree: true,
+      patientIdentifiersFree: true,
+      contactDestinationsFree: true,
+      localPathsFree: true,
+    },
+    findings: {
+      criticalCount: 0,
+      highCount: 0,
+      openReleaseBlockingCount: 0,
+    },
+  };
+}
+
 function healthyEvidence() {
   const checks: Record<string, { ok: boolean; advisory?: boolean }> =
     Object.fromEntries(
@@ -182,7 +236,7 @@ function healthyEvidence() {
       ].map((name) => [name, { ok: true }]),
     );
   return {
-    evidenceFormatVersion: 8,
+    evidenceFormatVersion: 9,
     releaseSha: sha,
     releaseApproval: {
       releaseSha: sha,
@@ -219,6 +273,7 @@ function healthyEvidence() {
     },
     incidentResponse: healthyIncidentResponseEvidence(),
     authRecovery: healthyAuthRecoveryEvidence(),
+    clinicPilot: healthyClinicPilotEvidence(),
     repositoryGovernance: {
       checkedAt: "2026-08-29T20:55:00.000Z",
       productionEnvironment: {
@@ -383,7 +438,7 @@ describe("clinic readiness release decision", () => {
     const evidence = healthyEvidence();
     evidence.evidenceFormatVersion = 5;
     expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
-      "Clinic readiness evidence format version must be 8.",
+      "Clinic readiness evidence format version must be 9.",
     );
   });
 
@@ -430,6 +485,24 @@ describe("clinic readiness release decision", () => {
         "Account-recovery request and approval require distinct named authorities.",
         "Account-recovery drill did not prove priorSessionsRevoked.",
       ]),
+    );
+  });
+
+  it("rejects missing, cross-SHA, or incomplete clinic-pilot evidence", () => {
+    const evidence = healthyEvidence();
+    evidence.clinicPilot.releaseSha = "c".repeat(40);
+    evidence.clinicPilot.outcomes.clinicAcceptanceRecorded = false;
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toEqual(
+      expect.arrayContaining([
+        "Clinic-pilot evidence does not match the release SHA.",
+        "Clinic-pilot evidence did not prove clinicAcceptanceRecorded.",
+      ]),
+    );
+
+    delete (evidence as Partial<ReturnType<typeof healthyEvidence>>)
+      .clinicPilot;
+    expect(evaluateClinicReadinessRelease(evidence, now).reasons).toContain(
+      "Controlled clinic-pilot evidence is missing.",
     );
   });
 

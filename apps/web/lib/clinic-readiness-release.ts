@@ -1,6 +1,7 @@
 import { evaluateIncidentResponseEvidence } from "./incident-response-evidence";
 import { evaluateAuthRecoveryEvidence } from "./auth-recovery-evidence";
 import { evaluateClinicalDataIntegrityEvidence } from "./clinical-data-integrity-evidence";
+import { evaluateClinicPilotReleaseEvidence } from "./clinic-pilot-release-evidence";
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const GITHUB_LOGIN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38})$/i;
@@ -150,8 +151,8 @@ export function evaluateClinicReadinessRelease(
 ): ClinicReadinessDecision {
   const reasons: string[] = [];
   const root = record(input);
-  if (root?.evidenceFormatVersion !== 8) {
-    reasons.push("Clinic readiness evidence format version must be 8.");
+  if (root?.evidenceFormatVersion !== 9) {
+    reasons.push("Clinic readiness evidence format version must be 9.");
   }
   const releaseSha =
     root &&
@@ -272,6 +273,20 @@ export function evaluateClinicReadinessRelease(
       nowMs,
     );
     reasons.push(...authRecoveryDecision.reasons);
+  }
+
+  const clinicPilot = record(root?.clinicPilot);
+  if (!clinicPilot) {
+    reasons.push("Controlled clinic-pilot evidence is missing.");
+  } else {
+    const clinicPilotDecision = evaluateClinicPilotReleaseEvidence(
+      clinicPilot,
+      nowMs,
+    );
+    reasons.push(...clinicPilotDecision.reasons);
+    if (releaseSha && clinicPilotDecision.releaseSha !== releaseSha) {
+      reasons.push("Clinic-pilot evidence does not match the release SHA.");
+    }
   }
 
   const governance = record(root?.repositoryGovernance);
