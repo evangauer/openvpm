@@ -149,6 +149,7 @@ const mocks = vi.hoisted(() => {
         : "b".repeat(64),
     ),
     readRequestBytesWithLimit: vi.fn(),
+    finalizeTreatmentPlanResponseForConsent: vi.fn(async () => null),
   };
 });
 
@@ -170,6 +171,10 @@ vi.mock("@/lib/managed-file-upload", () => ({
 }));
 vi.mock("@/lib/file-replication", () => ({
   checksumSha256Hex: mocks.checksumSha256Hex,
+}));
+vi.mock("@/lib/treatment-plan-presentations/finalize", () => ({
+  finalizeTreatmentPlanResponseForConsent:
+    mocks.finalizeTreatmentPlanResponseForConsent,
 }));
 vi.mock("@/lib/billing/plans", () => ({
   billingEnforced: mocks.billingEnforced,
@@ -288,6 +293,7 @@ afterEach(() => {
     evidence: { etag: "etag-1", versionId: "version-1" },
   });
   mocks.finalizeManagedUploadManifest.mockResolvedValue(true);
+  mocks.finalizeTreatmentPlanResponseForConsent.mockResolvedValue(null);
   mocks.queueManagedUploadReplication.mockResolvedValue(true);
 });
 

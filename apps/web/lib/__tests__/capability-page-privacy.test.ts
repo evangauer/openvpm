@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("public capability page privacy", () => {
-  for (const capability of ["capture", "sign"] as const) {
+  for (const capability of ["capture", "sign", "treatment-plan"] as const) {
     it(`${capability} pages suppress indexing, caching, and referrers`, () => {
       const source = readFileSync(`app/${capability}/layout.tsx`, "utf8");
 
@@ -19,12 +19,16 @@ describe("public capability page privacy", () => {
     for (const path of [
       "/capture/:path*",
       "/sign/:path*",
+      "/treatment-plan/:path*",
       "/api/capture/:path*",
       "/api/sign/:path*",
+      "/api/treatment-plan/:path*",
     ]) {
       expect(config).toContain(`source: "${path}"`);
     }
-    expect(config).toContain('{ key: "Referrer-Policy", value: "no-referrer" }');
+    expect(config).toContain(
+      '{ key: "Referrer-Policy", value: "no-referrer" }',
+    );
     expect(config).toContain(
       '{ key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" }',
     );

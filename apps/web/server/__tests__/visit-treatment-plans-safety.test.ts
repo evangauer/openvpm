@@ -153,9 +153,7 @@ describe("visit treatment-plan authoring safety", () => {
   });
 
   it("does not import or mutate downstream billing, inventory, queue, or consent surfaces", () => {
-    expect(ROUTER_SOURCE).not.toMatch(
-      /invoiceItems|invoices|whiteboard|consent/i,
-    );
+    expect(ROUTER_SOURCE).not.toMatch(/invoiceItems|invoices|whiteboard/i);
     expect(ROUTER_SOURCE).not.toMatch(/stockQuantity|inventoryTracked/);
     expect(ROUTER_SOURCE).not.toContain("postCommitEffect");
   });

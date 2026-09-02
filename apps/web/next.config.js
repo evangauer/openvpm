@@ -19,8 +19,10 @@ const nextConfig = {
       },
       { source: "/capture/:path*", headers: capabilityHeaders },
       { source: "/sign/:path*", headers: capabilityHeaders },
+      { source: "/treatment-plan/:path*", headers: capabilityHeaders },
       { source: "/api/capture/:path*", headers: capabilityHeaders },
       { source: "/api/sign/:path*", headers: capabilityHeaders },
+      { source: "/api/treatment-plan/:path*", headers: capabilityHeaders },
     ];
   },
 };
