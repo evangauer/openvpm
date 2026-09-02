@@ -57,7 +57,7 @@ DECLARE
     'locations','patient_merge_events','patients','payment_disputes','payment_processor_payouts','payment_processor_refunds','payment_processor_settlements','portal_sessions','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_note_replacements','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
-    'visit_treatment_plan_response_lines','visit_treatment_plan_responses','visit_treatment_plan_revision_lines','visit_treatment_plan_revisions','visit_treatment_plans',
+    'visit_treatment_plan_presentations','visit_treatment_plan_response_lines','visit_treatment_plan_responses','visit_treatment_plan_revision_lines','visit_treatment_plan_revisions','visit_treatment_plans',
     'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
   ];
 BEGIN
@@ -169,11 +169,15 @@ GRANT SELECT, INSERT ON visit_treatment_plan_revisions,
   TO openpims_app;
 REVOKE DELETE ON visit_treatment_plans FROM openpims_app;
 GRANT SELECT, INSERT, UPDATE ON visit_treatment_plans TO openpims_app;
+REVOKE DELETE ON visit_treatment_plan_presentations FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON visit_treatment_plan_presentations TO openpims_app;
 
 REVOKE ALL ON FUNCTION compute_visit_treatment_plan_revision_sha256(uuid,uuid,uuid,integer,text,numeric,numeric,numeric) FROM PUBLIC;
 REVOKE ALL ON FUNCTION compute_visit_treatment_plan_response_sha256(uuid,uuid,uuid,uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION compute_visit_treatment_plan_response_sha256_from_decisions(uuid,uuid,uuid,uuid,jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION compute_visit_treatment_plan_revision_sha256(uuid,uuid,uuid,integer,text,numeric,numeric,numeric) TO openpims_app;
 GRANT EXECUTE ON FUNCTION compute_visit_treatment_plan_response_sha256(uuid,uuid,uuid,uuid) TO openpims_app;
+GRANT EXECUTE ON FUNCTION compute_visit_treatment_plan_response_sha256_from_decisions(uuid,uuid,uuid,uuid,jsonb) TO openpims_app;
 REVOKE ALL ON FUNCTION validate_visit_treatment_plan_revision_seal() FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION protect_visit_treatment_plan_revision() FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION protect_visit_treatment_plan_revision_line() FROM PUBLIC, openpims_app;
@@ -181,6 +185,9 @@ REVOKE ALL ON FUNCTION validate_visit_treatment_plan_response_seal() FROM PUBLIC
 REVOKE ALL ON FUNCTION protect_visit_treatment_plan_response() FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION protect_visit_treatment_plan_response_line() FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION protect_visit_treatment_plan_identity() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION protect_visit_treatment_plan_presentation() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION reject_revision_while_treatment_plan_signing() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION reject_treatment_plan_close_while_signing() FROM PUBLIC, openpims_app;
 
 -- Carrier registration events are PHI-free, append-only lifecycle evidence.
 REVOKE ALL ON messaging_registration_events FROM openpims_app;

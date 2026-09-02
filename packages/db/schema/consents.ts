@@ -119,6 +119,10 @@ export const consentRequests = pgTable(
   },
   (table) => ({
     tokenUq: uniqueIndex("consent_requests_token_uq").on(table.token),
+    practiceIdUq: uniqueIndex("consent_requests_practice_id_uq").on(
+      table.practiceId,
+      table.id,
+    ),
     practiceIdx: index("consent_requests_practice_idx").on(
       table.practiceId,
       table.deletedAt,

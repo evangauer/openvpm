@@ -27,6 +27,7 @@ import {
   reserveManagedUpload,
   type ManagedUploadReservation,
 } from "@/lib/managed-file-upload";
+import { finalizeTreatmentPlanResponseForConsent } from "@/lib/treatment-plan-presentations/finalize";
 
 export const dynamic = "force-dynamic";
 
@@ -627,6 +628,15 @@ async function handlePost(
           ) {
             throw new Error("Consent file disappeared before finalization");
           }
+          await finalizeTreatmentPlanResponseForConsent(tx, {
+            practiceId: signing.practiceId,
+            consentRequestId: signing.id,
+            signedFileId: reservation.id,
+            signedDocumentSha256: reservation.checksumSha256,
+            signatureSha256: signing.signatureSha256,
+            signerName: signing.signerName,
+            signedAt: signing.signedAt,
+          });
         });
       } else {
         created = await withTenant(db, signing.practiceId, async (tx) => {
@@ -654,6 +664,16 @@ async function handlePost(
           ) {
             throw new Error("Consent file disappeared before finalization");
           }
+
+          await finalizeTreatmentPlanResponseForConsent(tx, {
+            practiceId: signing.practiceId,
+            consentRequestId: signing.id,
+            signedFileId: reservation.id,
+            signedDocumentSha256: reservation.checksumSha256,
+            signatureSha256: signing.signatureSha256,
+            signerName: signing.signerName,
+            signedAt: signing.signedAt,
+          });
 
           await tx.insert(auditLog).values({
             practiceId: signing.practiceId,
