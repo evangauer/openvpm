@@ -1,5 +1,16 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
+
+const require = createRequire(import.meta.url);
+const nextConfig = require("../../next.config.js") as {
+  headers: () => Promise<
+    {
+      source: string;
+      headers: { key: string; value: string }[];
+    }[]
+  >;
+};
 
 describe("public capability page privacy", () => {
   for (const capability of ["capture", "sign", "treatment-plan"] as const) {
@@ -13,8 +24,13 @@ describe("public capability page privacy", () => {
     });
   }
 
-  it("sets capability privacy at the HTTP boundary before subresources load", () => {
-    const config = readFileSync("next.config.js", "utf8");
+  it("sets capability privacy at the HTTP boundary before subresources load", async () => {
+    const configuredHeaders = await nextConfig.headers();
+    const expectedHeaders = [
+      { key: "Referrer-Policy", value: "no-referrer" },
+      { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
+      { key: "Cache-Control", value: "private, no-store, max-age=0" },
+    ];
 
     for (const path of [
       "/capture/:path*",
@@ -24,16 +40,10 @@ describe("public capability page privacy", () => {
       "/api/sign/:path*",
       "/api/treatment-plan/:path*",
     ]) {
-      expect(config).toContain(`source: "${path}"`);
+      expect(configuredHeaders).toContainEqual({
+        source: path,
+        headers: expectedHeaders,
+      });
     }
-    expect(config).toContain(
-      '{ key: "Referrer-Policy", value: "no-referrer" }',
-    );
-    expect(config).toContain(
-      '{ key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" }',
-    );
-    expect(config).toContain(
-      '{ key: "Cache-Control", value: "private, no-store, max-age=0" }',
-    );
   });
 });
