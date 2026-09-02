@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildTreatmentPlanConsentBody,
   canonicalTreatmentPlanDecisions,
+  treatmentPlanDecisionsEqual,
+  treatmentPlanPresentationBlocksReplacement,
   type OfferedTreatmentPlanLine,
 } from "./decision-policy";
 
@@ -29,6 +31,78 @@ const lines: OfferedTreatmentPlanLine[] = [
 ];
 
 describe("treatment-plan client decision policy", () => {
+  it("allows replacement after an awaiting-signature presentation and pending consent expire", () => {
+    const now = new Date("2026-09-02T12:00:00.000Z");
+    expect(
+      treatmentPlanPresentationBlocksReplacement(
+        {
+          status: "awaiting_signature",
+          expiresAt: new Date("2026-09-02T11:59:59.000Z"),
+          consentStatus: "pending",
+        },
+        now,
+      ),
+    ).toBe(false);
+    expect(
+      treatmentPlanPresentationBlocksReplacement(
+        {
+          status: "awaiting_signature",
+          expiresAt: new Date("2026-09-02T12:00:01.000Z"),
+          consentStatus: "pending",
+        },
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      treatmentPlanPresentationBlocksReplacement(
+        {
+          status: "awaiting_signature",
+          expiresAt: new Date("2026-09-02T11:59:59.000Z"),
+          consentStatus: "signing",
+        },
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it("compares canonical decisions independently of JSON object and array order", () => {
+    const persisted = [
+      {
+        decision: "declined" as const,
+        declineReason: "not today",
+        revisionLineId: lines[1]!.id,
+        acceptedQuantity: "0.000",
+      },
+      {
+        acceptedQuantity: "1.500",
+        revisionLineId: lines[0]!.id,
+        declineReason: null,
+        decision: "accepted" as const,
+      },
+    ];
+    const retried = [
+      {
+        revisionLineId: lines[0]!.id,
+        decision: "accepted" as const,
+        acceptedQuantity: "1.500",
+        declineReason: null,
+      },
+      {
+        revisionLineId: lines[1]!.id,
+        decision: "declined" as const,
+        acceptedQuantity: "0.000",
+        declineReason: "not today",
+      },
+    ];
+    expect(treatmentPlanDecisionsEqual(persisted, retried)).toBe(true);
+    expect(
+      treatmentPlanDecisionsEqual(persisted, [
+        retried[0]!,
+        { ...retried[1]!, declineReason: "different" },
+      ]),
+    ).toBe(false);
+  });
+
   it("requires one decision per exact offered line and canonicalizes quantities", () => {
     expect(
       canonicalTreatmentPlanDecisions(

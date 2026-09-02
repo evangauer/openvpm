@@ -157,4 +157,14 @@ describe("visit treatment-plan authoring safety", () => {
     expect(ROUTER_SOURCE).not.toMatch(/stockQuantity|inventoryTracked/);
     expect(ROUTER_SOURCE).not.toContain("postCommitEffect");
   });
+
+  it("does not strand an expired pending consent as an active signature", () => {
+    expect(ROUTER_SOURCE).toContain("consentStatus: consentRequests.status");
+    expect(ROUTER_SOURCE).toContain(
+      "treatmentPlanPresentationBlocksReplacement(presentationCandidate, now)",
+    );
+    expect(ROUTER_SOURCE).toContain(
+      "TREATMENT_PLAN_IN_FLIGHT_CONSENT_STATUSES",
+    );
+  });
 });

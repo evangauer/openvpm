@@ -43,6 +43,10 @@ import {
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import { appBaseUrl } from "@/lib/app-url";
 import {
+  TREATMENT_PLAN_IN_FLIGHT_CONSENT_STATUSES,
+  treatmentPlanPresentationBlocksReplacement,
+} from "@/lib/treatment-plan-presentations/decision-policy";
+import {
   generateTreatmentPlanPresentationToken,
   hashTreatmentPlanPresentationToken,
   TREATMENT_PLAN_PRESENTATION_TOKEN_TTL_MS,
@@ -723,13 +727,28 @@ async function readPreview(
           asc(visitTreatmentPlanRevisionLines.id),
         )
     : [];
-  const [activePresentation] = treatmentPlanClientDecisionsEnabled()
+  const now = new Date();
+  const [presentationCandidate] = treatmentPlanClientDecisionsEnabled()
     ? await database
         .select({
           status: visitTreatmentPlanPresentations.status,
           expiresAt: visitTreatmentPlanPresentations.expiresAt,
+          consentStatus: consentRequests.status,
         })
         .from(visitTreatmentPlanPresentations)
+        .leftJoin(
+          consentRequests,
+          and(
+            eq(
+              consentRequests.practiceId,
+              visitTreatmentPlanPresentations.practiceId,
+            ),
+            eq(
+              consentRequests.id,
+              visitTreatmentPlanPresentations.consentRequestId,
+            ),
+          ),
+        )
         .where(
           and(
             eq(visitTreatmentPlanPresentations.practiceId, practiceId),
@@ -743,12 +762,21 @@ async function readPreview(
         .orderBy(desc(visitTreatmentPlanPresentations.createdAt))
         .limit(1)
     : [];
+  const activePresentation =
+    presentationCandidate &&
+    (presentationCandidate.status === "pending" ||
+      treatmentPlanPresentationBlocksReplacement(presentationCandidate, now))
+      ? {
+          status: presentationCandidate.status,
+          expiresAt: presentationCandidate.expiresAt,
+        }
+      : null;
   return {
     plan,
     revision,
     lines,
     response: response ? { ...response, lines: responseLines } : null,
-    activePresentation: activePresentation ?? null,
+    activePresentation,
     clientDecisionsEnabled: treatmentPlanClientDecisionsEnabled(),
   };
 }
@@ -963,7 +991,10 @@ export const visitTreatmentPlansRouter = createRouter({
               eq(visitTreatmentPlanPresentations.status, "awaiting_signature"),
               or(
                 gt(visitTreatmentPlanPresentations.expiresAt, new Date()),
-                inArray(consentRequests.status, ["signing", "signed"]),
+                inArray(
+                  consentRequests.status,
+                  TREATMENT_PLAN_IN_FLIGHT_CONSENT_STATUSES,
+                ),
               ),
             ),
           )

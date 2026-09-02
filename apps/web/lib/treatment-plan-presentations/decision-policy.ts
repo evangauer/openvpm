@@ -22,6 +22,51 @@ export type TreatmentPlanDecisionInput = {
   declineReason?: string | null;
 };
 
+export const TREATMENT_PLAN_IN_FLIGHT_CONSENT_STATUSES = ["signing", "signed"];
+
+export function treatmentPlanPresentationBlocksReplacement(
+  presentation: {
+    status: string;
+    expiresAt: Date;
+    consentStatus: string | null;
+  },
+  now = new Date(),
+): boolean {
+  return (
+    presentation.status === "awaiting_signature" &&
+    (presentation.expiresAt > now ||
+      TREATMENT_PLAN_IN_FLIGHT_CONSENT_STATUSES.some(
+        (status) => status === presentation.consentStatus,
+      ))
+  );
+}
+
+export function treatmentPlanDecisionsEqual(
+  left: readonly VisitTreatmentPlanPresentationDecision[] | null,
+  right: readonly VisitTreatmentPlanPresentationDecision[],
+): boolean {
+  if (!left || left.length !== right.length) return false;
+  const leftByLine = new Map(
+    left.map((decision) => [decision.revisionLineId, decision]),
+  );
+  if (leftByLine.size !== left.length) return false;
+  const seen = new Set<string>();
+  for (const decision of right) {
+    if (seen.has(decision.revisionLineId)) return false;
+    seen.add(decision.revisionLineId);
+    const persisted = leftByLine.get(decision.revisionLineId);
+    if (
+      !persisted ||
+      persisted.decision !== decision.decision ||
+      persisted.acceptedQuantity !== decision.acceptedQuantity ||
+      persisted.declineReason !== decision.declineReason
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function canonicalTreatmentPlanDecisions(
   input: readonly TreatmentPlanDecisionInput[],
   lines: readonly OfferedTreatmentPlanLine[],
