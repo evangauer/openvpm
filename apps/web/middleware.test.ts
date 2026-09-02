@@ -37,6 +37,21 @@ function expectSecurityHeaders(response: Response) {
   }
 }
 
+function expectCapabilitySecurityHeaders(response: Response) {
+  for (const { key, value } of securityHeaders) {
+    if (key.toLowerCase() !== "referrer-policy") {
+      expect(response.headers.get(key)).toBe(value);
+    }
+  }
+  expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+  expect(response.headers.get("X-Robots-Tag")).toBe(
+    "noindex, nofollow, noarchive",
+  );
+  expect(response.headers.get("Cache-Control")).toBe(
+    "private, no-store, max-age=0",
+  );
+}
+
 beforeEach(() => {
   vi.stubEnv("NEXTAUTH_SECRET", "test-secret");
 });
@@ -53,6 +68,11 @@ describe("middleware security headers", () => {
     expect(mocks.getToken).not.toHaveBeenCalled();
     expect(response.headers.get("location")).toBeNull();
     expectSecurityHeaders(response);
+    expect(response.headers.get("Referrer-Policy")).toBe(
+      "strict-origin-when-cross-origin",
+    );
+    expect(response.headers.get("Cache-Control")).toBeNull();
+    expect(response.headers.get("X-Robots-Tag")).toBeNull();
   });
 
   it("keeps email preference links public without exposing lookalike routes", async () => {
@@ -142,8 +162,28 @@ describe("middleware security headers", () => {
     expect(protectedResponse.headers.get("location")).toBe(
       "https://openvpm.test/login?next=%2Ftreatment-plans",
     );
-    expectSecurityHeaders(capabilityResponse);
+    expectCapabilitySecurityHeaders(capabilityResponse);
     expectSecurityHeaders(protectedResponse);
+  });
+
+  it("enforces capability privacy headers on public page and API prefixes", async () => {
+    const token = "a".repeat(64);
+
+    for (const path of [
+      `/capture/${token}`,
+      `/sign/${token}`,
+      `/treatment-plan/${token}`,
+      `/api/capture/${token}`,
+      `/api/sign/${token}`,
+      `/api/treatment-plan/${token}`,
+    ]) {
+      const response = await middleware(request(path));
+
+      expect(response.headers.get("location")).toBeNull();
+      expectCapabilitySecurityHeaders(response);
+    }
+
+    expect(mocks.getToken).not.toHaveBeenCalled();
   });
 
   it("allows Vercel observability proxy paths without session lookup", async () => {
