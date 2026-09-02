@@ -1,5 +1,6 @@
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
+import type { Database } from "@openpims/db/client";
 import { usageRecords, practices } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { alertOps } from "@/lib/alerts";
@@ -29,7 +30,7 @@ export const ABUSE_ALERT_THRESHOLDS: Record<UsageKind, number> = {
 export function crossesAbuseThreshold(
   kind: UsageKind,
   before: number,
-  after: number
+  after: number,
 ): boolean {
   const threshold = ABUSE_ALERT_THRESHOLDS[kind];
   if (!threshold) return false;
@@ -67,22 +68,22 @@ export async function recordUsage(opts: {
         })
         .from(practices)
         .where(
-          and(
-            eq(practices.id, opts.practiceId),
-            isNull(practices.deletedAt)
-          )
+          and(eq(practices.id, opts.practiceId), isNull(practices.deletedAt)),
         )
-        .limit(1)
+        .limit(1),
     );
     if (!activePractice) return;
 
     const [usageRecord] = await withSystem(db, (tx) =>
-      tx.insert(usageRecords).values({
-        practiceId: opts.practiceId,
-        kind: opts.kind,
-        quantity,
-        periodMonth,
-      }).returning({ id: usageRecords.id })
+      tx
+        .insert(usageRecords)
+        .values({
+          practiceId: opts.practiceId,
+          kind: opts.kind,
+          quantity,
+          periodMonth,
+        })
+        .returning({ id: usageRecords.id }),
     );
     if (!usageRecord) return;
     // Keep the local usage ledger complete while a clinic is held, but defer
@@ -122,10 +123,7 @@ async function maybeMeterToStripe(opts: {
         })
         .from(practices)
         .where(
-          and(
-            eq(practices.id, opts.practiceId),
-            isNull(practices.deletedAt)
-          )
+          and(eq(practices.id, opts.practiceId), isNull(practices.deletedAt)),
         )
         .limit(1)
         .for("share", { of: practices });
@@ -149,8 +147,8 @@ async function maybeMeterToStripe(opts: {
           .where(
             and(
               eq(usageRecords.id, opts.usageRecordId),
-              isNull(usageRecords.deletedAt)
-            )
+              isNull(usageRecords.deletedAt),
+            ),
           );
         return "metered";
       }
@@ -162,9 +160,11 @@ async function maybeMeterToStripe(opts: {
   }
 }
 
-export async function reconcileUnmeteredUsage(opts: {
-  limit?: number;
-} = {}): Promise<UsageReconciliationResult> {
+export async function reconcileUnmeteredUsage(
+  opts: {
+    limit?: number;
+  } = {},
+): Promise<UsageReconciliationResult> {
   if (!billingEnforced()) return { attempted: 0, metered: 0, skipped: 0 };
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
   const rows = await withSystem(db, (tx) =>
@@ -182,16 +182,16 @@ export async function reconcileUnmeteredUsage(opts: {
           eq(practices.id, usageRecords.practiceId),
           isNull(practices.deletedAt),
           eq(practices.recoveryHold, false),
-          isNotNull(practices.stripeCustomerId)
-        )
+          isNotNull(practices.stripeCustomerId),
+        ),
       )
       .where(
         and(
           isNull(usageRecords.stripeMeteredAt),
-          isNull(usageRecords.deletedAt)
-        )
+          isNull(usageRecords.deletedAt),
+        ),
       )
-      .limit(limit)
+      .limit(limit),
   );
 
   let metered = 0;
@@ -219,7 +219,7 @@ async function maybeAlertOnSpike(
   practiceId: string,
   kind: UsageKind,
   periodMonth: string,
-  quantity: number
+  quantity: number,
 ): Promise<void> {
   if (!ABUSE_ALERT_THRESHOLDS[kind]) return;
   try {
@@ -228,7 +228,7 @@ async function maybeAlertOnSpike(
     if (crossesAbuseThreshold(kind, before, after)) {
       await alertOps(
         `usage spike: ${kind}`,
-        `Practice ${practiceId} crossed ${ABUSE_ALERT_THRESHOLDS[kind]} ${kind} events in ${periodMonth} (now ${after}). Overage is billed past the included allowance — review for abuse.`
+        `Practice ${practiceId} crossed ${ABUSE_ALERT_THRESHOLDS[kind]} ${kind} events in ${periodMonth} (now ${after}). Overage is billed past the included allowance — review for abuse.`,
       );
     }
   } catch (e) {
@@ -240,20 +240,28 @@ async function maybeAlertOnSpike(
 export async function usageForPractice(
   practiceId: string,
   kind: UsageKind,
-  periodMonth: string = currentPeriodMonth()
+  periodMonth: string = currentPeriodMonth(),
+  transactionDb?: Database,
 ): Promise<number> {
-  const [row] = await withSystem(db, (tx) =>
+  const readUsage = (tx: Database) =>
     tx
-      .select({ total: sql<number>`coalesce(sum(${usageRecords.quantity}), 0)::int` })
+      .select({
+        total: sql<number>`coalesce(sum(${usageRecords.quantity}), 0)::int`,
+      })
       .from(usageRecords)
       .where(
         and(
           eq(usageRecords.practiceId, practiceId),
           eq(usageRecords.kind, kind),
           eq(usageRecords.periodMonth, periodMonth),
-          isNull(usageRecords.deletedAt)
-        )
-      )
-  );
+          isNull(usageRecords.deletedAt),
+        ),
+      );
+  // usage_records is tenant-scoped by RLS. Protected procedures can reuse
+  // their existing transaction directly instead of checking out another pool
+  // connection or temporarily elevating privileges.
+  const [row] = transactionDb
+    ? await readUsage(transactionDb)
+    : await withSystem(db, readUsage);
   return Number(row?.total ?? 0);
 }

@@ -762,6 +762,7 @@ describe("messaging location target safety", () => {
       PRACTICE_ID,
       "sms",
       "2026-06",
+      db,
     );
   });
 

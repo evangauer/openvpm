@@ -784,7 +784,12 @@ export const messagingRouter = createRouter({
       );
 
     const period = currentPeriodMonth();
-    const smsUsed = await usageForPractice(ctx.practiceId, "sms", period);
+    const smsUsed = await usageForPractice(
+      ctx.practiceId,
+      "sms",
+      period,
+      ctx.db,
+    );
 
     const [practice] = await ctx.db
       .select({

@@ -140,6 +140,13 @@ describe("subscription checkout", () => {
     expect(source).not.toContain("if (!result?.url)");
     expect(source).not.toContain("if (!result)");
     expect(source).not.toContain("practice?.");
+    expect(source).toContain(
+      'usageForPractice(ctx.practiceId, "sms", period, ctx.db)',
+    );
+    expect(source).toContain(
+      'usageForPractice(ctx.practiceId, "ai_run", period, ctx.db)',
+    );
+    expect(source).not.toContain("await Promise.all([");
   });
 
   it("marks Cloud purchasable with only the location price configured", async () => {

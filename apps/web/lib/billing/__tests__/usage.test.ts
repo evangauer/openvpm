@@ -9,9 +9,15 @@ import {
 
 describe("currentPeriodMonth", () => {
   it("formats the billing period as YYYY-MM (UTC)", () => {
-    expect(currentPeriodMonth(new Date("2026-06-07T12:00:00Z"))).toBe("2026-06");
-    expect(currentPeriodMonth(new Date("2026-01-31T23:59:59Z"))).toBe("2026-01");
-    expect(currentPeriodMonth(new Date("2026-12-01T00:00:00Z"))).toBe("2026-12");
+    expect(currentPeriodMonth(new Date("2026-06-07T12:00:00Z"))).toBe(
+      "2026-06",
+    );
+    expect(currentPeriodMonth(new Date("2026-01-31T23:59:59Z"))).toBe(
+      "2026-01",
+    );
+    expect(currentPeriodMonth(new Date("2026-12-01T00:00:00Z"))).toBe(
+      "2026-12",
+    );
   });
 });
 
@@ -20,33 +26,42 @@ describe("usage query scoping", () => {
 
   it("keeps metering and reconciliation scoped to active rows", () => {
     const activePracticeGuard = source.indexOf("const [activePractice]");
-    const usageInsert = source.indexOf("tx.insert(usageRecords)");
+    const usageInsert = source.search(/tx\s*\.insert\(usageRecords\)/);
     expect(activePracticeGuard).toBeGreaterThanOrEqual(0);
     expect(usageInsert).toBeGreaterThan(activePracticeGuard);
     expect(source).toMatch(
-      /id: practices\.id,\s*recoveryHold: practices\.recoveryHold,[\s\S]+?where\(\s*and\(\s*eq\(practices\.id, opts\.practiceId\),\s*isNull\(practices\.deletedAt\)\s*\)\s*\)/s
+      /id: practices\.id,\s*recoveryHold: practices\.recoveryHold,[\s\S]+?where\(\s*and\(\s*eq\(practices\.id, opts\.practiceId\),\s*isNull\(practices\.deletedAt\)\s*\)\s*,?\s*\)/s,
     );
     expect(source).toContain("if (!activePractice) return;");
     expect(source).toMatch(
-      /eq\(practices\.id, opts\.practiceId\),\s*isNull\(practices\.deletedAt\)/s
+      /eq\(practices\.id, opts\.practiceId\),\s*isNull\(practices\.deletedAt\)/s,
     );
     expect(source).toContain("eq(practices.recoveryHold, false)");
     expect(source).toContain('.for("share", { of: practices })');
     expect(source).toMatch(
-      /eq\(usageRecords\.id, opts\.usageRecordId\),\s*isNull\(usageRecords\.deletedAt\)/s
+      /eq\(usageRecords\.id, opts\.usageRecordId\),\s*isNull\(usageRecords\.deletedAt\)/s,
     );
     expect(source).toMatch(
-      /isNull\(usageRecords\.stripeMeteredAt\),\s*isNull\(usageRecords\.deletedAt\)/s
+      /isNull\(usageRecords\.stripeMeteredAt\),\s*isNull\(usageRecords\.deletedAt\)/s,
     );
     expect(source).toMatch(
-      /eq\(usageRecords\.periodMonth, periodMonth\),\s*isNull\(usageRecords\.deletedAt\)/s
+      /eq\(usageRecords\.periodMonth, periodMonth\),\s*isNull\(usageRecords\.deletedAt\)/s,
     );
+  });
+
+  it("reuses a caller transaction for protected usage reads", () => {
+    expect(source).toContain("transactionDb?: Database");
+    expect(source).toContain("await readUsage(transactionDb)");
+    expect(source).toContain("withSystem(db, readUsage)");
+    expect(source).not.toContain("withSystemSavepoint");
   });
 });
 
 describe("meterIdentifierForUsageRecord", () => {
   it("uses a stable identifier derived from the usage row id", () => {
-    expect(meterIdentifierForUsageRecord("usage-row-1")).toBe("usage:usage-row-1");
+    expect(meterIdentifierForUsageRecord("usage-row-1")).toBe(
+      "usage:usage-row-1",
+    );
   });
 });
 

@@ -73,15 +73,17 @@ export const subscriptionRouter = createRouter({
     let counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
     let billingSync: BillingSyncState | null = await readBillingSyncState(
       ctx.db,
-      ctx.practiceId
+      ctx.practiceId,
     );
     const period = currentPeriodMonth();
-    const [smsUsed, aiUsed] = enforced
-      ? await Promise.all([
-          usageForPractice(ctx.practiceId, "sms", period),
-          usageForPractice(ctx.practiceId, "ai_run", period),
-        ])
-      : [0, 0];
+    // Reuse the current tenant transaction so the small serverless pool never
+    // needs extra connections for these RLS-scoped usage reads.
+    const smsUsed = enforced
+      ? await usageForPractice(ctx.practiceId, "sms", period, ctx.db)
+      : 0;
+    const aiUsed = enforced
+      ? await usageForPractice(ctx.practiceId, "ai_run", period, ctx.db)
+      : 0;
 
     return {
       tier: practice.tier ?? "free",
@@ -94,7 +96,7 @@ export const subscriptionRouter = createRouter({
       hasFullAccess: hasHostedFullAccess(
         practice.tier,
         practice.billingStatus,
-        practice.trialEndsAt
+        practice.trialEndsAt,
       ),
       locationCount: counts.locationCount,
       billableSeatCount: counts.billableSeatCount,
@@ -102,7 +104,7 @@ export const subscriptionRouter = createRouter({
       seatUnitPriceMonthlyUsd: CLOUD_SEAT_UNIT_PRICE_MONTHLY_USD,
       estimatedMonthlyBase: estimatedCloudBaseMonthlyUsd(
         counts.locationCount,
-        counts.billableSeatCount
+        counts.billableSeatCount,
       ),
       estimatedAnnualBase: estimatedCloudBaseAnnualUsd(
         counts.locationCount,
@@ -157,7 +159,7 @@ export const subscriptionRouter = createRouter({
         // Where Stripe sends the admin back: the billing page (default) or
         // the guided setup, which resumes where they left off.
         returnTo: z.enum(["settings", "setup"]).default("settings"),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const plan = PLANS[input.tier];
@@ -206,7 +208,10 @@ export const subscriptionRouter = createRouter({
         });
       }
 
-      const counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
+      const counts = await countBillableLocationsAndSeats(
+        ctx.db,
+        ctx.practiceId,
+      );
 
       const base = appBaseUrl();
       const activeTrialEnd =
@@ -233,7 +238,8 @@ export const subscriptionRouter = createRouter({
         customerId: practice.stripeCustomerId ?? undefined,
         customerEmail,
         trialEnd: activeTrialEnd,
-        trialPeriodDays: activeTrialEnd || practice.trialEndsAt ? undefined : TRIAL_DAYS,
+        trialPeriodDays:
+          activeTrialEnd || practice.trialEndsAt ? undefined : TRIAL_DAYS,
         billingCadence: input.billingCadence,
         source: "settings",
         successUrl:
