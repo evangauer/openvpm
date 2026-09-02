@@ -129,6 +129,23 @@ describe("middleware security headers", () => {
     expectSecurityHeaders(lookalikeResponse);
   });
 
+  it("allows treatment-plan capabilities without exposing protected lookalike routes", async () => {
+    mocks.getToken.mockResolvedValue(null);
+
+    const capabilityResponse = await middleware(
+      request(`/treatment-plan/${"a".repeat(64)}`),
+    );
+    const protectedResponse = await middleware(request("/treatment-plans"));
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(capabilityResponse.headers.get("location")).toBeNull();
+    expect(protectedResponse.headers.get("location")).toBe(
+      "https://openvpm.test/login?next=%2Ftreatment-plans",
+    );
+    expectSecurityHeaders(capabilityResponse);
+    expectSecurityHeaders(protectedResponse);
+  });
+
   it("allows Vercel observability proxy paths without session lookup", async () => {
     const insights = await middleware(request("/_vercel/insights/view"));
     const proxied = await middleware(request("/5691167a7e0cfa40/view"));
