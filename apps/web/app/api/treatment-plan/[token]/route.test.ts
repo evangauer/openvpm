@@ -203,6 +203,41 @@ describe("public treatment-plan capability route", () => {
     expect(mocks.withTenant).not.toHaveBeenCalled();
   });
 
+  it("returns the existing sign link for an exact retry after JSONB key reordering", async () => {
+    mocks.selectResults.push(
+      [
+        {
+          ...session("awaiting_signature"),
+          decisions: [
+            {
+              decision: "accepted",
+              declineReason: null,
+              revisionLineId: line.id,
+              acceptedQuantity: "1.000",
+            },
+          ],
+        },
+      ],
+      [line],
+      [{ token: "cd".repeat(32) }],
+    );
+    const response = await callPost({
+      decisions: [
+        {
+          revisionLineId: line.id,
+          decision: "accepted",
+          acceptedQuantity: "1",
+        },
+      ],
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "awaiting_signature",
+      signUrl: `https://openvpm.test/sign/${"cd".repeat(32)}`,
+    });
+    expect(mocks.withTenant).not.toHaveBeenCalled();
+  });
+
   it("contains explicit database predicates for expiry, latest revision, and state pairing", () => {
     expect(ROUTE_SOURCE).toContain(
       "gt(visitTreatmentPlanPresentations.expiresAt, new Date())",

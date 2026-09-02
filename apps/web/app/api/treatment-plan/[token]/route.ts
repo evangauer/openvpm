@@ -18,6 +18,7 @@ import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
 import {
   buildTreatmentPlanConsentBody,
   canonicalTreatmentPlanDecisions,
+  treatmentPlanDecisionsEqual,
   type OfferedTreatmentPlanLine,
 } from "@/lib/treatment-plan-presentations/decision-policy";
 import {
@@ -390,9 +391,7 @@ async function handlePost(
       return NextResponse.json({ status: "completed" });
     }
     if (found.session.status === "awaiting_signature") {
-      if (
-        JSON.stringify(found.session.decisions) !== JSON.stringify(decisions)
-      ) {
+      if (!treatmentPlanDecisionsEqual(found.session.decisions, decisions)) {
         return NextResponse.json(
           { error: "These decisions do not match the saved response" },
           { status: 409 },
