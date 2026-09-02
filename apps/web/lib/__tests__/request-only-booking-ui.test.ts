@@ -97,6 +97,14 @@ describe("request-only booking UI", () => {
     expect(portalPage).toContain("Preferred time");
   });
 
+  it("blocks over-cap visit details and explains how to fix them", () => {
+    expect(publicPage).toContain("preflightOnlineBookingAppointmentNote");
+    expect(publicPage).toContain("appointmentNotePreflight.ok");
+    expect(publicPage).toContain("intakeLengthError");
+    expect(publicPage).toContain("{intakeLengthError ? (");
+    expect(publicPage).toContain('role="alert"');
+  });
+
   it("associates booking settings labels with their controls", () => {
     for (const id of [
       "booking-page-slug",

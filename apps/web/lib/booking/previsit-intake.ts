@@ -125,39 +125,26 @@ function normalizeForNote(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function truncateToLength(value: string, maxLength: number): string {
-  if (value.length <= maxLength) return value;
-  if (maxLength <= 0) return "";
-  if (maxLength === 1) return "…";
-  return `${value.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
 /**
- * Compiles intake into the existing appointment note surface. This makes the
- * answers visible in the schedule, inbox, and encounter without a schema
- * change. Reason and service address always precede lower-priority history.
+ * Preflights the complete public-request handoff before any persistence.
+ * Accepted content is never truncated or omitted. Reason and service address
+ * always precede the remaining history in the compiled appointment note.
  */
-export function formatOnlineBookingAppointmentNote(input: {
+export function preflightOnlineBookingAppointmentNote(input: {
   reason: string;
   intake?: PrevisitIntake;
-}): string {
+}):
+  | { ok: true; note: string }
+  | { ok: false; message: string; overBy: number; maxLength: number } {
   const prefix = "[Online request] ";
   const reason = normalizeForNote(input.reason);
-  let note = `${prefix}${truncateToLength(
-    reason,
-    APPOINTMENT_NOTES_MAX_LENGTH - prefix.length,
-  )}`;
+  let note = `${prefix}${reason}`;
 
   const serviceAddress = input.intake?.serviceAddress
     ? normalizeForNote(input.intake.serviceAddress)
     : "";
   if (serviceAddress) {
-    const separator = " | Service/farm address (owner-reported): ";
-    const available =
-      APPOINTMENT_NOTES_MAX_LENGTH - note.length - separator.length;
-    if (available > 1) {
-      note += `${separator}${truncateToLength(serviceAddress, available)}`;
-    }
+    note += ` | Service/farm address (owner-reported): ${serviceAddress}`;
   }
 
   const reportedFields = input.intake
@@ -169,17 +156,19 @@ export function formatOnlineBookingAppointmentNote(input: {
       })
     : [];
 
-  if (reportedFields.length === 0) return note;
-
-  const heading = " | Client-reported pre-visit history (unverified): ";
-  for (const field of reportedFields) {
-    const separator = note.includes(heading) ? " • " : heading;
-    const available =
-      APPOINTMENT_NOTES_MAX_LENGTH - note.length - separator.length;
-    if (available <= 1) break;
-    note += `${separator}${truncateToLength(field, available)}`;
-    if (field.length > available) break;
+  if (reportedFields.length > 0) {
+    note += ` | Client-reported pre-visit history (unverified): ${reportedFields.join(" • ")}`;
   }
 
-  return note;
+  if (note.length > APPOINTMENT_NOTES_MAX_LENGTH) {
+    const overBy = note.length - APPOINTMENT_NOTES_MAX_LENGTH;
+    return {
+      ok: false,
+      message: `Visit details are too long to send. Shorten the visit reason or optional intake answers by at least ${overBy} character${overBy === 1 ? "" : "s"}.`,
+      overBy,
+      maxLength: APPOINTMENT_NOTES_MAX_LENGTH,
+    };
+  }
+
+  return { ok: true, note };
 }

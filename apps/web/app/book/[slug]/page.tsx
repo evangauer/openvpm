@@ -7,7 +7,11 @@ import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
 import { PrevisitIntakeFields } from "@/components/booking/previsit-intake-fields";
 import { BOOKING_REASON_MAX_LENGTH } from "@/lib/booking/page-config";
-import type { PrevisitIntake } from "@/lib/booking/previsit-intake";
+import {
+  filterPrevisitIntakeByFieldKeys,
+  preflightOnlineBookingAppointmentNote,
+  type PrevisitIntake,
+} from "@/lib/booking/previsit-intake";
 
 const SPECIES_OPTIONS = [
   { value: "canine", label: "Dog" },
@@ -104,6 +108,13 @@ export default function PublicBookingPage() {
   const selectedLocation = data.locations.find(
     (item) => item.id === locationId,
   );
+  const appointmentNotePreflight = preflightOnlineBookingAppointmentNote({
+    reason: reason.trim(),
+    intake: filterPrevisitIntakeByFieldKeys(intake, data.intakeFieldKeys),
+  });
+  const intakeLengthError = appointmentNotePreflight.ok
+    ? null
+    : appointmentNotePreflight.message;
   const canSubmit = Boolean(
     date &&
     time &&
@@ -114,6 +125,7 @@ export default function PublicBookingPage() {
     email.trim() &&
     petName.trim() &&
     reason.trim() &&
+    appointmentNotePreflight.ok &&
     !book.isPending,
   );
 
@@ -562,6 +574,11 @@ export default function PublicBookingPage() {
             onChange={setIntake}
             disabled={book.isPending}
           />
+          {intakeLengthError ? (
+            <p className="text-sm text-red-600" role="alert">
+              {intakeLengthError}
+            </p>
+          ) : null}
         </div>
 
         {book.error && (

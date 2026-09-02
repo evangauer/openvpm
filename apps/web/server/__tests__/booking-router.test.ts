@@ -251,7 +251,43 @@ describe("public booking page", () => {
     const result = await publicCaller(db).getPage({ slug: "test-clinic" });
     expect(result.practice.name).toBe("Test Clinic");
     expect(result.types).toEqual([types[0]]);
-    expect(result.intakeFieldKeys[0]).toBe("serviceAddress");
+    expect(result.intakeFieldKeys).toEqual([]);
+  });
+
+  it("exposes optional intake only after explicit clinic configuration", async () => {
+    const types = [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }];
+    const { db } = createDb({
+      selectResults: [
+        [
+          pageRow({
+            bookableTypeIds: [TYPE_A],
+            intakeFieldKeys: ["handlingNotes", "serviceAddress"],
+          }),
+        ],
+        types,
+      ],
+    });
+
+    const result = await publicCaller(db).getPage({ slug: "test-clinic" });
+    expect(result.intakeFieldKeys).toEqual(["serviceAddress", "handlingNotes"]);
+  });
+
+  it("fails closed for malformed legacy intake configuration", async () => {
+    const types = [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }];
+    const { db } = createDb({
+      selectResults: [
+        [
+          pageRow({
+            bookableTypeIds: [TYPE_A],
+            intakeFieldKeys: ["serviceAddress", "unknown-sensitive-field"],
+          }),
+        ],
+        types,
+      ],
+    });
+
+    const result = await publicCaller(db).getPage({ slug: "test-clinic" });
+    expect(result.intakeFieldKeys).toEqual([]);
   });
 
   it("hides a published page with no configured active requestable type", async () => {
@@ -554,36 +590,56 @@ describe("public booking", () => {
     expect(insert).not.toHaveBeenCalled();
   });
 
-  it("drops known intake fields that the clinic disabled", async () => {
+  it("rejects an aggregate note overflow before any persistence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
-    const { db, insertedValues } = createDb({
+    const { db, insert } = createDb({
       selectResults: [
-        [pageRow({ intakeFieldKeys: ["serviceAddress"] })],
-        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
-        [],
-        [{ id: CLIENT_ID }],
-        [{ id: PATIENT_ID, name: "Milo" }],
-      ],
-      insertResults: [
-        [{ id: APPOINTMENT_ID, startTime: new Date(), endTime: new Date() }],
-        [],
+        [pageRow({ intakeFieldKeys: ["serviceAddress", "symptoms"] })],
       ],
     });
 
-    await publicCaller(db).book(
-      bookInput({
-        intake: {
-          serviceAddress: "Allowed address",
-          symptoms: "Tampered disabled answer",
-        },
-      }),
-    );
+    await expect(
+      publicCaller(db).book(
+        bookInput({
+          reason: "r".repeat(1000),
+          intake: {
+            serviceAddress: "a".repeat(500),
+            symptoms: "s".repeat(500),
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining(
+        "Visit details are too long to send. Shorten the visit reason or optional intake answers by at least",
+      ),
+    });
+    expect(insert).not.toHaveBeenCalled();
+  });
 
-    const appointment = insertedValues[0] as Record<string, unknown>;
-    expect(appointment.notes).toContain("Allowed address");
-    expect(appointment.notes).not.toContain("Tampered disabled answer");
-    expect(appointment.notes).not.toContain("Current signs:");
+  it("rejects known intake fields that the clinic disabled", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
+    const { db, insert } = createDb({
+      selectResults: [[pageRow({ intakeFieldKeys: ["serviceAddress"] })]],
+    });
+
+    await expect(
+      publicCaller(db).book(
+        bookInput({
+          intake: {
+            serviceAddress: "Allowed address",
+            symptoms: "Tampered disabled answer",
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message:
+        "One or more optional intake fields are no longer enabled. Refresh the page and try again.",
+    });
+    expect(insert).not.toHaveBeenCalled();
   });
 
   it("keeps legacy auto-confirm pages request-only", async () => {
@@ -797,19 +853,42 @@ describe("booking page admin", () => {
     const result = await adminCaller(db).savePage({
       slug: "test-clinic",
       published: true,
-      config: { autoConfirm: true, bookableTypeIds: [TYPE_A] },
+      config: {
+        autoConfirm: true,
+        bookableTypeIds: [TYPE_A],
+        intakeFieldKeys: ["handlingNotes", "serviceAddress"],
+      },
     } as never);
     expect(result).toEqual({ slug: "test-clinic", published: true });
     expect(insertedValues[0]).toMatchObject({
       practiceId: PRACTICE_ID,
       slug: "test-clinic",
       published: true,
-      config: expect.objectContaining({ autoConfirm: false }),
+      config: expect.objectContaining({
+        autoConfirm: false,
+        intakeFieldKeys: ["serviceAddress", "handlingNotes"],
+      }),
     });
     expect(operations.indexOf("type-lock")).toBeGreaterThanOrEqual(0);
     expect(operations.indexOf("type-lock")).toBeLessThan(
       operations.indexOf("insert"),
     );
+  });
+
+  it("rejects malformed intake configuration before any database write", async () => {
+    const { db, insert, updateSet } = createDb();
+
+    await expect(
+      adminCaller(db).savePage({
+        slug: "test-clinic",
+        published: false,
+        config: {
+          intakeFieldKeys: ["serviceAddress", "unknown-sensitive-field"],
+        },
+      } as never),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(insert).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("rejects publication unless a selected type is active in this practice", async () => {

@@ -46,7 +46,7 @@ import {
 } from "@/lib/booking/page-config";
 import {
   filterPrevisitIntakeByFieldKeys,
-  formatOnlineBookingAppointmentNote,
+  preflightOnlineBookingAppointmentNote,
   previsitIntakeInput,
 } from "@/lib/booking/previsit-intake";
 import {
@@ -502,6 +502,38 @@ export const bookingRouter = createRouter({
       const { practice, config } = await getLivePage(ctx.db, input.slug);
       assertBookingBillingAccess(practice);
 
+      const enabledIntake = input.intake
+        ? filterPrevisitIntakeByFieldKeys(input.intake, config.intakeFieldKeys)
+        : undefined;
+      const submittedDisabledIntakeField = input.intake
+        ? Object.entries(input.intake).some(
+            ([key, value]) =>
+              value !== undefined &&
+              !config.intakeFieldKeys.includes(
+                key as (typeof config.intakeFieldKeys)[number],
+              ),
+          )
+        : false;
+      if (submittedDisabledIntakeField) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "One or more optional intake fields are no longer enabled. Refresh the page and try again.",
+        });
+      }
+
+      const appointmentNotePreflight = preflightOnlineBookingAppointmentNote({
+        reason: input.reason,
+        intake: enabledIntake,
+      });
+      if (!appointmentNotePreflight.ok) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appointmentNotePreflight.message,
+        });
+      }
+      const appointmentNote = appointmentNotePreflight.note;
+
       // Public and portal requests for one practice share a transaction lock,
       // so neither path can pass the conflict check concurrently. Take it
       // before the type row lock to keep request lock ordering consistent.
@@ -707,15 +739,6 @@ export const bookingRouter = createRouter({
         petName = created!.name;
       }
 
-      const appointmentNote = formatOnlineBookingAppointmentNote({
-        reason: input.reason,
-        intake: input.intake
-          ? filterPrevisitIntakeByFieldKeys(
-              input.intake,
-              config.intakeFieldKeys,
-            )
-          : undefined,
-      });
       const [appt] = await ctx.db
         .insert(appointments)
         .values({

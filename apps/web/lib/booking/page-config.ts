@@ -122,21 +122,29 @@ export const BOOKING_LEAD_TIME_DEFAULT_MINUTES = 60;
 export const BOOKING_WINDOW_DEFAULT_DAYS = 60;
 export const BOOKING_WINDOW_MAX_DAYS = 365;
 
-export const DEFAULT_PREVISIT_INTAKE_FIELD_KEYS: PrevisitIntakeFieldKey[] =
-  PREVISIT_INTAKE_FIELD_DEFINITIONS.map(({ key }) => key);
+export const DEFAULT_PREVISIT_INTAKE_FIELD_KEYS: PrevisitIntakeFieldKey[] = [];
 
-const intakeFieldKeysSchema = z
+function catalogOrderedIntakeFieldKeys(
+  keys: readonly PrevisitIntakeFieldKey[],
+): PrevisitIntakeFieldKey[] {
+  const selected = new Set(keys);
+  return PREVISIT_INTAKE_FIELD_DEFINITIONS.flatMap(({ key }) =>
+    selected.has(key) ? [key] : [],
+  );
+}
+
+const intakeFieldKeysReadSchema = z
   .array(previsitIntakeFieldKeyInput)
   .catch(() => DEFAULT_PREVISIT_INTAKE_FIELD_KEYS)
   .default(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS)
-  .transform((keys) => {
-    const selected = new Set(keys);
-    return PREVISIT_INTAKE_FIELD_DEFINITIONS.flatMap(({ key }) =>
-      selected.has(key) ? [key] : [],
-    );
-  });
+  .transform(catalogOrderedIntakeFieldKeys);
 
-const configSchema = z.object({
+const intakeFieldKeysWriteSchema = z
+  .array(previsitIntakeFieldKeyInput)
+  .default(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS)
+  .transform(catalogOrderedIntakeFieldKeys);
+
+const configReadSchema = z.object({
   hours: weeklyHoursSchema.catch(() => DEFAULT_WEEKLY_HOURS),
   /** Explicitly selected active appointment types; empty fails public booking closed. */
   bookableTypeIds: z
@@ -173,10 +181,10 @@ const configSchema = z.object({
     .default(""),
   /**
    * Optional owner-reported pre-visit fields shown on this public page.
-   * Missing legacy values expose every existing field; an explicit [] hides
-   * the section. Values are deduplicated into stable catalog order.
+   * Missing or malformed legacy values expose no optional sensitive fields.
+   * Values are deduplicated into stable catalog order.
    */
-  intakeFieldKeys: intakeFieldKeysSchema,
+  intakeFieldKeys: intakeFieldKeysReadSchema,
   /** Hex accent for the public page, e.g. "#0d9488". */
   accentColor: z
     .string()
@@ -184,7 +192,41 @@ const configSchema = z.object({
     .catch("#0d9488"),
 });
 
-export type BookingPageConfig = z.infer<typeof configSchema>;
+const configWriteSchema = z
+  .object({
+    hours: weeklyHoursSchema.default(DEFAULT_WEEKLY_HOURS),
+    bookableTypeIds: z
+      .array(z.string().uuid())
+      .nullable()
+      .default([])
+      .transform((ids) => ids ?? []),
+    autoConfirm: z
+      .boolean()
+      .default(false)
+      .transform(() => false),
+    allowNewClients: z.boolean().default(true),
+    leadTimeMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(7 * 24 * 60)
+      .default(BOOKING_LEAD_TIME_DEFAULT_MINUTES),
+    bookingWindowDays: z
+      .number()
+      .int()
+      .min(1)
+      .max(BOOKING_WINDOW_MAX_DAYS)
+      .default(BOOKING_WINDOW_DEFAULT_DAYS),
+    welcomeText: z.string().trim().max(BOOKING_WELCOME_MAX_LENGTH).default(""),
+    intakeFieldKeys: intakeFieldKeysWriteSchema,
+    accentColor: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/)
+      .default("#0d9488"),
+  })
+  .strict();
+
+export type BookingPageConfig = z.infer<typeof configWriteSchema>;
 
 export const DEFAULT_BOOKING_PAGE_CONFIG: BookingPageConfig = {
   hours: DEFAULT_WEEKLY_HOURS,
@@ -200,13 +242,13 @@ export const DEFAULT_BOOKING_PAGE_CONFIG: BookingPageConfig = {
 
 /** Tolerant parse: unknown/invalid fields fall back to defaults, never throws. */
 export function parseBookingPageConfig(raw: unknown): BookingPageConfig {
-  const result = configSchema.safeParse(raw ?? {});
+  const result = configReadSchema.safeParse(raw ?? {});
   if (result.success) return result.data;
   return { ...DEFAULT_BOOKING_PAGE_CONFIG };
 }
 
-/** Strict parse for writes from the settings UI: throws on invalid input. */
-export const bookingPageConfigInput = configSchema;
+/** Strict parse for writes from the settings UI: throws on malformed input. */
+export const bookingPageConfigInput = configWriteSchema;
 
 function isValidDateInput(value: string): boolean {
   if (!DATE_RE.test(value)) return false;
