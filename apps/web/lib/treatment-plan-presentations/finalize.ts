@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 
 import {
+  consentRequests,
   visitTreatmentPlanPresentations,
   visitTreatmentPlanResponseLines,
   visitTreatmentPlanResponses,
@@ -20,7 +21,6 @@ export async function finalizeTreatmentPlanResponseForConsent(
     signedDocumentSha256: string;
     signatureSha256: string;
     signerName: string;
-    signedAt: Date;
   },
 ): Promise<{ responseId: string } | null> {
   const [presentation] = await tx
@@ -126,7 +126,20 @@ export async function finalizeTreatmentPlanResponseForConsent(
     signatureSha256: input.signatureSha256,
     signedDocumentSha256: input.signedDocumentSha256,
     signerName: input.signerName,
-    decidedAt: input.signedAt,
+    // signed_at is captured by PostgreSQL's clock_timestamp() with
+    // microsecond precision. A JavaScript Date truncates that value to
+    // milliseconds, so round-tripping through application memory would fail
+    // the database seal trigger's exact evidence match. Source the value from
+    // the bound consent row inside this INSERT to preserve the original
+    // timestamp.
+    decidedAt: sql`(
+      select ${consentRequests.signedAt}
+      from ${consentRequests}
+      where ${consentRequests.practiceId} = ${input.practiceId}
+        and ${consentRequests.id} = ${input.consentRequestId}
+        and ${consentRequests.status} = 'signed'
+        and ${consentRequests.deletedAt} is null
+    )`,
     operationId: presentation.responseId,
     operationPayloadHash: presentation.responseSha256,
     responseSha256: presentation.responseSha256,

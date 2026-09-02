@@ -46,6 +46,11 @@ describe("treatment-plan client flow safety", () => {
     expect(finalizer).toContain("visitTreatmentPlanResponses");
     expect(finalizer).toContain("signedDocumentSha256");
     expect(finalizer).toContain("signatureSha256");
+    expect(finalizer).toContain("decidedAt: sql`");
+    expect(finalizer).toContain("${consentRequests.signedAt}");
+    expect(finalizer).not.toContain("decidedAt: input.signedAt");
+    expect(finalizer).toContain("${consentRequests.status} = 'signed'");
+    expect(finalizer).toContain("${consentRequests.deletedAt} is null");
     expect(finalizer).toContain("responseSha256: presentation.responseSha256");
     expect(finalizer).toContain("set constraints all immediate");
   });

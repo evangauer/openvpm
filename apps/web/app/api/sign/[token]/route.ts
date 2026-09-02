@@ -635,7 +635,6 @@ async function handlePost(
             signedDocumentSha256: reservation.checksumSha256,
             signatureSha256: signing.signatureSha256,
             signerName: signing.signerName,
-            signedAt: signing.signedAt,
           });
         });
       } else {
@@ -672,7 +671,6 @@ async function handlePost(
             signedDocumentSha256: reservation.checksumSha256,
             signatureSha256: signing.signatureSha256,
             signerName: signing.signerName,
-            signedAt: signing.signedAt,
           });
 
           await tx.insert(auditLog).values({

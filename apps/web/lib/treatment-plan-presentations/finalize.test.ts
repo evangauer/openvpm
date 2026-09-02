@@ -48,7 +48,6 @@ const evidence = {
   signedDocumentSha256: "d".repeat(64),
   signatureSha256: "s".repeat(64),
   signerName: "Jordan Marsh",
-  signedAt: new Date("2026-09-02T12:00:00.000Z"),
 };
 
 describe("treatment-plan signed response finalizer", () => {
@@ -116,7 +115,9 @@ describe("treatment-plan signed response finalizer", () => {
             signedDocumentSha256: evidence.signedDocumentSha256,
             signatureSha256: evidence.signatureSha256,
             signerName: evidence.signerName,
-            decidedAt: evidence.signedAt,
+            decidedAt: expect.objectContaining({
+              queryChunks: expect.any(Array),
+            }),
             responseSha256,
           }),
         },

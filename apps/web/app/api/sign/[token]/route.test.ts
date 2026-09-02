@@ -677,6 +677,9 @@ describe("POST /api/sign/[token]", () => {
     )[0][0].body;
     expect(pdf.subarray(0, 4).toString()).toBe("%PDF");
     expect(mocks.finalizeManagedUploadManifest).toHaveBeenCalledTimes(1);
+    const finalizerCalls = mocks.finalizeTreatmentPlanResponseForConsent.mock
+      .calls as unknown as [unknown, Record<string, unknown>][];
+    expect(finalizerCalls[0]?.[1]).not.toHaveProperty("signedAt");
     expect(mocks.insertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         practiceId: mocks.practiceId,
@@ -756,6 +759,9 @@ describe("POST /api/sign/[token]", () => {
 
     const res = await callPost(TOKEN, validBody());
     expect(res.status).toBe(201);
+    const finalizerCalls = mocks.finalizeTreatmentPlanResponseForConsent.mock
+      .calls as unknown as [unknown, Record<string, unknown>][];
+    expect(finalizerCalls[0]?.[1]).not.toHaveProperty("signedAt");
     expect(mocks.updateSet).not.toHaveBeenCalledWith(
       expect.objectContaining({ signerName: "Jordan Marsh" }),
     );
@@ -961,6 +967,9 @@ describe("POST /api/sign/[token]", () => {
     ]);
     const res = await callPost(TOKEN, validBody());
     expect(res.status).toBe(200);
+    const finalizerCalls = mocks.finalizeTreatmentPlanResponseForConsent.mock
+      .calls as unknown as [unknown, Record<string, unknown>][];
+    expect(finalizerCalls[0]?.[1]).not.toHaveProperty("signedAt");
     expect(mocks.finalizeManagedUploadManifest).toHaveBeenCalledTimes(1);
     expect(mocks.insertValues).not.toHaveBeenCalled();
     expect(mocks.queueManagedUploadReplication).toHaveBeenCalledTimes(1);
