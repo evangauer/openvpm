@@ -35,11 +35,17 @@ const mocks = vi.hoisted(() => {
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(db),
     ),
+    withSystemSavepoint: vi.fn(
+      async (_db: unknown, fn: (tx: unknown) => unknown) => fn(db),
+    ),
   };
 });
 
 vi.mock("@openpims/db/client", () => ({ db: mocks.db }));
-vi.mock("@/lib/tenant-db", () => ({ withSystem: mocks.withSystem }));
+vi.mock("@/lib/tenant-db", () => ({
+  withSystem: mocks.withSystem,
+  withSystemSavepoint: mocks.withSystemSavepoint,
+}));
 
 const {
   marketingEmailEnabledForRecipient,
@@ -113,6 +119,24 @@ describe("platform email preference persistence", () => {
     await expect(
       marketingEmailEnabledForRecipient("OWNER@example.com "),
     ).resolves.toBe(false);
+  });
+
+  it("uses a caller transaction instead of acquiring from the root pool", async () => {
+    const callerTransaction = { transaction: vi.fn() };
+    queueIdentityAndPreference();
+
+    await expect(
+      marketingEmailEnabledForRecipient(
+        "owner@example.com",
+        callerTransaction as never,
+      ),
+    ).resolves.toBe(true);
+
+    expect(mocks.withSystemSavepoint).toHaveBeenCalledWith(
+      callerTransaction,
+      expect.any(Function),
+    );
+    expect(mocks.withSystem).not.toHaveBeenCalled();
   });
 
   it("stores only keyed hashes and appends an attributed audit event", async () => {

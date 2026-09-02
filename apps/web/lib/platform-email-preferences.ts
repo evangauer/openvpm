@@ -10,7 +10,7 @@ import {
   emailPreferenceIdentityKeyFingerprint,
   emailPreferenceRecipientHash,
 } from "@/lib/email-preferences";
-import { withSystem } from "@/lib/tenant-db";
+import { withSystem, withSystemSavepoint } from "@/lib/tenant-db";
 
 type PreferenceSource = "settings" | "unsubscribe_link";
 type PreferenceReason =
@@ -246,8 +246,12 @@ async function updateProjection(
 
 export async function marketingEmailEnabledForRecipient(
   email: string,
+  transactionDb?: Database,
 ): Promise<boolean> {
-  return withSystem(db, (tx) => lockAndCheckMarketingEmailEnabled(tx, email));
+  const check = (tx: Database) => lockAndCheckMarketingEmailEnabled(tx, email);
+  return transactionDb
+    ? withSystemSavepoint(transactionDb, check)
+    : withSystem(db, check);
 }
 
 /**
@@ -271,32 +275,41 @@ export async function lockAndCheckMarketingEmailEnabled(
   return preference?.marketingEnabled !== false;
 }
 
-export async function setMarketingEmailPreferenceForRecipient(input: {
-  email: string;
-  enabled: boolean;
-  source: PreferenceSource;
-  updatedByUserId?: string | null;
-}): Promise<void> {
+export async function setMarketingEmailPreferenceForRecipient(
+  input: {
+    email: string;
+    enabled: boolean;
+    source: PreferenceSource;
+    updatedByUserId?: string | null;
+  },
+  transactionDb?: Database,
+): Promise<void> {
   const identity = configuredIdentity();
-  await setMarketingEmailPreferenceForHash({
-    emailHash: identity.emailHashFor(input.email),
-    enabled: input.enabled,
-    source: input.source,
-    updatedByUserId: input.updatedByUserId,
-  });
+  await setMarketingEmailPreferenceForHash(
+    {
+      emailHash: identity.emailHashFor(input.email),
+      enabled: input.enabled,
+      source: input.source,
+      updatedByUserId: input.updatedByUserId,
+    },
+    transactionDb,
+  );
 }
 
-export async function setMarketingEmailPreferenceForHash(input: {
-  emailHash: string;
-  enabled: boolean;
-  source: PreferenceSource;
-  updatedByUserId?: string | null;
-}): Promise<void> {
+export async function setMarketingEmailPreferenceForHash(
+  input: {
+    emailHash: string;
+    enabled: boolean;
+    source: PreferenceSource;
+    updatedByUserId?: string | null;
+  },
+  transactionDb?: Database,
+): Promise<void> {
   validateEmailHash(input.emailHash);
   const identity = configuredIdentity();
   const reason = preferenceReason(input);
 
-  const outcome = await withSystem(db, async (tx) => {
+  const update = async (tx: Database) => {
     await assertPersistedIdentityKey(tx, identity.fingerprint);
     await lockRecipient(tx, input.emailHash);
     const current = await currentPreference(
@@ -336,10 +349,15 @@ export async function setMarketingEmailPreferenceForHash(input: {
       });
     }
     return decision;
-  });
+  };
+  const outcome = transactionDb
+    ? await withSystemSavepoint(transactionDb, update)
+    : await withSystem(db, update);
 
-  // Throw only after the audit event commits so the settings caller can
-  // explain that this recipient address cannot be re-enabled there.
+  // Throw only after the system transaction (or the settings resolver's
+  // nested system savepoint) has accepted the audit event. Protected tRPC
+  // commits ordinary resolver error results, so the settings path preserves
+  // this blocked-attempt evidence while still returning a truthful error.
   if (outcome.blocked) throw new PlatformEmailPreferenceBlockedError();
 }
 

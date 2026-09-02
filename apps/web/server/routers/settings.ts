@@ -625,7 +625,10 @@ export const settingsRouter = createRouter({
     }
     let enabled: boolean;
     try {
-      enabled = await marketingEmailEnabledForRecipient(recipientEmail);
+      // Reuse the protected procedure's tenant transaction. The preference
+      // helper establishes a nested system savepoint on this same connection,
+      // avoiding root-pool starvation in concurrent tRPC batches.
+      enabled = await marketingEmailEnabledForRecipient(recipientEmail, ctx.db);
     } catch {
       throw new TRPCError({
         code: "INTERNAL_SERVER_ERROR",
@@ -893,12 +896,15 @@ export const settingsRouter = createRouter({
         });
       }
       try {
-        await setMarketingEmailPreferenceForRecipient({
-          email: recipientEmail,
-          enabled: input.enabled,
-          source: "settings",
-          updatedByUserId: ctx.user.id,
-        });
+        await setMarketingEmailPreferenceForRecipient(
+          {
+            email: recipientEmail,
+            enabled: input.enabled,
+            source: "settings",
+            updatedByUserId: ctx.user.id,
+          },
+          ctx.db,
+        );
       } catch (error) {
         if (error instanceof PlatformEmailPreferenceBlockedError) {
           throw new TRPCError({

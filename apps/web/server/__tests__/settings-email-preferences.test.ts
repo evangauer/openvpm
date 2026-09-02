@@ -78,6 +78,10 @@ describe("settings marketing email preference", () => {
       configurable: true,
       recipientEmail: "owner@example.com",
     });
+    expect(mocks.marketingEmailEnabledForRecipient).toHaveBeenCalledWith(
+      "owner@example.com",
+      db,
+    );
   });
 
   it("returns the current recipient's global opt-out", async () => {
@@ -99,12 +103,15 @@ describe("settings marketing email preference", () => {
       configurable: true,
       recipientEmail: "owner@example.com",
     });
-    expect(mocks.setMarketingEmailPreferenceForRecipient).toHaveBeenCalledWith({
-      email: "owner@example.com",
-      enabled: false,
-      source: "settings",
-      updatedByUserId: USER_ID,
-    });
+    expect(mocks.setMarketingEmailPreferenceForRecipient).toHaveBeenCalledWith(
+      {
+        email: "owner@example.com",
+        enabled: false,
+        source: "settings",
+        updatedByUserId: USER_ID,
+      },
+      db,
+    );
   });
 
   it("requires a valid current practice email", async () => {

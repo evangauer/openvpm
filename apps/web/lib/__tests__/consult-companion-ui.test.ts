@@ -39,10 +39,18 @@ describe("consult companion UI states", () => {
 
   it("allows the no-login capture page through the middleware allowlist", () => {
     expect(middleware).toContain('"/capture",');
-    // Regression guard: the allowlist must stay inside PUBLIC_PATH_PREFIXES.
+    // Regression guards: the route stays public while receiving the stricter
+    // capability-page privacy headers before the generic public-path branch.
+    const capabilityStart = middleware.indexOf("CAPABILITY_PATH_PREFIXES");
+    const capabilityAllowlist = middleware.slice(
+      capabilityStart,
+      middleware.indexOf("];", capabilityStart),
+    );
+    expect(capabilityAllowlist).toContain('"/capture"');
+    const publicStart = middleware.indexOf("PUBLIC_PATH_PREFIXES");
     const allowlist = middleware.slice(
-      middleware.indexOf("PUBLIC_PATH_PREFIXES"),
-      middleware.indexOf("];"),
+      publicStart,
+      middleware.indexOf("];", publicStart),
     );
     expect(allowlist).toContain('"/capture"');
   });
@@ -147,9 +155,16 @@ describe("e-sign consent UI states", () => {
   });
 
   it("allows the no-login sign page through the middleware allowlist", () => {
+    const capabilityStart = middleware.indexOf("CAPABILITY_PATH_PREFIXES");
+    const capabilityAllowlist = middleware.slice(
+      capabilityStart,
+      middleware.indexOf("];", capabilityStart),
+    );
+    expect(capabilityAllowlist).toContain('"/sign"');
+    const publicStart = middleware.indexOf("PUBLIC_PATH_PREFIXES");
     const allowlist = middleware.slice(
-      middleware.indexOf("PUBLIC_PATH_PREFIXES"),
-      middleware.indexOf("];"),
+      publicStart,
+      middleware.indexOf("];", publicStart),
     );
     expect(allowlist).toContain('"/sign"');
   });

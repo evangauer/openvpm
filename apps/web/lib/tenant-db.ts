@@ -74,3 +74,27 @@ export async function withSystem<T>(
     return fn(tx as unknown as Database);
   });
 }
+
+/**
+ * Temporarily enter system RLS scope from an existing transaction without
+ * acquiring another pool connection. The nested transaction is a PostgreSQL
+ * savepoint on the caller's client. On success we restore the prior bypass;
+ * on failure the savepoint rollback restores transaction-local GUC state.
+ */
+export async function withSystemSavepoint<T>(
+  transactionDb: Database,
+  fn: (tx: Database) => Promise<T>,
+): Promise<T> {
+  return transactionDb.transaction(async (tx) => {
+    const [context] = await tx.execute<{ bypass: string }>(sql`
+      select coalesce(current_setting('app.rls_bypass', true), '') as bypass
+    `);
+    const previousBypass = context?.bypass ?? "";
+    await tx.execute(sql`select set_config('app.rls_bypass', 'on', true)`);
+    const result = await fn(tx as unknown as Database);
+    await tx.execute(
+      sql`select set_config('app.rls_bypass', ${previousBypass}, true)`,
+    );
+    return result;
+  });
+}
