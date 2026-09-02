@@ -9,6 +9,11 @@
 
 import { z } from "zod";
 import { dateInputTimeUtcInstant } from "@/lib/date-input";
+import {
+  PREVISIT_INTAKE_FIELD_DEFINITIONS,
+  previsitIntakeFieldKeyInput,
+  type PrevisitIntakeFieldKey,
+} from "@/lib/booking/previsit-intake";
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -61,7 +66,10 @@ export function suggestBookingSlug(practiceName: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, BOOKING_SLUG_MAX_LENGTH)
     .replace(/-+$/g, "");
-  if (slug.length >= BOOKING_SLUG_MIN_LENGTH && !RESERVED_BOOKING_SLUGS.has(slug)) {
+  if (
+    slug.length >= BOOKING_SLUG_MIN_LENGTH &&
+    !RESERVED_BOOKING_SLUGS.has(slug)
+  ) {
     return slug;
   }
   return slug ? `${slug}-clinic`.slice(0, BOOKING_SLUG_MAX_LENGTH) : "";
@@ -114,6 +122,20 @@ export const BOOKING_LEAD_TIME_DEFAULT_MINUTES = 60;
 export const BOOKING_WINDOW_DEFAULT_DAYS = 60;
 export const BOOKING_WINDOW_MAX_DAYS = 365;
 
+export const DEFAULT_PREVISIT_INTAKE_FIELD_KEYS: PrevisitIntakeFieldKey[] =
+  PREVISIT_INTAKE_FIELD_DEFINITIONS.map(({ key }) => key);
+
+const intakeFieldKeysSchema = z
+  .array(previsitIntakeFieldKeyInput)
+  .catch(() => DEFAULT_PREVISIT_INTAKE_FIELD_KEYS)
+  .default(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS)
+  .transform((keys) => {
+    const selected = new Set(keys);
+    return PREVISIT_INTAKE_FIELD_DEFINITIONS.flatMap(({ key }) =>
+      selected.has(key) ? [key] : [],
+    );
+  });
+
 const configSchema = z.object({
   hours: weeklyHoursSchema.catch(() => DEFAULT_WEEKLY_HOURS),
   /** Explicitly selected active appointment types; empty fails public booking closed. */
@@ -149,6 +171,12 @@ const configSchema = z.object({
     .max(BOOKING_WELCOME_MAX_LENGTH)
     .catch("")
     .default(""),
+  /**
+   * Optional owner-reported pre-visit fields shown on this public page.
+   * Missing legacy values expose every existing field; an explicit [] hides
+   * the section. Values are deduplicated into stable catalog order.
+   */
+  intakeFieldKeys: intakeFieldKeysSchema,
   /** Hex accent for the public page, e.g. "#0d9488". */
   accentColor: z
     .string()
@@ -166,6 +194,7 @@ export const DEFAULT_BOOKING_PAGE_CONFIG: BookingPageConfig = {
   leadTimeMinutes: BOOKING_LEAD_TIME_DEFAULT_MINUTES,
   bookingWindowDays: BOOKING_WINDOW_DEFAULT_DAYS,
   welcomeText: "",
+  intakeFieldKeys: DEFAULT_PREVISIT_INTAKE_FIELD_KEYS,
   accentColor: "#0d9488",
 };
 
@@ -208,7 +237,7 @@ export interface BookingDayWindow {
 export function bookingWindowForDate(
   config: BookingPageConfig,
   date: string,
-  timeZone?: string | null
+  timeZone?: string | null,
 ): BookingDayWindow | null {
   if (!isValidDateInput(date)) {
     throw new Error("date must be a valid YYYY-MM-DD date.");
@@ -222,12 +251,12 @@ export function bookingWindowForDate(
     dayStart: dateInputTimeUtcInstant(
       date,
       { hour: openHour!, minute: openMinute! },
-      timeZone
+      timeZone,
     ),
     dayEnd: dateInputTimeUtcInstant(
       date,
       { hour: closeHour!, minute: closeMinute! },
-      timeZone
+      timeZone,
     ),
   };
 }
@@ -239,21 +268,23 @@ export function bookingWindowForDate(
 export function isDateWithinBookingWindow(
   config: BookingPageConfig,
   date: string,
-  now: Date = new Date()
+  now: Date = new Date(),
 ): boolean {
   if (!isValidDateInput(date)) return false;
-  const endOfDate = new Date(`${date}T23:59:59Z`).getTime() + 14 * 60 * 60 * 1000;
+  const endOfDate =
+    new Date(`${date}T23:59:59Z`).getTime() + 14 * 60 * 60 * 1000;
   if (endOfDate < now.getTime()) return false;
   const horizon =
     now.getTime() + config.bookingWindowDays * 24 * 60 * 60 * 1000;
-  const startOfDate = new Date(`${date}T00:00:00Z`).getTime() - 14 * 60 * 60 * 1000;
+  const startOfDate =
+    new Date(`${date}T00:00:00Z`).getTime() - 14 * 60 * 60 * 1000;
   return startOfDate <= horizon;
 }
 
 /** Earliest bookable instant given the page's lead time. */
 export function minimumBookableInstant(
   config: BookingPageConfig,
-  now: Date = new Date()
+  now: Date = new Date(),
 ): Date {
   return new Date(now.getTime() + config.leadTimeMinutes * 60_000);
 }
