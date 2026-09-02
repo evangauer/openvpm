@@ -2410,6 +2410,38 @@ try {
       soapReplacementPrivileges[0]!.can_delete === false,
   );
 
+  const soapAddendumRestorePrivileges = await owner`
+    select
+      has_function_privilege(
+        'openpims_app',
+        to_regprocedure('public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text)'),
+        'EXECUTE'
+      ) as app_can_execute,
+      coalesce((
+        select has_function_privilege(
+          role.oid,
+          to_regprocedure('public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text)'),
+          'EXECUTE'
+        )
+        from pg_roles as role where role.rolname = 'anon'
+      ), false) as anon_can_execute,
+      coalesce((
+        select has_function_privilege(
+          role.oid,
+          to_regprocedure('public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text)'),
+          'EXECUTE'
+        )
+        from pg_roles as role where role.rolname = 'authenticated'
+      ), false) as authenticated_can_execute
+  `;
+  check(
+    "only the app role can execute SOAP addendum restore",
+    soapAddendumRestorePrivileges.length === 1 &&
+      soapAddendumRestorePrivileges[0]!.app_can_execute === true &&
+      soapAddendumRestorePrivileges[0]!.anon_can_execute === false &&
+      soapAddendumRestorePrivileges[0]!.authenticated_can_execute === false,
+  );
+
   const soapReplacementRestorePrivileges = await owner`
     select
       has_function_privilege(

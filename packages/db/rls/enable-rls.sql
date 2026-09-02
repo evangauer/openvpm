@@ -127,8 +127,18 @@ GRANT SELECT, INSERT ON patient_allergies TO openpims_app;
 -- SOAP addenda are immutable, attributed extensions to a finalized note.
 REVOKE ALL ON soap_note_addenda FROM openpims_app;
 GRANT SELECT, INSERT ON soap_note_addenda TO openpims_app;
-REVOKE ALL ON FUNCTION restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) TO openpims_app;
+REVOKE ALL ON FUNCTION public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) TO openpims_app;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    REVOKE ALL ON FUNCTION public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) FROM anon;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    REVOKE ALL ON FUNCTION public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) FROM authenticated;
+  END IF;
+END
+$$;
 
 -- Prescription lifecycle events are an append-only clinical ledger. Tenant
 -- users may read and append attributed events through the transactional app

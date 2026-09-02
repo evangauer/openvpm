@@ -297,6 +297,36 @@ describe("committed Drizzle migrations", () => {
     );
   });
 
+  it("restricts SOAP addendum restoration to the application role", () => {
+    const signature =
+      "public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text)";
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries: Array<{ tag: string }> };
+    const tag = journal.entries.find((entry) =>
+      entry.tag.startsWith("0100_"),
+    )?.tag;
+
+    expect(tag).toBe("0100_restrict_soap_addendum_execute");
+    const migration = readRepoFile(`packages/db/drizzle/${tag}.sql`);
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+
+    for (const source of [migration, rls]) {
+      expect(source).toContain(
+        `REVOKE ALL ON FUNCTION ${signature} FROM PUBLIC`,
+      );
+      expect(source).toContain(
+        `REVOKE ALL ON FUNCTION ${signature} FROM anon`,
+      );
+      expect(source).toContain(
+        `REVOKE ALL ON FUNCTION ${signature} FROM authenticated`,
+      );
+      expect(source).toContain(
+        `GRANT EXECUTE ON FUNCTION ${signature} TO openpims_app`,
+      );
+    }
+  });
+
   it("stages file recovery constraints behind a count-only preflight", () => {
     const preflight = readRepoFile(
       "packages/db/preflight/0077_file_recovery.sql",
