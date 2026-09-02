@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bookingWindowForDate,
+  bookingPageConfigInput,
   DEFAULT_BOOKING_PAGE_CONFIG,
   DEFAULT_PREVISIT_INTAKE_FIELD_KEYS,
   DEFAULT_WEEKLY_HOURS,
@@ -59,11 +60,11 @@ describe("parseBookingPageConfig", () => {
     ).toEqual([]);
   });
 
-  it("defaults legacy configs to every existing intake field", () => {
+  it("defaults legacy configs to zero optional sensitive intake fields", () => {
     expect(
       parseBookingPageConfig({ welcomeText: "Legacy page" }).intakeFieldKeys,
     ).toEqual(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS);
-    expect(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS[0]).toBe("serviceAddress");
+    expect(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS).toEqual([]);
   });
 
   it("preserves an explicit empty intake selection", () => {
@@ -96,6 +97,27 @@ describe("parseBookingPageConfig", () => {
       parseBookingPageConfig({ intakeFieldKeys: "serviceAddress" })
         .intakeFieldKeys,
     ).toEqual(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS);
+  });
+
+  it("rejects malformed intake fields on admin writes", () => {
+    expect(
+      bookingPageConfigInput.safeParse({
+        intakeFieldKeys: ["serviceAddress", "not-a-field"],
+      }).success,
+    ).toBe(false);
+    expect(
+      bookingPageConfigInput.safeParse({
+        intakeFieldKeys: "serviceAddress",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts an explicit catalog selection on admin writes", () => {
+    expect(
+      bookingPageConfigInput.parse({
+        intakeFieldKeys: ["handlingNotes", "serviceAddress"],
+      }).intakeFieldKeys,
+    ).toEqual(["serviceAddress", "handlingNotes"]);
   });
 
   it("rejects hours where open is not before close", () => {
