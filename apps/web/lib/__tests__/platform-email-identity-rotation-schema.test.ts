@@ -62,6 +62,11 @@ describe("platform email identity rotation schema", () => {
     expect(migration).toContain(
       'CREATE TABLE "platform_email_identity_aliases"',
     );
+    expect(
+      migration.indexOf("SET LOCAL search_path = public, pg_catalog"),
+    ).toBeLessThan(
+      migration.indexOf('CREATE TABLE "platform_email_identity_aliases"'),
+    );
     expect(migration).toContain(
       'CONSTRAINT "platform_email_identity_rotation_state_check"',
     );

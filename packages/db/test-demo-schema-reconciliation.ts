@@ -36,14 +36,15 @@ const canonicalMigration = readFileSync(
   join(migrationDir, "0100_small_kylun.sql"),
   "utf8",
 );
+const identityRotationMigration = readFileSync(
+  join(migrationDir, "0101_colorful_stark_industries.sql"),
+  "utf8",
+);
 const rogueFixture = readFileSync(
   join(here, "fixtures", "demo-rogue-0099-0101.sql"),
   "utf8",
 );
-const rlsBaseline = readFileSync(
-  join(here, "rls", "enable-rls.sql"),
-  "utf8",
-);
+const rlsBaseline = readFileSync(join(here, "rls", "enable-rls.sql"), "utf8");
 const migrationsThroughMain0099 = readdirSync(migrationDir)
   .filter((name) => /^\d{4}_.+\.sql$/.test(name))
   .filter((name) => Number(name.slice(0, 4)) <= 99)
@@ -56,6 +57,14 @@ async function applyCanonical(owner: SqlClient): Promise<void> {
   await owner.begin(async (transaction) => {
     await (transaction as unknown as SqlClient)
       .unsafe(canonicalMigration)
+      .simple();
+  });
+}
+
+async function applyIdentityRotation(owner: SqlClient): Promise<void> {
+  await owner.begin(async (transaction) => {
+    await (transaction as unknown as SqlClient)
+      .unsafe(identityRotationMigration)
       .simple();
   });
 }
@@ -91,7 +100,9 @@ async function runScenario(kind: "fresh" | "rogue"): Promise<void> {
       `create role "${ownerRole}" login password '${ownerPassword}'`,
     );
     ownerRoleCreated = true;
-    await admin.unsafe(`create database "${databaseName}" owner "${ownerRole}"`);
+    await admin.unsafe(
+      `create database "${databaseName}" owner "${ownerRole}"`,
+    );
     databaseCreated = true;
 
     owner = postgres(targetOwnerUrl.toString(), { max: 1 });
@@ -130,6 +141,9 @@ async function runScenario(kind: "fresh" | "rogue"): Promise<void> {
     // adopted shape and performs no second-pass mutation.
     await applyCanonical(owner);
     await applyCanonical(owner);
+    // The next canonical migration must apply cleanly after both fresh and
+    // adopted demo schema paths without disturbing reconciled evidence.
+    await applyIdentityRotation(owner);
     // Prove the idempotent full RLS baseline retains the migration's narrower
     // backup-run privilege override after its initial all-table grant.
     await owner.unsafe(rlsBaseline).simple();
@@ -141,6 +155,11 @@ async function runScenario(kind: "fresh" | "rogue"): Promise<void> {
         mfaConstraints: number;
         enumLabels: string[];
         rowSecurity: boolean;
+        identityRotationColumns: number;
+        identityRotationConstraints: number;
+        aliasConstraints: number;
+        aliasUniqueIndexes: number;
+        aliasRowSecurity: boolean;
       }>
     >`select
       (select count(*)::int from backup_runs) as "backupRows",
@@ -156,7 +175,37 @@ async function runScenario(kind: "fresh" | "rogue"): Promise<void> {
         from pg_enum e
         where e.enumtypid = 'public.backup_run_status'::regtype) as "enumLabels",
       (select relrowsecurity from pg_class
-        where oid = 'public.backup_runs'::regclass) as "rowSecurity"`;
+        where oid = 'public.backup_runs'::regclass) as "rowSecurity",
+      (select count(*)::int from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'platform_email_identity'
+          and column_name in ('previous_identity_key_fingerprint',
+            'rotation_started_at')) as "identityRotationColumns",
+      (select count(*)::int from pg_constraint
+        where conrelid = 'public.platform_email_identity'::regclass
+          and conname in ('platform_email_identity_previous_fingerprint_check',
+            'platform_email_identity_distinct_fingerprints_check',
+            'platform_email_identity_rotation_state_check')
+          and convalidated) as "identityRotationConstraints",
+      (select count(*)::int from pg_constraint
+        where conrelid = 'public.platform_email_identity_aliases'::regclass
+          and conname in (
+            'platform_email_identity_aliases_current_fingerprint_check',
+            'platform_email_identity_aliases_current_hash_check',
+            'platform_email_identity_aliases_previous_fingerprint_check',
+            'platform_email_identity_aliases_previous_hash_check',
+            'platform_email_identity_aliases_distinct_fingerprints_check',
+            'platform_email_identity_aliases_distinct_hashes_check')
+          and convalidated) as "aliasConstraints",
+      (select count(*)::int from pg_index i
+        join pg_class c on c.oid = i.indexrelid
+        where i.indrelid = 'public.platform_email_identity_aliases'::regclass
+          and i.indisunique
+          and c.relname in ('platform_email_identity_aliases_current_uq',
+            'platform_email_identity_aliases_previous_uq')) as "aliasUniqueIndexes",
+      (select relrowsecurity from pg_class
+        where oid = 'public.platform_email_identity_aliases'::regclass)
+        as "aliasRowSecurity"`;
 
     const expectedBackupRows = kind === "rogue" ? 3 : 0;
     if (
@@ -165,9 +214,16 @@ async function runScenario(kind: "fresh" | "rogue"): Promise<void> {
       shape.mfaConstraints !== 3 ||
       JSON.stringify(shape.enumLabels) !==
         JSON.stringify(["ok", "degraded", "failed"]) ||
-      !shape.rowSecurity
+      !shape.rowSecurity ||
+      shape.identityRotationColumns !== 2 ||
+      shape.identityRotationConstraints !== 3 ||
+      shape.aliasConstraints !== 6 ||
+      shape.aliasUniqueIndexes !== 2 ||
+      !shape.aliasRowSecurity
     ) {
-      throw new Error(`${kind} reconciliation shape mismatch: ${JSON.stringify(shape)}`);
+      throw new Error(
+        `${kind} reconciliation shape mismatch: ${JSON.stringify(shape)}`,
+      );
     }
 
     const mfaAfter = await owner`select email, mfa_secret_encrypted,
@@ -200,27 +256,50 @@ async function runScenario(kind: "fresh" | "rogue"): Promise<void> {
         update: boolean;
         delete: boolean;
         publicSelect: boolean;
+        aliasSelect: boolean;
+        aliasInsert: boolean;
+        aliasUpdate: boolean;
+        aliasDelete: boolean;
+        publicAliasSelect: boolean;
       }>
     >`select
       has_table_privilege('openpims_app', 'public.backup_runs', 'select') as "select",
       has_table_privilege('openpims_app', 'public.backup_runs', 'insert') as "insert",
       has_table_privilege('openpims_app', 'public.backup_runs', 'update') as "update",
       has_table_privilege('openpims_app', 'public.backup_runs', 'delete') as "delete",
+      has_table_privilege('openpims_app', 'public.platform_email_identity_aliases', 'select') as "aliasSelect",
+      has_table_privilege('openpims_app', 'public.platform_email_identity_aliases', 'insert') as "aliasInsert",
+      has_table_privilege('openpims_app', 'public.platform_email_identity_aliases', 'update') as "aliasUpdate",
+      has_table_privilege('openpims_app', 'public.platform_email_identity_aliases', 'delete') as "aliasDelete",
       exists (
         select 1 from information_schema.role_table_grants
         where grantee = 'PUBLIC'
           and table_schema = 'public'
           and table_name = 'backup_runs'
           and privilege_type = 'SELECT'
-      ) as "publicSelect"`;
+      ) as "publicSelect",
+      exists (
+        select 1 from information_schema.role_table_grants
+        where grantee = 'PUBLIC'
+          and table_schema = 'public'
+          and table_name = 'platform_email_identity_aliases'
+          and privilege_type = 'SELECT'
+      ) as "publicAliasSelect"`;
     if (
       !privileges?.select ||
       !privileges.insert ||
       privileges.update ||
       privileges.delete ||
-      privileges.publicSelect
+      privileges.publicSelect ||
+      !privileges.aliasSelect ||
+      !privileges.aliasInsert ||
+      privileges.aliasUpdate ||
+      privileges.aliasDelete ||
+      privileges.publicAliasSelect
     ) {
-      throw new Error(`unsafe backup_runs privileges: ${JSON.stringify(privileges)}`);
+      throw new Error(
+        `unsafe backup_runs privileges: ${JSON.stringify(privileges)}`,
+      );
     }
 
     const noContextRows = await targetAdmin.begin(async (transaction) => {
@@ -239,7 +318,9 @@ async function runScenario(kind: "fresh" | "rogue"): Promise<void> {
       return scoped`select id from backup_runs order by id`;
     });
     if (systemRows.length !== expectedBackupRows) {
-      throw new Error("backup_runs system-context read did not expose exact evidence");
+      throw new Error(
+        "backup_runs system-context read did not expose exact evidence",
+      );
     }
 
     await expectRejected("no-context backup insert", () =>
@@ -275,7 +356,7 @@ async function runScenario(kind: "fresh" | "rogue"): Promise<void> {
     }
 
     console.log(
-      `✓ ${kind}: canonical 0100 preserved data, reconciled exact shape, and enforced system-only RLS`,
+      `✓ ${kind}: canonical 0100 + 0101 preserved data, reconciled exact shape, and enforced system-only RLS`,
     );
   } finally {
     if (targetAdmin) await targetAdmin.end();
@@ -290,7 +371,8 @@ async function runScenario(kind: "fresh" | "rogue"): Promise<void> {
 }
 
 try {
-  const [appRole] = await admin`select 1 from pg_roles where rolname = 'openpims_app'`;
+  const [appRole] =
+    await admin`select 1 from pg_roles where rolname = 'openpims_app'`;
   if (!appRole) {
     await admin.unsafe("create role openpims_app nologin");
     createdAppRole = true;
@@ -299,7 +381,7 @@ try {
   await runScenario("fresh");
   await runScenario("rogue");
   console.log(
-    "Demo schema reconciliation PostgreSQL contract passed: fresh-main and exact rogue 0099-0101 upgrades are lossless and fail closed.",
+    "Demo schema reconciliation PostgreSQL contract passed: fresh-main and exact rogue 0099-0101 upgrades through canonical 0101 are lossless and fail closed.",
   );
 } finally {
   if (createdAppRole) {

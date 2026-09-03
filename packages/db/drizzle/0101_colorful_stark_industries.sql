@@ -1,3 +1,4 @@
+SET LOCAL search_path = public, pg_catalog;--> statement-breakpoint
 CREATE TABLE "platform_email_identity_aliases" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
