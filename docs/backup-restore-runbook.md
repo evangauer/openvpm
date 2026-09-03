@@ -177,6 +177,14 @@ a complete recovery source for that incident.
    consent whose frozen key, checksum, size, patient, appointment, or manifest
    binding is not exactly available.
 
+   Signed rows created before versioned attestation and PDF rendering are
+   exported as `legacy-pre-attestation-v1` only when their later provenance
+   fields are all null. This marker preserves the historical signer, time,
+   retained PNG (when present), and exact PDF without claiming a signing method,
+   owner-authority acknowledgement, or renderer version that was never
+   recorded. Mixed or incomplete provenance and incomplete PDF manifests fail
+   closed and require full database recovery.
+
 6. **Verify:** client list, one patient chart (vaccinations tab), one
    invoice, and the Lab Inbox review/follow-up evidence for one completed
    result. For a backup containing a lab correction, confirm the retained

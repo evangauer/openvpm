@@ -895,6 +895,7 @@ function restoredTimestampMillis(value: unknown): number | null {
 }
 
 const SIGNED_CONSENT_EVIDENCE_KEYS = new Set([
+  "evidenceProfile",
   "id",
   "createdAt",
   "updatedAt",
@@ -918,6 +919,9 @@ const SIGNED_CONSENT_EVIDENCE_KEYS = new Set([
   "signedFileChecksumSha256",
   "signedFileSizeBytes",
 ]);
+const ATTESTED_SIGNED_CONSENT_EVIDENCE_PROFILE = "attested-signature-v1";
+const LEGACY_SIGNED_CONSENT_EVIDENCE_PROFILE =
+  "legacy-pre-attestation-v1";
 
 function portableSignaturePng(value: unknown): Buffer | null {
   if (
@@ -1131,25 +1135,48 @@ export function validatePracticeExportRestore(data: unknown): {
       pushError(`${label} must contain bounded consent copy and signer identity.`);
     }
     const signature = portableSignaturePng(row.signaturePngBase64);
-    if (!signature) {
-      pushError(`${label}.signaturePngBase64 must contain a bounded decodable PNG.`);
+    const hasExactSignature =
+      signature !== null &&
+      typeof row.signatureSha256 === "string" &&
+      createHash("sha256").update(signature).digest("hex") ===
+        row.signatureSha256;
+    const hasExplicitlyAbsentSignature =
+      row.signaturePngBase64 === null && row.signatureSha256 === null;
+    if (row.evidenceProfile === ATTESTED_SIGNED_CONSENT_EVIDENCE_PROFILE) {
+      if (!hasExactSignature) {
+        pushError(`${label} must contain exact modern PNG signature evidence.`);
+      }
+      if (row.signatureMethod !== "drawn" && row.signatureMethod !== "typed") {
+        pushError(`${label}.signatureMethod is unsupported.`);
+      }
+      if (row.signerAttestationVersion !== "owner-authority-v1") {
+        pushError(`${label}.signerAttestationVersion is unsupported.`);
+      }
+      if (
+        row.documentRenderVersion !== "consent-pdf-v1" &&
+        row.documentRenderVersion !== "consent-pdf-v2"
+      ) {
+        pushError(`${label}.documentRenderVersion is unsupported.`);
+      }
     } else if (
-      typeof row.signatureSha256 !== "string" ||
-      createHash("sha256").update(signature).digest("hex") !== row.signatureSha256
+      row.evidenceProfile === LEGACY_SIGNED_CONSENT_EVIDENCE_PROFILE
     ) {
-      pushError(`${label}.signatureSha256 must match the exact PNG bytes.`);
-    }
-    if (row.signatureMethod !== "drawn" && row.signatureMethod !== "typed") {
-      pushError(`${label}.signatureMethod is unsupported.`);
-    }
-    if (row.signerAttestationVersion !== "owner-authority-v1") {
-      pushError(`${label}.signerAttestationVersion is unsupported.`);
-    }
-    if (
-      row.documentRenderVersion !== "consent-pdf-v1" &&
-      row.documentRenderVersion !== "consent-pdf-v2"
-    ) {
-      pushError(`${label}.documentRenderVersion is unsupported.`);
+      if (!hasExactSignature && !hasExplicitlyAbsentSignature) {
+        pushError(
+          `${label} legacy PNG evidence must be an exact pair or explicitly absent.`,
+        );
+      }
+      if (
+        row.signatureMethod !== null ||
+        row.signerAttestationVersion !== null ||
+        row.documentRenderVersion !== null
+      ) {
+        pushError(
+          `${label} legacy provenance fields must remain explicitly null.`,
+        );
+      }
+    } else {
+      pushError(`${label}.evidenceProfile is unsupported.`);
     }
     if (
       typeof row.signedFileKey !== "string" ||
@@ -2698,13 +2725,22 @@ async function sealedSignedConsentEvidenceRows(
       ),
     );
 
-  return rows.map(({ signaturePngBytes, ...row }) => ({
-    ...row,
-    signaturePngBase64:
-      signaturePngBytes == null
-        ? null
-        : Buffer.from(signaturePngBytes).toString("base64"),
-  }));
+  return rows.map(({ signaturePngBytes, ...row }) => {
+    const evidenceProfile =
+      row.signatureMethod === null &&
+      row.signerAttestationVersion === null &&
+      row.documentRenderVersion === null
+        ? LEGACY_SIGNED_CONSENT_EVIDENCE_PROFILE
+        : ATTESTED_SIGNED_CONSENT_EVIDENCE_PROFILE;
+    return {
+      ...row,
+      evidenceProfile,
+      signaturePngBase64:
+        signaturePngBytes == null
+          ? null
+          : Buffer.from(signaturePngBytes).toString("base64"),
+    };
+  });
 }
 
 async function allPracticeRows(db: Database, table: any, practiceId: string) {

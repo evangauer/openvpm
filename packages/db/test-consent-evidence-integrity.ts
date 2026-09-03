@@ -39,6 +39,8 @@ const ids = {
   unreservedConsent: randomUUID(),
   restoreConsent: randomUUID(),
   restoreFile: randomUUID(),
+  legacyRestoreConsent: randomUUID(),
+  legacyRestoreFile: randomUUID(),
   restoreForm: randomUUID(),
   receipt: randomUUID(),
 };
@@ -386,11 +388,14 @@ try {
   console.log("  ✓ deferred validation failure preserves signing recovery state");
 
   const restoreFileKey = `${ids.practiceA}/consents/${ids.restoreFile}.pdf`;
+  const legacyRestoreFileKey =
+    `${ids.practiceA}/consents/${ids.legacyRestoreFile}.pdf`;
   const restoreCreatedAt = new Date(Date.now() - 60_000).toISOString();
   const restoreUpdatedAt = new Date(Date.now() - 30_000).toISOString();
   const restoreSignedAt = new Date(Date.now() - 45_000).toISOString();
   const restoreExpiresAt = new Date(Date.now() - 15_000).toISOString();
   const sealedEvidence = {
+    evidenceProfile: "attested-signature-v1",
     id: ids.restoreConsent,
     createdAt: restoreCreatedAt,
     updatedAt: restoreUpdatedAt,
@@ -414,6 +419,18 @@ try {
     signedFileChecksumSha256: pdfHash,
     signedFileSizeBytes: pdfSize,
   };
+  const legacySealedEvidence = {
+    ...sealedEvidence,
+    evidenceProfile: "legacy-pre-attestation-v1",
+    id: ids.legacyRestoreConsent,
+    title: "Portable legacy signed consent",
+    bodyText: "Exact frozen pre-attestation disclosure.",
+    signatureMethod: null,
+    signerAttestationVersion: null,
+    documentRenderVersion: null,
+    fileId: ids.legacyRestoreFile,
+    signedFileKey: legacyRestoreFileKey,
+  };
 
   await owner`update practices set recovery_hold = true,
     recovery_hold_set_at = clock_timestamp(),
@@ -431,6 +448,15 @@ try {
       ${restoreFileKey}, ${`/api/files/${restoreFileKey}`}, 'application/pdf',
       ${pdfSize}, ${pdfHash}, 'unverified', 'consents', 'consent_signature',
       ${ids.restoreConsent}, 'patient', ${ids.patientA}, ${ids.patientA})`;
+  await owner`insert into files
+    (id, practice_id, uploaded_by, file_name, file_key, file_url, mime_type,
+     file_size_bytes, checksum_sha256, storage_status, category, source,
+     idempotency_key, entity_type, entity_id, patient_id)
+    values (${ids.legacyRestoreFile}, ${ids.practiceA}, ${ids.userA},
+      'restored-legacy-signed.pdf', ${legacyRestoreFileKey},
+      ${`/api/files/${legacyRestoreFileKey}`}, 'application/pdf', ${pdfSize},
+      ${pdfHash}, 'unverified', 'consents', 'consent_signature',
+      ${ids.legacyRestoreConsent}, 'patient', ${ids.patientA}, ${ids.patientA})`;
 
   const [firstRestore] = await owner`select * from restore_signed_consent_evidence(
     ${ids.practiceA}, ${owner.json(sealedEvidence)}
@@ -443,6 +469,32 @@ try {
   }
   console.log("  ✓ owner+hold sealed restore inserts once and exact replay is idempotent");
 
+  const [legacyRestore] = await owner`select * from restore_signed_consent_evidence(
+    ${ids.practiceA}, ${owner.json(legacySealedEvidence)}
+  )`;
+  if (legacyRestore?.was_inserted !== true) {
+    throw new Error("truthful legacy sealed evidence was not restored");
+  }
+  const [legacyRow] = await owner`select signature_method,
+    signer_attestation_version, document_render_version, token, token_hash,
+    storage_lease_token, storage_lease_expires_at,
+    signed_file_object_etag, signed_file_object_version_id
+    from consent_requests where id = ${ids.legacyRestoreConsent}`;
+  if (
+    legacyRow?.signature_method !== null ||
+    legacyRow?.signer_attestation_version !== null ||
+    legacyRow?.document_render_version !== null ||
+    legacyRow?.token !== null ||
+    legacyRow?.token_hash !== null ||
+    legacyRow?.storage_lease_token !== null ||
+    legacyRow?.storage_lease_expires_at !== null ||
+    legacyRow?.signed_file_object_etag !== null ||
+    legacyRow?.signed_file_object_version_id !== null
+  ) {
+    throw new Error("legacy restore fabricated provenance or retained secret state");
+  }
+  console.log("  ✓ legacy restore preserves null provenance and omits capabilities");
+
   await expectRejected("divergent sealed evidence replay fails closed", () =>
     owner`select restore_signed_consent_evidence(
       ${ids.practiceA}, ${owner.json({ ...sealedEvidence, title: "Changed" })}
@@ -454,6 +506,15 @@ try {
         ...sealedEvidence,
         id: randomUUID(),
         signatureSha256: wrongHash,
+      })}
+    )`,
+  );
+  await expectRejected("legacy marker cannot fabricate modern attestation", () =>
+    owner`select restore_signed_consent_evidence(
+      ${ids.practiceA}, ${owner.json({
+        ...legacySealedEvidence,
+        id: randomUUID(),
+        signerAttestationVersion: "owner-authority-v1",
       })}
     )`,
   );
@@ -471,6 +532,14 @@ try {
       'available'::file_storage_status, clock_timestamp(), null, null
     ) as ok`;
     if (verified?.ok !== true) throw new Error("restored exact object verification failed");
+    const [legacyVerified] = await tx`select transition_signed_consent_file_storage(
+      ${ids.practiceA}, ${ids.legacyRestoreFile}, ${legacyRestoreFileKey},
+      ${pdfHash}, ${pdfSize}, 'unverified'::file_storage_status,
+      'available'::file_storage_status, clock_timestamp(), null, null
+    ) as ok`;
+    if (legacyVerified?.ok !== true) {
+      throw new Error("restored legacy exact object verification failed");
+    }
   });
   const [restoredEvidence] = await owner`select token, token_hash,
     storage_lease_token, storage_lease_expires_at, deleted_at,
@@ -493,8 +562,8 @@ try {
 } finally {
   try {
     await owner`delete from consent_receipt_capabilities where id = ${ids.receipt}`;
-    await owner`delete from consent_requests where id in (${ids.consent}, ${ids.deferredConsent}, ${ids.unreservedConsent}, ${ids.restoreConsent})`;
-    await owner`delete from files where id in (${ids.file}, ${ids.deferredFile}, ${ids.ordinaryFile}, ${ids.restoreFile})`;
+    await owner`delete from consent_requests where id in (${ids.consent}, ${ids.deferredConsent}, ${ids.unreservedConsent}, ${ids.restoreConsent}, ${ids.legacyRestoreConsent})`;
+    await owner`delete from files where id in (${ids.file}, ${ids.deferredFile}, ${ids.ordinaryFile}, ${ids.restoreFile}, ${ids.legacyRestoreFile})`;
     await owner`delete from consent_forms where id = ${ids.restoreForm}`;
     await owner`delete from patients where id in (${ids.patientA}, ${ids.patientB})`;
     await owner`delete from clients where id in (${ids.clientA}, ${ids.clientB})`;

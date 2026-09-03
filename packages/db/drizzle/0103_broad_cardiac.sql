@@ -231,6 +231,7 @@ DECLARE
   restored_expires_at timestamptz;
   restored_signed_at timestamptz;
   restored_file_size integer;
+  restored_evidence_profile text;
   png_width bigint;
   png_height bigint;
   existing_record public.consent_requests%ROWTYPE;
@@ -268,7 +269,15 @@ BEGIN
     restored_expires_at := (p_evidence->>'expiresAt')::timestamptz;
     restored_signed_at := (p_evidence->>'signedAt')::timestamptz;
     restored_file_size := (p_evidence->>'signedFileSizeBytes')::integer;
-    restored_signature_bytes := pg_catalog.decode(p_evidence->>'signaturePngBase64', 'base64');
+    restored_evidence_profile := p_evidence->>'evidenceProfile';
+    IF p_evidence->>'signaturePngBase64' IS NOT NULL THEN
+      restored_signature_bytes := pg_catalog.decode(
+        p_evidence->>'signaturePngBase64',
+        'base64'
+      );
+    ELSE
+      restored_signature_bytes := NULL;
+    END IF;
   EXCEPTION WHEN OTHERS THEN
     RAISE EXCEPTION USING ERRCODE = '22023',
       MESSAGE = 'Signed consent backup has invalid encoded fields';
@@ -280,41 +289,85 @@ BEGIN
      OR p_evidence->>'bodyText' IS NULL
      OR p_evidence->>'signerName' IS NULL
      OR pg_catalog.length(pg_catalog.btrim(p_evidence->>'signerName')) NOT BETWEEN 1 AND 120
-     OR p_evidence->>'signatureSha256' !~ '^[0-9a-f]{64}$'
-     OR p_evidence->>'signatureSha256' <> pg_catalog.encode(pg_catalog.sha256(restored_signature_bytes), 'hex')
-     OR p_evidence->>'signatureMethod' NOT IN ('drawn', 'typed')
-     OR p_evidence->>'signerAttestationVersion' <> 'owner-authority-v1'
-     OR p_evidence->>'documentRenderVersion' NOT IN ('consent-pdf-v1', 'consent-pdf-v2')
      OR p_evidence->>'signedFileKey' IS NULL
      OR p_evidence->>'signedFileKey' NOT LIKE p_practice_id::text || '/%'
      OR p_evidence->>'signedFileChecksumSha256' !~ '^[0-9a-f]{64}$'
      OR restored_file_size <= 0
      OR restored_created_at IS NULL OR restored_updated_at IS NULL
      OR restored_expires_at IS NULL OR restored_signed_at IS NULL
-     OR pg_catalog.octet_length(restored_signature_bytes) NOT BETWEEN 24 AND 500000
-     OR pg_catalog.substring(restored_signature_bytes, 1, 8) <> pg_catalog.decode('89504e470d0a1a0a', 'hex')
-     OR pg_catalog.substring(restored_signature_bytes, 13, 4) <> pg_catalog.convert_to('IHDR', 'UTF8')
   THEN
     RAISE EXCEPTION USING ERRCODE = '23514',
       MESSAGE = 'Signed consent backup failed terminal evidence validation';
   END IF;
 
-  png_width :=
-    pg_catalog.get_byte(restored_signature_bytes, 16) * 16777216::bigint +
-    pg_catalog.get_byte(restored_signature_bytes, 17) * 65536::bigint +
-    pg_catalog.get_byte(restored_signature_bytes, 18) * 256::bigint +
-    pg_catalog.get_byte(restored_signature_bytes, 19);
-  png_height :=
-    pg_catalog.get_byte(restored_signature_bytes, 20) * 16777216::bigint +
-    pg_catalog.get_byte(restored_signature_bytes, 21) * 65536::bigint +
-    pg_catalog.get_byte(restored_signature_bytes, 22) * 256::bigint +
-    pg_catalog.get_byte(restored_signature_bytes, 23);
-  IF png_width NOT BETWEEN 1 AND 2048
-     OR png_height NOT BETWEEN 1 AND 2048
-     OR png_width * png_height > 2000000
-  THEN
+  IF restored_evidence_profile = 'attested-signature-v1' THEN
+    IF restored_signature_bytes IS NULL
+       OR p_evidence->>'signatureSha256' IS NULL
+       OR p_evidence->>'signatureSha256' !~ '^[0-9a-f]{64}$'
+       OR p_evidence->>'signatureSha256' <> pg_catalog.encode(pg_catalog.sha256(restored_signature_bytes), 'hex')
+       OR p_evidence->>'signatureMethod' IS NULL
+       OR p_evidence->>'signatureMethod' NOT IN ('drawn', 'typed')
+       OR p_evidence->>'signerAttestationVersion' IS DISTINCT FROM 'owner-authority-v1'
+       OR p_evidence->>'documentRenderVersion' IS NULL
+       OR p_evidence->>'documentRenderVersion' NOT IN ('consent-pdf-v1', 'consent-pdf-v2')
+    THEN
+      RAISE EXCEPTION USING ERRCODE = '23514',
+        MESSAGE = 'Attested signed consent backup has invalid provenance';
+    END IF;
+  ELSIF restored_evidence_profile = 'legacy-pre-attestation-v1' THEN
+    IF p_evidence->'signatureMethod' IS DISTINCT FROM 'null'::jsonb
+       OR p_evidence->'signerAttestationVersion' IS DISTINCT FROM 'null'::jsonb
+       OR p_evidence->'documentRenderVersion' IS DISTINCT FROM 'null'::jsonb
+       OR (
+         restored_signature_bytes IS NULL
+         AND (
+           p_evidence->'signaturePngBase64' IS DISTINCT FROM 'null'::jsonb
+           OR p_evidence->'signatureSha256' IS DISTINCT FROM 'null'::jsonb
+         )
+       )
+       OR (
+         restored_signature_bytes IS NOT NULL
+         AND (
+           p_evidence->>'signatureSha256' IS NULL
+           OR p_evidence->>'signatureSha256' !~ '^[0-9a-f]{64}$'
+           OR p_evidence->>'signatureSha256' <> pg_catalog.encode(pg_catalog.sha256(restored_signature_bytes), 'hex')
+         )
+       )
+    THEN
+      RAISE EXCEPTION USING ERRCODE = '23514',
+        MESSAGE = 'Legacy signed consent backup has invalid evidence provenance';
+    END IF;
+  ELSE
     RAISE EXCEPTION USING ERRCODE = '23514',
-      MESSAGE = 'Signed consent backup PNG dimensions are invalid';
+      MESSAGE = 'Signed consent backup evidence profile is unsupported';
+  END IF;
+
+  IF restored_signature_bytes IS NOT NULL THEN
+    IF pg_catalog.octet_length(restored_signature_bytes) NOT BETWEEN 24 AND 500000
+       OR pg_catalog.substring(restored_signature_bytes, 1, 8) <> pg_catalog.decode('89504e470d0a1a0a', 'hex')
+       OR pg_catalog.substring(restored_signature_bytes, 13, 4) <> pg_catalog.convert_to('IHDR', 'UTF8')
+    THEN
+      RAISE EXCEPTION USING ERRCODE = '23514',
+        MESSAGE = 'Signed consent backup PNG bytes are invalid';
+    END IF;
+
+    png_width :=
+      pg_catalog.get_byte(restored_signature_bytes, 16) * 16777216::bigint +
+      pg_catalog.get_byte(restored_signature_bytes, 17) * 65536::bigint +
+      pg_catalog.get_byte(restored_signature_bytes, 18) * 256::bigint +
+      pg_catalog.get_byte(restored_signature_bytes, 19);
+    png_height :=
+      pg_catalog.get_byte(restored_signature_bytes, 20) * 16777216::bigint +
+      pg_catalog.get_byte(restored_signature_bytes, 21) * 65536::bigint +
+      pg_catalog.get_byte(restored_signature_bytes, 22) * 256::bigint +
+      pg_catalog.get_byte(restored_signature_bytes, 23);
+    IF png_width NOT BETWEEN 1 AND 2048
+       OR png_height NOT BETWEEN 1 AND 2048
+       OR png_width * png_height > 2000000
+    THEN
+      RAISE EXCEPTION USING ERRCODE = '23514',
+        MESSAGE = 'Signed consent backup PNG dimensions are invalid';
+    END IF;
   END IF;
 
   IF NOT EXISTS (

@@ -364,6 +364,7 @@ function signedConsentBackup() {
     ],
     signedConsentEvidence: [
       {
+        evidenceProfile: "attested-signature-v1",
         id: requestId,
         createdAt: timestamp,
         updatedAt: "2026-09-03T12:05:00.000Z",
@@ -438,8 +439,61 @@ describe("sealed signed-consent backup v9", () => {
     expect(validatePracticeExportRestore(tampered).errors).toEqual(
       expect.arrayContaining([
         expect.stringContaining("unsupported or secret fields: tokenHash"),
-        expect.stringContaining("signatureSha256 must match the exact PNG bytes"),
+        expect.stringContaining("exact modern PNG signature evidence"),
         expect.stringContaining("exact portable consent PDF manifest"),
+      ]),
+    );
+  });
+
+  it("preserves bounded pre-attestation evidence without inventing provenance", () => {
+    const current = signedConsentBackup();
+    const modern = current.signedConsentEvidence[0]!;
+    const legacy = withCanonicalCounts({
+      ...current,
+      signedConsentEvidence: [
+        {
+          ...modern,
+          evidenceProfile: "legacy-pre-attestation-v1",
+          signatureMethod: null,
+          signerAttestationVersion: null,
+          documentRenderVersion: null,
+        },
+      ],
+    });
+    expect(validatePracticeExportRestore(legacy)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const withoutRetainedPng = withCanonicalCounts({
+      ...legacy,
+      signedConsentEvidence: [
+        {
+          ...legacy.signedConsentEvidence[0]!,
+          signaturePngBase64: null,
+          signatureSha256: null,
+        },
+      ],
+    });
+    expect(validatePracticeExportRestore(withoutRetainedPng)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const fabricated = withCanonicalCounts({
+      ...legacy,
+      signedConsentEvidence: [
+        {
+          ...legacy.signedConsentEvidence[0]!,
+          signerAttestationVersion: "owner-authority-v1",
+        },
+      ],
+    });
+    expect(validatePracticeExportRestore(fabricated).errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          "legacy provenance fields must remain explicitly null",
+        ),
       ]),
     );
   });

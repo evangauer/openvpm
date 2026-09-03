@@ -102,6 +102,11 @@ describe("committed Drizzle migrations", () => {
     expect(migration).toContain(
       "Signed consent evidence conflicts with an existing record",
     );
+    expect(migration).toContain("attested-signature-v1");
+    expect(migration).toContain("legacy-pre-attestation-v1");
+    expect(migration).toContain(
+      "Legacy signed consent backup has invalid evidence provenance",
+    );
     expect(rls).toContain(
       "REVOKE ALL ON FUNCTION public.resolve_consent_document_render_version",
     );
