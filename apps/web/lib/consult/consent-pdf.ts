@@ -63,15 +63,30 @@ function ensureSpace(doc: jsPDF, y: number, needed: number): number {
   return y;
 }
 
+function canonicalPdfCreationDate(signedAtIso: string): string {
+  // The explicit PDF date string bypasses jsPDF's timezone-sensitive Date
+  // overload while retaining the persisted signing instant as metadata.
+  const utcDigits = new Date(signedAtIso)
+    .toISOString()
+    .replace(/\D/g, "")
+    .slice(0, 14);
+  return `D:${utcDigits}+00'00'`;
+}
+
 function renderConsentPdf(
   input: ConsentPdfV1Input,
-  signerAttestation?: string,
+  signerAttestation: string | undefined,
+  creationDateMode: "legacy-local" | "canonical-utc",
 ): Buffer {
   const doc = new jsPDF();
   // jsPDF otherwise embeds a fresh document ID and the wall-clock creation
   // time, making the same consent render to different bytes on every retry.
   doc.setFileId(input.documentId.replaceAll("-", "").toUpperCase());
-  doc.setCreationDate(new Date(input.signedAtIso));
+  doc.setCreationDate(
+    creationDateMode === "legacy-local"
+      ? new Date(input.signedAtIso)
+      : canonicalPdfCreationDate(input.signedAtIso),
+  );
   let y = PAGE_MARGIN;
 
   doc.setFont("helvetica", "bold");
@@ -153,15 +168,17 @@ function renderConsentPdf(
  * Frozen pre-attestation renderer. Rows already in `signing` when the render
  * version migration lands have a null version and must continue to reproduce
  * these exact bytes so their existing managed-file reservation remains valid.
- * Never change this implementation's output; add a new version instead.
+ * jsPDF's Date overload records local clock fields and the local UTC offset,
+ * so v1 bytes intentionally remain dependent on the originating deployment's
+ * timezone. Never canonicalize this implementation; add a new version instead.
  */
 export function buildConsentPdfV1(input: ConsentPdfV1Input): Buffer {
-  return renderConsentPdf(input);
+  return renderConsentPdf(input, undefined, "legacy-local");
 }
 
 /** Current renderer for signing claims created after the versioned rollout. */
 export function buildConsentPdf(input: ConsentPdfInput): Buffer {
-  return renderConsentPdf(input, input.signerAttestation);
+  return renderConsentPdf(input, input.signerAttestation, "canonical-utc");
 }
 
 export function buildConsentPdfForVersion(
