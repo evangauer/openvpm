@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import Underline from "@tiptap/extension-underline";
 import Highlight from "@tiptap/extension-highlight";
 import { Bold, Italic, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -34,7 +33,6 @@ export function SoapNoteEditor({
         code: { HTMLAttributes: { class: "bg-muted px-1 rounded text-xs font-mono" } },
         codeBlock: { HTMLAttributes: { class: "bg-muted p-2 rounded text-xs font-mono overflow-x-auto mb-2" } },
       }),
-      Underline,
       Highlight.configure({ multicolor: true }),
     ],
     content: value || "",
