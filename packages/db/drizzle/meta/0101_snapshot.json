@@ -1,6 +1,6 @@
 {
-  "id": "a58c7d51-deca-4089-a4e2-03b6efb8d5b7",
-  "prevId": "9c51609c-731e-4ecf-a31b-b6e469c6115a",
+  "id": "1a2f3daa-80c2-42c5-be55-0bad014f83f4",
+  "prevId": "a58c7d51-deca-4089-a4e2-03b6efb8d5b7",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -23757,6 +23757,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "previous_identity_key_fingerprint": {
+          "name": "previous_identity_key_fingerprint",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rotation_started_at": {
+          "name": "rotation_started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -23778,6 +23790,137 @@
         "platform_email_identity_fingerprint_check": {
           "name": "platform_email_identity_fingerprint_check",
           "value": "\"platform_email_identity\".\"identity_key_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        },
+        "platform_email_identity_previous_fingerprint_check": {
+          "name": "platform_email_identity_previous_fingerprint_check",
+          "value": "\"platform_email_identity\".\"previous_identity_key_fingerprint\" IS NULL OR \"platform_email_identity\".\"previous_identity_key_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        },
+        "platform_email_identity_distinct_fingerprints_check": {
+          "name": "platform_email_identity_distinct_fingerprints_check",
+          "value": "\"platform_email_identity\".\"previous_identity_key_fingerprint\" IS NULL OR \"platform_email_identity\".\"previous_identity_key_fingerprint\" <> \"platform_email_identity\".\"identity_key_fingerprint\""
+        },
+        "platform_email_identity_rotation_state_check": {
+          "name": "platform_email_identity_rotation_state_check",
+          "value": "(\"platform_email_identity\".\"previous_identity_key_fingerprint\" IS NULL) = (\"platform_email_identity\".\"rotation_started_at\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.platform_email_identity_aliases": {
+      "name": "platform_email_identity_aliases",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "current_identity_key_fingerprint": {
+          "name": "current_identity_key_fingerprint",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "current_email_hash": {
+          "name": "current_email_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_identity_key_fingerprint": {
+          "name": "previous_identity_key_fingerprint",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_email_hash": {
+          "name": "previous_email_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "platform_email_identity_aliases_current_uq": {
+          "name": "platform_email_identity_aliases_current_uq",
+          "columns": [
+            {
+              "expression": "current_identity_key_fingerprint",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "current_email_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "platform_email_identity_aliases_previous_uq": {
+          "name": "platform_email_identity_aliases_previous_uq",
+          "columns": [
+            {
+              "expression": "previous_identity_key_fingerprint",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "previous_email_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "platform_email_identity_aliases_current_fingerprint_check": {
+          "name": "platform_email_identity_aliases_current_fingerprint_check",
+          "value": "\"platform_email_identity_aliases\".\"current_identity_key_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        },
+        "platform_email_identity_aliases_current_hash_check": {
+          "name": "platform_email_identity_aliases_current_hash_check",
+          "value": "\"platform_email_identity_aliases\".\"current_email_hash\" ~ '^[a-f0-9]{64}$'"
+        },
+        "platform_email_identity_aliases_previous_fingerprint_check": {
+          "name": "platform_email_identity_aliases_previous_fingerprint_check",
+          "value": "\"platform_email_identity_aliases\".\"previous_identity_key_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        },
+        "platform_email_identity_aliases_previous_hash_check": {
+          "name": "platform_email_identity_aliases_previous_hash_check",
+          "value": "\"platform_email_identity_aliases\".\"previous_email_hash\" ~ '^[a-f0-9]{64}$'"
+        },
+        "platform_email_identity_aliases_distinct_fingerprints_check": {
+          "name": "platform_email_identity_aliases_distinct_fingerprints_check",
+          "value": "\"platform_email_identity_aliases\".\"current_identity_key_fingerprint\" <> \"platform_email_identity_aliases\".\"previous_identity_key_fingerprint\""
+        },
+        "platform_email_identity_aliases_distinct_hashes_check": {
+          "name": "platform_email_identity_aliases_distinct_hashes_check",
+          "value": "\"platform_email_identity_aliases\".\"current_email_hash\" <> \"platform_email_identity_aliases\".\"previous_email_hash\""
         }
       },
       "isRLSEnabled": false

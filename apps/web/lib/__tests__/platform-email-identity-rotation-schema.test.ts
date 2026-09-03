@@ -55,7 +55,7 @@ describe("platform email identity rotation schema", () => {
 
   it("ships constrained migration and system-only least-privilege RLS", () => {
     const migration = readRepoFile(
-      "packages/db/drizzle/0100_late_the_hood.sql",
+      "packages/db/drizzle/0101_colorful_stark_industries.sql",
     );
     const rls = readRepoFile("packages/db/rls/enable-rls.sql");
 
