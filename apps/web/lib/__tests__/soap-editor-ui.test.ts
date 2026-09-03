@@ -312,9 +312,16 @@ describe("records prescription form UX", () => {
     expect(source).toContain("hasValidPrescriptionQuantityForInventory");
     expect(source).toContain("<PrescriptionInventoryProductPicker");
     expect(inventoryPicker).toContain("search: normalizedSearch || undefined");
-    expect(inventoryPicker).toContain("limit: RESULT_LIMIT");
+    expect(inventoryPicker).toContain("limit: PAGE_SIZE");
+    expect(inventoryPicker).toContain("offset: pageOffset");
     expect(inventoryPicker).toContain("Search inventory by name or SKU...");
-    expect(inventoryPicker).toMatch(/Type more to\s+narrow the list\./);
+    expect(inventoryPicker).toContain("onScroll={(event) => {");
+    expect(inventoryPicker).toContain("loadNextPage();");
+    expect(inventoryPicker).toContain(
+      "setPageOffset(pageOffset + products.data.items.length)"
+    );
+    expect(inventoryPicker).toContain("Load more inventory items");
+    expect(inventoryPicker).toMatch(/Scroll for more or\s+use search/);
     expect(inventoryPicker).toContain("Inventory unavailable. Please retry.");
     expect(source).not.toContain("{ limit: 100, offset: 0 }");
     expect(source).toContain("prescriptionQuantity <= linkedPrescriptionProduct.stockQuantity");

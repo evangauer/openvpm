@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { inferRouterOutputs } from "@trpc/server";
 import { Check, ChevronsUpDown, Loader2, Search } from "lucide-react";
 import { Command } from "cmdk";
@@ -19,7 +19,7 @@ export type PrescriptionInventoryProduct =
   RouterOutputs["inventory"]["list"]["items"][number];
 
 const SEARCH_DEBOUNCE_MS = 200;
-const RESULT_LIMIT = 50;
+const PAGE_SIZE = 50;
 
 function useDebouncedValue<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -43,29 +43,77 @@ export function PrescriptionInventoryProductPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [pageOffset, setPageOffset] = useState(0);
+  const [loadedProducts, setLoadedProducts] = useState<
+    PrescriptionInventoryProduct[]
+  >([]);
+  const [resultTotal, setResultTotal] = useState(0);
   const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   const normalizedSearch = debouncedSearch.trim();
+  const searchSettled = search.trim() === normalizedSearch;
   const products = trpc.inventory.list.useQuery(
     {
       search: normalizedSearch || undefined,
-      limit: RESULT_LIMIT,
-      offset: 0,
+      limit: PAGE_SIZE,
+      offset: pageOffset,
     },
-    { enabled: open },
+    { enabled: open && searchSettled },
   );
+
+  const visibleProducts = useMemo(() => {
+    const productsById = new Map(
+      loadedProducts.map((product) => [product.id, product]),
+    );
+    if (searchSettled) {
+      for (const product of products.data?.items ?? []) {
+        productsById.set(product.id, product);
+      }
+    }
+    return [...productsById.values()];
+  }, [loadedProducts, products.data?.items, searchSettled]);
+
+  const total = products.data?.total ?? resultTotal;
+  const hasMore = visibleProducts.length < total;
+
+  function changeSearch(nextSearch: string) {
+    setSearch(nextSearch);
+    setPageOffset(0);
+    setLoadedProducts([]);
+    setResultTotal(0);
+  }
+
+  function loadNextPage() {
+    if (
+      !products.data ||
+      products.isFetching ||
+      !hasMore ||
+      products.data.items.length === 0
+    ) {
+      return;
+    }
+
+    setLoadedProducts(visibleProducts);
+    setResultTotal(products.data.total);
+    // A native scroll and a synthetic scroll can arrive before React renders
+    // again. Set this render's absolute next page so duplicate events cannot
+    // increment twice and skip an entire page.
+    setPageOffset(pageOffset + products.data.items.length);
+  }
 
   function changeOpen(nextOpen: boolean) {
     setOpen(nextOpen);
-    if (!nextOpen) setSearch("");
+    if (!nextOpen) {
+      setSearch("");
+      setPageOffset(0);
+      setLoadedProducts([]);
+      setResultTotal(0);
+    }
   }
 
   function selectProduct(product: PrescriptionInventoryProduct | null) {
     onChange(product);
     changeOpen(false);
   }
-
-  const visibleProducts = products.data?.items ?? [];
-  const total = products.data?.total ?? 0;
 
   return (
     <Popover open={open} onOpenChange={changeOpen}>
@@ -102,13 +150,24 @@ export function PrescriptionInventoryProductPicker({
             )}
             <Command.Input
               value={search}
-              onValueChange={setSearch}
+              onValueChange={changeSearch}
               autoFocus
               placeholder="Search inventory by name or SKU..."
               className="h-10 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
             />
           </div>
-          <Command.List className="max-h-64 overflow-y-auto p-1">
+          <Command.List
+            className="max-h-64 overflow-y-auto p-1"
+            onScroll={(event) => {
+              const list = event.currentTarget;
+              if (
+                list.scrollHeight - list.scrollTop - list.clientHeight <=
+                24
+              ) {
+                loadNextPage();
+              }
+            }}
+          >
             <Command.Item
               value="not-dispensed-from-inventory"
               onSelect={() => selectProduct(null)}
@@ -136,6 +195,7 @@ export function PrescriptionInventoryProductPicker({
               </div>
             ) : null}
             {!products.error &&
+            searchSettled &&
             !products.isLoading &&
             visibleProducts.length === 0 ? (
               <div className="px-2 py-4 text-center text-sm text-muted-foreground">
@@ -168,11 +228,26 @@ export function PrescriptionInventoryProductPicker({
                 ))
               : null}
           </Command.List>
-          {!products.error && total > visibleProducts.length ? (
-            <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
-              Showing {visibleProducts.length} of {total} matches. Type more to
-              narrow the list.
-            </p>
+          {!products.error && hasMore ? (
+            <div className="border-t border-border px-3 py-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-auto w-full justify-center py-1 text-xs"
+                disabled={products.isFetching || !searchSettled}
+                onClick={loadNextPage}
+              >
+                {products.isFetching || !searchSettled ? (
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                ) : null}
+                Load more inventory items
+              </Button>
+              <p className="mt-1 text-center text-xs text-muted-foreground">
+                Showing {visibleProducts.length} of {total}. Scroll for more or
+                use search to jump to an item.
+              </p>
+            </div>
           ) : null}
         </Command>
       </PopoverContent>
