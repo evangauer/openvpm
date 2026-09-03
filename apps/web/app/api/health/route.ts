@@ -90,7 +90,10 @@ function hostedStorageEnvCheck(): { ok: boolean; detail: string } {
     );
   }
 
-  return hostedEnvCheck(HOSTED_STORAGE_ENV_NAMES, "Hosted storage envs present");
+  return hostedEnvCheck(
+    HOSTED_STORAGE_ENV_NAMES,
+    "Hosted storage envs present",
+  );
 }
 
 const HOSTED_EMAIL_ENV_NAMES = [
@@ -103,6 +106,8 @@ const HOSTED_EMAIL_ENV_NAMES = [
   "EMAIL_COMPANY_ADDRESS",
 ];
 const EMAIL_PREFERENCE_IDENTITY_ENV_NAME = "EMAIL_PREFERENCE_IDENTITY_SECRET";
+const EMAIL_PREFERENCE_PREVIOUS_IDENTITY_ENV_NAME =
+  "EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS";
 const HOSTED_SMS_PROVISIONING_PRACTICE_IDS_ENV =
   "MESSAGING_PROVISIONING_PRACTICE_IDS";
 const HOSTED_SMS_SENDING_PRACTICE_IDS_ENV = "MESSAGING_SENDING_PRACTICE_IDS";
@@ -181,6 +186,11 @@ async function hostedEmailCheck(): Promise<{ ok: boolean; detail: string }> {
     !isValidEmailPreferencePreviousSecrets(
       process.env.EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS,
     );
+  const invalidPreviousIdentitySecret =
+    configured(EMAIL_PREFERENCE_PREVIOUS_IDENTITY_ENV_NAME) &&
+    !isValidEmailPreferenceSecret(
+      process.env[EMAIL_PREFERENCE_PREVIOUS_IDENTITY_ENV_NAME],
+    );
   const preferenceBaseUrl = normalizeEmailPreferenceBaseUrl(
     process.env.EMAIL_PREFERENCE_BASE_URL,
   );
@@ -190,6 +200,7 @@ async function hostedEmailCheck(): Promise<{ ok: boolean; detail: string }> {
   const invalid =
     invalidSecrets.length +
     (invalidPreviousSecrets ? 1 : 0) +
+    (invalidPreviousIdentitySecret ? 1 : 0) +
     (invalidBaseUrl ? 1 : 0);
   const issues = missing.length + invalid;
   const envResult = {
@@ -245,6 +256,17 @@ async function emailPreferenceIdentityCheck(): Promise<{
   if (
     !isValidEmailPreferenceSecret(
       process.env[EMAIL_PREFERENCE_IDENTITY_ENV_NAME],
+    )
+  ) {
+    return {
+      ok: false,
+      detail: "1 required email preference configuration value is invalid",
+    };
+  }
+  if (
+    configured(EMAIL_PREFERENCE_PREVIOUS_IDENTITY_ENV_NAME) &&
+    !isValidEmailPreferenceSecret(
+      process.env[EMAIL_PREFERENCE_PREVIOUS_IDENTITY_ENV_NAME],
     )
   ) {
     return {

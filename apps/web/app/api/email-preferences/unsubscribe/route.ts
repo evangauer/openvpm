@@ -54,6 +54,7 @@ export async function POST(request: Request) {
   try {
     await setMarketingEmailPreferenceForHash({
       emailHash: preference.target.id,
+      identityKeyFingerprint: preference.identityKeyFingerprint,
       enabled: false,
       source: "unsubscribe_link",
     });

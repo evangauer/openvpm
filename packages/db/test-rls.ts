@@ -207,8 +207,11 @@ const platformEmailPreferenceId = randomUUID();
 const systemUpsertPlatformEmailPreferenceId = randomUUID();
 const platformEmailPreferenceEventId = randomUUID();
 const systemPlatformEmailPreferenceEventId = randomUUID();
+const platformEmailIdentityAliasId = randomUUID();
+const systemPlatformEmailIdentityAliasId = randomUUID();
 const platformEmailHash = "c".repeat(64);
 const platformEmailIdentityFingerprint = "d".repeat(64);
+const platformEmailPreviousIdentityFingerprint = "e".repeat(64);
 const aConversionEvidenceKey = `practice:${aId}`;
 const bConversionEvidenceKey = `practice:${bId}`;
 const clinicPilotId = randomUUID();
@@ -258,6 +261,12 @@ try {
     on conflict (key_slot) do nothing
     returning key_slot`;
   createdPlatformEmailIdentity = insertedPlatformEmailIdentity.length === 1;
+  await owner`insert into platform_email_identity_aliases
+    (id, current_identity_key_fingerprint, current_email_hash,
+      previous_identity_key_fingerprint, previous_email_hash)
+    values (${platformEmailIdentityAliasId}, ${platformEmailIdentityFingerprint},
+      ${"3".repeat(64)}, ${platformEmailPreviousIdentityFingerprint},
+      ${"4".repeat(64)})`;
   await owner`insert into platform_email_preferences
     (id, email_hash, identity_key_fingerprint, marketing_enabled, source, reason)
     values (${platformEmailPreferenceId}, ${platformEmailHash},
@@ -3720,6 +3729,34 @@ try {
     "tenant context cannot read the platform email identity fingerprint",
     hiddenPlatformEmailIdentity.length === 0,
   );
+  const hiddenPlatformEmailIdentityAliases = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      return tx`select id from platform_email_identity_aliases
+        where id = ${platformEmailIdentityAliasId}`;
+    },
+  );
+  check(
+    "tenant context cannot read platform email identity aliases",
+    hiddenPlatformEmailIdentityAliases.length === 0,
+  );
+  let tenantCannotWritePlatformEmailIdentityAlias = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into platform_email_identity_aliases
+        (current_identity_key_fingerprint, current_email_hash,
+          previous_identity_key_fingerprint, previous_email_hash)
+        values (${platformEmailIdentityFingerprint}, ${"5".repeat(64)},
+          ${platformEmailPreviousIdentityFingerprint}, ${"6".repeat(64)})`;
+    });
+  } catch {
+    tenantCannotWritePlatformEmailIdentityAlias = true;
+  }
+  check(
+    "tenant context cannot write platform email identity aliases",
+    tenantCannotWritePlatformEmailIdentityAlias,
+  );
   const hiddenPlatformEmailPreferenceEvents = await appTransaction(
     async (tx) => {
       await tx`select set_config('app.current_practice_id', ${aId}, true)`;
@@ -4118,6 +4155,62 @@ try {
   check(
     "system bypass can read the platform email identity fingerprint",
     systemPlatformEmailIdentity.length === 1,
+  );
+  const systemPlatformEmailIdentityAliases = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      return tx`select id from platform_email_identity_aliases
+        where id = ${platformEmailIdentityAliasId}`;
+    },
+  );
+  check(
+    "system bypass can read platform email identity aliases",
+    systemPlatformEmailIdentityAliases.length === 1,
+  );
+  const systemInsertedPlatformEmailIdentityAlias = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      return tx`insert into platform_email_identity_aliases
+        (id, current_identity_key_fingerprint, current_email_hash,
+          previous_identity_key_fingerprint, previous_email_hash)
+        values (${systemPlatformEmailIdentityAliasId},
+          ${platformEmailIdentityFingerprint}, ${"7".repeat(64)},
+          ${platformEmailPreviousIdentityFingerprint}, ${"8".repeat(64)})
+        returning id`;
+    },
+  );
+  check(
+    "system bypass can append platform email identity aliases",
+    systemInsertedPlatformEmailIdentityAlias.length === 1,
+  );
+  let bypassCannotRewritePlatformEmailIdentityAlias = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`update platform_email_identity_aliases
+        set previous_email_hash = ${"9".repeat(64)}
+        where id = ${systemPlatformEmailIdentityAliasId}`;
+    });
+  } catch {
+    bypassCannotRewritePlatformEmailIdentityAlias = true;
+  }
+  check(
+    "application role cannot rewrite platform email identity aliases",
+    bypassCannotRewritePlatformEmailIdentityAlias,
+  );
+  let bypassCannotDeletePlatformEmailIdentityAlias = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`delete from platform_email_identity_aliases
+        where id = ${systemPlatformEmailIdentityAliasId}`;
+    });
+  } catch {
+    bypassCannotDeletePlatformEmailIdentityAlias = true;
+  }
+  check(
+    "application role cannot delete platform email identity aliases",
+    bypassCannotDeletePlatformEmailIdentityAlias,
   );
   const systemPlatformEmailPreferenceEvents = await appTransaction(
     async (tx) => {
@@ -4522,6 +4615,8 @@ try {
     await cleanup`delete from platform_email_preference_events
       where id in (${platformEmailPreferenceEventId}, ${systemPlatformEmailPreferenceEventId})`;
     await cleanup`delete from platform_email_preferences where id = ${platformEmailPreferenceId}`;
+    await cleanup`delete from platform_email_identity_aliases
+      where id in (${platformEmailIdentityAliasId}, ${systemPlatformEmailIdentityAliasId})`;
     if (createdPlatformEmailIdentity) {
       await cleanup`delete from platform_email_identity where key_slot = 1`;
     }

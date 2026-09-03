@@ -117,7 +117,8 @@ FILE_REPLICA_S3_REGION=
 
 RESEND_API_KEY=...
 RESEND_WEBHOOK_SECRET=...
-EMAIL_PREFERENCE_IDENTITY_SECRET=... # stable `openssl rand -base64 32`; never rotate without migrating preference data
+EMAIL_PREFERENCE_IDENTITY_SECRET=... # current `openssl rand -base64 32` recipient-identity key
+EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS= # exact former key only during a registered identity rotation
 EMAIL_PREFERENCE_SIGNING_SECRET=... # rotatable `openssl rand -base64 32`; do not reuse another secret
 EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS= # comma-separated former signing keys retained for delivered links
 EMAIL_PREFERENCE_BASE_URL=https://app.openvpm.com
@@ -425,14 +426,53 @@ Resend sends transactional email and posts delivery lifecycle callbacks back to 
 `EMAIL_SUPPORT_ADDRESS` is used as lifecycle email Reply-To and footer contact
 address. `EMAIL_COMPANY_ADDRESS` is rendered in hosted email footers. Both gate
 hosted readiness so production emails do not fall back to local/dev defaults.
-`EMAIL_PREFERENCE_IDENTITY_SECRET` is the stable HMAC identity key for PII-free
-recipient hashes. Never rotate it without a coordinated migration of persisted
-preference identities. `EMAIL_PREFERENCE_SIGNING_SECRET` signs new durable
+`EMAIL_PREFERENCE_IDENTITY_SECRET` is the current HMAC identity key for PII-free
+recipient hashes. `EMAIL_PREFERENCE_SIGNING_SECRET` signs new durable
 unsubscribe links. To rotate it safely, move the former current key into the
 comma-separated `EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS` key ring before
 installing the new key; retain former keys for as long as delivered links must
 continue working. Keep both kinds of key separate from each other and from
 `NEXTAUTH_SECRET`.
+
+Identity-key rotation is a separate, deliberately fail-closed operation. First
+deploy the dual-key-capable schema and application while the existing identity
+key remains current and `EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS` is unset.
+Prepare a deployment with the new current key and the exact former key in
+`EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS`, but do not promote it yet. In one
+database-owner transaction, take the exclusive advisory transaction lock for
+`openvpm-platform-email-identity-rotation`, verify slot 1 still contains the
+former key fingerprint with no active previous fingerprint, and update slot 1
+to the new fingerprint, former fingerprint, and `rotation_started_at = now()`.
+Use a conditional update and require exactly one returned row; the transaction
+contains fingerprints only, never either key:
+
+```sql
+BEGIN;
+SELECT pg_advisory_xact_lock(
+  hashtextextended('openvpm-platform-email-identity-rotation', 0)
+);
+UPDATE platform_email_identity
+SET identity_key_fingerprint = '<new-fingerprint>',
+    previous_identity_key_fingerprint = '<former-fingerprint>',
+    rotation_started_at = now()
+WHERE key_slot = 1
+  AND identity_key_fingerprint = '<former-fingerprint>'
+  AND previous_identity_key_fingerprint IS NULL
+RETURNING key_slot, identity_key_fingerprint,
+          previous_identity_key_fingerprint, rotation_started_at;
+COMMIT;
+```
+
+Roll back unless the conditional update returns slot 1 exactly once.
+Then promote the prepared deployment and verify `/api/health`. Runtime
+preference operations take the corresponding shared lock, so the registry
+change cannot race an in-flight write; deployments whose keys do not exactly
+match the registry stop reads, sends, and writes. Do not store recipient email
+addresses or either secret during this operation. Alias rows are created only
+when a normal runtime call already has a recipient address and contain only
+fingerprints and keyed hashes. Keep the former key configured until the legacy
+link retention period is over and a separately reviewed retirement migration
+is ready; simply deleting it causes readiness to fail closed.
 
 `EMAIL_PREFERENCE_BASE_URL` must be the canonical HTTPS origin
 `https://app.openvpm.com` in every hosted deployment. This ensures demo and

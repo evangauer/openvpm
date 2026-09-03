@@ -145,6 +145,7 @@ function stubHostedRequiredEnvs() {
     "EMAIL_PREFERENCE_IDENTITY_SECRET",
     "stable-identity-secret-at-least-32-bytes",
   );
+  vi.stubEnv("EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS", "");
   vi.stubEnv(
     "EMAIL_PREFERENCE_SIGNING_SECRET",
     "current-signing-secret-at-least-32-bytes",
@@ -371,7 +372,26 @@ describe("health route", () => {
     expect(JSON.stringify(json)).not.toContain("too-short");
   });
 
-  it("fails demo readiness when persisted preference identity does not match", async () => {
+  it("rejects a malformed previous demo identity without exposing it", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS", "too-short");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.emailPreferenceIdentity).toEqual({
+      ok: false,
+      detail: "1 required email preference configuration value is invalid",
+    });
+    expect(JSON.stringify(json)).not.toContain("too-short");
+  });
+
+  it("fails demo readiness when registered rotation requires an unavailable previous key", async () => {
     vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
     vi.stubEnv(
       "EMAIL_PREFERENCE_IDENTITY_SECRET",
@@ -878,6 +898,22 @@ describe("health route", () => {
     });
     expect(JSON.stringify(json)).not.toContain("valid-previous-signing-secret");
     expect(JSON.stringify(json)).not.toContain("short");
+  });
+
+  it("rejects an invalid previous email preference identity key", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS", "too-short");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedEmail).toEqual({
+      ok: false,
+      detail: "1 required hosted configuration value is invalid",
+    });
+    expect(JSON.stringify(json)).not.toContain("too-short");
   });
 
   it("requires the canonical platform preference origin", async () => {
