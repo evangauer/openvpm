@@ -68,7 +68,9 @@ describe("SOAP note editor UX", () => {
     expect(source).toContain("pointer-events-none");
     expect(source).toContain("{placeholder}");
     expect(source).toContain("useEffect");
-    expect(source).toContain("editor.commands.setContent(nextValue, false)");
+    expect(source).toContain(
+      "editor.commands.setContent(nextValue, { emitUpdate: false })"
+    );
     expect(source).not.toContain("`<p>${placeholder}</p>`");
   });
 

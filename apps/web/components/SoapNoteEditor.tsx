@@ -24,6 +24,7 @@ export function SoapNoteEditor({
 }: SoapNoteEditorProps) {
   const [isEmpty, setIsEmpty] = useState(!value);
   const editor = useEditor({
+    immediatelyRender: false,
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
@@ -57,7 +58,7 @@ export function SoapNoteEditor({
     const nextValue = value || "";
     const currentValue = editor.isEmpty ? "" : editor.getHTML();
     if (currentValue === nextValue) return;
-    editor.commands.setContent(nextValue, false);
+    editor.commands.setContent(nextValue, { emitUpdate: false });
     setIsEmpty(editor.isEmpty);
   }, [editor, value]);
 
