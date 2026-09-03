@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { and, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
-import { auditLog, consentRequests, patients, practices } from "@openpims/db";
+import {
+  auditLog,
+  consentReceiptCapabilities,
+  consentRequests,
+  files,
+  patients,
+  practices,
+} from "@openpims/db";
 import { db, type Database } from "@openpims/db/client";
 import { withSystem, withTenant } from "@/lib/tenant-db";
 import { lockPracticeForExternalSideEffects } from "@/lib/recovery-hold";
@@ -9,7 +16,9 @@ import { rateLimit, rateLimitResponseHeaders } from "@/lib/rate-limit";
 import { clientIpFromRequest } from "@/lib/request-ip";
 import {
   captureRateLimitKey,
+  generateConsentReceiptToken,
   hashConsentToken,
+  hashConsentReceiptToken,
   isCaptureTokenShape,
 } from "@/lib/consult/tokens";
 import {
@@ -156,6 +165,7 @@ type ConsentLookup = {
   signedAt: Date | null;
   signaturePngBytes: Uint8Array | null;
   signatureSha256: string | null;
+  signatureMethod: string | null;
   signerAttestationVersion: string | null;
   documentRenderVersion: string | null;
   storageLeaseToken: string | null;
@@ -189,6 +199,7 @@ async function lookupConsent(
       signedAt: consentRequests.signedAt,
       signaturePngBytes: consentRequests.signaturePngBytes,
       signatureSha256: consentRequests.signatureSha256,
+      signatureMethod: consentRequests.signatureMethod,
       signerAttestationVersion: consentRequests.signerAttestationVersion,
       documentRenderVersion: consentRequests.documentRenderVersion,
       storageLeaseToken: consentRequests.storageLeaseToken,
@@ -263,6 +274,7 @@ type SigningSession = ConsentLookup & {
   signedAt: Date;
   signaturePngBytes: Buffer;
   signatureSha256: string;
+  signatureMethod: "drawn" | "typed";
   signerAttestationVersion: string;
   documentRenderVersion: ConsentPdfRendererVersion;
 };
@@ -270,13 +282,131 @@ type SigningSession = ConsentLookup & {
 function persistedRendererVersion(
   session: ConsentLookup,
 ): ConsentPdfRendererVersion | null {
-  if (session.documentRenderVersion === null) {
-    return CONSENT_PDF_RENDERER_V1;
-  }
   return session.documentRenderVersion === CONSENT_PDF_RENDERER_V1 ||
     session.documentRenderVersion === CONSENT_PDF_RENDERER_V2
     ? session.documentRenderVersion
     : null;
+}
+
+/**
+ * Persist the renderer used by an in-flight row created before renderer
+ * versioning. A durable reservation is authoritative: render both historical
+ * byte formats and require exactly one checksum+size match. Attestation is a
+ * safe discriminator only when no file reservation exists yet.
+ */
+async function recordDocumentRenderVersion(
+  session: ConsentLookup,
+): Promise<ConsentLookup | null> {
+  if (persistedRendererVersion(session)) return session;
+  if (
+    session.status !== "signing" ||
+    !signingRecoveryIsLive(session) ||
+    !session.signerName ||
+    !session.signedAt ||
+    !session.signaturePngBytes ||
+    !session.signatureSha256
+  ) {
+    return null;
+  }
+
+  const originalAttestationVersion = session.signerAttestationVersion;
+  const originalFileId = session.fileId;
+  let v1Evidence: { checksum: string; size: number } | null = null;
+  let v2Evidence: { checksum: string; size: number } | null = null;
+
+  if (originalFileId) {
+    const signaturePngDataUrl = `${SIGNATURE_DATA_URL_PREFIX}${Buffer.from(session.signaturePngBytes).toString("base64")}`;
+    const renderInput = {
+      documentId: session.id,
+      practiceId: session.practiceId,
+      patientId: session.patientId,
+      title: session.title,
+      bodyText: session.bodyText,
+      signerName: session.signerName,
+      signerAttestation: `${CONSENT_SIGNER_AUTHORITY_ATTESTATION} ${CONSENT_ELECTRONIC_SIGNATURE_INTENT}`,
+      signedAtIso: session.signedAt.toISOString(),
+      signaturePngDataUrl,
+    };
+    const v1 = buildConsentPdfForVersion(CONSENT_PDF_RENDERER_V1, renderInput);
+    const v2 = buildConsentPdfForVersion(CONSENT_PDF_RENDERER_V2, renderInput);
+    v1Evidence = { checksum: checksumSha256Hex(v1), size: v1.length };
+    v2Evidence = { checksum: checksumSha256Hex(v2), size: v2.length };
+  }
+
+  return withTenant(db, session.practiceId, async (tx) => {
+    if (!(await lockPracticeForExternalSideEffects(tx, session.practiceId))) {
+      return null;
+    }
+
+    let selectedVersion: ConsentPdfRendererVersion;
+    let expectedChecksum: string | null = null;
+    let expectedSize: number | null = null;
+    if (originalFileId) {
+      const [reservation] = await tx
+        .select({
+          checksum: files.checksumSha256,
+          size: files.fileSizeBytes,
+        })
+        .from(files)
+        .where(
+          and(
+            eq(files.id, originalFileId),
+            eq(files.practiceId, session.practiceId),
+            isNull(files.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!reservation?.checksum || reservation.size === null) return null;
+      const v1Matches =
+        reservation.checksum === v1Evidence!.checksum &&
+        reservation.size === v1Evidence!.size;
+      const v2Matches =
+        reservation.checksum === v2Evidence!.checksum &&
+        reservation.size === v2Evidence!.size;
+      if (v1Matches === v2Matches) return null;
+      selectedVersion = v1Matches
+        ? CONSENT_PDF_RENDERER_V1
+        : CONSENT_PDF_RENDERER_V2;
+      expectedChecksum = reservation.checksum;
+      expectedSize = reservation.size;
+    } else {
+      selectedVersion =
+        originalAttestationVersion === CONSENT_SIGNER_ATTESTATION_VERSION
+          ? CONSENT_PDF_RENDERER_V2
+          : CONSENT_PDF_RENDERER_V1;
+    }
+
+    const [recorded] = await tx
+      .update(consentRequests)
+      .set({ documentRenderVersion: selectedVersion })
+      .where(
+        and(
+          eq(consentRequests.id, session.id),
+          eq(consentRequests.practiceId, session.practiceId),
+          eq(consentRequests.status, "signing"),
+          isNull(consentRequests.documentRenderVersion),
+          sql`${consentRequests.signerAttestationVersion} IS NOT DISTINCT FROM ${originalAttestationVersion}`,
+          sql`${consentRequests.fileId} IS NOT DISTINCT FROM ${originalFileId}`,
+          originalFileId
+            ? sql`EXISTS (
+                SELECT 1 FROM ${files}
+                WHERE ${files.id} = ${originalFileId}
+                  AND ${files.practiceId} = ${session.practiceId}
+                  AND ${files.checksumSha256} = ${expectedChecksum}
+                  AND ${files.fileSizeBytes} = ${expectedSize}
+                  AND ${files.deletedAt} IS NULL
+              )`
+            : sql`TRUE`,
+          isNull(consentRequests.deletedAt),
+        ),
+      )
+      .returning({
+        documentRenderVersion: consentRequests.documentRenderVersion,
+      });
+    return recorded?.documentRenderVersion === selectedVersion
+      ? { ...session, documentRenderVersion: selectedVersion }
+      : null;
+  });
 }
 
 function signingRecoveryIsLive(session: ConsentLookup): boolean {
@@ -309,6 +439,7 @@ function signingFromPersistedEvidence(
     signedAt: session.signedAt,
     signaturePngBytes: Buffer.from(session.signaturePngBytes),
     signatureSha256: session.signatureSha256,
+    signatureMethod: session.signatureMethod === "typed" ? "typed" : "drawn",
     signerAttestationVersion: session.signerAttestationVersion,
     documentRenderVersion: persistedRendererVersion(session)!,
   };
@@ -339,6 +470,7 @@ async function claimSigning(
   signerName: string,
   signaturePngBytes: Buffer,
   signatureSha256: string,
+  signatureMethod: "drawn" | "typed",
 ): Promise<SigningSession | null> {
   if (session.status === "pending") {
     const claimed = await withTenant(db, session.practiceId, async (tx) => {
@@ -353,6 +485,7 @@ async function claimSigning(
           signedAt: sql`clock_timestamp()`,
           signaturePngBytes,
           signatureSha256,
+          signatureMethod,
           signerAttestationVersion: CONSENT_SIGNER_ATTESTATION_VERSION,
           documentRenderVersion: CONSENT_PDF_RENDERER_V2,
         })
@@ -373,6 +506,7 @@ async function claimSigning(
           signedAt: consentRequests.signedAt,
           signaturePngBytes: consentRequests.signaturePngBytes,
           signatureSha256: consentRequests.signatureSha256,
+          signatureMethod: consentRequests.signatureMethod,
           signerAttestationVersion: consentRequests.signerAttestationVersion,
           documentRenderVersion: consentRequests.documentRenderVersion,
         });
@@ -383,6 +517,8 @@ async function claimSigning(
       !claimed.signedAt ||
       !claimed.signaturePngBytes ||
       !claimed.signatureSha256 ||
+      (claimed.signatureMethod !== "drawn" &&
+        claimed.signatureMethod !== "typed") ||
       claimed.signerAttestationVersion !== CONSENT_SIGNER_ATTESTATION_VERSION ||
       claimed.documentRenderVersion !== CONSENT_PDF_RENDERER_V2
     ) {
@@ -395,6 +531,7 @@ async function claimSigning(
       signedAt: claimed.signedAt,
       signaturePngBytes: Buffer.from(claimed.signaturePngBytes),
       signatureSha256: claimed.signatureSha256,
+      signatureMethod: claimed.signatureMethod,
       signerAttestationVersion: claimed.signerAttestationVersion,
       documentRenderVersion: claimed.documentRenderVersion,
     };
@@ -404,6 +541,7 @@ async function claimSigning(
     const signing = signingFromPersistedEvidence(session);
     if (!signing) return null;
     if (
+      signing.signatureMethod !== signatureMethod ||
       !signatureEvidenceMatches(
         signing.signaturePngBytes,
         signing.signatureSha256,
@@ -670,6 +808,7 @@ async function handlePost(
     signerName?: unknown;
     signaturePngDataUrl?: unknown;
     signerAuthorityAccepted?: unknown;
+    signatureMethod?: unknown;
     resume?: unknown;
   };
 
@@ -690,6 +829,7 @@ async function handlePost(
   }
   let signerName = "";
   let signatureBytes: Buffer | null = null;
+  let signatureMethod: "drawn" | "typed" = "drawn";
   if (!resume) {
     signerName =
       typeof payload.signerName === "string" ? payload.signerName.trim() : "";
@@ -703,13 +843,25 @@ async function handlePost(
       );
     }
 
+    if (
+      payload.signatureMethod !== undefined &&
+      payload.signatureMethod !== "drawn" &&
+      payload.signatureMethod !== "typed"
+    ) {
+      return NextResponse.json(
+        { error: "Please provide a valid signature" },
+        { status: 400 },
+      );
+    }
+    signatureMethod = payload.signatureMethod === "typed" ? "typed" : "drawn";
+
     const dataUrl =
       typeof payload.signaturePngDataUrl === "string"
         ? payload.signaturePngDataUrl
         : "";
     if (!dataUrl.startsWith(SIGNATURE_DATA_URL_PREFIX)) {
       return NextResponse.json(
-        { error: "Please draw your signature" },
+        { error: "Please provide your signature" },
         { status: 400 },
       );
     }
@@ -721,7 +873,7 @@ async function handlePost(
       );
     } catch {
       return NextResponse.json(
-        { error: "Please draw your signature" },
+        { error: "Please provide your signature" },
         { status: 400 },
       );
     }
@@ -735,18 +887,26 @@ async function handlePost(
       )
     ) {
       return NextResponse.json(
-        { error: "Please draw your signature" },
+        { error: "Please provide your signature" },
         { status: 400 },
       );
     }
   }
 
   try {
+    // Renderer inference must happen before attestation upgrade: existing v1
+    // reservations may otherwise become indistinguishable from parent-v2 rows.
+    const rendererSession =
+      session.status === "signing" && session.documentRenderVersion === null
+        ? await recordDocumentRenderVersion(session)
+        : session;
+    if (!rendererSession) return notFound();
     const attestedSession =
-      session.signerAttestationVersion === CONSENT_SIGNER_ATTESTATION_VERSION ||
-      session.status === "pending"
-        ? session
-        : await recordSignerAttestation(session);
+      rendererSession.signerAttestationVersion ===
+        CONSENT_SIGNER_ATTESTATION_VERSION ||
+      rendererSession.status === "pending"
+        ? rendererSession
+        : await recordSignerAttestation(rendererSession);
     if (!attestedSession) return notFound();
     const signing = resume
       ? signingFromPersistedEvidence(attestedSession)
@@ -755,6 +915,7 @@ async function handlePost(
           signerName,
           signatureBytes!,
           checksumSha256Hex(signatureBytes!),
+          signatureMethod,
         );
     // A failed pending->signing compare-and-swap is the concurrent loser. It
     // exits before rendering, reserving, or touching object storage.
@@ -836,6 +997,7 @@ async function handlePost(
       );
     }
 
+    const receiptToken = generateConsentReceiptToken();
     const outcome = await withTenant(db, signing.practiceId, async (tx) => {
       if (!(await lockPracticeForExternalSideEffects(tx, signing.practiceId))) {
         return { status: "not_found" as const };
@@ -881,6 +1043,18 @@ async function handlePost(
         });
       }
 
+      await tx.insert(consentReceiptCapabilities).values({
+        practiceId: signing.practiceId,
+        consentRequestId: signing.id,
+        fileId: reservation.id,
+        fileChecksumSha256: reservation.checksumSha256,
+        fileSizeBytes: reservation.fileSizeBytes,
+        tokenHash: hashConsentReceiptToken(receiptToken),
+        // baseColumns.created_at also uses transaction_timestamp()/now(), so
+        // this is exactly inside the database-enforced 15-minute maximum.
+        expiresAt: sql`transaction_timestamp() + interval '15 minutes'`,
+      });
+
       await tx.insert(auditLog).values({
         practiceId: signing.practiceId,
         // The client performed this public capability action. The staff
@@ -901,6 +1075,7 @@ async function handlePost(
           documentRenderVersion: signing.documentRenderVersion,
           signedAt: signing.signedAt.toISOString(),
           signatureSha256: signing.signatureSha256,
+          signatureMethod: signing.signatureMethod,
           patientId: signing.patientId,
           fileId: reservation.id,
         },
@@ -914,7 +1089,7 @@ async function handlePost(
     if (outcome.status === "not_found") return notFound();
 
     await queueManagedUploadReplication(reservation, outcome.evidence);
-    return NextResponse.json({ ok: true }, { status: 201 });
+    return NextResponse.json({ ok: true, receiptToken }, { status: 201 });
   } catch (err) {
     if (err instanceof ConsentRecoveryHoldError) return notFound();
     if (err instanceof ConsentStorageBusyError) {

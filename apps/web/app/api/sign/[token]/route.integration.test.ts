@@ -14,10 +14,16 @@ import { hashConsentToken } from "@/lib/consult/tokens";
 import { withTenant } from "@/lib/tenant-db";
 import { checksumSha256Hex } from "@/lib/file-replication";
 import {
+  buildConsentPdf,
   buildConsentPdfV1,
   CONSENT_PDF_RENDERER_V1,
+  CONSENT_PDF_RENDERER_V2,
 } from "@/lib/consult/consent-pdf";
-import { CONSENT_SIGNER_ATTESTATION_VERSION } from "@/lib/consult/consent-template";
+import {
+  CONSENT_ELECTRONIC_SIGNATURE_INTENT,
+  CONSENT_SIGNER_ATTESTATION_VERSION,
+  CONSENT_SIGNER_AUTHORITY_ATTESTATION,
+} from "@/lib/consult/consent-template";
 import type { ManagedUploadReservation } from "@/lib/managed-file-upload";
 import {
   PRACTICE_EXPORT_SECTIONS,
@@ -59,9 +65,15 @@ const CONSENT_ID = "33333333-3333-4333-8333-333333333344";
 const LEGACY_CONSENT_ID = "33333333-3333-4333-8333-333333333345";
 const LEGACY_FILE_ID = "33333333-3333-4333-8333-333333333346";
 const LEASE_CONSENT_ID = "33333333-3333-4333-8333-333333333347";
+const PARENT_V2_CONSENT_ID = "33333333-3333-4333-8333-333333333348";
+const PARENT_V2_FILE_ID = "33333333-3333-4333-8333-333333333349";
+const MISMATCH_CONSENT_ID = "33333333-3333-4333-8333-333333333350";
+const MISMATCH_FILE_ID = "33333333-3333-4333-8333-333333333351";
 const TOKEN = "cd".repeat(32);
 const LEGACY_TOKEN = "ce".repeat(32);
 const LEASE_TOKEN = "cf".repeat(32);
+const PARENT_V2_TOKEN = "d0".repeat(32);
+const MISMATCH_TOKEN = "d1".repeat(32);
 const SIGNATURE_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
@@ -111,7 +123,10 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
     );
 
     expect(response.status).toBe(201);
-    await expect(response.json()).resolves.toEqual({ ok: true });
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      receiptToken: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
     const [signed] = await withTenant(db, PRACTICE_ID, (tx) =>
       tx
         .select({
@@ -288,10 +303,179 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
     expect(completed).toEqual({
       status: "signed",
       signerAttestationVersion: CONSENT_SIGNER_ATTESTATION_VERSION,
-      documentRenderVersion: null,
+      documentRenderVersion: CONSENT_PDF_RENDERER_V1,
       storageLeaseToken: null,
       storageStatus: "available",
     });
+  }, 5_000);
+
+  it("replays an exact parent-generation v2 reservation despite a null renderer", async () => {
+    const signedAt = new Date();
+    const signatureBytes = Buffer.from(
+      SIGNATURE_DATA_URL.slice("data:image/png;base64,".length),
+      "base64",
+    );
+    const v2Pdf = buildConsentPdf({
+      documentId: PARENT_V2_CONSENT_ID,
+      practiceId: PRACTICE_ID,
+      patientId: PATIENT_ID,
+      title: "Parent in-flight consent",
+      bodyText: "These bytes were reserved by the parent v2 renderer.",
+      signerName: "Parent Client",
+      signerAttestation: `${CONSENT_SIGNER_AUTHORITY_ATTESTATION} ${CONSENT_ELECTRONIC_SIGNATURE_INTENT}`,
+      signedAtIso: signedAt.toISOString(),
+      signaturePngDataUrl: SIGNATURE_DATA_URL,
+    });
+    const v2Checksum = checksumSha256Hex(v2Pdf);
+
+    await withTenant(db, PRACTICE_ID, async (tx) => {
+      await tx.insert(files).values({
+        id: PARENT_V2_FILE_ID,
+        practiceId: PRACTICE_ID,
+        uploadedBy: CREATED_BY,
+        idempotencyKey: PARENT_V2_CONSENT_ID,
+        fileName: `signed-consent-${PARENT_V2_CONSENT_ID.slice(0, 8)}.pdf`,
+        fileKey: `${PRACTICE_ID}/consents/${PARENT_V2_FILE_ID}`,
+        fileUrl: `/api/files/${PRACTICE_ID}/consents/${PARENT_V2_FILE_ID}`,
+        mimeType: "application/pdf",
+        fileSizeBytes: v2Pdf.length,
+        checksumSha256: v2Checksum,
+        storageStatus: "pending_upload",
+        category: "consents",
+        source: "consent_signature",
+        entityType: "patient",
+        entityId: PATIENT_ID,
+        patientId: PATIENT_ID,
+      });
+      await tx.insert(consentRequests).values({
+        id: PARENT_V2_CONSENT_ID,
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        createdBy: CREATED_BY,
+        token: PARENT_V2_TOKEN,
+        expiresAt: new Date(Date.now() + 60_000),
+        title: "Parent in-flight consent",
+        bodyText: "These bytes were reserved by the parent v2 renderer.",
+        status: "signing",
+        signerName: "Parent Client",
+        signedAt,
+        signaturePngBytes: signatureBytes,
+        signatureSha256: checksumSha256Hex(signatureBytes),
+        // Exact parent 5414/b5 generation: attestation was persisted but the
+        // renderer column did not exist when the reservation was created.
+        signerAttestationVersion: CONSENT_SIGNER_ATTESTATION_VERSION,
+        documentRenderVersion: null,
+        fileId: PARENT_V2_FILE_ID,
+      });
+    });
+
+    storageMocks.putAndVerifyManagedUpload.mockImplementationOnce(
+      async ({ reservation, body }) => {
+        expect(reservation.id).toBe(PARENT_V2_FILE_ID);
+        expect(reservation.checksumSha256).toBe(v2Checksum);
+        expect(body).toEqual(v2Pdf);
+        return {
+          status: "verified" as const,
+          evidence: {
+            etag: "parent-v2-isolated-etag",
+            versionId: "parent-v2-isolated-version",
+          },
+        };
+      },
+    );
+
+    const { POST } = await import("./route");
+    const response = await POST(
+      new Request(`https://openvpm.test/api/sign/${PARENT_V2_TOKEN}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resume: true }),
+      }) as never,
+      { params: Promise.resolve({ token: PARENT_V2_TOKEN }) },
+    );
+
+    expect(response.status).toBe(201);
+    const [completed] = await withTenant(db, PRACTICE_ID, (tx) =>
+      tx
+        .select({
+          status: consentRequests.status,
+          documentRenderVersion: consentRequests.documentRenderVersion,
+        })
+        .from(consentRequests)
+        .where(eq(consentRequests.id, PARENT_V2_CONSENT_ID))
+        .limit(1),
+    );
+    expect(completed).toEqual({
+      status: "signed",
+      documentRenderVersion: CONSENT_PDF_RENDERER_V2,
+    });
+  }, 5_000);
+
+  it("fails closed when a preexisting reservation matches neither renderer", async () => {
+    const signedAt = new Date();
+    const signatureBytes = Buffer.from(
+      SIGNATURE_DATA_URL.slice("data:image/png;base64,".length),
+      "base64",
+    );
+    await withTenant(db, PRACTICE_ID, async (tx) => {
+      await tx.insert(files).values({
+        id: MISMATCH_FILE_ID,
+        practiceId: PRACTICE_ID,
+        uploadedBy: CREATED_BY,
+        idempotencyKey: MISMATCH_CONSENT_ID,
+        fileName: `signed-consent-${MISMATCH_CONSENT_ID.slice(0, 8)}.pdf`,
+        fileKey: `${PRACTICE_ID}/consents/${MISMATCH_FILE_ID}`,
+        fileUrl: `/api/files/${PRACTICE_ID}/consents/${MISMATCH_FILE_ID}`,
+        mimeType: "application/pdf",
+        fileSizeBytes: 123,
+        checksumSha256: "f".repeat(64),
+        storageStatus: "pending_upload",
+        category: "consents",
+        source: "consent_signature",
+        entityType: "patient",
+        entityId: PATIENT_ID,
+        patientId: PATIENT_ID,
+      });
+      await tx.insert(consentRequests).values({
+        id: MISMATCH_CONSENT_ID,
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        createdBy: CREATED_BY,
+        token: MISMATCH_TOKEN,
+        expiresAt: new Date(Date.now() + 60_000),
+        title: "Mismatched in-flight consent",
+        bodyText: "This reservation must not be replaced.",
+        status: "signing",
+        signerName: "Mismatch Client",
+        signedAt,
+        signaturePngBytes: signatureBytes,
+        signatureSha256: checksumSha256Hex(signatureBytes),
+        signerAttestationVersion: CONSENT_SIGNER_ATTESTATION_VERSION,
+        documentRenderVersion: null,
+        fileId: MISMATCH_FILE_ID,
+      });
+    });
+
+    const { POST } = await import("./route");
+    const response = await POST(
+      new Request(`https://openvpm.test/api/sign/${MISMATCH_TOKEN}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resume: true }),
+      }) as never,
+      { params: Promise.resolve({ token: MISMATCH_TOKEN }) },
+    );
+
+    expect(response.status).toBe(404);
+    expect(storageMocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+    const [row] = await withTenant(db, PRACTICE_ID, (tx) =>
+      tx
+        .select({ version: consentRequests.documentRenderVersion })
+        .from(consentRequests)
+        .where(eq(consentRequests.id, MISMATCH_CONSENT_ID))
+        .limit(1),
+    );
+    expect(row?.version).toBeNull();
   }, 5_000);
 
   it("leaves pool=1 free while the durable lease blocks concurrent recovery", async () => {
@@ -350,11 +534,13 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
     ).rejects.toThrow(
       "Recovery cannot begin while a signed-document storage operation is in flight",
     );
-    const [practice] = await db
-      .select({ recoveryHold: practices.recoveryHold })
-      .from(practices)
-      .where(eq(practices.id, PRACTICE_ID))
-      .limit(1);
+    const [practice] = await withTenant(db, PRACTICE_ID, (tx) =>
+      tx
+        .select({ recoveryHold: practices.recoveryHold })
+        .from(practices)
+        .where(eq(practices.id, PRACTICE_ID))
+        .limit(1),
+    );
     expect(practice?.recoveryHold).toBe(false);
 
     releaseProvider();

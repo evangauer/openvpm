@@ -118,13 +118,18 @@ export const consentRequests = pgTable(
      * persist this before rendering or provider I/O and always reuse it. */
     signaturePngBytes: bytea("signature_png_bytes"),
     signatureSha256: varchar("signature_sha256", { length: 64 }),
+    /** How the signer supplied the signature mark. New claims persist this
+     * alongside the exact PNG; null is reserved for pre-migration evidence. */
+    signatureMethod: varchar("signature_method", { length: 16 }),
     /** Versioned evidence that the signer explicitly confirmed owner or
      * authorized-agent authority before the signature was accepted. */
     signerAttestationVersion: varchar("signer_attestation_version", {
       length: 64,
     }),
     /** Immutable renderer selected by the pending -> signing claim. Null is
-     * reserved for pre-migration signing rows and means consent-pdf-v1. */
+     * reserved for pre-migration signing rows. Without a reservation,
+     * attested rows infer v2 and older unattested rows v1; with one, the route
+     * requires a unique checksum-and-size match before persisting either. */
     documentRenderVersion: varchar("document_render_version", { length: 32 }),
     /** Short durable fence around object-store work. Recovery acquires the
      * practice row exclusively and refuses to start while an unexpired fence
@@ -219,12 +224,92 @@ export const consentRequests = pgTable(
       "consent_requests_signature_evidence_hash_check",
       sql`${table.signatureSha256} is null or (${table.signatureSha256} ~ '^[0-9a-f]{64}$' and ${table.signatureSha256} = pg_catalog.encode(pg_catalog.sha256(${table.signaturePngBytes}), 'hex'))`,
     ),
+    signatureMethodCheck: check(
+      "consent_requests_signature_method_check",
+      sql`${table.signatureMethod} is null or ${table.signatureMethod} in ('drawn', 'typed')`,
+    ),
+  }),
+);
+
+/**
+ * Short-lived, download-only capabilities returned once after a successful
+ * public signing commit. Only the digest is retained. The bound file checksum
+ * and size make every claim specific to the exact signed PDF generation.
+ */
+export const consentReceiptCapabilities = pgTable(
+  "consent_receipt_capabilities",
+  {
+    ...baseColumns(),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    consentRequestId: uuid("consent_request_id")
+      .notNull()
+      .references(() => consentRequests.id),
+    fileId: uuid("file_id")
+      .notNull()
+      .references(() => files.id),
+    fileChecksumSha256: varchar("file_checksum_sha256", {
+      length: 64,
+    }).notNull(),
+    fileSizeBytes: integer("file_size_bytes").notNull(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    claimCount: integer("claim_count").notNull().default(0),
+    maxClaims: integer("max_claims").notNull().default(3),
+    lastClaimedAt: timestamp("last_claimed_at", { withTimezone: true }),
+  },
+  (table) => ({
+    tokenHashUq: uniqueIndex("consent_receipt_capabilities_token_hash_uq").on(
+      table.tokenHash,
+    ),
+    consentUq: uniqueIndex("consent_receipt_capabilities_consent_uq").on(
+      table.practiceId,
+      table.consentRequestId,
+    ),
+    practiceExpiryIdx: index("consent_receipt_capabilities_practice_expiry_idx")
+      .on(table.practiceId, table.expiresAt)
+      .where(sql`${table.deletedAt} is null`),
+    consentTenantFk: foreignKey({
+      columns: [table.practiceId, table.consentRequestId],
+      foreignColumns: [consentRequests.practiceId, consentRequests.id],
+      name: "consent_receipt_capabilities_consent_tenant_fk",
+    }),
+    fileTenantFk: foreignKey({
+      columns: [table.practiceId, table.fileId],
+      foreignColumns: [files.practiceId, files.id],
+      name: "consent_receipt_capabilities_file_tenant_fk",
+    }),
+    tokenHashCheck: check(
+      "consent_receipt_capabilities_token_hash_check",
+      sql`${table.tokenHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    checksumCheck: check(
+      "consent_receipt_capabilities_checksum_check",
+      sql`${table.fileChecksumSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    fileSizeCheck: check(
+      "consent_receipt_capabilities_file_size_check",
+      sql`${table.fileSizeBytes} > 0`,
+    ),
+    expiryCheck: check(
+      "consent_receipt_capabilities_expiry_check",
+      sql`${table.expiresAt} > ${table.createdAt} and ${table.expiresAt} <= ${table.createdAt} + interval '15 minutes'`,
+    ),
+    claimsCheck: check(
+      "consent_receipt_capabilities_claims_check",
+      sql`${table.maxClaims} between 1 and 3 and ${table.claimCount} between 0 and ${table.maxClaims}`,
+    ),
+    claimEvidenceCheck: check(
+      "consent_receipt_capabilities_claim_evidence_check",
+      sql`(${table.claimCount} = 0 and ${table.lastClaimedAt} is null) or (${table.claimCount} > 0 and ${table.lastClaimedAt} is not null)`,
+    ),
   }),
 );
 
 export const consentRequestsRelations = relations(
   consentRequests,
-  ({ one }) => ({
+  ({ one, many }) => ({
     practice: one(practices, {
       fields: [consentRequests.practiceId],
       references: [practices.id],
@@ -248,6 +333,25 @@ export const consentRequestsRelations = relations(
     form: one(consentForms, {
       fields: [consentRequests.formId],
       references: [consentForms.id],
+    }),
+    receiptCapabilities: many(consentReceiptCapabilities),
+  }),
+);
+
+export const consentReceiptCapabilitiesRelations = relations(
+  consentReceiptCapabilities,
+  ({ one }) => ({
+    practice: one(practices, {
+      fields: [consentReceiptCapabilities.practiceId],
+      references: [practices.id],
+    }),
+    consentRequest: one(consentRequests, {
+      fields: [consentReceiptCapabilities.consentRequestId],
+      references: [consentRequests.id],
+    }),
+    file: one(files, {
+      fields: [consentReceiptCapabilities.fileId],
+      references: [files.id],
     }),
   }),
 );

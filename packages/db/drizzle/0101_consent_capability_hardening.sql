@@ -21,11 +21,36 @@ ALTER TABLE "consent_requests" VALIDATE CONSTRAINT "consent_requests_document_re
 ALTER TABLE "consent_requests" VALIDATE CONSTRAINT "consent_requests_storage_lease_pair_check";--> statement-breakpoint
 ALTER TABLE "consent_requests" VALIDATE CONSTRAINT "consent_requests_storage_lease_state_check";--> statement-breakpoint
 
+-- Rows already in flight without a reservation used one of two immutable
+-- renderers. The authority attestation is sufficient only before file bytes
+-- were reserved. Reserved rows are resolved in the application by comparing
+-- both renderer outputs to the durable file checksum and size.
+UPDATE public.consent_requests
+SET document_render_version = CASE
+  WHEN signer_attestation_version = 'owner-authority-v1' THEN 'consent-pdf-v2'
+  ELSE 'consent-pdf-v1'
+END
+WHERE status = 'signing'
+  AND document_render_version IS NULL
+  AND file_id IS NULL;--> statement-breakpoint
+
 CREATE OR REPLACE FUNCTION public.protect_consent_document_render_version()
 RETURNS trigger LANGUAGE plpgsql SET search_path = '' AS $fn$
 BEGIN
   IF OLD.status <> 'pending'
      AND NEW.document_render_version IS DISTINCT FROM OLD.document_render_version
+     AND NOT (
+       OLD.status = 'signing'
+       AND OLD.document_render_version IS NULL
+       AND (
+         (OLD.file_id IS NULL AND NEW.document_render_version = CASE
+           WHEN OLD.signer_attestation_version = 'owner-authority-v1'
+             THEN 'consent-pdf-v2'
+           ELSE 'consent-pdf-v1'
+         END)
+         OR OLD.file_id IS NOT NULL
+       )
+     )
   THEN
     RAISE EXCEPTION USING ERRCODE = '23514',
       MESSAGE = 'Consent document renderer is immutable after signing begins';

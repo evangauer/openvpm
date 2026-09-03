@@ -217,6 +217,74 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       table: "consent_requests",
       name: "consent_requests_signature_evidence_hash_check",
     },
+    ...[
+      "consent_requests_credential_storage_check",
+      "consent_requests_token_hash_format_check",
+      "consent_requests_document_render_version_check",
+      "consent_requests_storage_lease_pair_check",
+      "consent_requests_storage_lease_state_check",
+      "consent_requests_signature_method_check",
+    ].map((name) => ({
+      kind: "constraint" as const,
+      table: "consent_requests",
+      name,
+    })),
+    ...[
+      "consent_requests_document_render_guard",
+      "consent_requests_signature_method_guard",
+    ].map((name) => ({
+      kind: "trigger" as const,
+      table: "consent_requests",
+      name,
+    })),
+    ...[
+      "consent_receipt_capabilities_consent_tenant_fk",
+      "consent_receipt_capabilities_file_tenant_fk",
+      "consent_receipt_capabilities_token_hash_check",
+      "consent_receipt_capabilities_checksum_check",
+      "consent_receipt_capabilities_file_size_check",
+      "consent_receipt_capabilities_expiry_check",
+      "consent_receipt_capabilities_claims_check",
+      "consent_receipt_capabilities_claim_evidence_check",
+    ].map((name) => ({
+      kind: "constraint" as const,
+      table: "consent_receipt_capabilities",
+      name,
+    })),
+    ...[
+      "consent_receipt_capabilities_token_hash_uq",
+      "consent_receipt_capabilities_consent_uq",
+      "consent_receipt_capabilities_practice_expiry_idx",
+    ].map((name) => ({
+      kind: "index" as const,
+      table: "consent_receipt_capabilities",
+      name,
+    })),
+    {
+      kind: "trigger",
+      table: "consent_receipt_capabilities",
+      name: "consent_receipt_capabilities_guard",
+    },
+    {
+      kind: "rls_policy",
+      table: "consent_receipt_capabilities",
+      name: "tenant_isolation",
+    },
+    ...["SELECT", "INSERT", "UPDATE"].map((name) => ({
+      kind: "table_privilege" as const,
+      table: "consent_receipt_capabilities",
+      name,
+    })),
+    {
+      kind: "forbidden_table_privilege",
+      table: "consent_receipt_capabilities",
+      name: "DELETE",
+    },
+    {
+      kind: "forbidden_function_privilege",
+      table: "protect_consent_receipt_capability",
+      name: "EXECUTE",
+    },
     {
       kind: "index",
       table: "files",
@@ -859,7 +927,8 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
       ('payment_processor_payouts'::text, 'DELETE'::text),
       ('payment_disputes'::text, 'DELETE'::text),
       ('financial_closes'::text, 'UPDATE'::text),
-      ('financial_closes'::text, 'DELETE'::text)
+      ('financial_closes'::text, 'DELETE'::text),
+      ('consent_receipt_capabilities'::text, 'DELETE'::text)
     ) required_absence(table_name, privilege_type)
     union all
     select
@@ -888,7 +957,8 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
     where function_namespace.nspname = 'public'
       and function_object.proname in (
         'validate_sms_provider_event_resolution_insert',
-        'validate_payment_processor_refund_tenant'
+        'validate_payment_processor_refund_tenant',
+        'protect_consent_receipt_capability'
       )
       and function_object.pronargs = 0
   `);

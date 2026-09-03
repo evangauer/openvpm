@@ -52,7 +52,7 @@ DECLARE
   t text;
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
-    'capture_sessions','care_reminders','cases','client_contacts','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
+    'capture_sessions','care_reminders','cases','client_contacts','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_receipt_capabilities','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
     'external_lab_observations','external_lab_reports','external_prescription_fills','external_prescriptions','files','financial_closes','historical_appointments','historical_documents','insurance_claims','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','legacy_financial_allocations','legacy_financial_documents','legacy_financial_line_items','legacy_financial_payments','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
     'locations','patient_merge_events','patients','payment_disputes','payment_processor_payouts','payment_processor_refunds','payment_processor_settlements','portal_sessions','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_note_replacements','soap_notes','staff_schedules','suppliers',
@@ -72,6 +72,15 @@ BEGIN
     );
   END LOOP;
 END$$;
+
+-- Receipt capabilities contain only a digest, but their binding and claim
+-- budget are still security evidence. Tenant code may create and atomically
+-- claim its own rows; only explicit system maintenance may remove them.
+REVOKE ALL ON consent_receipt_capabilities FROM PUBLIC;
+REVOKE ALL ON consent_receipt_capabilities FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON consent_receipt_capabilities TO openpims_app;
+REVOKE ALL ON FUNCTION public.protect_consent_receipt_capability()
+  FROM PUBLIC, openpims_app;
 
 -- Processor evidence is clinic-scoped but never deletable. Settlement,
 -- refund, payout, and dispute projections may be reconciled in place by a

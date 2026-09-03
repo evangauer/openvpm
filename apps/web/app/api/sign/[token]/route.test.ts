@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => {
       signedAt: status === "pending" ? null : new Date(),
       signaturePngBytes: status === "pending" ? null : signaturePngBytes,
       signatureSha256: status === "pending" ? null : signatureSha256,
+      signatureMethod: status === "pending" ? null : "drawn",
       signerAttestationVersion:
         status === "pending" ? null : "owner-authority-v1",
       documentRenderVersion: status === "pending" ? null : "consent-pdf-v2",
@@ -263,7 +264,7 @@ function validBody(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function queueHappyPending() {
+function queueHappyPending(signatureMethod: "drawn" | "typed" = "drawn") {
   mocks.selectResults.push([mocks.consentRow()]);
   mocks.updateReturningResults.push(
     [
@@ -272,6 +273,7 @@ function queueHappyPending() {
         signedAt: mocks.signedAt,
         signaturePngBytes: mocks.signaturePngBytes,
         signatureSha256: mocks.signatureSha256,
+        signatureMethod,
         signerAttestationVersion: "owner-authority-v1",
         documentRenderVersion: "consent-pdf-v2",
       },
@@ -667,7 +669,10 @@ describe("POST /api/sign/[token]", () => {
     expect(res.headers.get("Cache-Control")).toBe(
       "private, no-store, max-age=0",
     );
-    await expect(res.json()).resolves.toEqual({ ok: true });
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      receiptToken: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
 
     expect(mocks.updateSet).toHaveBeenNthCalledWith(
       1,
@@ -677,6 +682,7 @@ describe("POST /api/sign/[token]", () => {
         signedAt: expect.anything(),
         signaturePngBytes: mocks.signaturePngBytes,
         signatureSha256: mocks.signatureSha256,
+        signatureMethod: "drawn",
         signerAttestationVersion: "owner-authority-v1",
         documentRenderVersion: "consent-pdf-v2",
       }),
@@ -737,6 +743,44 @@ describe("POST /api/sign/[token]", () => {
       }),
     );
     expect(mocks.queueManagedUploadReplication).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists typed signatures as the same validated PNG evidence", async () => {
+    queueHappyPending("typed");
+
+    const response = await callPost(
+      TOKEN,
+      validBody({ signatureMethod: "typed" }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(mocks.updateSet).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        signatureMethod: "typed",
+        signaturePngBytes: mocks.signaturePngBytes,
+        signatureSha256: mocks.signatureSha256,
+      }),
+    );
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "sign",
+        changes: expect.objectContaining({ signatureMethod: "typed" }),
+      }),
+    );
+  });
+
+  it("rejects unknown signature methods before claiming evidence", async () => {
+    mocks.selectResults.push([mocks.consentRow()]);
+
+    const response = await callPost(
+      TOKEN,
+      validBody({ signatureMethod: "voice" }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.updateSet).not.toHaveBeenCalled();
+    expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
   });
 
   it("releases every database connection before provider I/O", async () => {
@@ -1153,7 +1197,7 @@ describe("POST /api/sign/[token]", () => {
     const claimIndex = ROUTE_SOURCE.lastIndexOf("await claimSigning(");
     expect(claimIndex).toBeGreaterThan(0);
     expect(claimIndex).toBeLessThan(
-      ROUTE_SOURCE.indexOf("buildConsentPdfForVersion("),
+      ROUTE_SOURCE.indexOf("buildConsentPdfForVersion(", claimIndex),
     );
     expect(ROUTE_SOURCE.indexOf("consentSignaturePngDecodes(")).toBeLessThan(
       claimIndex,

@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   CAPTURE_TOKEN_LENGTH,
   CAPTURE_TOKEN_TTL_MS,
+  CONSENT_RECEIPT_TOKEN_TTL_MS,
   CONSENT_TOKEN_TTL_MS,
   captureRateLimitKey,
   deriveTreatmentPlanConsentToken,
   generateCaptureToken,
+  generateConsentReceiptToken,
+  hashConsentReceiptToken,
   hashConsentToken,
   isCaptureTokenShape,
 } from "../tokens";
@@ -56,6 +59,17 @@ describe("capture tokens", () => {
 
   it("expires consent links after 60 minutes", () => {
     expect(CONSENT_TOKEN_TTL_MS).toBe(60 * 60 * 1000);
+  });
+
+  it("mints receipt credentials separately and stores only a domain-separated digest", () => {
+    const token = generateConsentReceiptToken();
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(CONSENT_RECEIPT_TOKEN_TTL_MS).toBe(15 * 60 * 1000);
+    const digest = hashConsentReceiptToken(token);
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(digest).not.toBe(token);
+    expect(digest).not.toBe(hashConsentToken(token));
+    expect(hashConsentReceiptToken(token)).toBe(digest);
   });
 
   it("hashes the token in rate-limit keys (never the raw credential)", () => {

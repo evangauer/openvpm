@@ -715,6 +715,13 @@
       "when": 1788443729834,
       "tag": "0101_consent_capability_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1788449958836,
+      "tag": "0102_equal_fantastic_four",
+      "breakpoints": true
     }
   ]
 }

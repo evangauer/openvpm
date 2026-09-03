@@ -33,7 +33,49 @@ describe("committed Drizzle migrations", () => {
     expect(migration).toContain("consent_requests_document_render_guard");
     expect(migration.match(/NOT VALID/g)).toHaveLength(5);
     expect(migration.match(/VALIDATE CONSTRAINT/g)).toHaveLength(5);
-    expect(migration).not.toMatch(/UPDATE\s+"?consent_requests"?\s+SET/i);
+    expect(migration).toContain("AND file_id IS NULL");
+    expect(migration).toContain(
+      "signer_attestation_version = 'owner-authority-v1'",
+    );
+    expect(migration).toContain("THEN 'consent-pdf-v2'");
+    expect(migration).toContain("ELSE 'consent-pdf-v1'");
+  });
+
+  it("adds bounded, digest-only signed-copy capabilities and signature methods", () => {
+    const migration = readRepoFile(
+      "packages/db/drizzle/0102_equal_fantastic_four.sql",
+    );
+    expect(migration).toContain('CREATE TABLE "consent_receipt_capabilities"');
+    expect(migration).toContain("consent_receipt_capabilities_token_hash_uq");
+    expect(migration).toContain(
+      "consent_receipt_capabilities_consent_tenant_fk",
+    );
+    expect(migration).toContain("consent_receipt_capabilities_file_tenant_fk");
+    expect(migration).toContain("interval '15 minutes'");
+    expect(migration).toContain('max_claims" between 1 and 3');
+    expect(migration).toContain(
+      "Consent receipt claims must advance atomically",
+    );
+    expect(migration).toContain(
+      "Consent receipt capability requires an exact signed file",
+    );
+    expect(migration).toContain("BEFORE INSERT OR UPDATE OR DELETE");
+    expect(migration).toContain('ADD COLUMN "signature_method"');
+    expect(migration).toContain("consent_requests_signature_method_guard");
+    expect(migration).toContain(
+      "CREATE OR REPLACE FUNCTION public.protect_consent_document_render_version()",
+    );
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(rls).toContain("'consent_receipt_capabilities'");
+    expect(rls).toContain(
+      "REVOKE ALL ON consent_receipt_capabilities FROM PUBLIC",
+    );
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT, UPDATE ON consent_receipt_capabilities TO openpims_app",
+    );
+    expect(rls).toContain(
+      "REVOKE ALL ON FUNCTION public.protect_consent_receipt_capability()",
+    );
   });
   it("exercises committed migrations in the CI RLS isolation job", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
