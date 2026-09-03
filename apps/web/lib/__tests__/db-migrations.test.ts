@@ -82,6 +82,37 @@ describe("committed Drizzle migrations", () => {
       "REVOKE ALL ON FUNCTION public.protect_consent_receipt_capability()",
     );
   });
+
+  it("moves reserved renderer repair and sealed consent restore behind the database owner", () => {
+    const migration = readRepoFile(
+      "packages/db/drizzle/0103_broad_cardiac.sql",
+    );
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+
+    expect(migration).toContain(
+      "CREATE OR REPLACE FUNCTION public.resolve_unreserved_consent_document_render_version",
+    );
+    expect(migration).toContain("AND consent.file_id IS NULL");
+    expect(migration).toContain("session_user <> owner_name");
+    expect(migration).toContain(
+      "CREATE OR REPLACE FUNCTION public.restore_signed_consent_evidence",
+    );
+    expect(migration).toContain("practice.recovery_hold = true");
+    expect(migration).toContain("SET search_path = ''");
+    expect(migration).toContain(
+      "Signed consent evidence conflicts with an existing record",
+    );
+    expect(rls).toContain(
+      "REVOKE ALL ON FUNCTION public.resolve_consent_document_render_version",
+    );
+    expect(rls).toContain(
+      "GRANT EXECUTE ON FUNCTION public.resolve_unreserved_consent_document_render_version",
+    );
+    expect(rls).toContain(
+      "REVOKE ALL ON FUNCTION public.restore_signed_consent_evidence",
+    );
+  });
+
   it("exercises committed migrations in the CI RLS isolation job", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
     const migrationIntegrityJob = ci.slice(
@@ -95,6 +126,7 @@ describe("committed Drizzle migrations", () => {
       "lib/__tests__/baseline-postconditions.integration.test.ts",
     );
     expect(ci).toContain('BASELINE_POSTCONDITION_DB_INTEGRATION: "1"');
+    expect(ci).toContain("pnpm --filter @openpims/db db:consent-evidence:test");
     expect(migrationIntegrityJob).toContain("timeout-minutes: 15");
     expect(migrationIntegrityJob).toContain("persist-credentials: false");
     expect(migrationIntegrityJob).toContain(

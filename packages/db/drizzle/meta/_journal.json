@@ -722,6 +722,13 @@
       "when": 1788454525213,
       "tag": "0102_curved_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1788457888616,
+      "tag": "0103_broad_cardiac",
+      "breakpoints": true
     }
   ]
 }

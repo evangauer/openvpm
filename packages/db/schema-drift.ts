@@ -297,6 +297,16 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       name: "EXECUTE",
     },
     {
+      kind: "forbidden_function_privilege",
+      table: "resolve_consent_document_render_version",
+      name: "EXECUTE",
+    },
+    {
+      kind: "forbidden_function_privilege",
+      table: "restore_signed_consent_evidence",
+      name: "EXECUTE",
+    },
+    {
       kind: "index",
       table: "files",
       name: "files_practice_file_key_uq",
@@ -969,9 +979,10 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
       and function_object.proname in (
         'validate_sms_provider_event_resolution_insert',
         'validate_payment_processor_refund_tenant',
-        'protect_consent_receipt_capability'
+        'protect_consent_receipt_capability',
+        'resolve_consent_document_render_version',
+        'restore_signed_consent_evidence'
       )
-      and function_object.pronargs = 0
   `);
 
   const live = new Map<string, Set<string>>();

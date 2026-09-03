@@ -310,28 +310,13 @@ async function recordDocumentRenderVersion(
     return null;
   }
 
-  const originalAttestationVersion = session.signerAttestationVersion;
   const originalFileId = session.fileId;
-  let v1Evidence: { checksum: string; size: number } | null = null;
-  let v2Evidence: { checksum: string; size: number } | null = null;
-
+  // A durable reservation predates the immutable renderer label and cannot be
+  // classified safely from caller-supplied checksum mappings. Keep it frozen
+  // for explicit owner recovery instead of letting the public bearer choose
+  // which historical renderer label to persist.
   if (originalFileId) {
-    const signaturePngDataUrl = `${SIGNATURE_DATA_URL_PREFIX}${Buffer.from(session.signaturePngBytes).toString("base64")}`;
-    const renderInput = {
-      documentId: session.id,
-      practiceId: session.practiceId,
-      patientId: session.patientId,
-      title: session.title,
-      bodyText: session.bodyText,
-      signerName: session.signerName,
-      signerAttestation: `${CONSENT_SIGNER_AUTHORITY_ATTESTATION} ${CONSENT_ELECTRONIC_SIGNATURE_INTENT}`,
-      signedAtIso: session.signedAt.toISOString(),
-      signaturePngDataUrl,
-    };
-    const v1 = buildConsentPdfForVersion(CONSENT_PDF_RENDERER_V1, renderInput);
-    const v2 = buildConsentPdfForVersion(CONSENT_PDF_RENDERER_V2, renderInput);
-    v1Evidence = { checksum: checksumSha256Hex(v1), size: v1.length };
-    v2Evidence = { checksum: checksumSha256Hex(v2), size: v2.length };
+    return null;
   }
 
   return withTenant(db, session.practiceId, async (tx) => {
@@ -339,15 +324,9 @@ async function recordDocumentRenderVersion(
       return null;
     }
     const resolved = await tx.execute(sql`
-      select public.resolve_consent_document_render_version(
+      select public.resolve_unreserved_consent_document_render_version(
         ${session.practiceId}::uuid,
-        ${session.id}::uuid,
-        ${originalFileId}::uuid,
-        ${originalAttestationVersion}::text,
-        ${v1Evidence?.checksum ?? null}::text,
-        ${v1Evidence?.size ?? null}::integer,
-        ${v2Evidence?.checksum ?? null}::text,
-        ${v2Evidence?.size ?? null}::integer
+        ${session.id}::uuid
       ) as document_render_version
     `);
     const selectedVersion = rowsFromExecute<{

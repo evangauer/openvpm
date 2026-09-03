@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
     valid: true,
     errors: [] as string[],
   })),
+  practiceBackupContainsSealedConsentEvidence: vi.fn(() => false),
   isPracticeBackupJsonSizeValid: vi.fn(() => true),
   recordAuditLog: vi.fn(async () => undefined),
   recordActivationAfterAppointmentCreated: vi.fn(async () => true),
@@ -38,6 +39,8 @@ vi.mock("@/lib/backup/export", () => ({
   summarizePracticeExport: mocks.summarizePracticeExport,
   validatePracticeFileRestoreTarget: mocks.validatePracticeFileRestoreTarget,
   validatePracticeExportRestore: mocks.validatePracticeExportRestore,
+  practiceBackupContainsSealedConsentEvidence:
+    mocks.practiceBackupContainsSealedConsentEvidence,
 }));
 
 vi.mock("@/lib/backup/policy", () => ({
@@ -231,6 +234,25 @@ describe("data full backup restore", () => {
     ).resolves.toMatchObject({
       dryRun: true,
       restoreErrors: [expect.stringContaining("attachment manifests")],
+    });
+
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(mocks.restorePracticeData).not.toHaveBeenCalled();
+  });
+
+  it("rejects sealed signed-consent evidence from the web restore path", async () => {
+    const { db, select } = createRestoreDb();
+    mocks.practiceBackupContainsSealedConsentEvidence.mockReturnValueOnce(true);
+
+    await expect(
+      callerWithDb(db).restoreBackup({
+        backup: { signedConsentEvidence: [{ id: "sealed-consent" }] },
+        dryRun: false,
+        confirmFreshPractice: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("database-owner recovery workflow"),
     });
 
     expect(select).toHaveBeenCalledTimes(1);

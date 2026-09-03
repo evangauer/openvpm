@@ -216,7 +216,7 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
     expect(storageMocks.putAndVerifyManagedUpload).toHaveBeenCalledOnce();
   }, 5_000);
 
-  it("replays a preexisting v1 reservation byte-for-byte without a checksum conflict", async () => {
+  it("fails closed for a preexisting v1 reservation until owner repair", async () => {
     const signedAt = new Date();
     const signatureBytes = Buffer.from(
       SIGNATURE_DATA_URL.slice("data:image/png;base64,".length),
@@ -276,21 +276,6 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
       });
     });
 
-    storageMocks.putAndVerifyManagedUpload.mockImplementationOnce(
-      async ({ reservation, body }) => {
-        expect(reservation.id).toBe(LEGACY_FILE_ID);
-        expect(reservation.checksumSha256).toBe(legacyChecksum);
-        expect(body).toEqual(legacyPdf);
-        return {
-          status: "verified" as const,
-          evidence: {
-            etag: "legacy-isolated-etag",
-            versionId: "legacy-isolated-version",
-          },
-        };
-      },
-    );
-
     const { POST } = await import("./route");
     const response = await POST(
       new Request(`https://openvpm.test/api/sign/${LEGACY_TOKEN}`, {
@@ -304,7 +289,8 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
       { params: Promise.resolve({ token: LEGACY_TOKEN }) },
     );
 
-    expect(response.status).toBe(201);
+    expect(response.status).toBe(404);
+    expect(storageMocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
     const [completed] = await withTenant(db, PRACTICE_ID, (tx) =>
       tx
         .select({
@@ -320,15 +306,15 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
         .limit(1),
     );
     expect(completed).toEqual({
-      status: "signed",
-      signerAttestationVersion: CONSENT_SIGNER_ATTESTATION_VERSION,
-      documentRenderVersion: CONSENT_PDF_RENDERER_V1,
+      status: "signing",
+      signerAttestationVersion: null,
+      documentRenderVersion: null,
       storageLeaseToken: null,
-      storageStatus: "available",
+      storageStatus: "pending_upload",
     });
   }, 5_000);
 
-  it("replays an exact parent-generation v2 reservation despite a null renderer", async () => {
+  it("fails closed for an exact parent-generation v2 reservation until owner repair", async () => {
     const signedAt = new Date();
     const signatureBytes = Buffer.from(
       SIGNATURE_DATA_URL.slice("data:image/png;base64,".length),
@@ -388,21 +374,6 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
       });
     });
 
-    storageMocks.putAndVerifyManagedUpload.mockImplementationOnce(
-      async ({ reservation, body }) => {
-        expect(reservation.id).toBe(PARENT_V2_FILE_ID);
-        expect(reservation.checksumSha256).toBe(v2Checksum);
-        expect(body).toEqual(v2Pdf);
-        return {
-          status: "verified" as const,
-          evidence: {
-            etag: "parent-v2-isolated-etag",
-            versionId: "parent-v2-isolated-version",
-          },
-        };
-      },
-    );
-
     const { POST } = await import("./route");
     const response = await POST(
       new Request(`https://openvpm.test/api/sign/${PARENT_V2_TOKEN}`, {
@@ -413,7 +384,8 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
       { params: Promise.resolve({ token: PARENT_V2_TOKEN }) },
     );
 
-    expect(response.status).toBe(201);
+    expect(response.status).toBe(404);
+    expect(storageMocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
     const [completed] = await withTenant(db, PRACTICE_ID, (tx) =>
       tx
         .select({
@@ -425,8 +397,8 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
         .limit(1),
     );
     expect(completed).toEqual({
-      status: "signed",
-      documentRenderVersion: CONSENT_PDF_RENDERER_V2,
+      status: "signing",
+      documentRenderVersion: null,
     });
   }, 5_000);
 

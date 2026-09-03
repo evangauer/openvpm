@@ -141,6 +141,14 @@ jobs:
           pnpm --filter @openpims/db db:treatment-plan-evidence:test
           pnpm --filter @openpims/db db:treatment-plan-concurrency:test
 
+      # Signed consent rows and their exact PDFs are legal evidence. Exercise
+      # both the owner-only sealed recovery path and app-role immutability,
+      # privilege, tenant, replay, and exact-byte recovery boundaries.
+      - name: Execute signed-consent evidence contract
+        env:
+          OPENPIMS_APP_DATABASE_URL: postgresql://openpims_app:openpims_app@localhost:5432/openpims
+        run: pnpm --filter @openpims/db db:consent-evidence:test
+
       # The staff authoring API is dark by default. Exercise the complete
       # protected route with the least-privilege app role against disposable
       # real PostgreSQL, including replay, rollback, RLS, and two-writer races.

@@ -13,6 +13,7 @@ import { withSystem } from "@/lib/tenant-db";
 import { redactSecrets } from "@/lib/audit";
 import { normalizeE164 } from "@/lib/messaging/phone";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
+import { consentSignaturePngDecodes } from "@/lib/consult/consent-pdf";
 import {
   isPracticeBackupJsonSizeValid,
   PRACTICE_BACKUP_JSON_MAX_BYTES,
@@ -32,6 +33,7 @@ import {
   clinicalNotes,
   clients,
   communications,
+  consentForms,
   consentRequests,
   controlledSubstanceLog,
   dispenseChargeQueue,
@@ -147,7 +149,7 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
   fileStorageEvents:
     "Append-only platform recovery evidence; rebuild operational projections from independently retained objects and catalogs.",
   consentRequests:
-    "Expiring e-sign link tokens; the signed consent PDF is in the files section and the signing event is in the audit log.",
+    "Raw rows contain e-sign capability and recovery state. Format v9 exports only the credential-free terminal projection in signedConsentEvidence.",
   messagingRegistrations:
     "Encrypted tax identity plus live carrier brand/campaign state. It is environment-bound, may be undecryptable under another key, and must never bind a restored clone to the real SMS provider. Recover it only through operational database disaster recovery.",
 } as const;
@@ -240,7 +242,9 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "legacyFinancialAllocations",
   "dispenseChargeQueue",
   "visitCloseouts",
+  "consentForms",
   "files",
+  "signedConsentEvidence",
   "visitTreatmentPlans",
   "visitTreatmentPlanRevisions",
   "visitTreatmentPlanRevisionLines",
@@ -300,6 +304,10 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   // Backward compatibility for backups created before internal care reminders
   // became a fully owned, auditable restore section.
   "careReminders",
+  // Sealed signed-consent evidence became portable in v9. Its absence is
+  // compatible only for older backups that have no dependent consent refs.
+  "consentForms",
+  "signedConsentEvidence",
 ] as const satisfies readonly PracticeExportSection[];
 
 export type PracticeExport = {
@@ -312,7 +320,7 @@ export type PracticeExport = {
   counts: Record<PracticeExportSection, number>;
 } & Record<PracticeExportSection, unknown[]>;
 
-export const PRACTICE_EXPORT_FORMAT_VERSION = 8;
+export const PRACTICE_EXPORT_FORMAT_VERSION = 9;
 export const PRACTICE_RECOVERY_HOLD_REASON =
   "Practice data restore pending owner reconciliation";
 
@@ -347,6 +355,12 @@ function rowsFor(data: unknown, section: PracticeExportSection): Row[] {
   const value = data[section];
   if (!Array.isArray(value)) return [];
   return value.filter(isRecord);
+}
+
+export function practiceBackupContainsSealedConsentEvidence(
+  data: unknown,
+): boolean {
+  return rowsFor(data, "signedConsentEvidence").length > 0;
 }
 
 export function sanitizePracticeExportRows(
@@ -647,6 +661,16 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("visitCloseouts", "clinicalFinalizedBy", "users"),
   optionalRef("visitCloseouts", "invoiceId", "invoices"),
   optionalRef("visitCloseouts", "completedBy", "users"),
+  requiredRef("signedConsentEvidence", "patientId", "patients"),
+  optionalRef("signedConsentEvidence", "createdBy", "users"),
+  optionalRef("signedConsentEvidence", "appointmentId", "appointments"),
+  optionalRef("signedConsentEvidence", "formId", "consentForms"),
+  requiredRef("signedConsentEvidence", "fileId", "files"),
+  requiredRef(
+    "visitTreatmentPlanResponses",
+    "consentRequestId",
+    "signedConsentEvidence",
+  ),
   requiredRef("files", "uploadedBy", "users"),
   optionalRef("files", "patientId", "patients"),
   optionalRef("files", "appointmentId", "appointments"),
@@ -868,6 +892,66 @@ function restoredTimestampMillis(value: unknown): number | null {
   return Number.isNaN(milliseconds) ? null : milliseconds;
 }
 
+const SIGNED_CONSENT_EVIDENCE_KEYS = new Set([
+  "id",
+  "createdAt",
+  "updatedAt",
+  "practiceId",
+  "patientId",
+  "createdBy",
+  "appointmentId",
+  "formId",
+  "expiresAt",
+  "title",
+  "bodyText",
+  "signerName",
+  "signedAt",
+  "signaturePngBase64",
+  "signatureSha256",
+  "signatureMethod",
+  "signerAttestationVersion",
+  "documentRenderVersion",
+  "fileId",
+  "signedFileKey",
+  "signedFileChecksumSha256",
+  "signedFileSizeBytes",
+]);
+
+function portableSignaturePng(value: unknown): Buffer | null {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 666_672 ||
+    value.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(value)
+  ) {
+    return null;
+  }
+  const bytes = Buffer.from(value, "base64");
+  if (
+    bytes.length < 24 ||
+    bytes.length > 500_000 ||
+    bytes.toString("base64") !== value ||
+    bytes.readUInt32BE(8) !== 13 ||
+    bytes.toString("ascii", 12, 16) !== "IHDR"
+  ) {
+    return null;
+  }
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  if (
+    width < 1 ||
+    height < 1 ||
+    width > 2_048 ||
+    height > 2_048 ||
+    width * height > 2_000_000 ||
+    !consentSignaturePngDecodes(`data:image/png;base64,${value}`)
+  ) {
+    return null;
+  }
+  return bytes;
+}
+
 function validateRestoreRows(
   data: unknown,
   pushError: (message: string) => void,
@@ -996,6 +1080,121 @@ export function validatePracticeExportRestore(data: unknown): {
   }
 
   validateRestoreRows(data, pushError);
+
+  const signedEvidenceIds = new Set<string>();
+  const filesById = new Map(
+    rowsFor(data, "files")
+      .filter((row): row is Row & { id: string } => typeof row.id === "string")
+      .map((row) => [row.id, row]),
+  );
+  rowsFor(data, "consentForms").forEach((row, index) => {
+    const label = `consentForms[${rowLabel(row, index)}]`;
+    if (row.practiceId !== exportRecord.practiceId) {
+      pushError(`${label}.practiceId must match the backup practiceId.`);
+    }
+  });
+  rowsFor(data, "signedConsentEvidence").forEach((row, index) => {
+    const label = `signedConsentEvidence[${rowLabel(row, index)}]`;
+    const unknownKeys = Object.keys(row).filter(
+      (key) => !SIGNED_CONSENT_EVIDENCE_KEYS.has(key),
+    );
+    if (unknownKeys.length > 0) {
+      pushError(`${label} contains unsupported or secret fields: ${unknownKeys.join(", ")}.`);
+    }
+    if (typeof row.id !== "string" || !CANONICAL_LOWER_UUID.test(row.id)) {
+      pushError(`${label}.id must be a canonical UUID.`);
+    } else if (signedEvidenceIds.has(row.id)) {
+      pushError(`${label}.id must be unique.`);
+    } else {
+      signedEvidenceIds.add(row.id);
+    }
+    if (row.practiceId !== exportRecord.practiceId) {
+      pushError(`${label}.practiceId must match the backup practiceId.`);
+    }
+    for (const field of ["createdAt", "updatedAt", "expiresAt", "signedAt"] as const) {
+      if (!isRestoredTimestamp(row[field])) {
+        pushError(`${label}.${field} must be a timestamp.`);
+      }
+    }
+    if (
+      typeof row.title !== "string" ||
+      row.title.length < 1 ||
+      row.title.length > 200 ||
+      typeof row.bodyText !== "string" ||
+      row.bodyText.length < 1 ||
+      typeof row.signerName !== "string" ||
+      row.signerName.trim().length < 1 ||
+      row.signerName.length > 120
+    ) {
+      pushError(`${label} must contain bounded consent copy and signer identity.`);
+    }
+    const signature = portableSignaturePng(row.signaturePngBase64);
+    if (!signature) {
+      pushError(`${label}.signaturePngBase64 must contain a bounded decodable PNG.`);
+    } else if (
+      typeof row.signatureSha256 !== "string" ||
+      createHash("sha256").update(signature).digest("hex") !== row.signatureSha256
+    ) {
+      pushError(`${label}.signatureSha256 must match the exact PNG bytes.`);
+    }
+    if (row.signatureMethod !== "drawn" && row.signatureMethod !== "typed") {
+      pushError(`${label}.signatureMethod is unsupported.`);
+    }
+    if (row.signerAttestationVersion !== "owner-authority-v1") {
+      pushError(`${label}.signerAttestationVersion is unsupported.`);
+    }
+    if (
+      row.documentRenderVersion !== "consent-pdf-v1" &&
+      row.documentRenderVersion !== "consent-pdf-v2"
+    ) {
+      pushError(`${label}.documentRenderVersion is unsupported.`);
+    }
+    if (
+      typeof row.signedFileKey !== "string" ||
+      typeof row.practiceId !== "string" ||
+      !row.signedFileKey.startsWith(`${row.practiceId}/`) ||
+      typeof row.signedFileChecksumSha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(row.signedFileChecksumSha256) ||
+      !Number.isInteger(row.signedFileSizeBytes) ||
+      Number(row.signedFileSizeBytes) <= 0
+    ) {
+      pushError(`${label} must contain an exact namespaced PDF byte manifest.`);
+    }
+    const file = typeof row.fileId === "string" ? filesById.get(row.fileId) : undefined;
+    if (
+      !file ||
+      file.practiceId !== row.practiceId ||
+      file.deletedAt != null ||
+      file.idempotencyKey !== row.id ||
+      file.mimeType !== "application/pdf" ||
+      file.category !== "consents" ||
+      file.source !== "consent_signature" ||
+      file.entityType !== "patient" ||
+      file.entityId !== row.patientId ||
+      file.patientId !== row.patientId ||
+      (file.appointmentId ?? null) !== (row.appointmentId ?? null) ||
+      file.fileKey !== row.signedFileKey ||
+      file.checksumSha256 !== row.signedFileChecksumSha256 ||
+      file.fileSizeBytes !== row.signedFileSizeBytes ||
+      Object.prototype.hasOwnProperty.call(file, "objectEtag") ||
+      Object.prototype.hasOwnProperty.call(file, "objectVersionId")
+    ) {
+      pushError(`${label}.fileId must reference its exact portable consent PDF manifest.`);
+    }
+  });
+
+  if (
+    typeof exportRecord.formatVersion === "number" &&
+    exportRecord.formatVersion < 9 &&
+    rowsFor(data, "visitTreatmentPlanResponses").some(
+      (row) => typeof row.consentRequestId === "string",
+    ) &&
+    rowsFor(data, "signedConsentEvidence").length === 0
+  ) {
+    pushError(
+      "This legacy backup contains treatment-plan decisions without their signed consent parent; a format v9 export or full database recovery is required.",
+    );
+  }
 
   for (const rule of RESTORE_REFERENCE_RULES) {
     const ids = idsFor(rule.parentSection);
@@ -2457,6 +2656,56 @@ async function activeFileRows(
   }));
 }
 
+/** Portable terminal consent evidence. Capability credentials, leases,
+ * deletion state, receipt capabilities, and provider generation metadata are
+ * intentionally not selected and therefore cannot enter the JSON artifact. */
+async function sealedSignedConsentEvidenceRows(
+  db: Database,
+  practiceId: string,
+): Promise<Row[]> {
+  const rows = await db
+    .select({
+      id: consentRequests.id,
+      createdAt: consentRequests.createdAt,
+      updatedAt: consentRequests.updatedAt,
+      practiceId: consentRequests.practiceId,
+      patientId: consentRequests.patientId,
+      createdBy: consentRequests.createdBy,
+      appointmentId: consentRequests.appointmentId,
+      formId: consentRequests.formId,
+      expiresAt: consentRequests.expiresAt,
+      title: consentRequests.title,
+      bodyText: consentRequests.bodyText,
+      signerName: consentRequests.signerName,
+      signedAt: consentRequests.signedAt,
+      signaturePngBytes: consentRequests.signaturePngBytes,
+      signatureSha256: consentRequests.signatureSha256,
+      signatureMethod: consentRequests.signatureMethod,
+      signerAttestationVersion: consentRequests.signerAttestationVersion,
+      documentRenderVersion: consentRequests.documentRenderVersion,
+      fileId: consentRequests.fileId,
+      signedFileKey: consentRequests.signedFileKey,
+      signedFileChecksumSha256: consentRequests.signedFileChecksumSha256,
+      signedFileSizeBytes: consentRequests.signedFileSizeBytes,
+    })
+    .from(consentRequests)
+    .where(
+      and(
+        eq(consentRequests.practiceId, practiceId),
+        eq(consentRequests.status, "signed"),
+        isNull(consentRequests.deletedAt),
+      ),
+    );
+
+  return rows.map(({ signaturePngBytes, ...row }) => ({
+    ...row,
+    signaturePngBase64:
+      signaturePngBytes == null
+        ? null
+        : Buffer.from(signaturePngBytes).toString("base64"),
+  }));
+}
+
 async function allPracticeRows(db: Database, table: any, practiceId: string) {
   return db.select().from(table).where(eq(table.practiceId, practiceId));
 }
@@ -2536,6 +2785,32 @@ async function restoreRows(
     .onConflictDoNothing()
     .returning({ id: table.id });
   return restored.length;
+}
+
+async function restoreSignedConsentEvidence(
+  db: Database,
+  practiceId: string,
+  rows: Row[],
+): Promise<number> {
+  let restored = 0;
+  for (const row of rows) {
+    const result = await db.execute(sql`
+      select result_id, was_inserted
+      from public.restore_signed_consent_evidence(
+        ${practiceId}::uuid,
+        ${JSON.stringify(row)}::jsonb
+      )
+    `);
+    const [outcome] = rowsFromExecute<{
+      result_id: string;
+      was_inserted: boolean;
+    }>(result);
+    if (!outcome || outcome.result_id !== row.id) {
+      throw new Error("Signed consent restore returned invalid evidence.");
+    }
+    if (outcome.was_inserted) restored += 1;
+  }
+  return restored;
 }
 
 export async function exportPracticeData(
@@ -2667,6 +2942,8 @@ export async function exportPracticeData(
     historicalDocumentRows,
     controlledSubstanceRows,
     allCommunicationRows,
+    allConsentFormRows,
+    signedConsentEvidenceRows,
   ] = await Promise.all([
     allPracticeRows(db, locations, practiceId),
     activeRows(db, locationMessaging, practiceId),
@@ -2736,6 +3013,8 @@ export async function exportPracticeData(
     allPracticeRows(db, historicalDocuments, practiceId),
     activeRows(db, controlledSubstanceLog, practiceId),
     allPracticeRows(db, communications, practiceId),
+    allPracticeRows(db, consentForms, practiceId),
+    sealedSignedConsentEvidenceRows(db, practiceId),
   ]);
 
   const referencedHistoricalFileIds = [
@@ -2743,6 +3022,7 @@ export async function exportPracticeData(
     ...visitTreatmentPlanResponseRows.map(
       (response) => response.signedFileId as string,
     ),
+    ...signedConsentEvidenceRows.map((consent) => consent.fileId as string),
   ];
   const fileRows = await activeFileRows(
     db,
@@ -2817,6 +3097,7 @@ export async function exportPracticeData(
       ...labResultEventRows.map((event) => event.appointmentId),
       ...fileRows.map((file) => file.appointmentId),
       ...visitTreatmentPlanRows.map((plan) => plan.appointmentId),
+      ...signedConsentEvidenceRows.map((consent) => consent.appointmentId),
     ].filter((id): id is string => typeof id === "string"),
   );
   const appointmentRows = allAppointmentRows.filter(
@@ -2843,6 +3124,7 @@ export async function exportPracticeData(
       ...fileRows.map((file) => restoredFilePatientId(file)),
       ...appointmentRows.map((appointment) => appointment.patientId),
       ...visitTreatmentPlanRows.map((plan) => plan.patientId),
+      ...signedConsentEvidenceRows.map((consent) => consent.patientId),
       ...patientMergeRows.flatMap((event) => [
         event.sourcePatientId,
         event.targetPatientId,
@@ -3041,6 +3323,15 @@ export async function exportPracticeData(
     ),
   ]);
 
+  const referencedConsentFormIds = new Set(
+    signedConsentEvidenceRows
+      .map((consent) => consent.formId)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const consentFormRows = allConsentFormRows.filter(
+    (form) => form.deletedAt == null || referencedConsentFormIds.has(form.id),
+  );
+
   const sections: Record<PracticeExportSection, unknown[]> = {
     locations: locationRows,
     locationMessaging: sanitizePracticeExportRows(
@@ -3128,7 +3419,9 @@ export async function exportPracticeData(
     legacyFinancialAllocations: legacyFinancialAllocationRows,
     dispenseChargeQueue: dispenseChargeRows,
     visitCloseouts: visitCloseoutRows,
+    consentForms: consentFormRows,
     files: fileRows,
+    signedConsentEvidence: signedConsentEvidenceRows,
     historicalDocuments: historicalDocumentRows,
     controlledSubstanceLog: controlledSubstanceRows,
     communications: communicationRows,
@@ -3155,6 +3448,7 @@ async function restorePracticeDataRows(
   db: Database,
   practiceId: string,
   data: unknown,
+  options: { allowOwnerLegalEvidenceRestore: boolean },
 ): Promise<{
   restored: Record<PracticeExportSection, number>;
   totalRows: number;
@@ -3619,6 +3913,7 @@ async function restorePracticeDataRows(
     }
   }
   await restorePracticeRows("visitCloseouts", visitCloseouts);
+  await restorePracticeRows("consentForms", consentForms);
   restored.files = await restoreRows(
     db,
     files,
@@ -3626,8 +3921,23 @@ async function restorePracticeDataRows(
     rowsFor(data, "files").map((row) => ({
       ...row,
       fileUrl: canonicalFileUrl(row.fileKey),
+      storageStatus: "unverified",
+      storageVerifiedAt: null,
+      objectEtag: null,
+      objectVersionId: null,
     })),
     { practiceId },
+  );
+  const signedEvidenceRows = rowsFor(data, "signedConsentEvidence");
+  if (signedEvidenceRows.length > 0 && !options.allowOwnerLegalEvidenceRestore) {
+    throw new Error(
+      "Sealed signed-consent evidence requires the explicit owner recovery path.",
+    );
+  }
+  restored.signedConsentEvidence = await restoreSignedConsentEvidence(
+    db,
+    practiceId,
+    signedEvidenceRows,
   );
   await restorePracticeRows("visitTreatmentPlans", visitTreatmentPlans);
   await restorePracticeRows(
@@ -3668,7 +3978,11 @@ export async function restorePracticeData(
   db: Database,
   practiceId: string,
   data: unknown,
-  options: { maxBytes?: number; recoveryHoldDb?: Database } = {},
+  options: {
+    maxBytes?: number;
+    recoveryHoldDb?: Database;
+    allowOwnerLegalEvidenceRestore?: boolean;
+  } = {},
 ): Promise<{
   restored: Record<PracticeExportSection, number>;
   totalRows: number;
@@ -3701,6 +4015,14 @@ export async function restorePracticeData(
   const targetValidation = validatePracticeFileRestoreTarget(data, practiceId);
   if (!targetValidation.valid) {
     throw new Error(targetValidation.errors.join("; "));
+  }
+  if (
+    practiceBackupContainsSealedConsentEvidence(data) &&
+    options.allowOwnerLegalEvidenceRestore !== true
+  ) {
+    throw new Error(
+      "This backup contains sealed signed-consent evidence and must be restored through the explicit database-owner recovery workflow.",
+    );
   }
 
   const commitRecoveryHold = async (holdDb: Database) => {
@@ -3789,9 +4111,15 @@ export async function restorePracticeData(
 
   if (typeof transaction === "function") {
     return transaction.call(db, (tx) =>
-      restorePracticeDataRows(tx as Database, practiceId, data),
+      restorePracticeDataRows(tx as Database, practiceId, data, {
+        allowOwnerLegalEvidenceRestore:
+          options.allowOwnerLegalEvidenceRestore === true,
+      }),
     );
   }
 
-  return restorePracticeDataRows(db, practiceId, data);
+  return restorePracticeDataRows(db, practiceId, data, {
+    allowOwnerLegalEvidenceRestore:
+      options.allowOwnerLegalEvidenceRestore === true,
+  });
 }

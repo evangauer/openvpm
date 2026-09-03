@@ -203,7 +203,7 @@ export const consentRequests = pgTable(
     ),
     credentialStorageCheck: check(
       "consent_requests_credential_storage_check",
-      sql`(${table.token} is not null and ${table.tokenHash} is null) or (${table.token} is null and ${table.tokenHash} is not null)`,
+      sql`(${table.token} is not null and ${table.tokenHash} is null) or (${table.token} is null and ${table.tokenHash} is not null) or (${table.status} = 'signed' and ${table.token} is null and ${table.tokenHash} is null)`,
     ),
     tokenHashFormatCheck: check(
       "consent_requests_token_hash_format_check",

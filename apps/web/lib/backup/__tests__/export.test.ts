@@ -11,6 +11,7 @@ import {
   PRACTICE_EXPORT_SYSTEM_EXCLUSIONS,
   PRACTICE_EXPORT_SECTIONS,
   prepareLegacySmsConsentRestore,
+  practiceBackupContainsSealedConsentEvidence,
   restorePracticeData,
   sanitizePracticeExportRows,
   summarizePracticeExport,
@@ -297,6 +298,210 @@ function withCanonicalCounts<T extends Record<string, unknown>>(backup: T) {
     ),
   };
 }
+
+function signedConsentBackup() {
+  const practiceId = "00000000-0000-4000-8000-000000000101";
+  const userId = "00000000-0000-4000-8000-000000000102";
+  const clientId = "00000000-0000-4000-8000-000000000103";
+  const patientId = "00000000-0000-4000-8000-000000000104";
+  const formId = "00000000-0000-4000-8000-000000000105";
+  const requestId = "00000000-0000-4000-8000-000000000106";
+  const fileId = "00000000-0000-4000-8000-000000000107";
+  const signaturePngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const signatureSha256 = createHash("sha256")
+    .update(Buffer.from(signaturePngBase64, "base64"))
+    .digest("hex");
+  const checksumSha256 = createHash("sha256")
+    .update("signed-pdf-v2")
+    .digest("hex");
+  const fileKey = `${practiceId}/consents/${fileId}.pdf`;
+  const timestamp = "2026-09-03T12:00:00.000Z";
+  const sections = {
+    ...emptyBackup(),
+    users: [{ id: userId, practiceId }],
+    clients: [{ id: clientId, practiceId }],
+    patients: [{ id: patientId, practiceId, clientId }],
+    consentForms: [
+      {
+        id: formId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deletedAt: "2026-09-03T12:30:00.000Z",
+        practiceId,
+        slug: "historical-surgery",
+        title: "Historical surgery consent",
+        body: "Frozen source template.",
+        sortOrder: 1,
+        isActive: false,
+      },
+    ],
+    files: [
+      {
+        id: fileId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deletedAt: null,
+        practiceId,
+        uploadedBy: userId,
+        fileName: "signed-consent.pdf",
+        fileKey,
+        fileUrl: `/api/files/${fileKey}`,
+        mimeType: "application/pdf",
+        fileSizeBytes: 13,
+        checksumSha256,
+        storageStatus: "available",
+        storageVerifiedAt: timestamp,
+        category: "consents",
+        source: "consent_signature",
+        idempotencyKey: requestId,
+        entityType: "patient",
+        entityId: patientId,
+        patientId,
+        appointmentId: null,
+      },
+    ],
+    signedConsentEvidence: [
+      {
+        id: requestId,
+        createdAt: timestamp,
+        updatedAt: "2026-09-03T12:05:00.000Z",
+        practiceId,
+        patientId,
+        createdBy: userId,
+        appointmentId: null,
+        formId,
+        expiresAt: "2026-09-03T12:15:00.000Z",
+        title: "Historical surgery consent",
+        bodyText: "Frozen signed disclosure.",
+        signerName: "Owner Example",
+        signedAt: "2026-09-03T12:04:00.000Z",
+        signaturePngBase64,
+        signatureSha256,
+        signatureMethod: "typed",
+        signerAttestationVersion: "owner-authority-v1",
+        documentRenderVersion: "consent-pdf-v2",
+        fileId,
+        signedFileKey: fileKey,
+        signedFileChecksumSha256: checksumSha256,
+        signedFileSizeBytes: 13,
+      },
+    ],
+  };
+  return withCanonicalCounts({
+    formatVersion: PRACTICE_EXPORT_FORMAT_VERSION,
+    practiceId,
+    exportedAt: timestamp,
+    practice: { id: practiceId, name: "Sealed Evidence Clinic" },
+    ...sections,
+  });
+}
+
+describe("sealed signed-consent backup v9", () => {
+  it("validates signed evidence, exact referenced form/file, and canonical counts", () => {
+    const backup = signedConsentBackup();
+
+    expect(PRACTICE_EXPORT_FORMAT_VERSION).toBe(9);
+    expect(practiceBackupContainsSealedConsentEvidence(backup)).toBe(true);
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const missingCount = {
+      ...backup,
+      counts: { ...backup.counts },
+    };
+    delete (missingCount.counts as Record<string, unknown>).signedConsentEvidence;
+    expect(validatePracticeExportRestore(missingCount).errors).toContain(
+      "backup counts are missing canonical sections: signedConsentEvidence.",
+    );
+  });
+
+  it("rejects capabilities, provider identities, and altered byte evidence", () => {
+    const backup = signedConsentBackup();
+    const evidence = backup.signedConsentEvidence[0]!;
+    const file = backup.files[0]!;
+    const tampered = withCanonicalCounts({
+      ...backup,
+      files: [{ ...file, objectEtag: "provider-secret" }],
+      signedConsentEvidence: [
+        {
+          ...evidence,
+          tokenHash: "a".repeat(64),
+          signatureSha256: "b".repeat(64),
+        },
+      ],
+    });
+
+    expect(validatePracticeExportRestore(tampered).errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("unsupported or secret fields: tokenHash"),
+        expect.stringContaining("signatureSha256 must match the exact PNG bytes"),
+        expect.stringContaining("exact portable consent PDF manifest"),
+      ]),
+    );
+  });
+
+  it("rejects clinic-role restore and requires explicit owner legal-evidence mode", async () => {
+    const backup = signedConsentBackup();
+    const rootDb = { transaction: vi.fn() };
+
+    await expect(
+      restorePracticeData(rootDb as never, backup.practiceId, backup),
+    ).rejects.toThrow("explicit database-owner recovery workflow");
+    expect(rootDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it("accepts pre-v9 backups only when they do not contain dangling consent references", () => {
+    const current = signedConsentBackup();
+    const {
+      consentForms: _consentForms,
+      signedConsentEvidence: _signedConsentEvidence,
+      counts: _counts,
+      practice: _practice,
+      ...legacyBase
+    } = current;
+    const legacy = {
+      ...legacyBase,
+      formatVersion: 8,
+      files: [],
+      users: [],
+      clients: [],
+      patients: [],
+    };
+    expect(validatePracticeExportRestore(legacy)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const dangling = {
+      ...legacy,
+      visitTreatmentPlanResponses: [
+        {
+          id: "response-1",
+          consentRequestId: "missing-consent",
+        },
+      ],
+    };
+    expect(validatePracticeExportRestore(dangling).errors).toContain(
+      "This legacy backup contains treatment-plan decisions without their signed consent parent; a format v9 export or full database recovery is required.",
+    );
+  });
+
+  it("keeps restore order and projection explicit in source", () => {
+    const source = readFileSync("lib/backup/export.ts", "utf8");
+    expect(source).toContain("async function sealedSignedConsentEvidenceRows");
+    expect(source).not.toContain("token: consentRequests.token");
+    expect(source).not.toContain("tokenHash: consentRequests.tokenHash");
+    expect(source.indexOf('restorePracticeRows("consentForms"')).toBeLessThan(
+      source.indexOf("restored.files = await restoreRows"),
+    );
+    expect(source.indexOf("restoreSignedConsentEvidence(")).toBeLessThan(
+      source.indexOf('restorePracticeRows("visitTreatmentPlans"'),
+    );
+  });
+});
 
 function restoreDb(executeResults: unknown[][] = []) {
   const inserted: { rows: Record<string, unknown>[] }[] = [];

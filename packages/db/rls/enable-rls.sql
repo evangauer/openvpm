@@ -105,9 +105,13 @@ REVOKE ALL ON FUNCTION public.protect_consent_signature_file()
 REVOKE ALL ON FUNCTION public.validate_signed_consent_file_binding()
   FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION public.resolve_consent_document_render_version(uuid,uuid,uuid,text,text,integer,text,integer)
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.resolve_unreserved_consent_document_render_version(uuid,uuid)
   FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.resolve_consent_document_render_version(uuid,uuid,uuid,text,text,integer,text,integer)
+GRANT EXECUTE ON FUNCTION public.resolve_unreserved_consent_document_render_version(uuid,uuid)
   TO openpims_app;
+REVOKE ALL ON FUNCTION public.restore_signed_consent_evidence(uuid,jsonb)
+  FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION public.release_consent_storage_lease(uuid,uuid,uuid,uuid)
   FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.release_consent_storage_lease(uuid,uuid,uuid,uuid)
