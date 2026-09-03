@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 
 type SqlClient = ReturnType<typeof postgres>;
+type MigrationJournalEntry = { idx: number; tag: string };
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -32,12 +33,16 @@ async function expectRejected(
 const adminUrl = requiredEnv("DATABASE_URL");
 const here = dirname(fileURLToPath(import.meta.url));
 const migrationDir = join(here, "drizzle");
+const canonicalMigrationTag = "0100_small_kylun";
+const identityRotationMigrationTag = "0101_colorful_stark_industries";
+const canonicalMigrationFile = `${canonicalMigrationTag}.sql`;
+const identityRotationMigrationFile = `${identityRotationMigrationTag}.sql`;
 const canonicalMigration = readFileSync(
-  join(migrationDir, "0100_small_kylun.sql"),
+  join(migrationDir, canonicalMigrationFile),
   "utf8",
 );
 const identityRotationMigration = readFileSync(
-  join(migrationDir, "0101_colorful_stark_industries.sql"),
+  join(migrationDir, identityRotationMigrationFile),
   "utf8",
 );
 const rogueFixture = readFileSync(
@@ -45,27 +50,100 @@ const rogueFixture = readFileSync(
   "utf8",
 );
 const rlsBaseline = readFileSync(join(here, "rls", "enable-rls.sql"), "utf8");
-const migrationsThroughMain0099 = readdirSync(migrationDir)
+const migrationJournal = JSON.parse(
+  readFileSync(join(migrationDir, "meta", "_journal.json"), "utf8"),
+) as { entries?: unknown };
+if (!Array.isArray(migrationJournal.entries)) {
+  throw new Error("Drizzle migration journal has no entries array");
+}
+const journalEntries = migrationJournal.entries.map((entry, position) => {
+  if (
+    typeof entry !== "object" ||
+    entry === null ||
+    !("idx" in entry) ||
+    !("tag" in entry) ||
+    typeof entry.idx !== "number" ||
+    entry.idx !== position ||
+    typeof entry.tag !== "string" ||
+    !/^\d{4}_.+$/.test(entry.tag)
+  ) {
+    throw new Error(`invalid Drizzle migration journal entry at ${position}`);
+  }
+  return { idx: entry.idx, tag: entry.tag } satisfies MigrationJournalEntry;
+});
+const journalMigrationFiles = journalEntries.map((entry) => `${entry.tag}.sql`);
+const directoryMigrationFiles = readdirSync(migrationDir)
   .filter((name) => /^\d{4}_.+\.sql$/.test(name))
-  .filter((name) => Number(name.slice(0, 4)) <= 99)
-  .sort();
+  .sort((left, right) => left.localeCompare(right, "en"));
+const sortedJournalMigrationFiles = [...journalMigrationFiles].sort(
+  (left, right) => left.localeCompare(right, "en"),
+);
+if (
+  directoryMigrationFiles.length !== sortedJournalMigrationFiles.length ||
+  directoryMigrationFiles.some(
+    (migrationFile, index) =>
+      migrationFile !== sortedJournalMigrationFiles[index],
+  )
+) {
+  throw new Error(
+    "Drizzle journal and canonical migration files do not have exact coverage",
+  );
+}
+const canonicalAnchorIndexes = journalEntries.flatMap((entry, index) =>
+  entry.tag === canonicalMigrationTag ? [index] : [],
+);
+const identityAnchorIndexes = journalEntries.flatMap((entry, index) =>
+  entry.tag === identityRotationMigrationTag ? [index] : [],
+);
+if (
+  canonicalAnchorIndexes.length !== 1 ||
+  identityAnchorIndexes.length !== 1 ||
+  identityAnchorIndexes[0] !== canonicalAnchorIndexes[0]! + 1
+) {
+  throw new Error(
+    "canonical 0100/0101 migration anchors are missing or ambiguous",
+  );
+}
+const migrationsThroughMain0099 = journalMigrationFiles.slice(
+  0,
+  canonicalAnchorIndexes[0],
+);
+const migrationsAfterIdentityRotation = journalMigrationFiles.slice(
+  identityAnchorIndexes[0]! + 1,
+);
 const safeIdentifier = /^[a-z][a-z0-9_]+$/;
 const admin = postgres(adminUrl, { max: 1 });
 let createdAppRole = false;
 
-async function applyCanonical(owner: SqlClient): Promise<void> {
+async function applyMigration(
+  owner: SqlClient,
+  migrationSql: string,
+): Promise<void> {
   await owner.begin(async (transaction) => {
-    await (transaction as unknown as SqlClient)
-      .unsafe(canonicalMigration)
-      .simple();
+    await (transaction as unknown as SqlClient).unsafe(migrationSql).simple();
   });
 }
 
+async function applyCanonical(owner: SqlClient): Promise<void> {
+  await applyMigration(owner, canonicalMigration);
+}
+
 async function applyIdentityRotation(owner: SqlClient): Promise<void> {
+  await applyMigration(owner, identityRotationMigration);
+}
+
+async function applyCanonicalTail(owner: SqlClient): Promise<void> {
+  const tailMigrations = migrationsAfterIdentityRotation.map(
+    (migrationFile) => ({
+      migrationFile,
+      migrationSql: readFileSync(join(migrationDir, migrationFile), "utf8"),
+    }),
+  );
   await owner.begin(async (transaction) => {
-    await (transaction as unknown as SqlClient)
-      .unsafe(identityRotationMigration)
-      .simple();
+    const scoped = transaction as unknown as SqlClient;
+    for (const migration of tailMigrations) {
+      await scoped.unsafe(migration.migrationSql).simple();
+    }
   });
 }
 
@@ -144,6 +222,10 @@ async function runScenario(kind: "fresh" | "rogue"): Promise<void> {
     // The next canonical migration must apply cleanly after both fresh and
     // adopted demo schema paths without disturbing reconciled evidence.
     await applyIdentityRotation(owner);
+    // The RLS baseline is intentionally strict about every current table.
+    // Discover and apply the complete journal-ordered canonical tail in one
+    // transaction so later migrations cannot be skipped or partially applied.
+    await applyCanonicalTail(owner);
     // Prove the idempotent full RLS baseline retains the migration's narrower
     // backup-run privilege override after its initial all-table grant.
     await owner.unsafe(rlsBaseline).simple();
@@ -356,7 +438,7 @@ async function runScenario(kind: "fresh" | "rogue"): Promise<void> {
     }
 
     console.log(
-      `✓ ${kind}: canonical 0100 + 0101 preserved data, reconciled exact shape, and enforced system-only RLS`,
+      `✓ ${kind}: canonical 0100 + 0101 preserved data, ${migrationsAfterIdentityRotation.length} tail migrations applied, and current system-only RLS enforced`,
     );
   } finally {
     if (targetAdmin) await targetAdmin.end();
@@ -381,7 +463,7 @@ try {
   await runScenario("fresh");
   await runScenario("rogue");
   console.log(
-    "Demo schema reconciliation PostgreSQL contract passed: fresh-main and exact rogue 0099-0101 upgrades through canonical 0101 are lossless and fail closed.",
+    "Demo schema reconciliation PostgreSQL contract passed: fresh-main and exact rogue 0099-0101 upgrades through the current canonical tail are lossless and fail closed.",
   );
 } finally {
   if (createdAppRole) {
