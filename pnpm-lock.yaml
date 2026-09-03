@@ -275,8 +275,8 @@ importers:
         version: 3.4.8
     devDependencies:
       '@faker-js/faker':
-        specifier: ^9.0.0
-        version: 9.9.0
+        specifier: ^10.5.0
+        version: 10.5.0
       '@openpims/config':
         specifier: workspace:*
         version: link:../config
@@ -790,9 +790,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@faker-js/faker@9.9.0':
-    resolution: {integrity: sha512-OEl393iCOoo/z8bMezRlJu+GlRGlsKbUAN7jKB6LhnKoqKve5DXRpalbItIIcwnCjs1k/FOPjFzcA6Qn+H+YbA==}
-    engines: {node: '>=18.0.0', npm: '>=9.0.0'}
+  '@faker-js/faker@10.5.0':
+    resolution: {integrity: sha512-bsxD8WLS5lIj7aaoCx1YJkktqYj5vlBUE6HWzu2Q51ksrGJ0H737ECCKlFU7Yf8Br45z9t99frBp/J7kzbMPAg==}
+    engines: {node: ^20.19.0 || ^22.13.0 || ^23.5.0 || >=24.0.0, npm: '>=10'}
 
   '@floating-ui/core@1.7.5':
     resolution: {integrity: sha512-1Ih4WTWyw0+lKyFMcBHGbb5U5FtuHJuujoyyr5zTaWS5EYMeT6Jb2AuDeftsCsEuchO+mM2ij5+q9crhydzLhQ==}
@@ -2890,8 +2890,8 @@ packages:
   jose@5.10.0:
     resolution: {integrity: sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg==}
 
-  js-base64@3.9.2:
-    resolution: {integrity: sha512-6zayE8QlUdiweYI6cETD/XBSqFcoCUlufn/29PJR99r82x1yDnIprRca0YvAYpAW+ez0GuQkVBC6xG5QkD7OjA==}
+  js-base64@3.9.3:
+    resolution: {integrity: sha512-uwYQp+VJ38FVvtim6qNbit6e9uT6dwWQ4Y1+H9TxhW5hcHjpHwoxlR0nMpqUmIFOmu4VqMxwdJA88gIVuZJQ/g==}
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -4322,7 +4322,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@faker-js/faker@9.9.0': {}
+  '@faker-js/faker@10.5.0': {}
 
   '@floating-ui/core@1.7.5':
     dependencies:
@@ -4465,12 +4465,12 @@ snapshots:
   '@libsql/client-wasm@0.17.0':
     dependencies:
       '@libsql/core': 0.17.4
-      js-base64: 3.9.2
+      js-base64: 3.9.3
     optional: true
 
   '@libsql/core@0.17.4':
     dependencies:
-      js-base64: 3.9.2
+      js-base64: 3.9.3
     optional: true
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
@@ -6183,7 +6183,7 @@ snapshots:
 
   jose@5.10.0: {}
 
-  js-base64@3.9.2:
+  js-base64@3.9.3:
     optional: true
 
   js-tokens@4.0.0: {}
