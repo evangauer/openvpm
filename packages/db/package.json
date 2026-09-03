@@ -37,7 +37,6 @@
     "postgres": "^3.4.0"
   },
   "devDependencies": {
-    "@faker-js/faker": "^9.0.0",
     "@openpims/config": "workspace:*",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.23.12",
