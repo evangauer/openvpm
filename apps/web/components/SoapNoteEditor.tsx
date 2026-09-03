@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import Underline from "@tiptap/extension-underline";
 import Highlight from "@tiptap/extension-highlight";
 import { Bold, Italic, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -24,6 +23,7 @@ export function SoapNoteEditor({
 }: SoapNoteEditorProps) {
   const [isEmpty, setIsEmpty] = useState(!value);
   const editor = useEditor({
+    immediatelyRender: false,
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
@@ -33,7 +33,6 @@ export function SoapNoteEditor({
         code: { HTMLAttributes: { class: "bg-muted px-1 rounded text-xs font-mono" } },
         codeBlock: { HTMLAttributes: { class: "bg-muted p-2 rounded text-xs font-mono overflow-x-auto mb-2" } },
       }),
-      Underline,
       Highlight.configure({ multicolor: true }),
     ],
     content: value || "",
@@ -57,7 +56,7 @@ export function SoapNoteEditor({
     const nextValue = value || "";
     const currentValue = editor.isEmpty ? "" : editor.getHTML();
     if (currentValue === nextValue) return;
-    editor.commands.setContent(nextValue, false);
+    editor.commands.setContent(nextValue, { emitUpdate: false });
     setIsEmpty(editor.isEmpty);
   }, [editor, value]);
 

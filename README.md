@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://openvpm.com/logo.svg" alt="OpenVPM" width="80" height="80" />
+  <img src="apps/web/public/favicon.svg" alt="OpenVPM paw mark" width="88" height="88" />
 </p>
 
 <h1 align="center">OpenVPM</h1>
@@ -11,9 +11,11 @@
 <p align="center">
   <a href="https://demo.openvpm.com/login">Live Demo</a> &middot;
   <a href="https://openvpm.com">Website</a> &middot;
+  <a href="https://docs.openvpm.com">Guides</a> &middot;
   <a href="#features">Features</a> &middot;
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#api">API Docs</a> &middot;
+  <a href="#roadmap">Roadmap</a> &middot;
   <a href="#contributing">Contributing</a>
 </p>
 
@@ -28,7 +30,7 @@
 ---
 
 <p align="center">
-  <strong>▶ <a href="https://demo.openvpm.com/login">Try the live demo</a></strong> — one-click logins, no signup. &nbsp;|&nbsp; If you believe veterinary software should be open, <strong><a href="https://github.com/evangauer/openvpm">give us a ⭐</a></strong> — it helps other clinics and builders find the project.
+  <strong>▶ <a href="https://demo.openvpm.com/login">Try the live demo</a></strong> — instant email access, no account or credit card. &nbsp;|&nbsp; If you believe veterinary software should be open, <strong><a href="https://github.com/evangauer/openvpm">give us a ⭐</a></strong> — it helps other clinics and builders find the project.
 </p>
 
 ---
@@ -61,13 +63,20 @@ That's the bar we're building to.
 
 ## Screenshots
 
-| Dashboard                                    | Schedule                                   | Patient Record                           |
-| -------------------------------------------- | ------------------------------------------ | ---------------------------------------- |
-| ![Dashboard](docs/screenshots/dashboard.png) | ![Schedule](docs/screenshots/schedule.png) | ![Patient](docs/screenshots/patient.png) |
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="OpenVPM dashboard with clinic metrics, follow-up queue, and upcoming appointments" width="100%" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/schedule.png" alt="OpenVPM multi-doctor appointment schedule" width="49%" />
+  <img src="docs/screenshots/patient.png" alt="OpenVPM patient record with allergy alert" width="49%" />
+</p>
+
+<p align="center"><sub>Current application UI rendered from the repository's seeded demo practice. The reproducible capture flow lives in <a href="e2e/demo-screenshots.spec.ts">e2e/demo-screenshots.spec.ts</a>.</sub></p>
 
 ## Help & Guides
 
-Short, plain-language guides live in [docs/help](docs/help/README.md): getting started, the day sheet, the AI helper, client portals, calendar sync, and owning your data. Before evaluating OpenVPM for live clinic use, read the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md) for the current supported, configuration-dependent, and not-yet-supported boundaries. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
+The searchable [OpenVPM Guides](https://docs.openvpm.com) cover front desk, clinical, checkout, client care, and practice administration workflows. Their MDX source and publishing workflow are documented in [docs/help](docs/help/README.md). Before evaluating OpenVPM for live clinic use, read the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md) for the current supported, configuration-dependent, and not-yet-supported boundaries. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
 
 ## Features
 
@@ -77,13 +86,13 @@ Short, plain-language guides live in [docs/help](docs/help/README.md): getting s
 Complete patient records with species, breed, weight history with trend charts, microchip tracking, photo uploads, and allergy/reaction alerts. Multi-pet households linked to single clients. Instant fuzzy search across all records via Cmd+K.
 
 **Appointment Scheduling**
-Visual calendar with day/week views and column-per-doctor layout. Configurable appointment types with durations and colors. Doctor-specific vs. any-doctor scheduling. Full status flow: Scheduled > Checked In > In Exam > Checked Out. Recurring appointments and block scheduling.
+Visual calendar with day/week views and column-per-doctor layout. Configurable appointment types with durations and colors. Doctor-specific vs. any-doctor scheduling, with doctor and room conflict detection. Full status flow: Scheduled > Checked In > In Exam > Checked Out. Recurring appointments and block scheduling.
 
 **Electronic Medical Records (EMR)**
 SOAP notes with rich text editing. Problem lists (active/resolved/chronic). Vaccination records with reminders and certificate generation. Lab results viewer with reference ranges and trend graphs. Prescription management with dosing calculator and refill tracking. Document and image attachments.
 
 **Billing & Invoicing**
-Treatment templates can populate draft invoices, with itemized manual service/product line items, tax calculation, estimates that convert to invoices, payment tracking, account balances, and revenue reporting.
+Structured visit closeout keeps the clinical handoff, follow-up plan, invoice or no-charge disposition, and checkout connected. Treatment templates can populate draft invoices, with itemized manual service/product line items, tax calculation, estimates that convert to invoices, payment tracking, account balances, and revenue reporting.
 
 **Inventory Management**
 Product catalog with stock levels, reorder point alerts, lot/batch tracking, and expiration dates. Auto-deduction when products are dispensed from invoices or EMR prescriptions. Supplier contact management for reorder workflows.
@@ -123,11 +132,11 @@ Structured data models queryable by AI agents. Signed webhook events for agent s
 | **UI**           | shadcn/ui + Radix UI + Tailwind CSS                                |
 | **API**          | tRPC dashboard API + versioned `/api/v1` REST                      |
 | **Database**     | PostgreSQL 16 + Drizzle ORM                                        |
-| **Auth**         | NextAuth.js (role-based clinic access, including read-only Viewer) |
+| **Auth**         | NextAuth.js, role-based access, optional TOTP MFA, recovery codes  |
 | **Events**       | Signed webhook delivery for integrations                           |
 | **Email/SMS**    | Resend + Telnyx SMS (Twilio fallback)                              |
 | **Payments**     | Stripe                                                             |
-| **File Storage** | S3-compatible (MinIO for self-hosted)                              |
+| **File Storage** | S3-compatible or Vercel Blob (MinIO for self-hosted)               |
 | **Monorepo**     | Turborepo + pnpm workspaces                                        |
 | **Testing**      | Vitest + Playwright                                                |
 | **Deployment**   | Docker Compose (self-host) or Vercel (cloud)                       |
@@ -145,12 +154,13 @@ openvpm/
 │   │   ├── components/         # UI component library
 │   │   ├── lib/                # Utilities and integrations
 │   │   └── server/             # tRPC routers and server services
-│   └── docs/                   # Documentation workspace metadata
+│   └── docs/                   # Searchable Next.js staff-guide site
 ├── docs/                        # Help, API, deployment, and safety guides
 ├── packages/
 │   ├── db/                     # Modular schema, migrations, RLS, seed data
 │   ├── api/                    # Shared Zod validators
 │   ├── config/                 # TypeScript, Tailwind config
+│   ├── docs-content/           # Shared guide content and metadata
 │   └── email/                  # Email templates
 ├── docker/                     # Docker Compose (PostgreSQL + MinIO)
 └── e2e/                        # Playwright E2E tests
@@ -168,7 +178,7 @@ Dashboard tRPC routers cover the product's clinic workflows, including patients,
 
 - **Multi-tenancy:** Tenant-scoped application queries plus database row-level security for clinic-owned data
 - **RBAC:** Admin, Veterinarian, Technician, Front Desk, and read-only Viewer roles enforced at the API layer
-- **Auth:** NextAuth.js with bcrypt password hashing and database sessions
+- **Auth:** NextAuth.js with bcrypt password hashing, database sessions, optional TOTP MFA, recovery codes, and privileged-action confirmation
 - **Headers:** CSP, HSTS, Permissions-Policy, X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy
 - **Audit:** Audit records for security-sensitive and high-risk clinical and financial workflows; coverage is expanded as workflows mature
 
@@ -190,8 +200,8 @@ cd openvpm
 # Copy environment config
 cp .env.example .env
 
-# Start PostgreSQL and MinIO
-docker compose -f docker/docker-compose.yml up -d
+# Start the local PostgreSQL and MinIO dependencies
+docker compose -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
 
 # Install dependencies
 pnpm install --frozen-lockfile
@@ -199,12 +209,12 @@ pnpm install --frozen-lockfile
 # Verify this clone contains only public release material
 pnpm verify:oss-release
 
-# Apply database schema
-pnpm db:push
+# Apply the committed database migrations
+pnpm db:migrate
 
 # Apply and verify row-level security policies
-pnpm db:rls
-pnpm db:rls:test
+OPENPIMS_APP_DB_PASSWORD='local-openpims-app' pnpm db:rls
+OPENPIMS_APP_DB_PASSWORD='local-openpims-app' pnpm db:rls:test
 
 # Seed with realistic demo data
 pnpm db:seed
@@ -297,7 +307,7 @@ OpenVPM ships with a built-in AI agent that operates on practice data through a 
 
 Self-hosting stays fully unlocked and free. Leave `HOSTED_BILLING_ENABLED` unset and OpenVPM runs without Stripe gates, hosted metering, or paid-plan limits.
 
-OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day free trial with no credit card required — clinics land in the product immediately and add a card only to convert, then bills one simple plan:
+OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day free trial with no credit card required — clinics land in the product immediately and add billing only to convert, then bills one simple plan:
 
 - $79/month per active, non-deleted location, with unlimited staff (all roles included)
 - $790/year per active location (two months free), with unlimited staff
@@ -331,44 +341,23 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, 
 
 - **Veterinary domain expertise** — Help us get the clinical workflows right
 - **UI/UX design** — Help us make every screen intuitive
-- **Integrations** — Lab equipment (IDEXX, Abaxis), payment processors, telemedicine
+- **Integrations** — IDEXX, Antech, Zoetis, e-prescribing, imaging, and accounting
 - **Internationalization** — Help us support practices worldwide
 - **Testing** — E2E tests, integration tests, accessibility audits
 - **Documentation** — API guides, deployment tutorials, user manuals
 
 ## Roadmap
 
-See **[ROADMAP.md](ROADMAP.md)** for what's shipping now, next, and later — and how to influence it.
+**[ROADMAP.md](ROADMAP.md)** is the source of truth for shipped, configuration-dependent, next, and later work.
 
-- [x] Patient & client management
-- [x] Appointment scheduling with calendar views
-- [x] Electronic medical records (SOAP, manual/in-house lab results, vaccinations, prescriptions)
-- [x] Billing & invoicing
-- [x] Inventory management with reorder alerts
-- [x] Controlled substance tracking
-- [x] Client communication history, portal requests, and configured email workflows
-- [x] Auto-refreshing shared practice whiteboard
-- [x] Reporting & analytics dashboard
-- [x] Client portal
-- [x] Open API with webhooks
-- [x] AI integration points
-- [x] Public REST API (`/api/v1`) with scoped API keys
-- [x] OpenVPM Agent — query practice data and make supported, explicitly opted-in writes
-- [x] Drug dosing calculator, vital signs, treatment plans
-- [x] Wellness plans / recurring billing
-- [x] Online appointment requests with staff confirmation (client portal and public booking page)
-- [x] CSV import for migrating clients & patients
-- [ ] Online booking widget (embeddable)
-- [ ] Hosted SMS rollout beyond the controlled, one-location clinic pilot
-- [ ] FHIR-inspired veterinary data standard
-- [ ] Multi-language support
-- [ ] Mobile companion app
-- [ ] Telemedicine integration
-- [ ] Advanced AI features (auto-coding, predictive analytics)
+- **Available now:** the connected clinic-day workflows above, reviewed CSV migration for clients, patients, vaccine history, and visit notes, full data export, scoped REST endpoints, signed webhooks, and the bounded OpenVPM Agent
+- **Next:** drag-to-reschedule, the staff-facing appointment waitlist, deeper agent tools with clearer review history, and an embeddable appointment-request widget
+- **Later:** direct lab and incumbent-PIMS integrations, field and herd workflows, validated multi-location operations, imaging, e-prescribing, card-present payments, localization, and offline-capable mobile experiences
 
 ## Community
 
 - **Website:** [openvpm.com](https://openvpm.com)
+- **Guides:** [docs.openvpm.com](https://docs.openvpm.com)
 - **GitHub Discussions:** [Join the conversation](https://github.com/evangauer/openvpm/discussions)
 - **Email:** hello@openvpm.com
 

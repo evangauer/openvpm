@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
     async (): Promise<{
       configured: boolean;
       windows: Array<{ start: Date; end: Date }>;
-    }> => ({ configured: false, windows: [] })
+    }> => ({ configured: false, windows: [] }),
   ),
 }));
 
@@ -151,7 +151,7 @@ function createDb(opts?: {
       }),
       then: (
         resolve: (value: unknown[]) => unknown,
-        reject?: (error: unknown) => unknown
+        reject?: (error: unknown) => unknown,
       ) => Promise.resolve(result).then(resolve, reject),
     };
     const builder = {
@@ -176,7 +176,7 @@ function createDb(opts?: {
         }),
         then: (
           resolve: (value: unknown) => unknown,
-          reject?: (error: unknown) => unknown
+          reject?: (error: unknown) => unknown,
         ) => Promise.resolve(result).then(resolve, reject),
       };
     }),
@@ -227,7 +227,7 @@ describe("public booking page", () => {
   it("404s unknown or unpublished slugs", async () => {
     const { db } = createDb({ selectResults: [[]] });
     await expect(
-      publicCaller(db).getPage({ slug: "nope" })
+      publicCaller(db).getPage({ slug: "nope" }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
@@ -236,7 +236,7 @@ describe("public booking page", () => {
     mocks.hasHostedFullAccess.mockReturnValue(false);
     const { db } = createDb({ selectResults: [[pageRow()]] });
     await expect(
-      publicCaller(db).getPage({ slug: "test-clinic" })
+      publicCaller(db).getPage({ slug: "test-clinic" }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
@@ -251,6 +251,43 @@ describe("public booking page", () => {
     const result = await publicCaller(db).getPage({ slug: "test-clinic" });
     expect(result.practice.name).toBe("Test Clinic");
     expect(result.types).toEqual([types[0]]);
+    expect(result.intakeFieldKeys).toEqual([]);
+  });
+
+  it("exposes optional intake only after explicit clinic configuration", async () => {
+    const types = [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }];
+    const { db } = createDb({
+      selectResults: [
+        [
+          pageRow({
+            bookableTypeIds: [TYPE_A],
+            intakeFieldKeys: ["handlingNotes", "serviceAddress"],
+          }),
+        ],
+        types,
+      ],
+    });
+
+    const result = await publicCaller(db).getPage({ slug: "test-clinic" });
+    expect(result.intakeFieldKeys).toEqual(["serviceAddress", "handlingNotes"]);
+  });
+
+  it("fails closed for malformed legacy intake configuration", async () => {
+    const types = [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }];
+    const { db } = createDb({
+      selectResults: [
+        [
+          pageRow({
+            bookableTypeIds: [TYPE_A],
+            intakeFieldKeys: ["serviceAddress", "unknown-sensitive-field"],
+          }),
+        ],
+        types,
+      ],
+    });
+
+    const result = await publicCaller(db).getPage({ slug: "test-clinic" });
+    expect(result.intakeFieldKeys).toEqual([]);
   });
 
   it("hides a published page with no configured active requestable type", async () => {
@@ -258,14 +295,14 @@ describe("public booking page", () => {
       selectResults: [[pageRow({ bookableTypeIds: [] })]],
     });
     await expect(
-      publicCaller(emptyConfig.db).getPage({ slug: "test-clinic" })
+      publicCaller(emptyConfig.db).getPage({ slug: "test-clinic" }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     const staleConfig = createDb({
       selectResults: [[pageRow({ bookableTypeIds: [TYPE_A] })], []],
     });
     await expect(
-      publicCaller(staleConfig.db).getPage({ slug: "test-clinic" })
+      publicCaller(staleConfig.db).getPage({ slug: "test-clinic" }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });
@@ -275,7 +312,9 @@ describe("public availability", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-16T12:00:00Z"));
     const { db, select } = createDb({
-      selectResults: [[pageRow({ hours: [null, null, null, null, null, null, null] })]],
+      selectResults: [
+        [pageRow({ hours: [null, null, null, null, null, null, null] })],
+      ],
     });
     const result = await publicCaller(db).availableSlots({
       slug: "test-clinic",
@@ -308,7 +347,9 @@ describe("public availability", () => {
       date: "2026-07-20",
       typeId: TYPE_A,
     });
-    expect(result).toEqual([{ time: "17:30", iso: "2026-07-20T17:30:00.000Z" }]);
+    expect(result).toEqual([
+      { time: "17:30", iso: "2026-07-20T17:30:00.000Z" },
+    ]);
   });
 
   it("intersects doctor-required requests with configured provider coverage", async () => {
@@ -374,7 +415,7 @@ describe("public availability", () => {
         slug: "test-clinic",
         date: "2026-07-20",
         typeId: TYPE_B,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(select).toHaveBeenCalledTimes(2);
   });
@@ -402,7 +443,7 @@ describe("public booking", () => {
   it("silently accepts honeypot submissions without touching the database", async () => {
     const { db, select, insert } = createDb();
     const result = await publicCaller(db).book(
-      bookInput({ website: "https://spam.example.com" })
+      bookInput({ website: "https://spam.example.com" }),
     );
     expect(result.success).toBe(true);
     expect(select).not.toHaveBeenCalled();
@@ -444,7 +485,7 @@ describe("public booking", () => {
     // practice-scoped advisory lock before checking for a conflicting slot.
     expect(execute).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(execute.mock.calls[1]![0])).toContain(
-      "pg_advisory_xact_lock"
+      "pg_advisory_xact_lock",
     );
 
     const [clientValues, patientValues, apptValues, commValues] =
@@ -483,13 +524,122 @@ describe("public booking", () => {
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
       PRACTICE_ID,
       "appointment.created",
-      expect.objectContaining({ source: "booking_page" })
+      expect.objectContaining({ source: "booking_page" }),
     );
     expect(mocks.recordActivationAfterAppointmentCreated).toHaveBeenCalledWith(
       db,
       PRACTICE_ID,
-      "booking.book"
+      "booking.book",
     );
+  });
+
+  it("puts owner-reported service address and history in the appointment and inbox handoff", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
+    const { db, insertedValues, updateSet } = createDb({
+      selectResults: [
+        [
+          pageRow({
+            intakeFieldKeys: ["serviceAddress", "symptoms", "handlingNotes"],
+          }),
+        ],
+        [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
+        [],
+        [{ id: CLIENT_ID }],
+        [{ id: PATIENT_ID, name: "Milo" }],
+      ],
+      insertResults: [
+        [{ id: APPOINTMENT_ID, startTime: new Date(), endTime: new Date() }],
+        [],
+      ],
+    });
+
+    await publicCaller(db).book(
+      bookInput({
+        intake: {
+          serviceAddress: "North pasture, 10 Farm Road",
+          symptoms: "Low energy and coughing",
+          handlingNotes: "Call before entering the gate",
+        },
+      }),
+    );
+
+    const [appointment, communication] = insertedValues as Array<
+      Record<string, unknown>
+    >;
+    expect(appointment.notes).toContain(
+      "Service/farm address (owner-reported): North pasture, 10 Farm Road",
+    );
+    expect(appointment.notes).toContain(
+      "Client-reported pre-visit history (unverified)",
+    );
+    expect(communication.content).toContain(String(appointment.notes));
+    // Public intake is request context. It does not mutate the permanent
+    // address or other demographics of an existing client.
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("rejects overlong intake before database work", async () => {
+    const { db, select, insert } = createDb();
+    await expect(
+      publicCaller(db).book(
+        bookInput({ intake: { serviceAddress: "x".repeat(501) } }),
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(select).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects an aggregate note overflow before any persistence", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
+    const { db, insert } = createDb({
+      selectResults: [
+        [pageRow({ intakeFieldKeys: ["serviceAddress", "symptoms"] })],
+      ],
+    });
+
+    await expect(
+      publicCaller(db).book(
+        bookInput({
+          reason: "r".repeat(1000),
+          intake: {
+            serviceAddress: "a".repeat(500),
+            symptoms: "s".repeat(500),
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining(
+        "Visit details are too long to send. Shorten the visit reason or optional intake answers by at least",
+      ),
+    });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects known intake fields that the clinic disabled", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T12:00:00Z"));
+    const { db, insert } = createDb({
+      selectResults: [[pageRow({ intakeFieldKeys: ["serviceAddress"] })]],
+    });
+
+    await expect(
+      publicCaller(db).book(
+        bookInput({
+          intake: {
+            serviceAddress: "Allowed address",
+            symptoms: "Tampered disabled answer",
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message:
+        "One or more optional intake fields are no longer enabled. Refresh the page and try again.",
+    });
+    expect(insert).not.toHaveBeenCalled();
   });
 
   it("keeps legacy auto-confirm pages request-only", async () => {
@@ -503,7 +653,10 @@ describe("public booking", () => {
         [{ id: CLIENT_ID }],
         [{ id: PATIENT_ID, name: "Milo" }],
       ],
-      insertResults: [[{ id: APPOINTMENT_ID, startTime: new Date(), endTime: new Date() }], []],
+      insertResults: [
+        [{ id: APPOINTMENT_ID, startTime: new Date(), endTime: new Date() }],
+        [],
+      ],
     });
     const result = await publicCaller(db).book(bookInput());
     expect(result.requiresConfirmation).toBe(true);
@@ -549,7 +702,9 @@ describe("public booking", () => {
 
     await expect(publicCaller(db).book(bookInput())).rejects.toMatchObject({
       code: "BAD_REQUEST",
-      message: expect.stringContaining("outside the clinic's provider coverage"),
+      message: expect.stringContaining(
+        "outside the clinic's provider coverage",
+      ),
     });
     expect(insert).not.toHaveBeenCalled();
   });
@@ -584,7 +739,7 @@ describe("public booking", () => {
       ],
     });
     await expect(
-      publicCaller(db).book(bookInput({ typeId: TYPE_B }))
+      publicCaller(db).book(bookInput({ typeId: TYPE_B })),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(insert).not.toHaveBeenCalled();
   });
@@ -637,7 +792,7 @@ describe("booking page admin", () => {
         slug: "test-clinic",
         published: true,
         config: {},
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
@@ -645,10 +800,10 @@ describe("booking page admin", () => {
     const { db, select } = createDb();
 
     await expect(
-      publicCaller(db).checkSlug({ slug: "test-clinic" })
+      publicCaller(db).checkSlug({ slug: "test-clinic" }),
     ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
     await expect(
-      adminCaller(db, "technician").checkSlug({ slug: "test-clinic" })
+      adminCaller(db, "technician").checkSlug({ slug: "test-clinic" }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(select).not.toHaveBeenCalled();
   });
@@ -660,7 +815,7 @@ describe("booking page admin", () => {
         slug: "admin",
         published: false,
         config: {},
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(select).not.toHaveBeenCalled();
   });
@@ -671,7 +826,7 @@ describe("booking page admin", () => {
     });
 
     await expect(
-      adminCaller(db).checkSlug({ slug: "taken-slug" })
+      adminCaller(db).checkSlug({ slug: "taken-slug" }),
     ).resolves.toEqual({ valid: true, available: false });
     expect(execute).toHaveBeenCalledTimes(1);
     expect(select).toHaveBeenCalledTimes(1);
@@ -683,7 +838,7 @@ describe("booking page admin", () => {
     });
 
     await expect(
-      adminCaller(db).checkSlug({ slug: "test-clinic" })
+      adminCaller(db).checkSlug({ slug: "test-clinic" }),
     ).resolves.toEqual({ valid: true, available: true });
   });
 
@@ -698,19 +853,42 @@ describe("booking page admin", () => {
     const result = await adminCaller(db).savePage({
       slug: "test-clinic",
       published: true,
-      config: { autoConfirm: true, bookableTypeIds: [TYPE_A] },
+      config: {
+        autoConfirm: true,
+        bookableTypeIds: [TYPE_A],
+        intakeFieldKeys: ["handlingNotes", "serviceAddress"],
+      },
     } as never);
     expect(result).toEqual({ slug: "test-clinic", published: true });
     expect(insertedValues[0]).toMatchObject({
       practiceId: PRACTICE_ID,
       slug: "test-clinic",
       published: true,
-      config: expect.objectContaining({ autoConfirm: false }),
+      config: expect.objectContaining({
+        autoConfirm: false,
+        intakeFieldKeys: ["serviceAddress", "handlingNotes"],
+      }),
     });
     expect(operations.indexOf("type-lock")).toBeGreaterThanOrEqual(0);
     expect(operations.indexOf("type-lock")).toBeLessThan(
-      operations.indexOf("insert")
+      operations.indexOf("insert"),
     );
+  });
+
+  it("rejects malformed intake configuration before any database write", async () => {
+    const { db, insert, updateSet } = createDb();
+
+    await expect(
+      adminCaller(db).savePage({
+        slug: "test-clinic",
+        published: false,
+        config: {
+          intakeFieldKeys: ["serviceAddress", "unknown-sensitive-field"],
+        },
+      } as never),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(insert).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("rejects publication unless a selected type is active in this practice", async () => {
@@ -720,7 +898,7 @@ describe("booking page admin", () => {
         slug: "test-clinic",
         published: true,
         config: {},
-      } as never)
+      } as never),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -733,7 +911,7 @@ describe("booking page admin", () => {
         slug: "test-clinic",
         published: true,
         config: { bookableTypeIds: [TYPE_A] },
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 
@@ -772,7 +950,7 @@ describe("booking page admin", () => {
         slug: "new-slug",
         published: false,
         config: expect.objectContaining({ autoConfirm: false }),
-      })
+      }),
     );
   });
 
@@ -793,7 +971,7 @@ describe("booking page admin", () => {
         slug: "race-winner",
         published: true,
         config: { bookableTypeIds: [TYPE_A] },
-      } as never)
+      } as never),
     ).rejects.toMatchObject({
       code: "CONFLICT",
       message: "That link is already taken. Please choose another.",
@@ -817,7 +995,7 @@ describe("booking page admin", () => {
         slug: "race-winner",
         published: true,
         config: { bookableTypeIds: [TYPE_A] },
-      } as never)
+      } as never),
     ).rejects.toMatchObject({
       code: "CONFLICT",
       message: "That link is already taken. Please choose another.",
