@@ -119,6 +119,9 @@ const aSoapDeletedRestoreAddendum = randomUUID();
 const aSoapDraft = randomUUID();
 const aPatient = randomUUID();
 const bPatient = randomUUID();
+const aRecentClinicalItem = randomUUID();
+const bRecentClinicalItem = randomUUID();
+const crossTenantRecentClinicalItem = randomUUID();
 const aFile = randomUUID();
 const bFile = randomUUID();
 const aReplica = randomUUID();
@@ -207,8 +210,11 @@ const platformEmailPreferenceId = randomUUID();
 const systemUpsertPlatformEmailPreferenceId = randomUUID();
 const platformEmailPreferenceEventId = randomUUID();
 const systemPlatformEmailPreferenceEventId = randomUUID();
+const platformEmailIdentityAliasId = randomUUID();
+const systemPlatformEmailIdentityAliasId = randomUUID();
 const platformEmailHash = "c".repeat(64);
 const platformEmailIdentityFingerprint = "d".repeat(64);
+const platformEmailPreviousIdentityFingerprint = "e".repeat(64);
 const aConversionEvidenceKey = `practice:${aId}`;
 const bConversionEvidenceKey = `practice:${bId}`;
 const clinicPilotId = randomUUID();
@@ -258,6 +264,12 @@ try {
     on conflict (key_slot) do nothing
     returning key_slot`;
   createdPlatformEmailIdentity = insertedPlatformEmailIdentity.length === 1;
+  await owner`insert into platform_email_identity_aliases
+    (id, current_identity_key_fingerprint, current_email_hash,
+      previous_identity_key_fingerprint, previous_email_hash)
+    values (${platformEmailIdentityAliasId}, ${platformEmailIdentityFingerprint},
+      ${"3".repeat(64)}, ${platformEmailPreviousIdentityFingerprint},
+      ${"4".repeat(64)})`;
   await owner`insert into platform_email_preferences
     (id, email_hash, identity_key_fingerprint, marketing_enabled, source, reason)
     values (${platformEmailPreferenceId}, ${platformEmailHash},
@@ -716,6 +728,77 @@ try {
     (${aSoapDraftFinalAppointment}, ${aId}, ${aLocation}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam'),
     (${aSoapDoubleFinalAppointment}, ${aId}, ${aLocation}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam'),
     (${aSoapDiscardAppointment}, ${aId}, ${aLocation}, ${aClient}, ${aPatient}, now(), now() + interval '30 minutes', 'in_exam')`;
+
+  await owner`insert into recent_clinical_items
+    (id, practice_id, user_id, patient_id, appointment_id)
+    values (${bRecentClinicalItem}, ${bId}, ${bUser}, ${bPatient}, ${bSoapLegalAppointment})`;
+  const insertedRecentClinicalItem = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`insert into recent_clinical_items
+      (id, practice_id, user_id, patient_id, appointment_id)
+      values (${aRecentClinicalItem}, ${aId}, ${aUser}, ${aPatient}, ${aSoapLegalAppointment})
+      returning id`;
+  });
+  check(
+    "tenant A can insert its own recent clinical item",
+    insertedRecentClinicalItem.length === 1 &&
+      insertedRecentClinicalItem[0]!.id === aRecentClinicalItem,
+  );
+
+  let crossTenantRecentClinicalInsertBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into recent_clinical_items
+        (id, practice_id, user_id, patient_id, appointment_id)
+        values (${crossTenantRecentClinicalItem}, ${bId}, ${bUser}, ${bPatient}, ${bSoapLegalAppointment})`;
+    });
+  } catch {
+    crossTenantRecentClinicalInsertBlocked = true;
+  }
+  check(
+    "tenant A cannot insert a recent clinical item for tenant B",
+    crossTenantRecentClinicalInsertBlocked,
+  );
+
+  const tenantARecentClinicalItems = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from recent_clinical_items
+      where id in (${aRecentClinicalItem}, ${bRecentClinicalItem})`;
+  });
+  check(
+    "tenant A sees only its own recent clinical items",
+    tenantARecentClinicalItems.length === 1 &&
+      tenantARecentClinicalItems[0]!.id === aRecentClinicalItem &&
+      tenantARecentClinicalItems[0]!.practice_id === aId,
+  );
+
+  const crossTenantRecentClinicalUpdate = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`update recent_clinical_items
+      set viewed_at = now()
+      where id = ${bRecentClinicalItem}
+      returning id`;
+  });
+  check(
+    "tenant A cannot update tenant B's recent clinical items",
+    crossTenantRecentClinicalUpdate.length === 0,
+  );
+
+  let recentClinicalDeleteBlocked = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`delete from recent_clinical_items
+        where id = ${aRecentClinicalItem}`;
+    });
+  } catch {
+    recentClinicalDeleteBlocked = true;
+  }
+  check(
+    "application role cannot delete its own recent clinical items",
+    recentClinicalDeleteBlocked,
+  );
 
   let correctedReplacementTransactionAllowed = false;
   try {
@@ -2413,6 +2496,38 @@ try {
       soapReplacementPrivileges[0]!.can_delete === false,
   );
 
+  const soapAddendumRestorePrivileges = await owner`
+    select
+      has_function_privilege(
+        'openpims_app',
+        to_regprocedure('public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text)'),
+        'EXECUTE'
+      ) as app_can_execute,
+      coalesce((
+        select has_function_privilege(
+          role.oid,
+          to_regprocedure('public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text)'),
+          'EXECUTE'
+        )
+        from pg_roles as role where role.rolname = 'anon'
+      ), false) as anon_can_execute,
+      coalesce((
+        select has_function_privilege(
+          role.oid,
+          to_regprocedure('public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text)'),
+          'EXECUTE'
+        )
+        from pg_roles as role where role.rolname = 'authenticated'
+      ), false) as authenticated_can_execute
+  `;
+  check(
+    "only the app role can execute SOAP addendum restore",
+    soapAddendumRestorePrivileges.length === 1 &&
+      soapAddendumRestorePrivileges[0]!.app_can_execute === true &&
+      soapAddendumRestorePrivileges[0]!.anon_can_execute === false &&
+      soapAddendumRestorePrivileges[0]!.authenticated_can_execute === false,
+  );
+
   const soapReplacementRestorePrivileges = await owner`
     select
       has_function_privilege(
@@ -3720,6 +3835,34 @@ try {
     "tenant context cannot read the platform email identity fingerprint",
     hiddenPlatformEmailIdentity.length === 0,
   );
+  const hiddenPlatformEmailIdentityAliases = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      return tx`select id from platform_email_identity_aliases
+        where id = ${platformEmailIdentityAliasId}`;
+    },
+  );
+  check(
+    "tenant context cannot read platform email identity aliases",
+    hiddenPlatformEmailIdentityAliases.length === 0,
+  );
+  let tenantCannotWritePlatformEmailIdentityAlias = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into platform_email_identity_aliases
+        (current_identity_key_fingerprint, current_email_hash,
+          previous_identity_key_fingerprint, previous_email_hash)
+        values (${platformEmailIdentityFingerprint}, ${"5".repeat(64)},
+          ${platformEmailPreviousIdentityFingerprint}, ${"6".repeat(64)})`;
+    });
+  } catch {
+    tenantCannotWritePlatformEmailIdentityAlias = true;
+  }
+  check(
+    "tenant context cannot write platform email identity aliases",
+    tenantCannotWritePlatformEmailIdentityAlias,
+  );
   const hiddenPlatformEmailPreferenceEvents = await appTransaction(
     async (tx) => {
       await tx`select set_config('app.current_practice_id', ${aId}, true)`;
@@ -4118,6 +4261,62 @@ try {
   check(
     "system bypass can read the platform email identity fingerprint",
     systemPlatformEmailIdentity.length === 1,
+  );
+  const systemPlatformEmailIdentityAliases = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      return tx`select id from platform_email_identity_aliases
+        where id = ${platformEmailIdentityAliasId}`;
+    },
+  );
+  check(
+    "system bypass can read platform email identity aliases",
+    systemPlatformEmailIdentityAliases.length === 1,
+  );
+  const systemInsertedPlatformEmailIdentityAlias = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      return tx`insert into platform_email_identity_aliases
+        (id, current_identity_key_fingerprint, current_email_hash,
+          previous_identity_key_fingerprint, previous_email_hash)
+        values (${systemPlatformEmailIdentityAliasId},
+          ${platformEmailIdentityFingerprint}, ${"7".repeat(64)},
+          ${platformEmailPreviousIdentityFingerprint}, ${"8".repeat(64)})
+        returning id`;
+    },
+  );
+  check(
+    "system bypass can append platform email identity aliases",
+    systemInsertedPlatformEmailIdentityAlias.length === 1,
+  );
+  let bypassCannotRewritePlatformEmailIdentityAlias = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`update platform_email_identity_aliases
+        set previous_email_hash = ${"9".repeat(64)}
+        where id = ${systemPlatformEmailIdentityAliasId}`;
+    });
+  } catch {
+    bypassCannotRewritePlatformEmailIdentityAlias = true;
+  }
+  check(
+    "application role cannot rewrite platform email identity aliases",
+    bypassCannotRewritePlatformEmailIdentityAlias,
+  );
+  let bypassCannotDeletePlatformEmailIdentityAlias = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`delete from platform_email_identity_aliases
+        where id = ${systemPlatformEmailIdentityAliasId}`;
+    });
+  } catch {
+    bypassCannotDeletePlatformEmailIdentityAlias = true;
+  }
+  check(
+    "application role cannot delete platform email identity aliases",
+    bypassCannotDeletePlatformEmailIdentityAlias,
   );
   const systemPlatformEmailPreferenceEvents = await appTransaction(
     async (tx) => {
@@ -4522,6 +4721,8 @@ try {
     await cleanup`delete from platform_email_preference_events
       where id in (${platformEmailPreferenceEventId}, ${systemPlatformEmailPreferenceEventId})`;
     await cleanup`delete from platform_email_preferences where id = ${platformEmailPreferenceId}`;
+    await cleanup`delete from platform_email_identity_aliases
+      where id in (${platformEmailIdentityAliasId}, ${systemPlatformEmailIdentityAliasId})`;
     if (createdPlatformEmailIdentity) {
       await cleanup`delete from platform_email_identity where key_slot = 1`;
     }
@@ -4561,6 +4762,8 @@ try {
     await cleanup`delete from clinic_pilots where id = ${clinicPilotId}`;
     await cleanup`delete from invoices where id in (${aInvoice}, ${bInvoice})`;
     await cleanup`delete from migration_runs where id in (${aMigrationRun}, ${bMigrationRun})`;
+    await cleanup`delete from recent_clinical_items
+      where id in (${aRecentClinicalItem}, ${bRecentClinicalItem}, ${crossTenantRecentClinicalItem})`;
     await cleanup`delete from appointments where id in (${aAppointment}, ${bAppointment}, ${aSoapLegalAppointment}, ${bSoapLegalAppointment}, ${aSoapDraftFinalAppointment}, ${aSoapDoubleFinalAppointment}, ${aSoapDiscardAppointment})`;
     await cleanup`delete from rooms where id in (${aRoom}, ${bRoom})`;
     await cleanup`delete from prescriptions where id in (${aPrescription}, ${bPrescription})`;

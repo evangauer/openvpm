@@ -1,10 +1,7 @@
-const { securityHeaders } = require("./lib/security-headers.js");
-
-const capabilityHeaders = [
-  { key: "Referrer-Policy", value: "no-referrer" },
-  { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
-  { key: "Cache-Control", value: "private, no-store, max-age=0" },
-];
+const {
+  capabilityHeaders,
+  securityHeaders,
+} = require("./lib/security-headers.js");
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -19,8 +16,10 @@ const nextConfig = {
       },
       { source: "/capture/:path*", headers: capabilityHeaders },
       { source: "/sign/:path*", headers: capabilityHeaders },
+      { source: "/treatment-plan/:path*", headers: capabilityHeaders },
       { source: "/api/capture/:path*", headers: capabilityHeaders },
       { source: "/api/sign/:path*", headers: capabilityHeaders },
+      { source: "/api/treatment-plan/:path*", headers: capabilityHeaders },
     ];
   },
 };

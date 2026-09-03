@@ -1,7 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Eraser, Loader2 } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Download,
+  Eraser,
+  Loader2,
+} from "lucide-react";
+import {
+  CONSENT_ELECTRONIC_SIGNATURE_INTENT,
+  CONSENT_SIGNER_AUTHORITY_ATTESTATION,
+} from "@/lib/consult/consent-template";
 
 const EXPIRED_MESSAGE =
   "This link has expired. Ask the front desk for a new code.";
@@ -22,7 +32,38 @@ type PageState =
   | { kind: "expired" }
   | { kind: "error"; message: string }
   | { kind: "ready"; consent: ConsentView }
-  | { kind: "submitted"; consent: ConsentView };
+  | {
+      kind: "submitted";
+      consent: ConsentView;
+      receiptToken: string | null;
+    };
+
+type SignatureMethod = "drawn" | "typed";
+
+/** Produce the same bounded PNG evidence as the drawn path without requiring
+ * pointer input. Fixed geometry/colors and normalized whitespace keep the
+ * signer-visible mark stable for the lifetime of this browser submission. */
+function typedSignaturePng(value: string): string | null {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (!normalized) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = 900;
+  canvas.height = 180;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#111827";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  let fontSize = 64;
+  do {
+    ctx.font = `italic ${fontSize}px Georgia, serif`;
+    fontSize -= 2;
+  } while (ctx.measureText(normalized).width > 820 && fontSize >= 28);
+  ctx.fillText(normalized, canvas.width / 2, canvas.height / 2, 820);
+  return canvas.toDataURL("image/png");
+}
 
 /**
  * Signature pad: a plain canvas with pointer events. Scaled for
@@ -135,8 +176,14 @@ export function SignClient({ token }: { token: string }) {
   const [state, setState] = useState<PageState>({ kind: "loading" });
   const [signerName, setSignerName] = useState("");
   const [signature, setSignature] = useState<string | null>(null);
+  const [signatureMethod, setSignatureMethod] =
+    useState<SignatureMethod>("drawn");
+  const [typedSignature, setTypedSignature] = useState("");
+  const [signerAuthorityAccepted, setSignerAuthorityAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -197,7 +244,15 @@ export function SignClient({ token }: { token: string }) {
         setSubmitError(data?.error ?? "Signing failed. Please try again.");
         return;
       }
-      setState({ kind: "submitted", consent: state.consent });
+      const data = (await res.json().catch(() => null)) as {
+        receiptToken?: unknown;
+      } | null;
+      setState({
+        kind: "submitted",
+        consent: state.consent,
+        receiptToken:
+          typeof data?.receiptToken === "string" ? data.receiptToken : null,
+      });
     } catch {
       setSubmitError(
         "Signing failed. Please check your connection and try again.",
@@ -208,15 +263,61 @@ export function SignClient({ token }: { token: string }) {
   }
 
   async function handleSubmit() {
-    if (!signature || !signerName.trim()) return;
+    const signaturePngDataUrl =
+      signatureMethod === "drawn"
+        ? signature
+        : typedSignaturePng(typedSignature);
+    if (
+      !signaturePngDataUrl ||
+      !signerName.trim() ||
+      !signerAuthorityAccepted
+    ) {
+      return;
+    }
     await submitSigningPayload({
       signerName: signerName.trim(),
-      signaturePngDataUrl: signature,
+      signaturePngDataUrl,
+      signatureMethod,
+      signerAuthorityAccepted: true,
     });
   }
 
+  async function handleReceiptDownload(receiptToken: string) {
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      const response = await fetch("/api/sign/receipt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ receiptToken }),
+      });
+      if (!response.ok) {
+        setDownloadError(
+          response.status === 429
+            ? "Too many download attempts. Wait a minute and try again."
+            : "This download is no longer available. Ask the clinic for a copy.",
+        );
+        return;
+      }
+      const blobUrl = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement("a");
+      anchor.href = blobUrl;
+      anchor.download = "signed-consent.pdf";
+      anchor.click();
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      setDownloadError("Download failed. Please check your connection.");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   async function handleResume() {
-    await submitSigningPayload({ resume: true });
+    if (!signerAuthorityAccepted) return;
+    await submitSigningPayload({
+      resume: true,
+      signerAuthorityAccepted: true,
+    });
   }
 
   if (state.kind === "loading") {
@@ -246,13 +347,56 @@ export function SignClient({ token }: { token: string }) {
     );
   }
 
-  if (state.kind === "submitted" || state.consent.status === "signed") {
+  if (state.kind === "submitted") {
     return (
       <div className="flex flex-col items-center gap-3 py-16 text-center">
         <CheckCircle2 className="h-10 w-10 text-teal-600" />
         <h1 className="text-lg font-semibold text-gray-900">All signed</h1>
         <p className="text-sm text-gray-600">
-          Thank you. The clinic has your signed form. You can close this page.
+          Thank you. The clinic has your signed form.
+        </p>
+        {state.receiptToken ? (
+          <>
+            <button
+              type="button"
+              disabled={downloading}
+              onClick={() => void handleReceiptDownload(state.receiptToken!)}
+              className="mt-2 inline-flex items-center gap-2 rounded-lg border border-teal-700 px-4 py-2 text-sm font-semibold text-teal-700 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {downloading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+              Download your signed PDF
+            </button>
+            <p className="max-w-sm text-xs text-gray-500">
+              This private download is available briefly on this device. Save it
+              now if you would like to keep a copy.
+            </p>
+          </>
+        ) : (
+          <p className="text-xs text-gray-500">
+            You can close this page. Ask the clinic if you need a copy.
+          </p>
+        )}
+        {downloadError && (
+          <p role="alert" className="text-sm text-red-600">
+            {downloadError}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  if (state.consent.status === "signed") {
+    return (
+      <div className="flex flex-col items-center gap-3 py-16 text-center">
+        <CheckCircle2 className="h-10 w-10 text-teal-600" />
+        <h1 className="text-lg font-semibold text-gray-900">All signed</h1>
+        <p className="text-sm text-gray-600">
+          Thank you. The clinic has your signed form. Ask the clinic if you need
+          another copy.
         </p>
       </div>
     );
@@ -275,9 +419,20 @@ export function SignClient({ token }: { token: string }) {
             {submitError}
           </p>
         )}
+        <label className="flex max-w-sm items-start gap-3 rounded-lg border border-gray-200 p-3 text-left text-sm leading-5 text-gray-700">
+          <input
+            type="checkbox"
+            checked={signerAuthorityAccepted}
+            onChange={(event) =>
+              setSignerAuthorityAccepted(event.target.checked)
+            }
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+          />
+          <span>{CONSENT_SIGNER_AUTHORITY_ATTESTATION}</span>
+        </label>
         <button
           type="button"
-          disabled={submitting}
+          disabled={submitting || !signerAuthorityAccepted}
           onClick={() => void handleResume()}
           className="w-full max-w-sm rounded-lg bg-teal-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
@@ -288,7 +443,12 @@ export function SignClient({ token }: { token: string }) {
   }
 
   const { consent } = state;
-  const canSubmit = Boolean(signature) && signerName.trim().length > 0;
+  const canSubmit =
+    (signatureMethod === "drawn"
+      ? Boolean(signature)
+      : typedSignature.trim().length > 0) &&
+    signerName.trim().length > 0 &&
+    signerAuthorityAccepted;
 
   return (
     <div className="space-y-6">
@@ -322,7 +482,68 @@ export function SignClient({ token }: { token: string }) {
         />
       </div>
 
-      <SignaturePad onChange={setSignature} />
+      <fieldset className="space-y-3">
+        <legend className="text-sm font-medium text-gray-700">
+          Choose how to sign
+        </legend>
+        <div className="flex gap-4" role="radiogroup">
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="radio"
+              name="signature-method"
+              value="drawn"
+              checked={signatureMethod === "drawn"}
+              onChange={() => setSignatureMethod("drawn")}
+            />
+            Draw signature
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="radio"
+              name="signature-method"
+              value="typed"
+              checked={signatureMethod === "typed"}
+              onChange={() => setSignatureMethod("typed")}
+            />
+            Type signature
+          </label>
+        </div>
+        {signatureMethod === "drawn" ? (
+          <SignaturePad onChange={setSignature} />
+        ) : (
+          <div>
+            <label
+              htmlFor="typed-signature"
+              className="mb-1 block text-sm font-medium text-gray-700"
+            >
+              Type your signature
+            </label>
+            <input
+              id="typed-signature"
+              type="text"
+              autoComplete="name"
+              maxLength={120}
+              value={typedSignature}
+              onChange={(event) => setTypedSignature(event.target.value)}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 font-serif text-lg italic focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+              placeholder="First and last name"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Your typed name will be saved as the signature image on the PDF.
+            </p>
+          </div>
+        )}
+      </fieldset>
+
+      <label className="flex items-start gap-3 rounded-lg border border-gray-200 p-3 text-sm leading-5 text-gray-700">
+        <input
+          type="checkbox"
+          checked={signerAuthorityAccepted}
+          onChange={(event) => setSignerAuthorityAccepted(event.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+        />
+        <span>{CONSENT_SIGNER_AUTHORITY_ATTESTATION}</span>
+      </label>
 
       {submitError && (
         <p className="flex items-center gap-2 text-sm text-red-600">
@@ -348,7 +569,7 @@ export function SignClient({ token }: { token: string }) {
       </button>
 
       <p className="text-center text-xs text-gray-400">
-        Signing here has the same effect as signing on paper.
+        {CONSENT_ELECTRONIC_SIGNATURE_INTENT}
       </p>
     </div>
   );

@@ -1,18 +1,23 @@
 import { randomUUID } from "node:crypto";
 
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import {
   appointments,
   clients,
+  consentRequests,
+  files,
   patients,
   practices,
   products,
   services,
   visitTreatmentPlanRevisionLines,
   visitTreatmentPlanRevisions,
+  visitTreatmentPlanPresentations,
+  visitTreatmentPlanResponseLines,
+  visitTreatmentPlanResponses,
   visitTreatmentPlans,
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
@@ -36,6 +41,17 @@ import {
   type TreatmentPlanCatalogItemInput,
 } from "@/lib/treatment-plan-authoring/policy";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
+import { appBaseUrl } from "@/lib/app-url";
+import {
+  TREATMENT_PLAN_IN_FLIGHT_CONSENT_STATUSES,
+  treatmentPlanPresentationBlocksReplacement,
+} from "@/lib/treatment-plan-presentations/decision-policy";
+import {
+  generateTreatmentPlanPresentationToken,
+  hashTreatmentPlanPresentationToken,
+  TREATMENT_PLAN_PRESENTATION_TOKEN_TTL_MS,
+  treatmentPlanClientDecisionsEnabled,
+} from "@/lib/treatment-plan-presentations/policy";
 
 const clinicalRole = requireRole("admin", "veterinarian", "technician");
 
@@ -119,6 +135,16 @@ function assertAuthoringEnabled(): void {
     throw new TRPCError({
       code: "NOT_FOUND",
       message: "Treatment plan authoring is not available.",
+    });
+  }
+}
+
+function assertClientDecisionsEnabled(): void {
+  assertAuthoringEnabled();
+  if (!treatmentPlanClientDecisionsEnabled()) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Treatment plan client decisions are not available.",
     });
   }
 }
@@ -643,7 +669,116 @@ async function readPreview(
       asc(visitTreatmentPlanRevisionLines.sortOrder),
       asc(visitTreatmentPlanRevisionLines.id),
     );
-  return { plan, revision, lines };
+  const [response] = await database
+    .select({
+      id: visitTreatmentPlanResponses.id,
+      signerName: visitTreatmentPlanResponses.signerName,
+      decidedAt: visitTreatmentPlanResponses.decidedAt,
+      signedFileId: visitTreatmentPlanResponses.signedFileId,
+      signedFileUrl: files.fileUrl,
+    })
+    .from(visitTreatmentPlanResponses)
+    .innerJoin(
+      files,
+      and(
+        eq(files.practiceId, visitTreatmentPlanResponses.practiceId),
+        eq(files.id, visitTreatmentPlanResponses.signedFileId),
+        eq(files.storageStatus, "available"),
+        isNull(files.deletedAt),
+      ),
+    )
+    .where(
+      and(
+        eq(visitTreatmentPlanResponses.practiceId, practiceId),
+        eq(visitTreatmentPlanResponses.revisionId, revision.id),
+      ),
+    )
+    .limit(1);
+  const responseLines = response
+    ? await database
+        .select({
+          revisionLineId: visitTreatmentPlanResponseLines.revisionLineId,
+          decision: visitTreatmentPlanResponseLines.decision,
+          acceptedQuantity: visitTreatmentPlanResponseLines.acceptedQuantity,
+          declineReason: visitTreatmentPlanResponseLines.declineReason,
+        })
+        .from(visitTreatmentPlanResponseLines)
+        .innerJoin(
+          visitTreatmentPlanRevisionLines,
+          and(
+            eq(
+              visitTreatmentPlanRevisionLines.practiceId,
+              visitTreatmentPlanResponseLines.practiceId,
+            ),
+            eq(
+              visitTreatmentPlanRevisionLines.id,
+              visitTreatmentPlanResponseLines.revisionLineId,
+            ),
+          ),
+        )
+        .where(
+          and(
+            eq(visitTreatmentPlanResponseLines.practiceId, practiceId),
+            eq(visitTreatmentPlanResponseLines.responseId, response.id),
+          ),
+        )
+        .orderBy(
+          asc(visitTreatmentPlanRevisionLines.sortOrder),
+          asc(visitTreatmentPlanRevisionLines.id),
+        )
+    : [];
+  const now = new Date();
+  const [presentationCandidate] = treatmentPlanClientDecisionsEnabled()
+    ? await database
+        .select({
+          status: visitTreatmentPlanPresentations.status,
+          expiresAt: visitTreatmentPlanPresentations.expiresAt,
+          consentStatus: consentRequests.status,
+        })
+        .from(visitTreatmentPlanPresentations)
+        .leftJoin(
+          consentRequests,
+          and(
+            eq(
+              consentRequests.practiceId,
+              visitTreatmentPlanPresentations.practiceId,
+            ),
+            eq(
+              consentRequests.id,
+              visitTreatmentPlanPresentations.consentRequestId,
+            ),
+          ),
+        )
+        .where(
+          and(
+            eq(visitTreatmentPlanPresentations.practiceId, practiceId),
+            eq(visitTreatmentPlanPresentations.revisionId, revision.id),
+            inArray(visitTreatmentPlanPresentations.status, [
+              "pending",
+              "awaiting_signature",
+            ]),
+          ),
+        )
+        .orderBy(desc(visitTreatmentPlanPresentations.createdAt))
+        .limit(1)
+    : [];
+  const activePresentation =
+    presentationCandidate &&
+    (presentationCandidate.status === "pending" ||
+      treatmentPlanPresentationBlocksReplacement(presentationCandidate, now))
+      ? {
+          status: presentationCandidate.status,
+          expiresAt: presentationCandidate.expiresAt,
+        }
+      : null;
+  return {
+    plan,
+    revision,
+    lines,
+    response: response ? { ...response, lines: responseLines } : null,
+    activePresentation,
+    clientDecisionsEnabled: treatmentPlanClientDecisionsEnabled(),
+  };
 }
 
 export const visitTreatmentPlansRouter = createRouter({
@@ -661,7 +796,7 @@ export const visitTreatmentPlansRouter = createRouter({
             eq(visitTreatmentPlans.clientId, input.clientId),
             eq(visitTreatmentPlans.patientId, input.patientId),
             eq(visitTreatmentPlans.appointmentId, input.appointmentId),
-            eq(visitTreatmentPlans.status, "open"),
+            inArray(visitTreatmentPlans.status, ["open", "completed"]),
             activePracticePredicate(ctx.practiceId),
           ),
         )
@@ -776,6 +911,125 @@ export const visitTreatmentPlansRouter = createRouter({
         input.planId,
         input.revisionNumber,
       );
+    }),
+
+  createPresentation: protectedProcedure
+    .use(clinicalRole)
+    .input(
+      z.object({
+        planId: z.string().uuid(),
+        revisionId: z.string().uuid(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      assertClientDecisionsEnabled();
+      const rawToken = generateTreatmentPlanPresentationToken();
+      const tokenHash = hashTreatmentPlanPresentationToken(rawToken);
+      const responseId = randomUUID();
+      const expiresAt = new Date(
+        Date.now() + TREATMENT_PLAN_PRESENTATION_TOKEN_TTL_MS,
+      );
+
+      await ctx.db.transaction(async (tx) => {
+        const [plan] = await tx
+          .select({ id: visitTreatmentPlans.id })
+          .from(visitTreatmentPlans)
+          .where(
+            and(
+              eq(visitTreatmentPlans.practiceId, ctx.practiceId),
+              eq(visitTreatmentPlans.id, input.planId),
+              eq(visitTreatmentPlans.status, "open"),
+              activePracticePredicate(ctx.practiceId),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!plan) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "This treatment plan is no longer open.",
+          });
+        }
+        const [latest] = await tx
+          .select({ id: visitTreatmentPlanRevisions.id })
+          .from(visitTreatmentPlanRevisions)
+          .where(
+            and(
+              eq(visitTreatmentPlanRevisions.practiceId, ctx.practiceId),
+              eq(visitTreatmentPlanRevisions.planId, input.planId),
+            ),
+          )
+          .orderBy(desc(visitTreatmentPlanRevisions.revisionNumber))
+          .limit(1);
+        if (!latest || latest.id !== input.revisionId) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "The treatment plan changed in another session. Refresh and retry.",
+          });
+        }
+        const [inFlight] = await tx
+          .select({ id: visitTreatmentPlanPresentations.id })
+          .from(visitTreatmentPlanPresentations)
+          .leftJoin(
+            consentRequests,
+            and(
+              eq(
+                consentRequests.practiceId,
+                visitTreatmentPlanPresentations.practiceId,
+              ),
+              eq(
+                consentRequests.id,
+                visitTreatmentPlanPresentations.consentRequestId,
+              ),
+            ),
+          )
+          .where(
+            and(
+              eq(visitTreatmentPlanPresentations.practiceId, ctx.practiceId),
+              eq(visitTreatmentPlanPresentations.planId, input.planId),
+              eq(visitTreatmentPlanPresentations.status, "awaiting_signature"),
+              or(
+                gt(visitTreatmentPlanPresentations.expiresAt, new Date()),
+                inArray(
+                  consentRequests.status,
+                  TREATMENT_PLAN_IN_FLIGHT_CONSENT_STATUSES,
+                ),
+              ),
+            ),
+          )
+          .limit(1);
+        if (inFlight) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "This treatment plan is already awaiting a signature.",
+          });
+        }
+        await tx
+          .update(visitTreatmentPlanPresentations)
+          .set({ status: "superseded" })
+          .where(
+            and(
+              eq(visitTreatmentPlanPresentations.practiceId, ctx.practiceId),
+              eq(visitTreatmentPlanPresentations.planId, input.planId),
+              eq(visitTreatmentPlanPresentations.status, "pending"),
+            ),
+          );
+        await tx.insert(visitTreatmentPlanPresentations).values({
+          practiceId: ctx.practiceId,
+          planId: input.planId,
+          revisionId: input.revisionId,
+          responseId,
+          createdBy: ctx.user.id,
+          tokenHash,
+          expiresAt,
+        });
+      });
+
+      return {
+        url: `${appBaseUrl()}/treatment-plan/${rawToken}`,
+        expiresAt,
+      };
     }),
 
   create: protectedProcedure

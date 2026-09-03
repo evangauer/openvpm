@@ -41,13 +41,20 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("Charge capture");
   });
 
-  it("keeps scheduled encounters on the standard workspace when ambulatory is enabled", () => {
+  it("requires the effective rollout gate for field visits and falls back to the standard workspace", () => {
     expect(workspaceSource).toContain(
-      'const isAmbulatoryWorkspace = appointment.origin === "field";',
+      'appointment.origin === "field" && ambulatoryProfile?.enabled === true',
     );
     expect(workspaceSource).not.toContain(
       'ambulatoryProfile?.enabled === true || appointment.origin === "field"',
     );
+    expect(workspaceSource).not.toContain(
+      'const isAmbulatoryWorkspace = appointment.origin === "field";',
+    );
+    expect(workspaceSource).toContain(
+      "{isAmbulatoryWorkspace && appointment.patientId ? (",
+    );
+    expect(workspaceSource).toContain("{!isAmbulatoryWorkspace ? (");
   });
 
   it("repairs patientless appointments before allowing an exam to start", () => {

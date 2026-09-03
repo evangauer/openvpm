@@ -20,6 +20,26 @@ describe("owner practice recovery CLI", () => {
       command: "restore",
       practiceId: PRACTICE_ID,
       execute: false,
+      restoreLegalEvidence: false,
+    });
+  });
+
+  it("requires an explicit operator flag for sealed legal evidence", () => {
+    expect(
+      parseRecoveryArgs([
+        "restore",
+        "--practice-id",
+        PRACTICE_ID,
+        "--backup",
+        "/tmp/backup.json",
+        "--practice-name",
+        "Recovery shell",
+        "--restore-legal-evidence",
+      ]),
+    ).toMatchObject({
+      command: "restore",
+      execute: false,
+      restoreLegalEvidence: true,
     });
   });
 
@@ -86,6 +106,10 @@ describe("owner practice recovery CLI", () => {
     );
     expect(releaseSource).toContain("remainingProviderEvents.total > 0");
     expect(releaseSource).toContain('action: "hold_release_blocked"');
+    expect(releaseSource).toContain("invalidSignedConsents");
+    expect(releaseSource).toContain("signedFileChecksumSha256");
+    expect(releaseSource).toContain("signedFileSizeBytes");
+    expect(releaseSource).toContain("storageStatus, \"available\"");
     expect(
       releaseSource.indexOf("remainingProviderEvents.total > 0"),
     ).toBeLessThan(releaseSource.indexOf("recoveryHold: false"));

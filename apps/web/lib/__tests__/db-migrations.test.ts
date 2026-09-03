@@ -15,6 +15,109 @@ function readRepoFile(path: string): string {
 }
 
 describe("committed Drizzle migrations", () => {
+  it("expands consent credentials to digests without invalidating live legacy links", () => {
+    const migration = readRepoFile(
+      "packages/db/drizzle/0102_curved_guardian.sql",
+    );
+    expect(migration).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(migration).toContain('ALTER COLUMN "token" DROP NOT NULL');
+    expect(migration).toContain('ADD COLUMN "token_hash" varchar(64)');
+    expect(migration).toContain("consent_requests_token_hash_uq");
+    expect(migration).toContain("consent_requests_credential_storage_check");
+    expect(migration).toContain("consent_requests_token_hash_format_check");
+    expect(migration).toContain('ADD COLUMN "document_render_version"');
+    expect(migration).toContain('ADD COLUMN "storage_lease_token" uuid');
+    expect(migration).toContain(
+      "consent_requests_document_render_version_check",
+    );
+    expect(migration).toContain("consent_requests_evidence_guard");
+    expect(migration).toContain(
+      "resolve_consent_document_render_version",
+    );
+    expect(migration).toContain("p_original_file_id IS NULL");
+    expect(migration).toContain(
+      "p_original_attestation_version = 'owner-authority-v1'",
+    );
+    expect(migration).toContain("THEN 'consent-pdf-v2'");
+    expect(migration).toContain(
+      "WHEN p_original_attestation_version IS NULL THEN 'consent-pdf-v1'",
+    );
+  });
+
+  it("adds bounded, digest-only signed-copy capabilities and signature methods", () => {
+    const migration = readRepoFile(
+      "packages/db/drizzle/0102_curved_guardian.sql",
+    );
+    expect(migration).toContain('CREATE TABLE "consent_receipt_capabilities"');
+    expect(migration).toContain("consent_receipt_capabilities_token_hash_uq");
+    expect(migration).toContain(
+      "consent_receipt_capabilities_consent_tenant_fk",
+    );
+    expect(migration).toContain("consent_receipt_capabilities_file_tenant_fk");
+    expect(migration).toContain("interval '15 minutes'");
+    expect(migration).toContain('max_claims" between 1 and 3');
+    expect(migration).toContain(
+      "Consent receipt claims must advance atomically",
+    );
+    expect(migration).toContain(
+      "Consent receipt capability requires an exact signed file",
+    );
+    expect(migration).toContain("BEFORE INSERT OR UPDATE OR DELETE");
+    expect(migration).toContain('ADD COLUMN "signature_method"');
+    expect(migration).toContain("consent_requests_evidence_guard");
+    expect(migration).toContain(
+      "CREATE OR REPLACE FUNCTION public.validate_signed_consent_file_binding()",
+    );
+    expect(migration).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(migration).toContain("transition_signed_consent_file_storage");
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(rls).toContain("'consent_receipt_capabilities'");
+    expect(rls).toContain(
+      "REVOKE ALL ON consent_receipt_capabilities FROM PUBLIC",
+    );
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT, UPDATE ON consent_receipt_capabilities TO openpims_app",
+    );
+    expect(rls).toContain(
+      "REVOKE ALL ON FUNCTION public.protect_consent_receipt_capability()",
+    );
+  });
+
+  it("moves reserved renderer repair and sealed consent restore behind the database owner", () => {
+    const migration = readRepoFile(
+      "packages/db/drizzle/0103_broad_cardiac.sql",
+    );
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+
+    expect(migration).toContain(
+      "CREATE OR REPLACE FUNCTION public.resolve_unreserved_consent_document_render_version",
+    );
+    expect(migration).toContain("AND consent.file_id IS NULL");
+    expect(migration).toContain("session_user <> owner_name");
+    expect(migration).toContain(
+      "CREATE OR REPLACE FUNCTION public.restore_signed_consent_evidence",
+    );
+    expect(migration).toContain("practice.recovery_hold = true");
+    expect(migration).toContain("SET search_path = ''");
+    expect(migration).toContain(
+      "Signed consent evidence conflicts with an existing record",
+    );
+    expect(migration).toContain("attested-signature-v1");
+    expect(migration).toContain("legacy-pre-attestation-v1");
+    expect(migration).toContain(
+      "Legacy signed consent backup has invalid evidence provenance",
+    );
+    expect(rls).toContain(
+      "REVOKE ALL ON FUNCTION public.resolve_consent_document_render_version",
+    );
+    expect(rls).toContain(
+      "GRANT EXECUTE ON FUNCTION public.resolve_unreserved_consent_document_render_version",
+    );
+    expect(rls).toContain(
+      "REVOKE ALL ON FUNCTION public.restore_signed_consent_evidence",
+    );
+  });
+
   it("exercises committed migrations in the CI RLS isolation job", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
     const migrationIntegrityJob = ci.slice(
@@ -28,6 +131,7 @@ describe("committed Drizzle migrations", () => {
       "lib/__tests__/baseline-postconditions.integration.test.ts",
     );
     expect(ci).toContain('BASELINE_POSTCONDITION_DB_INTEGRATION: "1"');
+    expect(ci).toContain("pnpm --filter @openpims/db db:consent-evidence:test");
     expect(migrationIntegrityJob).toContain("timeout-minutes: 15");
     expect(migrationIntegrityJob).toContain("persist-credentials: false");
     expect(migrationIntegrityJob).toContain(
@@ -295,6 +399,28 @@ describe("committed Drizzle migrations", () => {
     expect(migration).toContain(
       'VALIDATE CONSTRAINT "visit_closeouts_completed_state_check"',
     );
+  });
+
+  it("restricts SOAP addendum restoration to the application role", () => {
+    const signature =
+      "public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text)";
+    const migration = readRepoFile(
+      "packages/db/drizzle/0102_curved_guardian.sql",
+    );
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+
+    for (const source of [migration, rls]) {
+      expect(source).toContain(
+        `REVOKE ALL ON FUNCTION ${signature} FROM PUBLIC`,
+      );
+      expect(source).toContain(`REVOKE ALL ON FUNCTION ${signature} FROM anon`);
+      expect(source).toContain(
+        `REVOKE ALL ON FUNCTION ${signature} FROM authenticated`,
+      );
+      expect(source).toContain(
+        `GRANT EXECUTE ON FUNCTION ${signature} TO openpims_app`,
+      );
+    }
   });
 
   it("stages file recovery constraints behind a count-only preflight", () => {

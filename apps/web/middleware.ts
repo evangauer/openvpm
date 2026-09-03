@@ -1,8 +1,20 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
-import { applySecurityHeaders } from "./lib/security-headers";
+import {
+  applyCapabilitySecurityHeaders,
+  applySecurityHeaders,
+} from "./lib/security-headers";
 import { nextAuthSecret } from "./lib/auth-secret";
+
+const CAPABILITY_PATH_PREFIXES = [
+  "/capture",
+  "/sign",
+  "/treatment-plan",
+  "/api/capture",
+  "/api/sign",
+  "/api/treatment-plan",
+];
 
 const PUBLIC_PATH_PREFIXES = [
   "/accept-invite",
@@ -20,6 +32,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/reset-password",
   "/sign",
   "/sms",
+  "/treatment-plan",
   "/verify-email",
 ];
 
@@ -32,6 +45,12 @@ function isPublicPath(pathname: string): boolean {
     PUBLIC_PATH_PREFIXES.some(
       (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
     )
+  );
+}
+
+function isCapabilityPath(pathname: string): boolean {
+  return CAPABILITY_PATH_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
 }
 
@@ -49,6 +68,10 @@ export async function middleware(request: NextRequest) {
 
   if (isVercelObservabilityPath(pathname)) {
     return applySecurityHeaders(NextResponse.next());
+  }
+
+  if (isCapabilityPath(pathname)) {
+    return applyCapabilitySecurityHeaders(NextResponse.next());
   }
 
   if (isPublicPath(pathname)) {

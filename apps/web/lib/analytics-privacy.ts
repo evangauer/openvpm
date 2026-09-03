@@ -1,6 +1,6 @@
 import type { BeforeSend } from "@vercel/analytics";
 
-const CAPABILITY_PATH_PATTERN = /^\/(?:capture|sign)(?:\/|$)/;
+const CAPABILITY_PATH_PATTERN = /^\/(?:capture|sign|treatment-plan)(?:\/|$)/;
 
 /**
  * Capability URLs are credentials. Drop every analytics event emitted while a

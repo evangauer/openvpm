@@ -64,12 +64,12 @@ DECLARE
   t text;
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
-    'capture_sessions','care_reminders','cases','client_contacts','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
+    'capture_sessions','care_reminders','cases','client_contacts','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_receipt_capabilities','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
     'external_lab_observations','external_lab_reports','external_prescription_fills','external_prescriptions','files','financial_closes','historical_appointments','historical_documents','insurance_claims','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','legacy_financial_allocations','legacy_financial_documents','legacy_financial_line_items','legacy_financial_payments','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
     'locations','patient_merge_events','patients','payment_disputes','payment_processor_payouts','payment_processor_refunds','payment_processor_settlements','portal_sessions','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recent_clinical_items','recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_note_replacements','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
-    'visit_treatment_plan_response_lines','visit_treatment_plan_responses','visit_treatment_plan_revision_lines','visit_treatment_plan_revisions','visit_treatment_plans',
+    'visit_treatment_plan_presentations','visit_treatment_plan_response_lines','visit_treatment_plan_responses','visit_treatment_plan_revision_lines','visit_treatment_plan_revisions','visit_treatment_plans',
     'visit_closeouts','visit_work_items','vital_signs','webhooks','wellness_enrollments','wellness_plans'
   ];
 BEGIN
@@ -84,6 +84,50 @@ BEGIN
     );
   END LOOP;
 END$$;
+
+-- Receipt capabilities contain only a digest, but their binding and claim
+-- budget are still security evidence. Tenant code may create and atomically
+-- claim its own rows; only explicit system maintenance may remove them.
+REVOKE ALL ON consent_receipt_capabilities FROM PUBLIC;
+REVOKE ALL ON consent_receipt_capabilities FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON consent_receipt_capabilities TO openpims_app;
+REVOKE ALL ON FUNCTION public.protect_consent_receipt_capability()
+  FROM PUBLIC, openpims_app;
+
+-- Consent snapshots and signed evidence are protected by state-machine and
+-- deferred cross-table triggers. The application can advance the narrowly
+-- enumerated transitions but cannot delete a request or call trigger bodies.
+REVOKE DELETE ON consent_requests FROM openpims_app;
+REVOKE ALL ON FUNCTION public.protect_consent_request_evidence()
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.protect_consent_signature_file()
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.validate_signed_consent_file_binding()
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.resolve_consent_document_render_version(uuid,uuid,uuid,text,text,integer,text,integer)
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.resolve_unreserved_consent_document_render_version(uuid,uuid)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.resolve_unreserved_consent_document_render_version(uuid,uuid)
+  TO openpims_app;
+REVOKE ALL ON FUNCTION public.restore_signed_consent_evidence(uuid,jsonb)
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.release_consent_storage_lease(uuid,uuid,uuid,uuid)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.release_consent_storage_lease(uuid,uuid,uuid,uuid)
+  TO openpims_app;
+REVOKE ALL ON FUNCTION public.finalize_consent_request(uuid,uuid,uuid,uuid,text,text,integer,text,text)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.finalize_consent_request(uuid,uuid,uuid,uuid,text,text,integer,text,text)
+  TO openpims_app;
+REVOKE ALL ON FUNCTION public.transition_signed_consent_file_storage(uuid,uuid,text,text,integer,public.file_storage_status,public.file_storage_status,timestamptz,text,text)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.transition_signed_consent_file_storage(uuid,uuid,text,text,integer,public.file_storage_status,public.file_storage_status,timestamptz,text,text)
+  TO openpims_app;
+REVOKE ALL ON FUNCTION public.delete_expired_consent_receipt_capabilities(timestamptz,integer)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.delete_expired_consent_receipt_capabilities(timestamptz,integer)
+  TO openpims_app;
 
 -- Processor evidence is clinic-scoped but never deletable. Settlement,
 -- refund, payout, and dispute projections may be reconciled in place by a
@@ -141,8 +185,18 @@ GRANT SELECT, INSERT ON patient_allergies TO openpims_app;
 -- SOAP addenda are immutable, attributed extensions to a finalized note.
 REVOKE ALL ON soap_note_addenda FROM openpims_app;
 GRANT SELECT, INSERT ON soap_note_addenda TO openpims_app;
-REVOKE ALL ON FUNCTION restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) TO openpims_app;
+REVOKE ALL ON FUNCTION public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) TO openpims_app;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    REVOKE ALL ON FUNCTION public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) FROM anon;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    REVOKE ALL ON FUNCTION public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text) FROM authenticated;
+  END IF;
+END
+$$;
 
 -- Prescription lifecycle events are an append-only clinical ledger. Tenant
 -- users may read and append attributed events through the transactional app
@@ -183,11 +237,15 @@ GRANT SELECT, INSERT ON visit_treatment_plan_revisions,
   TO openpims_app;
 REVOKE DELETE ON visit_treatment_plans FROM openpims_app;
 GRANT SELECT, INSERT, UPDATE ON visit_treatment_plans TO openpims_app;
+REVOKE DELETE ON visit_treatment_plan_presentations FROM openpims_app;
+GRANT SELECT, INSERT, UPDATE ON visit_treatment_plan_presentations TO openpims_app;
 
 REVOKE ALL ON FUNCTION compute_visit_treatment_plan_revision_sha256(uuid,uuid,uuid,integer,text,numeric,numeric,numeric) FROM PUBLIC;
 REVOKE ALL ON FUNCTION compute_visit_treatment_plan_response_sha256(uuid,uuid,uuid,uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION compute_visit_treatment_plan_response_sha256_from_decisions(uuid,uuid,uuid,uuid,jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION compute_visit_treatment_plan_revision_sha256(uuid,uuid,uuid,integer,text,numeric,numeric,numeric) TO openpims_app;
 GRANT EXECUTE ON FUNCTION compute_visit_treatment_plan_response_sha256(uuid,uuid,uuid,uuid) TO openpims_app;
+GRANT EXECUTE ON FUNCTION compute_visit_treatment_plan_response_sha256_from_decisions(uuid,uuid,uuid,uuid,jsonb) TO openpims_app;
 REVOKE ALL ON FUNCTION validate_visit_treatment_plan_revision_seal() FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION protect_visit_treatment_plan_revision() FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION protect_visit_treatment_plan_revision_line() FROM PUBLIC, openpims_app;
@@ -195,6 +253,9 @@ REVOKE ALL ON FUNCTION validate_visit_treatment_plan_response_seal() FROM PUBLIC
 REVOKE ALL ON FUNCTION protect_visit_treatment_plan_response() FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION protect_visit_treatment_plan_response_line() FROM PUBLIC, openpims_app;
 REVOKE ALL ON FUNCTION protect_visit_treatment_plan_identity() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION protect_visit_treatment_plan_presentation() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION reject_revision_while_treatment_plan_signing() FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION reject_treatment_plan_close_while_signing() FROM PUBLIC, openpims_app;
 
 -- Carrier registration events are PHI-free, append-only lifecycle evidence.
 REVOKE ALL ON messaging_registration_events FROM openpims_app;
@@ -545,6 +606,14 @@ DROP POLICY IF EXISTS system_insert ON platform_email_identity;
 CREATE POLICY system_insert ON platform_email_identity
   FOR INSERT WITH CHECK (app_rls_bypass());
 
+ALTER TABLE platform_email_identity_aliases ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_read ON platform_email_identity_aliases;
+CREATE POLICY system_read ON platform_email_identity_aliases
+  FOR SELECT USING (app_rls_bypass());
+DROP POLICY IF EXISTS system_insert ON platform_email_identity_aliases;
+CREATE POLICY system_insert ON platform_email_identity_aliases
+  FOR INSERT WITH CHECK (app_rls_bypass());
+
 ALTER TABLE platform_email_preferences ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS system_only ON platform_email_preferences;
 CREATE POLICY system_only ON platform_email_preferences
@@ -559,8 +628,9 @@ DROP POLICY IF EXISTS system_insert ON platform_email_preference_events;
 CREATE POLICY system_insert ON platform_email_preference_events
   FOR INSERT WITH CHECK (app_rls_bypass());
 
-REVOKE ALL ON platform_email_identity, platform_email_preferences, platform_email_preference_events FROM openpims_app;
+REVOKE ALL ON platform_email_identity, platform_email_identity_aliases, platform_email_preferences, platform_email_preference_events FROM openpims_app;
 GRANT SELECT, INSERT ON platform_email_identity TO openpims_app;
+GRANT SELECT, INSERT ON platform_email_identity_aliases TO openpims_app;
 GRANT SELECT, INSERT, UPDATE ON platform_email_preferences TO openpims_app;
 GRANT SELECT, INSERT ON platform_email_preference_events TO openpims_app;
 
@@ -585,7 +655,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, backup_runs, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, file_storage_events, financial_closes, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, payment_disputes, payment_processor_payouts, payment_processor_refunds, payment_processor_settlements, platform_email_identity, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, recent_clinical_items, sessions, sms_delivery_event_history, sms_delivery_events, sms_provider_event_conflict_reviews, sms_provider_event_conflicts, sms_provider_event_resolutions, sms_provider_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, backup_runs, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, file_storage_events, financial_closes, funnel_events, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, payment_disputes, payment_processor_payouts, payment_processor_refunds, payment_processor_settlements, platform_email_identity, platform_email_identity_aliases, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, recent_clinical_items, sessions, sms_delivery_event_history, sms_delivery_events, sms_provider_event_conflict_reviews, sms_provider_event_conflicts, sms_provider_event_resolutions, sms_provider_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
       EXECUTE format(
         'REVOKE ALL ON FUNCTION public.validate_payment_processor_refund_tenant() FROM %I', r

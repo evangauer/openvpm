@@ -39,10 +39,18 @@ describe("consult companion UI states", () => {
 
   it("allows the no-login capture page through the middleware allowlist", () => {
     expect(middleware).toContain('"/capture",');
-    // Regression guard: the allowlist must stay inside PUBLIC_PATH_PREFIXES.
+    // Regression guards: the route stays public while receiving the stricter
+    // capability-page privacy headers before the generic public-path branch.
+    const capabilityStart = middleware.indexOf("CAPABILITY_PATH_PREFIXES");
+    const capabilityAllowlist = middleware.slice(
+      capabilityStart,
+      middleware.indexOf("];", capabilityStart),
+    );
+    expect(capabilityAllowlist).toContain('"/capture"');
+    const publicStart = middleware.indexOf("PUBLIC_PATH_PREFIXES");
     const allowlist = middleware.slice(
-      middleware.indexOf("PUBLIC_PATH_PREFIXES"),
-      middleware.indexOf("];"),
+      publicStart,
+      middleware.indexOf("];", publicStart),
     );
     expect(allowlist).toContain('"/capture"');
   });
@@ -147,9 +155,16 @@ describe("e-sign consent UI states", () => {
   });
 
   it("allows the no-login sign page through the middleware allowlist", () => {
+    const capabilityStart = middleware.indexOf("CAPABILITY_PATH_PREFIXES");
+    const capabilityAllowlist = middleware.slice(
+      capabilityStart,
+      middleware.indexOf("];", capabilityStart),
+    );
+    expect(capabilityAllowlist).toContain('"/sign"');
+    const publicStart = middleware.indexOf("PUBLIC_PATH_PREFIXES");
     const allowlist = middleware.slice(
-      middleware.indexOf("PUBLIC_PATH_PREFIXES"),
-      middleware.indexOf("];"),
+      publicStart,
+      middleware.indexOf("];", publicStart),
     );
     expect(allowlist).toContain('"/sign"');
   });
@@ -173,10 +188,15 @@ describe("e-sign consent UI states", () => {
     expect(consentModal).toContain("Open the signed PDF");
   });
 
-  it("requires both a name and drawn ink before submitting", () => {
-    expect(signClient).toContain(
-      "Boolean(signature) && signerName.trim().length > 0",
+  it("requires a name, drawn ink, and signer authority acknowledgement", () => {
+    const canSubmit = signClient.slice(
+      signClient.indexOf("const canSubmit ="),
+      signClient.indexOf("return (", signClient.indexOf("const canSubmit =")),
     );
+    expect(canSubmit).toContain("Boolean(signature)");
+    expect(canSubmit).toContain("signerName.trim().length > 0");
+    expect(canSubmit).toContain("signerAuthorityAccepted");
+    expect(signClient).toContain("signerAuthorityAccepted: true");
     expect(signClient).toContain("Agree and sign");
     expect(signClient).toContain('toDataURL("image/png")');
   });
@@ -184,7 +204,15 @@ describe("e-sign consent UI states", () => {
   it("lets a refreshed in-progress signing page finish from persisted evidence", () => {
     expect(signClient).toContain('state.consent.status === "signing"');
     expect(signClient).toContain("Your signature is safe");
-    expect(signClient).toContain("submitSigningPayload({ resume: true })");
+    const resumeHandler = signClient.slice(
+      signClient.indexOf("async function handleResume"),
+      signClient.indexOf(
+        "if (state.kind",
+        signClient.indexOf("async function handleResume"),
+      ),
+    );
+    expect(resumeHandler).toContain("resume: true");
+    expect(resumeHandler).toContain("signerAuthorityAccepted: true");
     expect(signClient).toContain("Finish saving");
   });
 

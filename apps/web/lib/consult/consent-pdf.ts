@@ -12,7 +12,13 @@ const CONTENT_WIDTH = PAGE_WIDTH - PAGE_MARGIN * 2;
 const SIGNATURE_WIDTH_MM = 70;
 const SIGNATURE_HEIGHT_MM = 26;
 
-export interface ConsentPdfInput {
+export const CONSENT_PDF_RENDERER_V1 = "consent-pdf-v1";
+export const CONSENT_PDF_RENDERER_V2 = "consent-pdf-v2";
+export type ConsentPdfRendererVersion =
+  | typeof CONSENT_PDF_RENDERER_V1
+  | typeof CONSENT_PDF_RENDERER_V2;
+
+export interface ConsentPdfV1Input {
   /** Stable UUID for deterministic PDF metadata across upload retries. */
   documentId: string;
   /** Durable tenant and patient identifiers from the consent snapshot. */
@@ -24,6 +30,10 @@ export interface ConsentPdfInput {
   signedAtIso: string;
   /** PNG data URL of the drawn signature. */
   signaturePngDataUrl: string;
+}
+
+export interface ConsentPdfInput extends ConsentPdfV1Input {
+  signerAttestation: string;
 }
 
 /**
@@ -53,12 +63,30 @@ function ensureSpace(doc: jsPDF, y: number, needed: number): number {
   return y;
 }
 
-export function buildConsentPdf(input: ConsentPdfInput): Buffer {
+function canonicalPdfCreationDate(signedAtIso: string): string {
+  // The explicit PDF date string bypasses jsPDF's timezone-sensitive Date
+  // overload while retaining the persisted signing instant as metadata.
+  const utcDigits = new Date(signedAtIso)
+    .toISOString()
+    .replace(/\D/g, "")
+    .slice(0, 14);
+  return `D:${utcDigits}+00'00'`;
+}
+
+function renderConsentPdf(
+  input: ConsentPdfV1Input,
+  signerAttestation: string | undefined,
+  creationDateMode: "legacy-local" | "canonical-utc",
+): Buffer {
   const doc = new jsPDF();
   // jsPDF otherwise embeds a fresh document ID and the wall-clock creation
   // time, making the same consent render to different bytes on every retry.
   doc.setFileId(input.documentId.replaceAll("-", "").toUpperCase());
-  doc.setCreationDate(new Date(input.signedAtIso));
+  doc.setCreationDate(
+    creationDateMode === "legacy-local"
+      ? new Date(input.signedAtIso)
+      : canonicalPdfCreationDate(input.signedAtIso),
+  );
   let y = PAGE_MARGIN;
 
   doc.setFont("helvetica", "bold");
@@ -112,6 +140,19 @@ export function buildConsentPdf(input: ConsentPdfInput): Buffer {
   doc.setTextColor(51, 51, 51);
   doc.text(input.signerName, PAGE_MARGIN, y);
   y += 6;
+  if (signerAttestation !== undefined) {
+    const attestationLines = doc.splitTextToSize(
+      signerAttestation,
+      CONTENT_WIDTH,
+    ) as string[];
+    for (const line of attestationLines) {
+      y = ensureSpace(doc, y, 5);
+      doc.setFontSize(9);
+      doc.setTextColor(51, 51, 51);
+      doc.text(line, PAGE_MARGIN, y);
+      y += 5;
+    }
+  }
   doc.setFontSize(10);
   doc.setTextColor(102, 102, 102);
   doc.text(
@@ -121,4 +162,30 @@ export function buildConsentPdf(input: ConsentPdfInput): Buffer {
   );
 
   return Buffer.from(doc.output("arraybuffer"));
+}
+
+/**
+ * Frozen pre-attestation renderer. Rows already in `signing` when the render
+ * version migration lands have a null version and must continue to reproduce
+ * these exact bytes so their existing managed-file reservation remains valid.
+ * jsPDF's Date overload records local clock fields and the local UTC offset,
+ * so v1 bytes intentionally remain dependent on the originating deployment's
+ * timezone. Never canonicalize this implementation; add a new version instead.
+ */
+export function buildConsentPdfV1(input: ConsentPdfV1Input): Buffer {
+  return renderConsentPdf(input, undefined, "legacy-local");
+}
+
+/** Current renderer for signing claims created after the versioned rollout. */
+export function buildConsentPdf(input: ConsentPdfInput): Buffer {
+  return renderConsentPdf(input, input.signerAttestation, "canonical-utc");
+}
+
+export function buildConsentPdfForVersion(
+  version: ConsentPdfRendererVersion,
+  input: ConsentPdfInput,
+): Buffer {
+  return version === CONSENT_PDF_RENDERER_V1
+    ? buildConsentPdfV1(input)
+    : buildConsentPdf(input);
 }

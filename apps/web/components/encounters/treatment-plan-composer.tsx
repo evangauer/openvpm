@@ -14,6 +14,9 @@ import {
   Check,
   ChevronsUpDown,
   ClipboardList,
+  Copy,
+  FileCheck2,
+  Link2,
   Loader2,
   Search,
   Trash2,
@@ -146,6 +149,7 @@ function TreatmentPlanCatalogPicker({
         type="button"
         variant="outline"
         className="w-full justify-between"
+        disabled={!enabled}
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => {
@@ -337,7 +341,14 @@ export function TreatmentPlanComposer({
 
   const createPlan = trpc.visitTreatmentPlans.create.useMutation();
   const revisePlan = trpc.visitTreatmentPlans.revise.useMutation();
+  const createPresentation =
+    trpc.visitTreatmentPlans.createPresentation.useMutation();
+  const [presentationLink, setPresentationLink] = useState<{
+    url: string;
+    expiresAt: Date;
+  } | null>(null);
   const saving = createPlan.isPending || revisePlan.isPending;
+  const completed = plan?.plan.status === "completed";
 
   const operationIdFor = (payloadFingerprint: string): string => {
     if (operation.current?.fingerprint === payloadFingerprint) {
@@ -383,6 +394,27 @@ export function TreatmentPlanComposer({
     }
   };
 
+  const makePresentationLink = async () => {
+    if (!plan) return;
+    try {
+      const result = await createPresentation.mutateAsync({
+        planId: plan.plan.id,
+        revisionId: plan.revision.id,
+      });
+      setPresentationLink({
+        url: result.url,
+        expiresAt: new Date(result.expiresAt),
+      });
+      await navigator.clipboard.writeText(result.url).catch(() => undefined);
+      await utils.visitTreatmentPlans.getForAppointment.invalidate(context);
+      toast.success("Client link created and copied");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not create client link",
+      );
+    }
+  };
+
   if (planQuery.error?.data?.code === "NOT_FOUND") return null;
   if (planQuery.isLoading) return null;
 
@@ -422,7 +454,7 @@ export function TreatmentPlanComposer({
       <CardContent className="space-y-4">
         <TreatmentPlanCatalogPicker
           excluded={excluded}
-          enabled={planQuery.isSuccess}
+          enabled={planQuery.isSuccess && !completed}
           currency={currency}
           onSelect={(item) =>
             setLines((current) => [...current, { ...item, quantity: "1" }])
@@ -464,6 +496,7 @@ export function TreatmentPlanComposer({
                       inputMode="decimal"
                       value={line.quantity}
                       aria-invalid={!validQuantity(line.quantity)}
+                      disabled={completed}
                       onChange={(event) =>
                         setLines((current) =>
                           current.map((candidate, candidateIndex) =>
@@ -491,7 +524,7 @@ export function TreatmentPlanComposer({
                           size="icon"
                           className="h-9 w-9"
                           aria-label={`Move ${line.name} up`}
-                          disabled={index === 0}
+                          disabled={completed || index === 0}
                           onClick={() =>
                             setLines((current) => {
                               if (index === 0) return current;
@@ -512,7 +545,7 @@ export function TreatmentPlanComposer({
                           size="icon"
                           className="h-9 w-9"
                           aria-label={`Move ${line.name} down`}
-                          disabled={index === lines.length - 1}
+                          disabled={completed || index === lines.length - 1}
                           onClick={() =>
                             setLines((current) => {
                               if (index === current.length - 1) return current;
@@ -534,6 +567,7 @@ export function TreatmentPlanComposer({
                       variant="ghost"
                       size="icon"
                       className="h-9 w-9 text-muted-foreground hover:text-destructive"
+                      disabled={completed}
                       aria-label={`Remove ${line.name}`}
                       onClick={() =>
                         setLines((current) =>
@@ -586,7 +620,8 @@ export function TreatmentPlanComposer({
               !quantitiesValid ||
               quoteQuery.isFetching ||
               !quote ||
-              !hasChanges
+              !hasChanges ||
+              completed
             }
             onClick={save}
           >
@@ -602,6 +637,111 @@ export function TreatmentPlanComposer({
           Saving this plan does not charge the client, adjust inventory, or
           schedule care.
         </p>
+
+        {plan?.clientDecisionsEnabled && !plan.response ? (
+          <div className="space-y-3 rounded-md border border-border bg-muted/30 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">
+                  Client review and signature
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  The link expires in one hour and is locked to revision{" "}
+                  {plan.revision.revisionNumber}.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={
+                  completed ||
+                  hasChanges ||
+                  createPresentation.isPending ||
+                  plan.activePresentation?.status === "awaiting_signature"
+                }
+                onClick={() => void makePresentationLink()}
+              >
+                {createPresentation.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Link2 className="mr-2 h-4 w-4" />
+                )}
+                {plan.activePresentation?.status === "pending"
+                  ? "Replace client link"
+                  : plan.activePresentation?.status === "awaiting_signature"
+                    ? "Awaiting signature"
+                    : "Create client link"}
+              </Button>
+            </div>
+            {presentationLink ? (
+              <div className="flex items-center gap-2">
+                <Input
+                  readOnly
+                  value={presentationLink.url}
+                  aria-label="Client treatment plan link"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label="Copy client treatment plan link"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(presentationLink.url);
+                    toast.success("Link copied");
+                  }}
+                >
+                  <Copy className="h-4 w-4" />
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {plan?.response ? (
+          <div className="space-y-3 rounded-md border border-teal-200 bg-teal-50/50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="flex items-center gap-2 text-sm font-semibold text-teal-950">
+                  <FileCheck2 className="h-4 w-4" /> Client response signed
+                </p>
+                <p className="mt-1 text-xs text-teal-900/70">
+                  {plan.response.signerName} ·{" "}
+                  {new Date(plan.response.decidedAt).toLocaleString()}
+                </p>
+              </div>
+              <Button asChild type="button" variant="outline" size="sm">
+                <a
+                  href={plan.response.signedFileUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Signed document
+                </a>
+              </Button>
+            </div>
+            <div className="divide-y divide-teal-100 rounded-md border border-teal-100 bg-white">
+              {plan.lines.map((line) => {
+                const decision = plan.response!.lines.find(
+                  (row) => row.revisionLineId === line.id,
+                );
+                return (
+                  <div
+                    key={line.id}
+                    className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+                  >
+                    <span className="min-w-0 truncate">{line.description}</span>
+                    <span className="shrink-0 font-medium capitalize">
+                      {decision?.decision}
+                      {decision?.decision === "accepted"
+                        ? ` · ${decision.acceptedQuantity}`
+                        : ""}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

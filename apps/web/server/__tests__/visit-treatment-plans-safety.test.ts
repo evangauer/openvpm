@@ -153,10 +153,18 @@ describe("visit treatment-plan authoring safety", () => {
   });
 
   it("does not import or mutate downstream billing, inventory, queue, or consent surfaces", () => {
-    expect(ROUTER_SOURCE).not.toMatch(
-      /invoiceItems|invoices|whiteboard|consent/i,
-    );
+    expect(ROUTER_SOURCE).not.toMatch(/invoiceItems|invoices|whiteboard/i);
     expect(ROUTER_SOURCE).not.toMatch(/stockQuantity|inventoryTracked/);
     expect(ROUTER_SOURCE).not.toContain("postCommitEffect");
+  });
+
+  it("does not strand an expired pending consent as an active signature", () => {
+    expect(ROUTER_SOURCE).toContain("consentStatus: consentRequests.status");
+    expect(ROUTER_SOURCE).toContain(
+      "treatmentPlanPresentationBlocksReplacement(presentationCandidate, now)",
+    );
+    expect(ROUTER_SOURCE).toContain(
+      "TREATMENT_PLAN_IN_FLIGHT_CONSENT_STATUSES",
+    );
   });
 });

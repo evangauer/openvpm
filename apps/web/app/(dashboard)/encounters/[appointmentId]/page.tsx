@@ -506,7 +506,8 @@ export default function EncounterWorkspacePage() {
   const role = session?.user?.role;
   const patient = patientQuery.data;
   const ambulatoryProfile = recordsSettingsQuery.data?.ambulatoryWorkspace;
-  const isAmbulatoryWorkspace = appointment.origin === "field";
+  const isAmbulatoryWorkspace =
+    appointment.origin === "field" && ambulatoryProfile?.enabled === true;
   const ambulatorySettingsReady =
     appointment.origin !== "field" ||
     (Boolean(ambulatoryProfile) && !recordsSettingsQuery.error);

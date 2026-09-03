@@ -155,6 +155,36 @@ a complete recovery source for that incident.
    without writing anything. [~2s] Check the empty-practice confirmation,
    then **Restore into Empty Practice**. [under 1s for a small clinic]
 
+   Format v9 backups with a nonempty `signedConsentEvidence` section cannot be
+   restored through the web role. A database owner must use the explicit legal
+   evidence mode against the same practice UUID, first as a dry run and then
+   with the exact destructive confirmation:
+
+   ```sh
+   OWNER_RECOVERY_DATABASE_URL='<owner connection>' pnpm --filter @openpims/web backup:recover-practice -- \
+     restore --practice-id 'PRACTICE_UUID' --practice-name 'Clinic name' \
+     --backup '/verified/backup.json' --restore-legal-evidence
+
+   OWNER_RECOVERY_DATABASE_URL='<owner connection>' pnpm --filter @openpims/web backup:recover-practice -- \
+     restore --practice-id 'PRACTICE_UUID' --practice-name 'Clinic name' \
+     --backup '/verified/backup.json' --restore-legal-evidence --execute \
+     --confirmation 'RESTORE:PRACTICE_UUID'
+   ```
+
+   The owner path restores only terminal, credential-free signed evidence. It
+   leaves PDF manifests unverified and the practice recovery-held. Recover and
+   checksum the exact objects before release; release now rejects any signed
+   consent whose frozen key, checksum, size, patient, appointment, or manifest
+   binding is not exactly available.
+
+   Signed rows created before versioned attestation and PDF rendering are
+   exported as `legacy-pre-attestation-v1` only when their later provenance
+   fields are all null. This marker preserves the historical signer, time,
+   retained PNG (when present), and exact PDF without claiming a signing method,
+   owner-authority acknowledgement, or renderer version that was never
+   recorded. Mixed or incomplete provenance and incomplete PDF manifests fail
+   closed and require full database recovery.
+
 6. **Verify:** client list, one patient chart (vaccinations tab), one
    invoice, and the Lab Inbox review/follow-up evidence for one completed
    result. For a backup containing a lab correction, confirm the retained
@@ -197,6 +227,18 @@ final blocked-release audit. Rerun only after the redacted queue explains every
 remaining item.
 The successful `hold_released` audit stores before/after counts, projection
 outcomes, the event watermark, and whether the bounded drain filled.
+
+Legacy in-flight consent reservations with a NULL document renderer are not
+self-repaired through the public signer route. If no file is reserved, the
+application may infer the renderer only from the row's immutable attestation.
+If a file is already reserved, the route fails closed. An operator must render
+both frozen v1 and v2 inputs offline, compare each checksum and size to the
+durable reservation, and invoke the owner-only
+`resolve_consent_document_render_version` function with both candidate pairs.
+The function persists a version only when exactly one candidate matches and
+returns NULL for no match or ambiguity. Never expose this function to
+`openpims_app`, swap candidate labels, replace the reserved file, or bypass the
+evidence guards.
 
 An identity-conflict review does not by itself make a quarantined original event
 safe. From the platform-admin **SMS evidence recovery** console, select the exact

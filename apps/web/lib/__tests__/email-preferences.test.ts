@@ -12,6 +12,8 @@ import {
 } from "../email-preferences";
 
 const IDENTITY_SECRET = "identity-secret-kept-stable-at-least-32-bytes";
+const PREVIOUS_IDENTITY_SECRET =
+  "previous-identity-secret-kept-at-least-32-bytes";
 const SIGNING_SECRET = "current-signing-secret-at-least-32-bytes";
 const PREVIOUS_SIGNING_SECRET = "previous-test-key-".repeat(3);
 const NOW = new Date("2026-08-09T12:00:00Z");
@@ -188,6 +190,59 @@ describe("email preference tokens", () => {
         now: NOW,
         identitySecret: "different-stable-identity-secret-at-least-32-bytes",
         signingSecret: SIGNING_SECRET,
+      }),
+    ).toBeNull();
+  });
+
+  it("verifies a legacy identity token only when both previous key rings are present", () => {
+    const previousRecipientHash = emailPreferenceRecipientHash(
+      "owner@example.com",
+      { identitySecret: PREVIOUS_IDENTITY_SECRET },
+    )!;
+    const token = createEmailPreferenceToken(
+      { kind: "recipient", id: previousRecipientHash },
+      {
+        now: NOW,
+        identitySecret: PREVIOUS_IDENTITY_SECRET,
+        signingSecret: PREVIOUS_SIGNING_SECRET,
+      },
+    );
+
+    expect(
+      verifyEmailPreferenceToken(token, {
+        now: NOW,
+        identitySecret: IDENTITY_SECRET,
+        previousIdentitySecret: PREVIOUS_IDENTITY_SECRET,
+        signingSecret: SIGNING_SECRET,
+        previousSigningSecrets: PREVIOUS_SIGNING_SECRET,
+      }),
+    ).toMatchObject({
+      identityKeyFingerprint: emailPreferenceIdentityKeyFingerprint({
+        identitySecret: PREVIOUS_IDENTITY_SECRET,
+      }),
+      target: { kind: "recipient", id: previousRecipientHash },
+    });
+    expect(
+      verifyEmailPreferenceToken(token, {
+        now: NOW,
+        identitySecret: IDENTITY_SECRET,
+        signingSecret: SIGNING_SECRET,
+        previousSigningSecrets: PREVIOUS_SIGNING_SECRET,
+      }),
+    ).toBeNull();
+  });
+
+  it("fails closed when a configured previous identity key is invalid", () => {
+    const token = createEmailPreferenceToken(
+      { kind: "recipient", id: RECIPIENT_HASH },
+      { now: NOW, signingSecret: SIGNING_SECRET },
+    );
+
+    expect(
+      verifyEmailPreferenceToken(token, {
+        now: NOW,
+        signingSecret: SIGNING_SECRET,
+        previousIdentitySecret: "too-short",
       }),
     ).toBeNull();
   });
