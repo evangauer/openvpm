@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const IDENTITY_SECRET = "stable-identity-secret-that-is-at-least-32-bytes";
+const PREVIOUS_IDENTITY_SECRET =
+  "previous-identity-secret-that-is-at-least-32-bytes";
 
 const mocks = vi.hoisted(() => {
   const selectResults: unknown[][] = [];
@@ -50,12 +52,12 @@ const {
   setMarketingEmailPreferenceForHash,
   setMarketingEmailPreferenceForRecipient,
 } = await import("../platform-email-preferences");
-const { emailPreferenceIdentityKeyFingerprint } =
+const { emailPreferenceIdentityKeyFingerprint, emailPreferenceRecipientHash } =
   await import("../email-preferences");
 
-function fingerprint(): string {
+function fingerprint(secret = IDENTITY_SECRET): string {
   const value = emailPreferenceIdentityKeyFingerprint({
-    identitySecret: IDENTITY_SECRET,
+    identitySecret: secret,
   });
   if (!value) throw new Error("test identity key is invalid");
   return value;
@@ -63,9 +65,53 @@ function fingerprint(): string {
 
 function queueIdentityAndPreference(preference: unknown[] = []): void {
   mocks.selectResults.push(
-    [{ identityKeyFingerprint: fingerprint() }],
+    [
+      {
+        identityKeyFingerprint: fingerprint(),
+        previousIdentityKeyFingerprint: null,
+      },
+    ],
     preference,
   );
+}
+
+function rotationKey(secret: string, email: string) {
+  const emailHash = emailPreferenceRecipientHash(email, {
+    identitySecret: secret,
+  });
+  if (!emailHash) throw new Error("test recipient hash is invalid");
+  return { fingerprint: fingerprint(secret), emailHash };
+}
+
+function queueRotationRecipient(
+  email: string,
+  currentPreference: unknown[] = [],
+  previousPreference: unknown[] = [],
+): {
+  current: ReturnType<typeof rotationKey>;
+  previous: ReturnType<typeof rotationKey>;
+} {
+  const current = rotationKey(IDENTITY_SECRET, email);
+  const previous = rotationKey(PREVIOUS_IDENTITY_SECRET, email);
+  mocks.selectResults.push(
+    [
+      {
+        identityKeyFingerprint: current.fingerprint,
+        previousIdentityKeyFingerprint: previous.fingerprint,
+      },
+    ],
+    [
+      {
+        currentIdentityKeyFingerprint: current.fingerprint,
+        currentEmailHash: current.emailHash,
+        previousIdentityKeyFingerprint: previous.fingerprint,
+        previousEmailHash: previous.emailHash,
+      },
+    ],
+    currentPreference,
+    previousPreference,
+  );
+  return { current, previous };
 }
 
 beforeEach(() => {
@@ -74,6 +120,7 @@ beforeEach(() => {
   mocks.returningResults.length = 0;
   mocks.insertTargets.length = 0;
   vi.stubEnv("EMAIL_PREFERENCE_IDENTITY_SECRET", IDENTITY_SECRET);
+  vi.stubEnv("EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS", "");
 });
 
 afterEach(() => {
@@ -83,8 +130,18 @@ afterEach(() => {
 describe("platform email preference persistence", () => {
   it("reports persisted identity-key readiness without exposing the key", async () => {
     mocks.selectResults.push(
-      [{ identityKeyFingerprint: fingerprint() }],
-      [{ identityKeyFingerprint: "f".repeat(64) }],
+      [
+        {
+          identityKeyFingerprint: fingerprint(),
+          previousIdentityKeyFingerprint: null,
+        },
+      ],
+      [
+        {
+          identityKeyFingerprint: "f".repeat(64),
+          previousIdentityKeyFingerprint: null,
+        },
+      ],
     );
 
     await expect(platformEmailIdentityConfigurationReady()).resolves.toEqual({
@@ -166,6 +223,7 @@ describe("platform email preference persistence", () => {
 
     await setMarketingEmailPreferenceForHash({
       emailHash: "a".repeat(64),
+      identityKeyFingerprint: fingerprint(),
       enabled: false,
       source: "unsubscribe_link",
     });
@@ -180,6 +238,7 @@ describe("platform email preference persistence", () => {
     queueIdentityAndPreference();
     await setMarketingEmailPreferenceForHash({
       emailHash: "f".repeat(64),
+      identityKeyFingerprint: fingerprint(),
       enabled: false,
       source: "unsubscribe_link",
     });
@@ -205,6 +264,7 @@ describe("platform email preference persistence", () => {
     await expect(
       setMarketingEmailPreferenceForHash({
         emailHash: "b".repeat(64),
+        identityKeyFingerprint: fingerprint(),
         enabled: true,
         source: "settings",
         updatedByUserId: "00000000-0000-4000-8000-000000000001",
@@ -233,6 +293,7 @@ describe("platform email preference persistence", () => {
     await expect(
       setMarketingEmailPreferenceForHash({
         emailHash: "c".repeat(64),
+        identityKeyFingerprint: fingerprint(),
         enabled: true,
         source: "settings",
         updatedByUserId: "00000000-0000-4000-8000-000000000001",
@@ -250,12 +311,270 @@ describe("platform email preference persistence", () => {
   });
 
   it("fails closed when the configured identity key differs from the durable key", async () => {
-    mocks.selectResults.push([{ identityKeyFingerprint: "f".repeat(64) }]);
+    mocks.selectResults.push([
+      {
+        identityKeyFingerprint: "f".repeat(64),
+        previousIdentityKeyFingerprint: null,
+      },
+    ]);
 
     await expect(
       marketingEmailEnabledForRecipient("owner@example.com"),
     ).rejects.toBeInstanceOf(PlatformEmailIdentityKeyMismatchError);
     expect(mocks.insertValues).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when persisted rotation metadata requires an unavailable previous key", async () => {
+    mocks.selectResults.push([
+      {
+        identityKeyFingerprint: fingerprint(),
+        previousIdentityKeyFingerprint: fingerprint(PREVIOUS_IDENTITY_SECRET),
+      },
+    ]);
+
+    await expect(
+      marketingEmailEnabledForRecipient("owner@example.com"),
+    ).rejects.toBeInstanceOf(PlatformEmailIdentityKeyMismatchError);
+    expect(mocks.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the strongest suppression across both identity projections", async () => {
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS",
+      PREVIOUS_IDENTITY_SECRET,
+    );
+    const { current, previous } = queueRotationRecipient(
+      "owner@example.com",
+      [
+        {
+          marketingEnabled: true,
+          source: "settings",
+          reason: "settings_enabled",
+          identityKeyFingerprint: fingerprint(),
+          updatedByUserId: null,
+        },
+      ],
+      [
+        {
+          marketingEnabled: false,
+          source: "resend_webhook",
+          reason: "bounce",
+          identityKeyFingerprint: fingerprint(PREVIOUS_IDENTITY_SECRET),
+          updatedByUserId: null,
+        },
+      ],
+    );
+
+    await expect(
+      marketingEmailEnabledForRecipient("owner@example.com"),
+    ).resolves.toBe(false);
+
+    expect(mocks.execute).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(mocks.execute.mock.calls[0])).toContain(
+      "pg_advisory_xact_lock_shared",
+    );
+    const sortedHashes = [current.emailHash, previous.emailHash].sort();
+    expect(JSON.stringify(mocks.execute.mock.calls[1])).toContain(
+      sortedHashes[0],
+    );
+    expect(JSON.stringify(mocks.execute.mock.calls[2])).toContain(
+      sortedHashes[1],
+    );
+    expect(mocks.insertValues).toHaveBeenCalledWith({
+      currentIdentityKeyFingerprint: current.fingerprint,
+      currentEmailHash: current.emailHash,
+      previousIdentityKeyFingerprint: previous.fingerprint,
+      previousEmailHash: previous.emailHash,
+    });
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        emailHash: current.emailHash,
+        marketingEnabled: false,
+        reason: "bounce",
+      }),
+    );
+    expect(JSON.stringify(mocks.insertValues.mock.calls)).not.toContain(
+      "owner@example.com",
+    );
+  });
+
+  it("fails closed rather than accepting a conflicting alias", async () => {
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS",
+      PREVIOUS_IDENTITY_SECRET,
+    );
+    const current = rotationKey(IDENTITY_SECRET, "owner@example.com");
+    const previous = rotationKey(PREVIOUS_IDENTITY_SECRET, "owner@example.com");
+    mocks.selectResults.push(
+      [
+        {
+          identityKeyFingerprint: current.fingerprint,
+          previousIdentityKeyFingerprint: previous.fingerprint,
+        },
+      ],
+      [
+        {
+          currentIdentityKeyFingerprint: current.fingerprint,
+          currentEmailHash: current.emailHash,
+          previousIdentityKeyFingerprint: previous.fingerprint,
+          previousEmailHash: "f".repeat(64),
+        },
+      ],
+    );
+
+    await expect(
+      marketingEmailEnabledForRecipient("owner@example.com"),
+    ).rejects.toBeInstanceOf(PlatformEmailIdentityKeyMismatchError);
+    expect(mocks.onConflictDoUpdate).not.toHaveBeenCalled();
+  });
+
+  it("blocks settings re-enable when the previous projection has a hard bounce", async () => {
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS",
+      PREVIOUS_IDENTITY_SECRET,
+    );
+    queueRotationRecipient(
+      "owner@example.com",
+      [],
+      [
+        {
+          marketingEnabled: false,
+          source: "resend_webhook",
+          reason: "bounce",
+          identityKeyFingerprint: fingerprint(PREVIOUS_IDENTITY_SECRET),
+          updatedByUserId: null,
+        },
+      ],
+    );
+
+    await expect(
+      setMarketingEmailPreferenceForRecipient({
+        email: "owner@example.com",
+        enabled: true,
+        source: "settings",
+        updatedByUserId: "00000000-0000-4000-8000-000000000001",
+      }),
+    ).rejects.toBeInstanceOf(PlatformEmailPreferenceBlockedError);
+
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestedMarketingEnabled: true,
+        applied: false,
+        reason: "settings_enabled",
+      }),
+    );
+    expect(mocks.insertValues).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        marketingEnabled: true,
+        reason: "settings_enabled",
+      }),
+    );
+  });
+
+  it("dual-writes a new preference and makes its replay a no-op", async () => {
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS",
+      PREVIOUS_IDENTITY_SECRET,
+    );
+    queueRotationRecipient("owner@example.com");
+
+    await setMarketingEmailPreferenceForRecipient({
+      email: "owner@example.com",
+      enabled: false,
+      source: "settings",
+    });
+
+    expect(mocks.onConflictDoUpdate).toHaveBeenCalledTimes(2);
+    expect(mocks.insertValues.mock.calls).toEqual(
+      expect.arrayContaining([
+        [
+          expect.objectContaining({
+            requestedMarketingEnabled: false,
+            applied: true,
+            reason: "settings_disabled",
+          }),
+        ],
+      ]),
+    );
+
+    vi.clearAllMocks();
+    mocks.selectResults.length = 0;
+    mocks.returningResults.length = 0;
+    mocks.insertTargets.length = 0;
+    const { current, previous } = queueRotationRecipient(
+      "owner@example.com",
+      [
+        {
+          marketingEnabled: false,
+          source: "settings",
+          reason: "settings_disabled",
+          identityKeyFingerprint: fingerprint(),
+          updatedByUserId: null,
+        },
+      ],
+      [
+        {
+          marketingEnabled: false,
+          source: "settings",
+          reason: "settings_disabled",
+          identityKeyFingerprint: fingerprint(PREVIOUS_IDENTITY_SECRET),
+          updatedByUserId: null,
+        },
+      ],
+    );
+
+    await setMarketingEmailPreferenceForRecipient({
+      email: "owner@example.com",
+      enabled: false,
+      source: "settings",
+    });
+
+    expect(mocks.insertValues).toHaveBeenCalledTimes(1);
+    expect(mocks.insertValues).toHaveBeenCalledWith({
+      currentIdentityKeyFingerprint: current.fingerprint,
+      currentEmailHash: current.emailHash,
+      previousIdentityKeyFingerprint: previous.fingerprint,
+      previousEmailHash: previous.emailHash,
+    });
+    expect(mocks.onConflictDoUpdate).not.toHaveBeenCalled();
+  });
+
+  it("accepts a registered legacy hash without deriving an alias from hashes alone", async () => {
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS",
+      PREVIOUS_IDENTITY_SECRET,
+    );
+    const current = rotationKey(IDENTITY_SECRET, "owner@example.com");
+    const previous = rotationKey(PREVIOUS_IDENTITY_SECRET, "owner@example.com");
+    mocks.selectResults.push(
+      [
+        {
+          identityKeyFingerprint: current.fingerprint,
+          previousIdentityKeyFingerprint: previous.fingerprint,
+        },
+      ],
+      [],
+      [],
+    );
+
+    await setMarketingEmailPreferenceForHash({
+      emailHash: previous.emailHash,
+      identityKeyFingerprint: previous.fingerprint,
+      enabled: false,
+      source: "unsubscribe_link",
+    });
+
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        emailHash: previous.emailHash,
+        identityKeyFingerprint: previous.fingerprint,
+        reason: "unsubscribe",
+      }),
+    );
+    expect(mocks.insertValues).not.toHaveBeenCalledWith(
+      expect.objectContaining({ currentEmailHash: expect.any(String) }),
+    );
+    expect(mocks.onConflictDoUpdate).toHaveBeenCalledTimes(1);
   });
 
   it("records a matched provider complaint with a PII-free idempotency key", async () => {
@@ -338,6 +657,7 @@ describe("platform email preference persistence", () => {
     await expect(
       setMarketingEmailPreferenceForHash({
         emailHash: "not-a-hash",
+        identityKeyFingerprint: fingerprint(),
         enabled: false,
         source: "unsubscribe_link",
       }),
@@ -345,6 +665,7 @@ describe("platform email preference persistence", () => {
     await expect(
       setMarketingEmailPreferenceForHash({
         emailHash: "d".repeat(64),
+        identityKeyFingerprint: fingerprint(),
         enabled: true,
         source: "unsubscribe_link",
       }),

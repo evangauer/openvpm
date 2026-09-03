@@ -278,6 +278,10 @@ describe("SOAP note editor UX", () => {
 describe("records prescription form UX", () => {
   it("keeps prescription form controls aligned to shared policy", () => {
     const source = readFileSync("app/(dashboard)/records/page.tsx", "utf8");
+    const inventoryPicker = readFileSync(
+      "components/records/prescription-inventory-product-picker.tsx",
+      "utf8"
+    );
 
     expect(PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH).toBe(255);
     expect(PRESCRIPTION_DOSAGE_MAX_LENGTH).toBe(128);
@@ -306,17 +310,17 @@ describe("records prescription form UX", () => {
     expect(source).toContain("max={PRESCRIPTION_COUNT_MAX}");
     expect(source).toContain("const canSubmitPrescription =");
     expect(source).toContain("hasValidPrescriptionQuantityForInventory");
-    expect(source).toContain("const inventoryProductsMissing =");
-    expect(source).toContain("const verifiedInventoryProducts =");
-    expect(source).toContain("verifiedInventoryProducts.items.find");
-    expect(source).toContain("verifiedInventoryProducts.items.map");
-    expect(source).toContain("Inventory unavailable");
-    expect(source).toContain("Unable to load inventory products. Please retry.");
-    expect(source).toContain("prescriptionQuantity <= selectedPrescriptionProduct.stockQuantity");
+    expect(source).toContain("<PrescriptionInventoryProductPicker");
+    expect(inventoryPicker).toContain("search: normalizedSearch || undefined");
+    expect(inventoryPicker).toContain("limit: RESULT_LIMIT");
+    expect(inventoryPicker).toContain("Search inventory by name or SKU...");
+    expect(inventoryPicker).toMatch(/Type more to\s+narrow the list\./);
+    expect(inventoryPicker).toContain("Inventory unavailable. Please retry.");
+    expect(source).not.toContain("{ limit: 100, offset: 0 }");
+    expect(source).toContain("prescriptionQuantity <= linkedPrescriptionProduct.stockQuantity");
     expect(source).toContain("Quantity (inventory units)");
-    expect(source).toMatch(
-      /\{product\.stockQuantity\} units\s+on hand · \{product\.unitPrice\} each/
-    );
+    expect(inventoryPicker).toContain("{product.stockQuantity} units on hand");
+    expect(inventoryPicker).toContain("{product.unitPrice} each");
     expect(source).toContain("The prescription quantity will be");
     expect(source).toContain("charged in that same unit.");
     expect(source).toContain("isPrescriptionOptionalPositiveIntegerInputValid");
@@ -325,8 +329,6 @@ describe("records prescription form UX", () => {
       "prescriptionForm.instructions.trim() || undefined"
     );
     expect(source).toContain("disabled={!canSubmitPrescription}");
-    expect(source).not.toContain("inventoryProducts.data?.items.find");
-    expect(source).not.toContain("inventoryProducts.data?.items.map");
     expect(source).not.toContain(
       "disabled={createPrescription.isPending}"
     );

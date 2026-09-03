@@ -207,9 +207,13 @@ const platformEmailPreferenceId = randomUUID();
 const systemUpsertPlatformEmailPreferenceId = randomUUID();
 const platformEmailPreferenceEventId = randomUUID();
 const systemPlatformEmailPreferenceEventId = randomUUID();
+const platformEmailIdentityAliasId = randomUUID();
+const systemPlatformEmailIdentityAliasId = randomUUID();
 const platformEmailHash = "c".repeat(64);
 const platformEmailIdentityFingerprint = "d".repeat(64);
-const conversionEvidenceKey = `practice:${aId}`;
+const platformEmailPreviousIdentityFingerprint = "e".repeat(64);
+const aConversionEvidenceKey = `practice:${aId}`;
+const bConversionEvidenceKey = `practice:${bId}`;
 const clinicPilotId = randomUUID();
 const clinicPilotEventId = randomUUID();
 const clinicPilotOperationId = randomUUID();
@@ -257,6 +261,12 @@ try {
     on conflict (key_slot) do nothing
     returning key_slot`;
   createdPlatformEmailIdentity = insertedPlatformEmailIdentity.length === 1;
+  await owner`insert into platform_email_identity_aliases
+    (id, current_identity_key_fingerprint, current_email_hash,
+      previous_identity_key_fingerprint, previous_email_hash)
+    values (${platformEmailIdentityAliasId}, ${platformEmailIdentityFingerprint},
+      ${"3".repeat(64)}, ${platformEmailPreviousIdentityFingerprint},
+      ${"4".repeat(64)})`;
   await owner`insert into platform_email_preferences
     (id, email_hash, identity_key_fingerprint, marketing_enabled, source, reason)
     values (${platformEmailPreferenceId}, ${platformEmailHash},
@@ -672,7 +682,9 @@ try {
     values (${funnelEventId}, 'registration', ${aId})`;
   await owner`insert into practice_conversion_milestones
     (practice_id, milestone, occurred_at, evidence_source, evidence_key)
-    values (${aId}, 'registered', now(), 'practice_created', ${conversionEvidenceKey})`;
+    values
+      (${aId}, 'registered', now(), 'practice_created', ${aConversionEvidenceKey}),
+      (${bId}, 'registered', now(), 'practice_created', ${bConversionEvidenceKey})`;
   await owner.begin(async (tx) => {
     const seed = tx as unknown as typeof owner;
     await seed`insert into clinic_pilots
@@ -3620,13 +3632,52 @@ try {
     "tenant context cannot read system-only funnel events",
     hiddenFunnelRows.length === 0,
   );
-  const hiddenConversionRows = await appTransaction(async (tx) => {
+  const tenantConversionRows = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${aId}, true)`;
-    return tx`select practice_id from practice_conversion_milestones where practice_id = ${aId}`;
+    return tx`select practice_id from practice_conversion_milestones
+      where practice_id in (${aId}, ${bId})`;
   });
   check(
-    "tenant context cannot read system-only conversion milestones",
-    hiddenConversionRows.length === 0,
+    "tenant context reads only its own conversion milestones",
+    tenantConversionRows.length === 1 &&
+      tenantConversionRows[0]?.practice_id === aId,
+  );
+  let tenantCannotInsertConversionMilestone = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into practice_conversion_milestones
+        (practice_id, milestone, occurred_at, evidence_source, evidence_key)
+        values (${aId}, 'activated', now(), 'product_records',
+          ${`client:${aClient}|appointment:${aAppointment}`})`;
+    });
+  } catch {
+    tenantCannotInsertConversionMilestone = true;
+  }
+  check(
+    "tenant context cannot insert conversion milestones",
+    tenantCannotInsertConversionMilestone,
+  );
+  const tenantUpdatedConversionMilestones = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`update practice_conversion_milestones
+        set occurred_at = occurred_at + interval '1 second'
+        where practice_id = ${aId} and milestone = 'registered'
+        returning practice_id`;
+  });
+  check(
+    "tenant context cannot update conversion milestones",
+    tenantUpdatedConversionMilestones.length === 0,
+  );
+  const tenantDeletedConversionMilestones = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`delete from practice_conversion_milestones
+      where practice_id = ${aId} and milestone = 'registered'
+      returning practice_id`;
+  });
+  check(
+    "tenant context cannot delete conversion milestones",
+    tenantDeletedConversionMilestones.length === 0,
   );
   const hiddenClinicPilots = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${aId}, true)`;
@@ -3709,6 +3760,34 @@ try {
   check(
     "tenant context cannot read the platform email identity fingerprint",
     hiddenPlatformEmailIdentity.length === 0,
+  );
+  const hiddenPlatformEmailIdentityAliases = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      return tx`select id from platform_email_identity_aliases
+        where id = ${platformEmailIdentityAliasId}`;
+    },
+  );
+  check(
+    "tenant context cannot read platform email identity aliases",
+    hiddenPlatformEmailIdentityAliases.length === 0,
+  );
+  let tenantCannotWritePlatformEmailIdentityAlias = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+      await tx`insert into platform_email_identity_aliases
+        (current_identity_key_fingerprint, current_email_hash,
+          previous_identity_key_fingerprint, previous_email_hash)
+        values (${platformEmailIdentityFingerprint}, ${"5".repeat(64)},
+          ${platformEmailPreviousIdentityFingerprint}, ${"6".repeat(64)})`;
+    });
+  } catch {
+    tenantCannotWritePlatformEmailIdentityAlias = true;
+  }
+  check(
+    "tenant context cannot write platform email identity aliases",
+    tenantCannotWritePlatformEmailIdentityAlias,
   );
   const hiddenPlatformEmailPreferenceEvents = await appTransaction(
     async (tx) => {
@@ -4108,6 +4187,62 @@ try {
   check(
     "system bypass can read the platform email identity fingerprint",
     systemPlatformEmailIdentity.length === 1,
+  );
+  const systemPlatformEmailIdentityAliases = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      return tx`select id from platform_email_identity_aliases
+        where id = ${platformEmailIdentityAliasId}`;
+    },
+  );
+  check(
+    "system bypass can read platform email identity aliases",
+    systemPlatformEmailIdentityAliases.length === 1,
+  );
+  const systemInsertedPlatformEmailIdentityAlias = await appTransaction(
+    async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      return tx`insert into platform_email_identity_aliases
+        (id, current_identity_key_fingerprint, current_email_hash,
+          previous_identity_key_fingerprint, previous_email_hash)
+        values (${systemPlatformEmailIdentityAliasId},
+          ${platformEmailIdentityFingerprint}, ${"7".repeat(64)},
+          ${platformEmailPreviousIdentityFingerprint}, ${"8".repeat(64)})
+        returning id`;
+    },
+  );
+  check(
+    "system bypass can append platform email identity aliases",
+    systemInsertedPlatformEmailIdentityAlias.length === 1,
+  );
+  let bypassCannotRewritePlatformEmailIdentityAlias = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`update platform_email_identity_aliases
+        set previous_email_hash = ${"9".repeat(64)}
+        where id = ${systemPlatformEmailIdentityAliasId}`;
+    });
+  } catch {
+    bypassCannotRewritePlatformEmailIdentityAlias = true;
+  }
+  check(
+    "application role cannot rewrite platform email identity aliases",
+    bypassCannotRewritePlatformEmailIdentityAlias,
+  );
+  let bypassCannotDeletePlatformEmailIdentityAlias = false;
+  try {
+    await appTransaction(async (tx) => {
+      await tx`select set_config('app.rls_bypass', 'on', true)`;
+      await tx`delete from platform_email_identity_aliases
+        where id = ${systemPlatformEmailIdentityAliasId}`;
+    });
+  } catch {
+    bypassCannotDeletePlatformEmailIdentityAlias = true;
+  }
+  check(
+    "application role cannot delete platform email identity aliases",
+    bypassCannotDeletePlatformEmailIdentityAlias,
   );
   const systemPlatformEmailPreferenceEvents = await appTransaction(
     async (tx) => {
@@ -4512,6 +4647,8 @@ try {
     await cleanup`delete from platform_email_preference_events
       where id in (${platformEmailPreferenceEventId}, ${systemPlatformEmailPreferenceEventId})`;
     await cleanup`delete from platform_email_preferences where id = ${platformEmailPreferenceId}`;
+    await cleanup`delete from platform_email_identity_aliases
+      where id in (${platformEmailIdentityAliasId}, ${systemPlatformEmailIdentityAliasId})`;
     if (createdPlatformEmailIdentity) {
       await cleanup`delete from platform_email_identity where key_slot = 1`;
     }
@@ -4546,7 +4683,7 @@ try {
     await cleanup`delete from prescription_events where id in (${aPrescriptionEvent}, ${bPrescriptionEvent})`;
     await cleanup`delete from visit_closeouts where id in (${aCloseout}, ${bCloseout})`;
     await cleanup`delete from funnel_events where id = ${funnelEventId}`;
-    await cleanup`delete from practice_conversion_milestones where practice_id = ${aId}`;
+    await cleanup`delete from practice_conversion_milestones where practice_id in (${aId}, ${bId})`;
     await cleanup`delete from clinic_pilot_events where id = ${clinicPilotEventId}`;
     await cleanup`delete from clinic_pilots where id = ${clinicPilotId}`;
     await cleanup`delete from invoices where id in (${aInvoice}, ${bInvoice})`;

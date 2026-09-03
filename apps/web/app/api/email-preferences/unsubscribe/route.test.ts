@@ -6,6 +6,7 @@ const ROUTE_SOURCE = readFileSync(
   fileURLToPath(new URL("./route.ts", import.meta.url)),
   "utf8",
 );
+const IDENTITY_KEY_FINGERPRINT = "c".repeat(64);
 
 const mocks = vi.hoisted(() => {
   return {
@@ -58,6 +59,7 @@ describe("POST email preference unsubscribe", () => {
 
   it("requires the RFC 8058 one-click content type and form body", async () => {
     mocks.verifyEmailPreferenceToken.mockReturnValue({
+      identityKeyFingerprint: IDENTITY_KEY_FINGERPRINT,
       target: { kind: "recipient", id: "b".repeat(64) },
     });
 
@@ -88,6 +90,7 @@ describe("POST email preference unsubscribe", () => {
 
   it("atomically opts a recipient out without reading or storing PII", async () => {
     mocks.verifyEmailPreferenceToken.mockReturnValue({
+      identityKeyFingerprint: IDENTITY_KEY_FINGERPRINT,
       target: { kind: "recipient", id: "b".repeat(64) },
     });
 
@@ -106,6 +109,7 @@ describe("POST email preference unsubscribe", () => {
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(mocks.setMarketingEmailPreferenceForHash).toHaveBeenCalledWith({
       emailHash: "b".repeat(64),
+      identityKeyFingerprint: IDENTITY_KEY_FINGERPRINT,
       enabled: false,
       source: "unsubscribe_link",
     });
@@ -113,6 +117,7 @@ describe("POST email preference unsubscribe", () => {
 
   it("rejects noncanonical deployment hosts before touching preference state", async () => {
     mocks.verifyEmailPreferenceToken.mockReturnValue({
+      identityKeyFingerprint: IDENTITY_KEY_FINGERPRINT,
       target: { kind: "recipient", id: "a".repeat(64) },
     });
 
@@ -145,6 +150,7 @@ describe("POST email preference unsubscribe", () => {
 
   it("fails closed when the preference cannot be persisted", async () => {
     mocks.verifyEmailPreferenceToken.mockReturnValue({
+      identityKeyFingerprint: IDENTITY_KEY_FINGERPRINT,
       target: { kind: "recipient", id: "b".repeat(64) },
     });
     mocks.setMarketingEmailPreferenceForHash.mockRejectedValueOnce(
