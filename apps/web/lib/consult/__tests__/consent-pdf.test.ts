@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildConsentPdf, consentSignaturePngDecodes } from "../consent-pdf";
 import {
+  CONSENT_ELECTRONIC_SIGNATURE_INTENT,
+  CONSENT_SIGNER_AUTHORITY_ATTESTATION,
   DEFAULT_CONSENT_BODY,
   DEFAULT_CONSENT_TITLE,
 } from "../consent-template";
@@ -18,6 +20,7 @@ function consentInput() {
     title: DEFAULT_CONSENT_TITLE,
     bodyText: DEFAULT_CONSENT_BODY,
     signerName: "Jordan Marsh",
+    signerAttestation: `${CONSENT_SIGNER_AUTHORITY_ATTESTATION} ${CONSENT_ELECTRONIC_SIGNATURE_INTENT}`,
     signedAtIso: "2026-07-10T12:00:00.000Z",
     signaturePngDataUrl: SIGNATURE_DATA_URL,
   };

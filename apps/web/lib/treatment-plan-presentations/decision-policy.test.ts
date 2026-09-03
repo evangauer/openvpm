@@ -239,5 +239,7 @@ describe("treatment-plan client decision policy", () => {
       `Treatment plan response SHA-256: ${"a".repeat(64)}`,
     );
     expect(body).toContain("does not itself charge me or schedule care");
+    expect(body).toContain("owner or an agent authorized by the owner");
+    expect(body).toContain("intend to sign this record electronically");
   });
 });

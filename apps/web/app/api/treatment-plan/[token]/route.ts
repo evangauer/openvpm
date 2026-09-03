@@ -37,6 +37,7 @@ import { rateLimit, rateLimitResponseHeaders } from "@/lib/rate-limit";
 import { clientIpFromRequest } from "@/lib/request-ip";
 import { readRequestBytesWithLimit } from "@/lib/request-body";
 import { withSystem, withTenant } from "@/lib/tenant-db";
+import { sanitizedExceptionTelemetry } from "@/lib/sanitized-exception-telemetry";
 
 export const dynamic = "force-dynamic";
 
@@ -526,7 +527,10 @@ async function handlePost(
         { status: 201 },
       );
     } catch (error) {
-      console.error("Treatment-plan decision claim failed:", error);
+      console.error(
+        "Treatment-plan decision claim failed:",
+        sanitizedExceptionTelemetry(error),
+      );
       return NextResponse.json(
         { error: "Could not save decisions" },
         { status: 500 },

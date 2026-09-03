@@ -3,6 +3,10 @@ import {
   canonicalQuantity,
   quantityToThousandths,
 } from "@/lib/treatment-plan-authoring/policy";
+import {
+  CONSENT_ELECTRONIC_SIGNATURE_INTENT,
+  CONSENT_SIGNER_AUTHORITY_ATTESTATION,
+} from "@/lib/consult/consent-template";
 
 export type OfferedTreatmentPlanLine = {
   id: string;
@@ -149,6 +153,8 @@ export function buildTreatmentPlanConsentBody(
     `Tax: ${context.currency} ${context.tax}`,
     `Total offered: ${context.currency} ${context.total}`,
     "",
+    CONSENT_SIGNER_AUTHORITY_ATTESTATION,
+    CONSENT_ELECTRONIC_SIGNATURE_INTENT,
     "I confirm these choices and authorize the clinic to keep this signed treatment-plan decision in the patient record. This signature does not itself charge me or schedule care.",
     "",
     `Treatment plan response SHA-256: ${responseSha256}`,

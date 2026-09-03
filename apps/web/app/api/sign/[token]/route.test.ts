@@ -247,6 +247,7 @@ function validBody(overrides: Record<string, unknown> = {}) {
   return {
     signerName: "Jordan Marsh",
     signaturePngDataUrl: SIGNATURE_DATA_URL,
+    signerAuthorityAccepted: true,
     ...overrides,
   };
 }
@@ -460,6 +461,20 @@ describe("POST /api/sign/[token]", () => {
     ).toBe(400);
     expect(mocks.withSystem).toHaveBeenCalledTimes(6);
     expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
+    expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+  });
+
+  it("requires an explicit owner or authorized-agent acknowledgement", async () => {
+    mocks.selectResults.push([mocks.consentRow()]);
+    const response = await callPost(
+      TOKEN,
+      validBody({ signerAuthorityAccepted: false }),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Please confirm you are authorized to sign",
+    });
+    expect(mocks.withTenant).not.toHaveBeenCalled();
     expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
   });
 
@@ -688,6 +703,8 @@ describe("POST /api/sign/[token]", () => {
         changes: expect.objectContaining({
           actorType: "client",
           provenance: "public_consent_capability",
+          signerAuthorityAccepted: true,
+          signerAttestationVersion: "owner-authority-v1",
           dispatchedByUserId: mocks.createdBy,
           signatureSha256: mocks.signatureSha256,
         }),
@@ -943,10 +960,9 @@ describe("POST /api/sign/[token]", () => {
     const res = await callPost(TOKEN, validBody());
     expect(res.status).toBe(500);
     expect(mocks.finalizeManagedUploadManifest).not.toHaveBeenCalled();
-    expect(consoleError).toHaveBeenCalledWith(
-      "Consent signing failed:",
-      expect.any(Error),
-    );
+    expect(consoleError).toHaveBeenCalledWith("Consent signing failed:", {
+      errorName: "Error",
+    });
     consoleError.mockRestore();
   });
 

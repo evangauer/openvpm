@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Eraser, Loader2 } from "lucide-react";
+import {
+  CONSENT_ELECTRONIC_SIGNATURE_INTENT,
+  CONSENT_SIGNER_AUTHORITY_ATTESTATION,
+} from "@/lib/consult/consent-template";
 
 const EXPIRED_MESSAGE =
   "This link has expired. Ask the front desk for a new code.";
@@ -135,6 +139,7 @@ export function SignClient({ token }: { token: string }) {
   const [state, setState] = useState<PageState>({ kind: "loading" });
   const [signerName, setSignerName] = useState("");
   const [signature, setSignature] = useState<string | null>(null);
+  const [signerAuthorityAccepted, setSignerAuthorityAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -208,10 +213,11 @@ export function SignClient({ token }: { token: string }) {
   }
 
   async function handleSubmit() {
-    if (!signature || !signerName.trim()) return;
+    if (!signature || !signerName.trim() || !signerAuthorityAccepted) return;
     await submitSigningPayload({
       signerName: signerName.trim(),
       signaturePngDataUrl: signature,
+      signerAuthorityAccepted: true,
     });
   }
 
@@ -288,7 +294,10 @@ export function SignClient({ token }: { token: string }) {
   }
 
   const { consent } = state;
-  const canSubmit = Boolean(signature) && signerName.trim().length > 0;
+  const canSubmit =
+    Boolean(signature) &&
+    signerName.trim().length > 0 &&
+    signerAuthorityAccepted;
 
   return (
     <div className="space-y-6">
@@ -324,6 +333,16 @@ export function SignClient({ token }: { token: string }) {
 
       <SignaturePad onChange={setSignature} />
 
+      <label className="flex items-start gap-3 rounded-lg border border-gray-200 p-3 text-sm leading-5 text-gray-700">
+        <input
+          type="checkbox"
+          checked={signerAuthorityAccepted}
+          onChange={(event) => setSignerAuthorityAccepted(event.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+        />
+        <span>{CONSENT_SIGNER_AUTHORITY_ATTESTATION}</span>
+      </label>
+
       {submitError && (
         <p className="flex items-center gap-2 text-sm text-red-600">
           <AlertCircle className="h-4 w-4 shrink-0" />
@@ -348,7 +367,7 @@ export function SignClient({ token }: { token: string }) {
       </button>
 
       <p className="text-center text-xs text-gray-400">
-        Signing here has the same effect as signing on paper.
+        {CONSENT_ELECTRONIC_SIGNATURE_INTENT}
       </p>
     </div>
   );

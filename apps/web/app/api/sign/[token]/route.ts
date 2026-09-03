@@ -8,7 +8,12 @@ import { lockPracticeForExternalSideEffects } from "@/lib/recovery-hold";
 import { rateLimit, rateLimitResponseHeaders } from "@/lib/rate-limit";
 import { clientIpFromRequest } from "@/lib/request-ip";
 import { captureRateLimitKey, isCaptureTokenShape } from "@/lib/consult/tokens";
-import { CONSENT_SIGNER_NAME_MAX_LENGTH } from "@/lib/consult/consent-template";
+import {
+  CONSENT_ELECTRONIC_SIGNATURE_INTENT,
+  CONSENT_SIGNER_ATTESTATION_VERSION,
+  CONSENT_SIGNER_AUTHORITY_ATTESTATION,
+  CONSENT_SIGNER_NAME_MAX_LENGTH,
+} from "@/lib/consult/consent-template";
 import {
   buildConsentPdf,
   consentSignaturePngDecodes,
@@ -28,6 +33,7 @@ import {
   type ManagedUploadReservation,
 } from "@/lib/managed-file-upload";
 import { finalizeTreatmentPlanResponseForConsent } from "@/lib/treatment-plan-presentations/finalize";
+import { sanitizedExceptionTelemetry } from "@/lib/sanitized-exception-telemetry";
 
 export const dynamic = "force-dynamic";
 
@@ -505,6 +511,7 @@ async function handlePost(
     const payload = parsedPayload as {
       signerName?: unknown;
       signaturePngDataUrl?: unknown;
+      signerAuthorityAccepted?: unknown;
       resume?: unknown;
     };
 
@@ -516,6 +523,12 @@ async function handlePost(
     let signerName = "";
     let signatureBytes: Buffer | null = null;
     if (!resume) {
+      if (payload.signerAuthorityAccepted !== true) {
+        return NextResponse.json(
+          { error: "Please confirm you are authorized to sign" },
+          { status: 400 },
+        );
+      }
       signerName =
         typeof payload.signerName === "string" ? payload.signerName.trim() : "";
       if (
@@ -587,6 +600,7 @@ async function handlePost(
         title: signing.title,
         bodyText: signing.bodyText,
         signerName: signing.signerName,
+        signerAttestation: `${CONSENT_SIGNER_AUTHORITY_ATTESTATION} ${CONSENT_ELECTRONIC_SIGNATURE_INTENT}`,
         signedAtIso: signing.signedAt.toISOString(),
         signaturePngDataUrl: persistedSignatureDataUrl,
       });
@@ -635,7 +649,6 @@ async function handlePost(
             signedDocumentSha256: reservation.checksumSha256,
             signatureSha256: signing.signatureSha256,
             signerName: signing.signerName,
-            signedAt: signing.signedAt,
           });
         });
       } else {
@@ -672,7 +685,6 @@ async function handlePost(
             signedDocumentSha256: reservation.checksumSha256,
             signatureSha256: signing.signatureSha256,
             signerName: signing.signerName,
-            signedAt: signing.signedAt,
           });
 
           await tx.insert(auditLog).values({
@@ -690,6 +702,8 @@ async function handlePost(
               provenance: "public_consent_capability",
               dispatchedByUserId: signing.createdBy,
               signerName: signing.signerName,
+              signerAuthorityAccepted: true,
+              signerAttestationVersion: CONSENT_SIGNER_ATTESTATION_VERSION,
               signedAt: signing.signedAt.toISOString(),
               signatureSha256: signing.signatureSha256,
               patientId: signing.patientId,
@@ -728,7 +742,10 @@ async function handlePost(
           { status: 409 },
         );
       }
-      console.error("Consent signing failed:", err);
+      console.error(
+        "Consent signing failed:",
+        sanitizedExceptionTelemetry(err),
+      );
       return NextResponse.json({ error: "Signing failed" }, { status: 500 });
     }
   });

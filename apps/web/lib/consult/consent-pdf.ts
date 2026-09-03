@@ -21,6 +21,7 @@ export interface ConsentPdfInput {
   title: string;
   bodyText: string;
   signerName: string;
+  signerAttestation: string;
   signedAtIso: string;
   /** PNG data URL of the drawn signature. */
   signaturePngDataUrl: string;
@@ -112,6 +113,17 @@ export function buildConsentPdf(input: ConsentPdfInput): Buffer {
   doc.setTextColor(51, 51, 51);
   doc.text(input.signerName, PAGE_MARGIN, y);
   y += 6;
+  const attestationLines = doc.splitTextToSize(
+    input.signerAttestation,
+    CONTENT_WIDTH,
+  ) as string[];
+  for (const line of attestationLines) {
+    y = ensureSpace(doc, y, 5);
+    doc.setFontSize(9);
+    doc.setTextColor(51, 51, 51);
+    doc.text(line, PAGE_MARGIN, y);
+    y += 5;
+  }
   doc.setFontSize(10);
   doc.setTextColor(102, 102, 102);
   doc.text(
