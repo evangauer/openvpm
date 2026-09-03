@@ -642,8 +642,9 @@ export const vitalSigns = pgTable(
     heartRateBpm: integer("heart_rate_bpm"),
     respiratoryRateBpm: integer("respiratory_rate_bpm"),
     weightKg: numeric("weight_kg", { precision: 8, scale: 3 }),
-    /** Body condition score, 1-9 scale. */
+    /** Body condition score interpreted against bodyConditionScale. */
     bodyConditionScore: integer("body_condition_score"),
+    bodyConditionScale: integer("body_condition_scale").notNull().default(9),
     /** Pain score, 0-10 scale. */
     painScore: integer("pain_score"),
     mucousMembrane: varchar("mucous_membrane", { length: 64 }),
@@ -686,6 +687,14 @@ export const vitalSigns = pgTable(
       ],
       name: "vital_signs_practice_appointment_fk",
     }),
+    bodyConditionScaleCheck: check(
+      "vital_signs_body_condition_scale_check",
+      sql`${table.bodyConditionScale} in (5, 9)`,
+    ),
+    bodyConditionScoreCheck: check(
+      "vital_signs_body_condition_score_check",
+      sql`${table.bodyConditionScore} is null or (${table.bodyConditionScore} >= 1 and ${table.bodyConditionScore} <= ${table.bodyConditionScale})`,
+    ),
   }),
 );
 

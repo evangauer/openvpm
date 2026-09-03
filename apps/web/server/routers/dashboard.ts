@@ -13,6 +13,7 @@ import {
   dateInputDayUtcRange,
   dateInputUtcRangeForTimeZone,
 } from "@/lib/date-input";
+import { PATIENT_SPECIES_LABELS } from "@/lib/patients/species";
 
 type DashboardContext = {
   db: Database;
@@ -284,15 +285,7 @@ export const dashboardRouter = createRouter({
       .groupBy(patients.species)
       .orderBy(sql`count(*) desc`);
 
-    const speciesLabels: Record<string, string> = {
-      canine: "Canine",
-      feline: "Feline",
-      avian: "Avian",
-      rabbit: "Rabbit",
-      reptile: "Reptile",
-      equine: "Equine",
-      other: "Other",
-    };
+    const speciesLabels: Record<string, string> = PATIENT_SPECIES_LABELS;
 
     const speciesDistribution = speciesRows.map((r) => ({
       name: speciesLabels[r.species] ?? r.species,

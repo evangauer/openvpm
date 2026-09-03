@@ -152,6 +152,7 @@ describe("records target safety", () => {
             phone: "555-0100",
             email: "care@example.test",
             timezone: "America/Los_Angeles",
+            settings: null,
           },
         ],
       ],
@@ -163,6 +164,12 @@ describe("records target safety", () => {
       phone: "555-0100",
       email: "care@example.test",
       timezone: "America/Los_Angeles",
+      ambulatoryWorkspace: {
+        enabled: false,
+        measurementSystem: "metric",
+        bodyConditionScale: 9,
+        compactCloseout: true,
+      },
     });
 
     expect(select).toHaveBeenCalledTimes(1);

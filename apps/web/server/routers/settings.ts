@@ -97,6 +97,11 @@ import {
   setMarketingEmailPreferenceForRecipient,
 } from "@/lib/platform-email-preferences";
 import { assertOutboundEmailAllowed } from "@/lib/outbound-email-security";
+import {
+  BODY_CONDITION_SCALES,
+  MEASUREMENT_SYSTEMS,
+  ambulatoryWorkspaceSettings,
+} from "@/lib/ambulatory-workspace";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -538,6 +543,12 @@ interface PracticeSettings {
   };
   /** Live brand accent color (set in settings; logo lives in practices.logoUrl). */
   brandColor?: string;
+  ambulatoryWorkspace?: {
+    enabled: boolean;
+    measurementSystem: (typeof MEASUREMENT_SYSTEMS)[number];
+    bodyConditionScale: (typeof BODY_CONDITION_SCALES)[number];
+    compactCloseout: boolean;
+  };
   /** In-app value tour + finish-setup card progress. */
   onboardingState?: {
     tourStatus?: "not_started" | "in_progress" | "completed" | "skipped";
@@ -874,6 +885,29 @@ export const settingsRouter = createRouter({
         return updated!;
       }),
     ),
+
+  updateAmbulatoryWorkspace: adminProcedure
+    .input(
+      z
+        .object({
+          enabled: z.boolean(),
+          measurementSystem: z.enum(MEASUREMENT_SYSTEMS),
+          bodyConditionScale: z.union([z.literal(5), z.literal(9)]),
+          compactCloseout: z.boolean(),
+        })
+        .strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [updated] = await ctx.db
+        .update(practices)
+        .set({
+          settings: settingsMergePatch({ ambulatoryWorkspace: input }),
+        })
+        .where(activePracticeWhere(ctx.practiceId))
+        .returning({ settings: practices.settings });
+      if (!updated) throw practiceNotFound();
+      return ambulatoryWorkspaceSettings(updated.settings);
+    }),
 
   setMarketingEmailPreference: adminProcedure
     .input(z.object({ enabled: z.boolean() }).strict())

@@ -792,6 +792,12 @@ const PATIENT_IDENTITY_SPECIES = new Set([
   "rabbit",
   "reptile",
   "equine",
+  "bovine",
+  "ovine",
+  "caprine",
+  "porcine",
+  "poultry",
+  "camelid",
   "other",
 ]);
 const PATIENT_IDENTITY_SEX = new Set([

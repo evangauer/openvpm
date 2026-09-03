@@ -74,16 +74,9 @@ import {
   patientSearchContainsPattern,
   patientSearchTokens,
 } from "@/lib/patients/search";
+import { PATIENT_SPECIES } from "@/lib/patients/species";
 
-const patientSpeciesInput = z.enum([
-  "canine",
-  "feline",
-  "avian",
-  "rabbit",
-  "reptile",
-  "equine",
-  "other",
-]);
+const patientSpeciesInput = z.enum(PATIENT_SPECIES);
 const patientSexInput = z.enum([
   "male",
   "female",

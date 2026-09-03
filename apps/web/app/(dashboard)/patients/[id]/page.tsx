@@ -23,6 +23,7 @@ import {
   Paperclip,
   Plus,
   Receipt,
+  Stethoscope,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -33,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import { PatientHistorySearch } from "@/components/patients/patient-history-search";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
+import { RecentClinicalItems } from "@/components/records/recent-clinical-items";
 import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
 import { cn } from "@/lib/utils";
 import {
@@ -70,7 +72,6 @@ import {
   isPatientWeightInputValid,
 } from "@/lib/records/patient-weight-policy";
 import {
-  VITALS_BODY_CONDITION_MAX,
   VITALS_BODY_CONDITION_MIN,
   VITALS_CAPILLARY_REFILL_MAX_SEC,
   VITALS_CAPILLARY_REFILL_MIN_SEC,
@@ -98,6 +99,16 @@ import {
   isVitalsOptionalTextInputValid,
   isVitalsOptionalWeightInputValid,
 } from "@/lib/records/vitals-policy";
+import { PATIENT_SPECIES_EMOJI } from "@/lib/patients/species";
+import {
+  celsiusToFahrenheit,
+  fahrenheitToCelsius,
+  kilogramsToPounds,
+  poundsToKilograms,
+  roundClinicalMeasurement,
+  type BodyConditionScale,
+  type MeasurementSystem,
+} from "@/lib/ambulatory-workspace";
 
 function PatientChartChunkLoading() {
   return (
@@ -130,15 +141,7 @@ const VitalsTrendChart = dynamic(
   },
 );
 
-const speciesEmoji: Record<string, string> = {
-  canine: "\uD83D\uDC36",
-  feline: "\uD83D\uDC31",
-  avian: "\uD83D\uDC26",
-  rabbit: "\uD83D\uDC30",
-  reptile: "\uD83E\uDD8E",
-  equine: "\uD83D\uDC34",
-  other: "\uD83D\uDC3E",
-};
+const speciesEmoji: Record<string, string> = PATIENT_SPECIES_EMOJI;
 
 function formatSex(sex: string | null): string {
   if (!sex) return "Unknown";
@@ -246,6 +249,42 @@ function initialVitalsForm(): VitalsFormState {
   };
 }
 
+function canonicalMeasurementInput(
+  value: string,
+  converter: ((value: number) => number) | undefined,
+  scale: number,
+): string {
+  const trimmed = value.trim();
+  if (!trimmed || !converter) return trimmed;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return trimmed;
+  return String(roundClinicalMeasurement(converter(parsed), scale));
+}
+
+function formatClinicalTemperature(
+  value: number | string | null | undefined,
+  measurementSystem: MeasurementSystem,
+): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "—";
+  return measurementSystem === "us_customary"
+    ? `${roundClinicalMeasurement(celsiusToFahrenheit(parsed))} F`
+    : `${roundClinicalMeasurement(parsed)} C`;
+}
+
+function formatClinicalWeight(
+  value: number | string | null | undefined,
+  measurementSystem: MeasurementSystem,
+): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "—";
+  return measurementSystem === "us_customary"
+    ? `${roundClinicalMeasurement(kilogramsToPounds(parsed))} lb`
+    : `${roundClinicalMeasurement(parsed, 3)} kg`;
+}
+
 function PatientDetailErrorPanel({ message }: { message: string }) {
   return (
     <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
@@ -268,6 +307,7 @@ export default function PatientDetailPage() {
   const router = useRouter();
   const { data: session } = useSession();
   const [activeTab, setActiveTab] = useState<Tab>("overview");
+  const [fieldVisitLocationId, setFieldVisitLocationId] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoUploadAttemptRef = useRef<ManagedUploadAttempt | null>(null);
@@ -317,6 +357,19 @@ export default function PatientDetailPage() {
     isLoading: recordsSettingsLoading,
     error: recordsSettingsError,
   } = trpc.records.settings.useQuery();
+  const ambulatoryEnabled =
+    recordsSettings?.ambulatoryWorkspace.enabled === true;
+  const chartMeasurementSystem =
+    recordsSettings?.ambulatoryWorkspace.measurementSystem ?? "metric";
+  const chartBodyConditionScale =
+    recordsSettings?.ambulatoryWorkspace.bodyConditionScale ?? 9;
+  const fieldVisitLocationsQuery = trpc.appointments.listLocations.useQuery(
+    undefined,
+    {
+      enabled:
+        ambulatoryEnabled && canRecordVitals && patient?.status === "active",
+    },
+  );
 
   async function uploadPatientPhoto(selectedFile?: File) {
     if (!canManagePatientDetail) {
@@ -392,14 +445,19 @@ export default function PatientDetailPage() {
     if (file) void uploadPatientPhoto(file);
   }
 
-  // Medical summary PDF data queries (lazy -- only fetched on demand)
+  // These sources power the ambulatory snapshot and fail closed together. SOAP
+  // history remains lazy until a full medical summary is requested.
   const problemsQuery = trpc.records.listProblems.useQuery(
     { patientId: canonicalPatientId },
-    { enabled: false },
+    { enabled: ambulatoryEnabled },
   );
   const vaccinationsQuery = trpc.records.listVaccinations.useQuery(
     { patientId: canonicalPatientId },
-    { enabled: false },
+    { enabled: ambulatoryEnabled },
+  );
+  const snapshotVitalsQuery = trpc.vitals.listByPatient.useQuery(
+    { patientId: canonicalPatientId, limit: 50 },
+    { enabled: ambulatoryEnabled },
   );
   const soapNotesQuery = trpc.records.listSoapNotes.useQuery(
     { patientId: canonicalPatientId },
@@ -407,7 +465,11 @@ export default function PatientDetailPage() {
   );
   const prescriptionsQuery = trpc.records.listPrescriptions.useQuery(
     { patientId: canonicalPatientId },
-    { enabled: false },
+    { enabled: ambulatoryEnabled },
+  );
+  const recentVisitsQuery = trpc.appointments.listByPatient.useQuery(
+    { patientId: canonicalPatientId, limit: 5 },
+    { enabled: ambulatoryEnabled },
   );
   const recordsSettingsMissing =
     !recordsSettingsLoading && !recordsSettingsError && !recordsSettings;
@@ -423,6 +485,11 @@ export default function PatientDetailPage() {
     [patient?.weights, recordsSettingsTimeZone],
   );
   const [weightKg, setWeightKg] = useState("");
+  const canonicalPatientWeight = canonicalMeasurementInput(
+    weightKg,
+    chartMeasurementSystem === "us_customary" ? poundsToKilograms : undefined,
+    3,
+  );
   const addWeight = trpc.patients.addWeight.useMutation({
     onSuccess: () => {
       toast.success("Weight recorded");
@@ -433,7 +500,7 @@ export default function PatientDetailPage() {
   });
   const canSubmitWeight =
     canManagePatientDetail &&
-    isPatientWeightInputValid(weightKg) &&
+    isPatientWeightInputValid(canonicalPatientWeight) &&
     !addWeight.isPending;
 
   function handleRecordWeight(e: React.FormEvent) {
@@ -441,7 +508,7 @@ export default function PatientDetailPage() {
     if (!canSubmitWeight || !patient) return;
     addWeight.mutate({
       patientId: patient.id,
-      weightKg: weightKg.trim(),
+      weightKg: canonicalPatientWeight,
     });
   }
 
@@ -461,6 +528,15 @@ export default function PatientDetailPage() {
       setAllergyReaction("");
       setAllergySeverity("moderate");
       setShowAllergyForm(false);
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const startFieldVisit = trpc.appointments.startFieldVisit.useMutation({
+    onSuccess: ({ appointment, created }) => {
+      toast.success(
+        created ? "Field visit started" : "Open field visit resumed",
+      );
+      router.push(`/encounters/${appointment.id}`);
     },
     onError: (err) => toast.error(err.message),
   });
@@ -524,6 +600,84 @@ export default function PatientDetailPage() {
   const recordsPracticeName =
     verifiedRecordsSettings.name ?? "Veterinary Practice";
   const recordsPracticePhone = verifiedRecordsSettings.phone;
+  const ambulatoryProfile = verifiedRecordsSettings.ambulatoryWorkspace;
+  const fieldVisitLocations = fieldVisitLocationsQuery.data ?? [];
+  const fieldVisitLocationsMissing =
+    !fieldVisitLocationsQuery.isLoading &&
+    !fieldVisitLocationsQuery.error &&
+    !fieldVisitLocationsQuery.data;
+  const selectedFieldVisitLocationId =
+    fieldVisitLocations.length === 1
+      ? fieldVisitLocations[0]!.id
+      : fieldVisitLocations.some(
+            (location) => location.id === fieldVisitLocationId,
+          )
+        ? fieldVisitLocationId
+        : "";
+  const fieldVisitLocationsUnavailable =
+    fieldVisitLocationsQuery.isLoading ||
+    Boolean(fieldVisitLocationsQuery.error) ||
+    fieldVisitLocationsMissing ||
+    fieldVisitLocations.length === 0;
+  const activeProblems = (problemsQuery.data ?? []).filter(
+    (problem) => problem.status === "active",
+  );
+  const activePrescriptions = (prescriptionsQuery.data ?? []).filter(
+    (prescription) => prescription.effectiveStatus === "active",
+  );
+  const latestWeightKg = patient.weights[0]?.weightKg;
+  const latestWeight = latestWeightKg
+    ? ambulatoryProfile.measurementSystem === "us_customary"
+      ? `${roundClinicalMeasurement(kilogramsToPounds(Number(latestWeightKg)))} lb`
+      : `${roundClinicalMeasurement(Number(latestWeightKg), 3)} kg`
+    : "Not recorded";
+  const latestVisit = recentVisitsQuery.data?.[0];
+  const latestSnapshotVitals = snapshotVitalsQuery.data?.find(
+    (vital) => !vital.correctionId,
+  );
+  const latestSnapshotBcs = snapshotVitalsQuery.data?.find(
+    (vital) => !vital.correctionId && vital.bodyConditionScore !== null,
+  );
+  const latestVitalsSummary = latestSnapshotVitals
+    ? [
+        latestSnapshotVitals.temperatureC != null
+          ? formatClinicalTemperature(
+              latestSnapshotVitals.temperatureC,
+              ambulatoryProfile.measurementSystem,
+            )
+          : null,
+        latestSnapshotVitals.heartRateBpm != null
+          ? "HR " + latestSnapshotVitals.heartRateBpm
+          : null,
+        latestSnapshotVitals.respiratoryRateBpm != null
+          ? "RR " + latestSnapshotVitals.respiratoryRateBpm
+          : null,
+        latestSnapshotVitals.weightKg != null
+          ? formatClinicalWeight(
+              latestSnapshotVitals.weightKg,
+              ambulatoryProfile.measurementSystem,
+            )
+          : null,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join(" · ") || "Recorded without summary values"
+    : "None recorded";
+  const currentVaccinations = (vaccinationsQuery.data ?? []).filter(
+    (vaccination) => !vaccination.correctionId,
+  );
+  const nextVaccinationDueDate = currentVaccinations
+    .flatMap((vaccination) =>
+      vaccination.nextDueDate ? [vaccination.nextDueDate] : [],
+    )
+    .sort()[0];
+  const vaccinationSummary = currentVaccinations.length
+    ? String(currentVaccinations.length) +
+      " recorded" +
+      (nextVaccinationDueDate
+        ? " · next due " +
+          formatClinicalDate(nextVaccinationDueDate, recordsTimeZone)
+        : " · no due date recorded")
+    : "None recorded";
 
   async function handleDownloadSummary() {
     try {
@@ -723,6 +877,11 @@ export default function PatientDetailPage() {
         Back to Patients
       </Button>
 
+      <RecentClinicalItems
+        patientId={patient.id}
+        enabled={ambulatoryProfile.enabled}
+      />
+
       {patient.mergeMetadata ? (
         <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-100">
           <div className="flex items-start gap-3">
@@ -842,6 +1001,76 @@ export default function PatientDetailPage() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {verifiedRecordsSettings.ambulatoryWorkspace.enabled &&
+            canRecordVitals &&
+            patient.status === "active" ? (
+              <div className="flex flex-col items-end gap-1">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {fieldVisitLocations.length > 1 ? (
+                    <label>
+                      <span className="sr-only">Field visit location</span>
+                      <select
+                        aria-label="Field visit location"
+                        value={selectedFieldVisitLocationId}
+                        disabled={
+                          fieldVisitLocationsUnavailable ||
+                          startFieldVisit.isPending
+                        }
+                        onChange={(event) =>
+                          setFieldVisitLocationId(event.target.value)
+                        }
+                        className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                      >
+                        <option value="">Select location...</option>
+                        {fieldVisitLocations.map((location) => (
+                          <option key={location.id} value={location.id}>
+                            {location.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  <Button
+                    size="sm"
+                    disabled={
+                      startFieldVisit.isPending ||
+                      fieldVisitLocationsUnavailable ||
+                      !selectedFieldVisitLocationId
+                    }
+                    onClick={() => {
+                      if (!selectedFieldVisitLocationId) return;
+                      startFieldVisit.mutate({
+                        patientId: patient.id,
+                        locationId: selectedFieldVisitLocationId,
+                      });
+                    }}
+                  >
+                    {startFieldVisit.isPending ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Stethoscope className="mr-2 h-4 w-4" />
+                    )}
+                    {startFieldVisit.isPending
+                      ? "Starting visit..."
+                      : "Start field visit"}
+                  </Button>
+                </div>
+                {fieldVisitLocationsQuery.error ||
+                fieldVisitLocationsMissing ||
+                (!fieldVisitLocationsQuery.isLoading &&
+                  fieldVisitLocations.length === 0) ? (
+                  <p className="max-w-xs text-right text-xs text-destructive">
+                    {fieldVisitLocationsQuery.error?.message ??
+                      "Add an active location before starting a field visit."}
+                  </p>
+                ) : fieldVisitLocations.length > 1 &&
+                  !selectedFieldVisitLocationId ? (
+                  <p className="text-xs text-muted-foreground">
+                    Choose where this field visit is managed.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             {canManagePatientDetail && (
               <>
                 <CapturePhotos patientId={patient.id} />
@@ -864,6 +1093,120 @@ export default function PatientDetailPage() {
           </div>
         </div>
       </div>
+
+      {ambulatoryProfile.enabled ? (
+        <section className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-semibold">Patient snapshot</h3>
+              <p className="text-xs text-muted-foreground">
+                The field essentials before treatment begins.
+              </p>
+            </div>
+            <span className="text-xs font-medium text-muted-foreground">
+              Latest weight: {latestWeight}
+            </span>
+          </div>
+          {problemsQuery.isLoading ||
+          prescriptionsQuery.isLoading ||
+          recentVisitsQuery.isLoading ||
+          snapshotVitalsQuery.isLoading ||
+          vaccinationsQuery.isLoading ? (
+            <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading clinical snapshot...
+            </div>
+          ) : problemsQuery.error ||
+            prescriptionsQuery.error ||
+            recentVisitsQuery.error ||
+            snapshotVitalsQuery.error ||
+            vaccinationsQuery.error ||
+            !problemsQuery.data ||
+            !prescriptionsQuery.data ||
+            !recentVisitsQuery.data ||
+            !snapshotVitalsQuery.data ||
+            !vaccinationsQuery.data ? (
+            <p className="mt-3 text-sm text-destructive">
+              The complete clinical snapshot could not be verified. Open the
+              chart sections below before relying on history.
+            </p>
+          ) : (
+            <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-6">
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Allergies
+                </dt>
+                <dd className="mt-1">
+                  {patient.allergies.length
+                    ? patient.allergies
+                        .map((allergy) => allergy.allergen)
+                        .join(", ")
+                    : "None recorded"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Active problems
+                </dt>
+                <dd className="mt-1">
+                  {activeProblems.length
+                    ? activeProblems
+                        .map((problem) => problem.description)
+                        .join(", ")
+                    : "None recorded"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Active medications
+                </dt>
+                <dd className="mt-1">
+                  {activePrescriptions.length
+                    ? activePrescriptions
+                        .map((prescription) => prescription.medicationName)
+                        .join(", ")
+                    : "None recorded"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Last visit
+                </dt>
+                <dd className="mt-1">
+                  {latestVisit
+                    ? `${formatClinicalDate(latestVisit.startTime, recordsTimeZone)} · ${latestVisit.origin === "field" ? "Field visit" : (latestVisit.typeName ?? "Appointment")}`
+                    : "No prior visits"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Latest vitals
+                </dt>
+                <dd className="mt-1">{latestVitalsSummary}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  BCS / vaccines
+                </dt>
+                <dd className="mt-1">
+                  BCS{" "}
+                  {latestSnapshotBcs?.bodyConditionScore !== null &&
+                  latestSnapshotBcs?.bodyConditionScore !== undefined ? (
+                    <>
+                      {latestSnapshotBcs.bodyConditionScore} /{" "}
+                      {latestSnapshotBcs.bodyConditionScale}
+                    </>
+                  ) : (
+                    "not recorded"
+                  )}
+                  {" · "}
+                  {vaccinationSummary}
+                </dd>
+              </div>
+            </dl>
+          )}
+        </section>
+      ) : null}
 
       {/* Allergy Alert Bar */}
       {patient.allergies && patient.allergies.length > 0 ? (
@@ -1152,18 +1495,33 @@ export default function PatientDetailPage() {
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                   <div className="w-full sm:max-w-xs">
                     <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                      Weight (kg)
+                      Weight (
+                      {chartMeasurementSystem === "us_customary" ? "lb" : "kg"})
                     </label>
                     <input
                       type="number"
-                      min={PATIENT_WEIGHT_MIN_KG}
-                      max={PATIENT_WEIGHT_MAX_KG}
+                      min={
+                        chartMeasurementSystem === "us_customary"
+                          ? roundClinicalMeasurement(
+                              kilogramsToPounds(PATIENT_WEIGHT_MIN_KG),
+                              3,
+                            )
+                          : PATIENT_WEIGHT_MIN_KG
+                      }
+                      max={
+                        chartMeasurementSystem === "us_customary"
+                          ? roundClinicalMeasurement(
+                              kilogramsToPounds(PATIENT_WEIGHT_MAX_KG),
+                              3,
+                            )
+                          : PATIENT_WEIGHT_MAX_KG
+                      }
                       step={PATIENT_WEIGHT_STEP}
                       value={weightKg}
                       required
                       aria-invalid={
                         weightKg.trim().length > 0 &&
-                        !isPatientWeightInputValid(weightKg)
+                        !isPatientWeightInputValid(canonicalPatientWeight)
                       }
                       onChange={(event) => setWeightKg(event.target.value)}
                       className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
@@ -1183,7 +1541,9 @@ export default function PatientDetailPage() {
 
             {patient.weights && patient.weights.length > 0 ? (
               <>
-                <WeightTrendChart data={weightTrend} />
+                {chartMeasurementSystem === "metric" ? (
+                  <WeightTrendChart data={weightTrend} />
+                ) : null}
                 <div className="overflow-x-auto rounded-lg border border-border">
                   <table className="w-full text-sm">
                     <thead>
@@ -1192,7 +1552,11 @@ export default function PatientDetailPage() {
                           Date
                         </th>
                         <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                          Weight (kg)
+                          Weight (
+                          {chartMeasurementSystem === "us_customary"
+                            ? "lb"
+                            : "kg"}
+                          )
                         </th>
                         <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                           Recorded By
@@ -1213,7 +1577,10 @@ export default function PatientDetailPage() {
                             )}
                           </td>
                           <td className="px-4 py-3 font-medium">
-                            {weight.weightKg} kg
+                            {formatClinicalWeight(
+                              weight.weightKg,
+                              chartMeasurementSystem,
+                            )}
                           </td>
                           <td className="px-4 py-3 text-muted-foreground">
                             {weight.recordedBy ?? "\u2014"}
@@ -1234,6 +1601,8 @@ export default function PatientDetailPage() {
           <VitalsTab
             patientId={patient.id}
             timeZone={recordsTimeZone}
+            measurementSystem={chartMeasurementSystem}
+            bodyConditionScale={chartBodyConditionScale}
             canRecordVitals={canRecordVitals}
             canCorrectClinicalRecords={canCorrectClinicalRecords}
           />
@@ -1275,11 +1644,15 @@ export default function PatientDetailPage() {
 function VitalsTab({
   patientId,
   timeZone,
+  measurementSystem,
+  bodyConditionScale,
   canRecordVitals,
   canCorrectClinicalRecords,
 }: {
   patientId: string;
   timeZone?: string | null;
+  measurementSystem: MeasurementSystem;
+  bodyConditionScale: BodyConditionScale;
   canRecordVitals: boolean;
   canCorrectClinicalRecords: boolean;
 }) {
@@ -1323,17 +1696,30 @@ function VitalsTab({
     const n = Number(v);
     return Number.isFinite(n) ? n : undefined;
   };
+  const canonicalTemperature = canonicalMeasurementInput(
+    form.temperatureC,
+    measurementSystem === "us_customary" ? fahrenheitToCelsius : undefined,
+    1,
+  );
+  const canonicalWeight = canonicalMeasurementInput(
+    form.weightKg,
+    measurementSystem === "us_customary" ? poundsToKilograms : undefined,
+    3,
+  );
   const hasVitalsFormContent = Object.values(form).some(
     (value) => value.trim().length > 0,
   );
   const canSubmitVitals =
     canRecordVitals &&
     hasVitalsFormContent &&
-    isVitalsOptionalTemperatureInputValid(form.temperatureC) &&
+    isVitalsOptionalTemperatureInputValid(canonicalTemperature) &&
     isVitalsOptionalHeartRateInputValid(form.heartRateBpm) &&
     isVitalsOptionalRespiratoryRateInputValid(form.respiratoryRateBpm) &&
-    isVitalsOptionalWeightInputValid(form.weightKg) &&
-    isVitalsOptionalBodyConditionInputValid(form.bodyConditionScore) &&
+    isVitalsOptionalWeightInputValid(canonicalWeight) &&
+    isVitalsOptionalBodyConditionInputValid(
+      form.bodyConditionScore,
+      bodyConditionScale,
+    ) &&
     isVitalsOptionalPainScoreInputValid(form.painScore) &&
     isVitalsOptionalTextInputValid(
       form.mucousMembrane,
@@ -1348,11 +1734,12 @@ function VitalsTab({
     if (!canSubmitVitals) return;
     record.mutate({
       patientId,
-      temperatureC: num(form.temperatureC),
+      temperatureC: num(canonicalTemperature),
       heartRateBpm: num(form.heartRateBpm),
       respiratoryRateBpm: num(form.respiratoryRateBpm),
-      weightKg: num(form.weightKg),
+      weightKg: num(canonicalWeight),
       bodyConditionScore: num(form.bodyConditionScore),
+      bodyConditionScale,
       painScore: num(form.painScore),
       mucousMembrane: form.mucousMembrane.trim() || undefined,
       capillaryRefillSec: num(form.capillaryRefillSec),
@@ -1370,16 +1757,28 @@ function VitalsTab({
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                Temp (C)
+                Temp ({measurementSystem === "us_customary" ? "F" : "C"})
               </label>
               <input
                 type="number"
-                min={VITALS_TEMPERATURE_MIN_C}
-                max={VITALS_TEMPERATURE_MAX_C}
+                min={
+                  measurementSystem === "us_customary"
+                    ? roundClinicalMeasurement(
+                        celsiusToFahrenheit(VITALS_TEMPERATURE_MIN_C),
+                      )
+                    : VITALS_TEMPERATURE_MIN_C
+                }
+                max={
+                  measurementSystem === "us_customary"
+                    ? roundClinicalMeasurement(
+                        celsiusToFahrenheit(VITALS_TEMPERATURE_MAX_C),
+                      )
+                    : VITALS_TEMPERATURE_MAX_C
+                }
                 step={VITALS_TEMPERATURE_STEP}
                 value={form.temperatureC}
                 aria-invalid={
-                  !isVitalsOptionalTemperatureInputValid(form.temperatureC)
+                  !isVitalsOptionalTemperatureInputValid(canonicalTemperature)
                 }
                 onChange={set("temperatureC")}
                 className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
@@ -1423,32 +1822,46 @@ function VitalsTab({
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                Weight (kg)
+                Weight ({measurementSystem === "us_customary" ? "lb" : "kg"})
               </label>
               <input
                 type="number"
-                min={VITALS_WEIGHT_MIN_KG}
-                max={VITALS_WEIGHT_MAX_KG}
+                min={
+                  measurementSystem === "us_customary"
+                    ? roundClinicalMeasurement(
+                        kilogramsToPounds(VITALS_WEIGHT_MIN_KG),
+                        3,
+                      )
+                    : VITALS_WEIGHT_MIN_KG
+                }
+                max={
+                  measurementSystem === "us_customary"
+                    ? Math.floor(kilogramsToPounds(VITALS_WEIGHT_MAX_KG))
+                    : VITALS_WEIGHT_MAX_KG
+                }
                 step={VITALS_WEIGHT_STEP}
                 value={form.weightKg}
-                aria-invalid={!isVitalsOptionalWeightInputValid(form.weightKg)}
+                aria-invalid={
+                  !isVitalsOptionalWeightInputValid(canonicalWeight)
+                }
                 onChange={set("weightKg")}
                 className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
               />
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                BCS (1-9)
+                BCS (1-{bodyConditionScale})
               </label>
               <input
                 type="number"
                 min={VITALS_BODY_CONDITION_MIN}
-                max={VITALS_BODY_CONDITION_MAX}
+                max={bodyConditionScale}
                 step={1}
                 value={form.bodyConditionScore}
                 aria-invalid={
                   !isVitalsOptionalBodyConditionInputValid(
                     form.bodyConditionScore,
+                    bodyConditionScale,
                   )
                 }
                 onChange={set("bodyConditionScore")}
@@ -1533,7 +1946,9 @@ function VitalsTab({
         <EmptyState icon={Activity} title="No vitals recorded yet" />
       ) : (
         <>
-          <VitalsTrendChart data={vitalTrend} />
+          {measurementSystem === "metric" && bodyConditionScale === 9 ? (
+            <VitalsTrendChart data={vitalTrend} />
+          ) : null}
           <div className="overflow-x-auto rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead>
@@ -1560,11 +1975,26 @@ function VitalsTab({
                     <td className="px-3 py-2">
                       {formatClinicalDateTime(v.recordedAt, timeZone, "—")}
                     </td>
-                    <td className="px-3 py-2">{v.temperatureC ?? "—"}</td>
+                    <td className="px-3 py-2">
+                      {formatClinicalTemperature(
+                        v.temperatureC,
+                        measurementSystem,
+                      )}
+                    </td>
                     <td className="px-3 py-2">{v.heartRateBpm ?? "—"}</td>
                     <td className="px-3 py-2">{v.respiratoryRateBpm ?? "—"}</td>
-                    <td className="px-3 py-2">{v.weightKg ?? "—"}</td>
-                    <td className="px-3 py-2">{v.bodyConditionScore ?? "—"}</td>
+                    <td className="px-3 py-2">
+                      {formatClinicalWeight(v.weightKg, measurementSystem)}
+                    </td>
+                    <td className="px-3 py-2">
+                      {v.bodyConditionScore !== null ? (
+                        <>
+                          {v.bodyConditionScore} / {v.bodyConditionScale}
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                     <td className="px-3 py-2">{v.painScore ?? "—"}</td>
                     <td className="min-w-64 px-3 py-2">
                       <ClinicalCorrectionControl

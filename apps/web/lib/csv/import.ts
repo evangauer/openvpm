@@ -42,6 +42,12 @@ export interface PatientImportRecord {
     | "rabbit"
     | "reptile"
     | "equine"
+    | "bovine"
+    | "ovine"
+    | "caprine"
+    | "porcine"
+    | "poultry"
+    | "camelid"
     | "other";
   breed?: string;
   sex?: "male" | "female" | "male_neutered" | "female_spayed";
@@ -109,6 +115,12 @@ const SPECIES = [
   "rabbit",
   "reptile",
   "equine",
+  "bovine",
+  "ovine",
+  "caprine",
+  "porcine",
+  "poultry",
+  "camelid",
   "other",
 ];
 

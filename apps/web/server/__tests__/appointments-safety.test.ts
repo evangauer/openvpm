@@ -91,7 +91,7 @@ function createDb(opts?: {
       for: vi.fn(async () => result),
       then: (
         resolve: (value: unknown[]) => unknown,
-        reject?: (error: unknown) => unknown
+        reject?: (error: unknown) => unknown,
       ) => Promise.resolve(result).then(resolve, reject),
     };
     const builder = {
@@ -111,7 +111,7 @@ function createDb(opts?: {
 
   const updateResults = opts?.updateResults ? [...opts.updateResults] : null;
   const updateReturning = vi.fn(
-    async () => updateResults?.shift() ?? opts?.updatedRows ?? []
+    async () => updateResults?.shift() ?? opts?.updatedRows ?? [],
   );
   const updateWhere = vi.fn(() => ({ returning: updateReturning }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
@@ -147,7 +147,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).list({
         startDate: "2026-07-01",
         endDate: "2026-07-02",
-      })
+      }),
     ).resolves.toEqual([row]);
     expect(select).toHaveBeenCalledTimes(2);
   });
@@ -165,30 +165,24 @@ describe("appointments target safety", () => {
     expect(isAppointmentDateTimeRangeValid(startTime, endTime)).toBe(true);
     expect(isAppointmentDateTimeRangeValid(startTime, startTime)).toBe(false);
     expect(
-      isAppointmentDateTimeRangeValid(
-        startTime,
-        "2026-07-01T14:04:00.000Z"
-      )
+      isAppointmentDateTimeRangeValid(startTime, "2026-07-01T14:04:00.000Z"),
     ).toBe(false);
     expect(
-      isAppointmentDateTimeRangeValid(
-        startTime,
-        "2026-07-01T22:01:00.000Z"
-      )
+      isAppointmentDateTimeRangeValid(startTime, "2026-07-01T22:01:00.000Z"),
     ).toBe(false);
 
     await expect(
       callerWithDb(db).list({
         startDate: "2026-02-31",
         endDate: endTime,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).create({
         startTime: "not-a-date",
         endTime,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -196,21 +190,21 @@ describe("appointments target safety", () => {
         startTime,
         endTime,
         notes: "n".repeat(APPOINTMENT_NOTES_MAX_LENGTH + 1),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).create({
         startTime,
         endTime: "2026-07-01T14:04:00.000Z",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).create({
         startTime,
         endTime: "2026-07-01T22:01:00.000Z",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -218,13 +212,13 @@ describe("appointments target safety", () => {
         id: APPOINTMENT_ID,
         startTime,
         endTime: startTime,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).availableSlots({
         date: "2026-02-31",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -236,7 +230,7 @@ describe("appointments target safety", () => {
         frequency: "weekly",
         interval: 1,
         occurrences: 3,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -248,7 +242,7 @@ describe("appointments target safety", () => {
         frequency: "weekly",
         interval: APPOINTMENT_RECURRENCE_INTERVAL_MAX + 1,
         occurrences: 3,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -260,7 +254,7 @@ describe("appointments target safety", () => {
         frequency: "weekly",
         interval: 1,
         occurrences: APPOINTMENT_RECURRENCE_OCCURRENCES_MAX + 1,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -273,7 +267,7 @@ describe("appointments target safety", () => {
         interval: 1,
         occurrences: 3,
         notes: "n".repeat(2001),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -289,7 +283,7 @@ describe("appointments target safety", () => {
         clientId: CLIENT_ID,
         startTime,
         endTime,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -302,7 +296,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).create({
         startTime,
         endTime,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "NOT_FOUND",
       message: "Practice not found",
@@ -322,7 +316,7 @@ describe("appointments target safety", () => {
         clientId: CLIENT_ID,
         startTime,
         endTime,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -339,7 +333,7 @@ describe("appointments target safety", () => {
         typeId: TYPE_ID,
         startTime,
         endTime,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -379,7 +373,7 @@ describe("appointments target safety", () => {
         startTime,
         endTime,
         notes: " Bring stool sample ",
-      })
+      }),
     ).resolves.toMatchObject({ id: APPOINTMENT_ID, patientId: PATIENT_ID });
 
     expect(insertValues).toHaveBeenCalledWith(
@@ -391,7 +385,7 @@ describe("appointments target safety", () => {
         roomId: ROOM_ID,
         notes: "Bring stool sample",
         practiceId: PRACTICE_ID,
-      })
+      }),
     );
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
       PRACTICE_ID,
@@ -401,12 +395,12 @@ describe("appointments target safety", () => {
         patientId: PATIENT_ID,
         clientId: CLIENT_ID,
         source: "dashboard",
-      })
+      }),
     );
     expect(mocks.recordActivationAfterAppointmentCreated).toHaveBeenCalledWith(
       db,
       PRACTICE_ID,
-      "appointments.create"
+      "appointments.create",
     );
   });
 
@@ -433,7 +427,7 @@ describe("appointments target safety", () => {
         patientId: PATIENT_ID,
         startTime,
         endTime,
-      })
+      }),
     ).resolves.toMatchObject({
       id: APPOINTMENT_ID,
       patientId: PATIENT_ID,
@@ -445,7 +439,7 @@ describe("appointments target safety", () => {
         practiceId: PRACTICE_ID,
         patientId: PATIENT_ID,
         clientId: CLIENT_ID,
-      })
+      }),
     );
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
       PRACTICE_ID,
@@ -454,7 +448,7 @@ describe("appointments target safety", () => {
         patientId: PATIENT_ID,
         clientId: CLIENT_ID,
         source: "dashboard",
-      })
+      }),
     );
   });
 
@@ -465,7 +459,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "checked_in",
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -480,7 +474,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "scheduled",
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -518,7 +512,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "scheduled",
-      })
+      }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -533,7 +527,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "checked_out",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -560,7 +554,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "confirmed",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: "Assign a doctor before confirming this appointment.",
@@ -586,7 +580,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "checked_in",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: "Assign a doctor before checking in this appointment.",
@@ -626,7 +620,7 @@ describe("appointments target safety", () => {
         id: APPOINTMENT_ID,
         status: "confirmed",
         confirmationContactMethod: "phone",
-      })
+      }),
     ).resolves.toMatchObject({
       id: APPOINTMENT_ID,
       status: "confirmed",
@@ -643,7 +637,7 @@ describe("appointments target safety", () => {
         status: "sent",
         assignedTo: USER_ID,
         dedupeKey: `appointment-confirmation:v1:${PRACTICE_ID}:${APPOINTMENT_ID}:${scheduledStateUpdatedAt.getTime()}`,
-      })
+      }),
     );
   });
 
@@ -668,7 +662,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "confirmed",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -701,10 +695,11 @@ describe("appointments target safety", () => {
         id: APPOINTMENT_ID,
         status: "confirmed",
         confirmationContactMethod: "phone",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
-      message: "Add a client phone number or record email confirmation instead.",
+      message:
+        "Add a client phone number or record email confirmation instead.",
     });
     expect(insertValues).not.toHaveBeenCalled();
     expect(updateSet).not.toHaveBeenCalled();
@@ -722,7 +717,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "cancelled",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -752,7 +747,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "checked_in",
-      })
+      }),
     ).resolves.toMatchObject({
       id: APPOINTMENT_ID,
       status: "checked_in",
@@ -771,7 +766,7 @@ describe("appointments target safety", () => {
         clientId: CLIENT_ID,
         doctorId: DOCTOR_ID,
         source: "dashboard",
-      })
+      }),
     );
   });
 
@@ -796,7 +791,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "cancelled",
-      })
+      }),
     ).resolves.toMatchObject({
       id: APPOINTMENT_ID,
       status: "cancelled",
@@ -815,7 +810,7 @@ describe("appointments target safety", () => {
         clientId: CLIENT_ID,
         doctorId: DOCTOR_ID,
         source: "dashboard",
-      })
+      }),
     );
   });
 
@@ -840,7 +835,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "in_exam",
-      })
+      }),
     ).resolves.toMatchObject({
       id: APPOINTMENT_ID,
       status: "in_exam",
@@ -870,7 +865,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "in_exam",
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -905,7 +900,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).attachPatient({
         id: APPOINTMENT_ID,
         patientId: PATIENT_ID,
-      })
+      }),
     ).resolves.toEqual(updated);
     expect(updateSet).toHaveBeenCalledWith({
       patientId: PATIENT_ID,
@@ -932,7 +927,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).attachPatient({
         id: APPOINTMENT_ID,
         patientId: PATIENT_ID,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -960,7 +955,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).attachPatient({
         id: APPOINTMENT_ID,
         patientId: PATIENT_ID,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message:
@@ -987,7 +982,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).attachPatient({
         id: APPOINTMENT_ID,
         patientId: PATIENT_ID,
-      })
+      }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     expect(select).toHaveBeenCalledTimes(1);
     expect(updateSet).not.toHaveBeenCalled();
@@ -1013,7 +1008,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).attachPatient({
         id: APPOINTMENT_ID,
         patientId: PATIENT_ID,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "CONFLICT",
       message:
@@ -1032,7 +1027,7 @@ describe("appointments target safety", () => {
       callerWithDb(db).updateStatus({
         id: APPOINTMENT_ID,
         status: "checked_in",
-      })
+      }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(updateSet).toHaveBeenCalledWith({ status: "checked_in" });
@@ -1046,7 +1041,7 @@ describe("appointments target safety", () => {
     await expect(
       callerWithDb(db).cancelRecurringSeries({
         seriesId: SERIES_ID,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).toHaveBeenCalledTimes(1);
@@ -1089,7 +1084,7 @@ describe("appointments target safety", () => {
     await expect(
       callerWithDb(db).cancelRecurringSeries({
         seriesId: SERIES_ID,
-      })
+      }),
     ).resolves.toEqual({ seriesId: SERIES_ID, cancelledCount: 2 });
 
     expect(transaction).toHaveBeenCalledTimes(2);
@@ -1108,7 +1103,7 @@ describe("appointments target safety", () => {
         appointmentId: APPOINTMENT_ID,
         recurringSeriesId: SERIES_ID,
         source: "recurring_series",
-      })
+      }),
     );
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(
       PRACTICE_ID,
@@ -1118,7 +1113,7 @@ describe("appointments target safety", () => {
         appointmentId: FUTURE_APPOINTMENT_ID,
         recurringSeriesId: SERIES_ID,
         source: "recurring_series",
-      })
+      }),
     );
   });
 
@@ -1161,7 +1156,7 @@ describe("appointments target safety", () => {
         id: APPOINTMENT_ID,
         startTime,
         endTime,
-      })
+      }),
     ).resolves.toMatchObject({
       id: APPOINTMENT_ID,
       status: "scheduled",
@@ -1192,7 +1187,7 @@ describe("appointments target safety", () => {
         clientId: CLIENT_ID,
         typeId: TYPE_ID,
         source: "dashboard",
-      })
+      }),
     );
   });
 
@@ -1219,7 +1214,7 @@ describe("appointments target safety", () => {
         doctorId: DOCTOR_ID,
         startTime,
         endTime,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(updateSet).not.toHaveBeenCalled();
@@ -1269,7 +1264,7 @@ describe("appointments target safety", () => {
         roomId: ROOM_ID,
         startTime,
         endTime,
-      })
+      }),
     ).resolves.toMatchObject({
       id: APPOINTMENT_ID,
       doctorId: DOCTOR_ID,
@@ -1309,7 +1304,7 @@ describe("appointments target safety", () => {
         doctorId: null,
         startTime,
         endTime,
-      })
+      }),
     ).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
       message: "Assign a doctor before saving a confirmed appointment.",
@@ -1354,14 +1349,14 @@ describe("appointments target safety", () => {
     });
 
     await expect(
-      callerWithDb(db).reschedule({ id: APPOINTMENT_ID, startTime, endTime })
+      callerWithDb(db).reschedule({ id: APPOINTMENT_ID, startTime, endTime }),
     ).resolves.toMatchObject({
       id: APPOINTMENT_ID,
       status: "scheduled",
       confirmationRequired: true,
     });
     expect(updateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "scheduled" })
+      expect.objectContaining({ status: "scheduled" }),
     );
   });
 
@@ -1405,7 +1400,7 @@ describe("appointments target safety", () => {
         locationId: LOCATION_ID,
         startTime,
         endTime,
-      })
+      }),
     ).resolves.toMatchObject({
       status: "scheduled",
       locationId: LOCATION_ID,
@@ -1415,7 +1410,7 @@ describe("appointments target safety", () => {
       expect.objectContaining({
         status: "scheduled",
         locationId: LOCATION_ID,
-      })
+      }),
     );
   });
 
@@ -1460,39 +1455,42 @@ describe("appointments target safety", () => {
         roomId: ROOM_ID,
         startTime,
         endTime,
-      })
+      }),
     ).resolves.toMatchObject({
       status: "confirmed",
       confirmationRequired: false,
     });
     expect(updateSet).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "confirmed", roomId: ROOM_ID })
+      expect.objectContaining({ status: "confirmed", roomId: ROOM_ID }),
     );
   });
 
-  it.each(["checked_in", "in_exam", "checked_out", "no_show", "cancelled"] as const)(
-    "rejects rescheduling %s appointments",
-    async (status) => {
-      const { db, updateSet } = createDb({
-        selectResults: [
-          [{ id: APPOINTMENT_ID, status, doctorId: DOCTOR_ID, roomId: ROOM_ID }],
-        ],
-      });
+  it.each([
+    "checked_in",
+    "in_exam",
+    "checked_out",
+    "no_show",
+    "cancelled",
+  ] as const)("rejects rescheduling %s appointments", async (status) => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [{ id: APPOINTMENT_ID, status, doctorId: DOCTOR_ID, roomId: ROOM_ID }],
+      ],
+    });
 
-      await expect(
-        callerWithDb(db).reschedule({
-          id: APPOINTMENT_ID,
-          startTime,
-          endTime,
-        })
-      ).rejects.toMatchObject({
-        code: "BAD_REQUEST",
-        message: "Only scheduled or confirmed appointments can be rescheduled.",
-      });
+    await expect(
+      callerWithDb(db).reschedule({
+        id: APPOINTMENT_ID,
+        startTime,
+        endTime,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "Only scheduled or confirmed appointments can be rescheduled.",
+    });
 
-      expect(updateSet).not.toHaveBeenCalled();
-    }
-  );
+    expect(updateSet).not.toHaveBeenCalled();
+  });
 
   it("rejects reschedule races when appointment status changes after validation", async () => {
     const { db, updateSet } = createDb({
@@ -1518,7 +1516,7 @@ describe("appointments target safety", () => {
         doctorId: null,
         startTime,
         endTime,
-      })
+      }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(updateSet).toHaveBeenCalledWith({
@@ -1539,7 +1537,7 @@ describe("appointments target safety", () => {
       callerWithDb(doctorDb.db).availableSlots({
         date: "2026-07-01",
         doctorId: DOCTOR_ID,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     const roomDb = createDb({
@@ -1549,7 +1547,7 @@ describe("appointments target safety", () => {
       callerWithDb(roomDb.db).availableSlots({
         date: "2026-07-01",
         roomId: ROOM_ID,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
@@ -1607,7 +1605,7 @@ describe("appointments target safety", () => {
         frequency: "weekly",
         interval: 1,
         occurrences: 3,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -1631,7 +1629,7 @@ describe("appointments target safety", () => {
         frequency: "weekly",
         interval: 1,
         occurrences: 1,
-      })
+      }),
     ).resolves.toEqual({ seriesId: SERIES_ID, created: 1, skipped: 0 });
 
     expect(insertValues).toHaveBeenNthCalledWith(
@@ -1641,7 +1639,7 @@ describe("appointments target safety", () => {
         patientId: PATIENT_ID,
         clientId: CLIENT_ID,
         recurringSeriesId: SERIES_ID,
-      })
+      }),
     );
   });
 
@@ -1665,7 +1663,7 @@ describe("appointments target safety", () => {
         interval: 1,
         occurrences: 2,
         notes: " Follow-up recheck ",
-      })
+      }),
     ).resolves.toEqual({ seriesId: SERIES_ID, created: 2, skipped: 0 });
 
     expect(transaction).toHaveBeenCalledTimes(2);
@@ -1675,7 +1673,7 @@ describe("appointments target safety", () => {
         practiceId: PRACTICE_ID,
         frequency: "weekly",
         interval: 1,
-      })
+      }),
     );
     expect(insertValues).toHaveBeenNthCalledWith(
       2,
@@ -1685,7 +1683,7 @@ describe("appointments target safety", () => {
         clientId: CLIENT_ID,
         notes: "Follow-up recheck",
         recurringSeriesId: SERIES_ID,
-      })
+      }),
     );
     expect(insertValues).toHaveBeenNthCalledWith(
       3,
@@ -1695,12 +1693,12 @@ describe("appointments target safety", () => {
         clientId: CLIENT_ID,
         notes: "Follow-up recheck",
         recurringSeriesId: SERIES_ID,
-      })
+      }),
     );
     expect(mocks.recordActivationAfterAppointmentCreated).toHaveBeenCalledWith(
       db,
       PRACTICE_ID,
-      "appointments.createRecurring"
+      "appointments.createRecurring",
     );
   });
 
@@ -1723,28 +1721,28 @@ describe("appointments target safety", () => {
         frequency: "weekly",
         interval: 1,
         occurrences: 2,
-      })
+      }),
     ).resolves.toEqual({ seriesId: SERIES_ID, created: 2, skipped: 0 });
 
     expect(insertValues).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
         endDate: "2026-03-14",
-      })
+      }),
     );
     expect(insertValues).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         startTime: new Date("2026-03-08T07:30:00.000Z"),
         endTime: new Date("2026-03-08T08:00:00.000Z"),
-      })
+      }),
     );
     expect(insertValues).toHaveBeenNthCalledWith(
       3,
       expect.objectContaining({
         startTime: new Date("2026-03-15T06:30:00.000Z"),
         endTime: new Date("2026-03-15T07:00:00.000Z"),
-      })
+      }),
     );
   });
 });
@@ -1752,7 +1750,7 @@ describe("appointments target safety", () => {
 describe("appointments display join scoping", () => {
   const source = readFileSync(
     new URL("../routers/appointments.ts", import.meta.url),
-    "utf8"
+    "utf8",
   );
 
   it("keeps joined patient, client, type, and room rows tenant scoped and active", () => {
@@ -1765,26 +1763,26 @@ describe("appointments display join scoping", () => {
         new RegExp(
           `leftJoin\\(\\s*${table},\\s*and\\(\\s*eq\\(${foreignKey.replace(
             ".",
-            "\\."
-          )}, ${table}\\.id\\),\\s*eq\\(${table}\\.practiceId, ctx\\.practiceId\\),\\s*isNull\\(${table}\\.deletedAt\\)\\s*\\)\\s*\\)`,
-          "s"
-        )
+            "\\.",
+          )}, ${table}\\.id\\),\\s*eq\\(${table}\\.practiceId, ctx\\.practiceId\\),\\s*isNull\\(${table}\\.deletedAt\\),?\\s*\\),?\\s*\\)`,
+          "s",
+        ),
       );
     }
   });
 
   it("keeps historical doctor attribution tenant scoped after deactivation", () => {
     expect(source).toMatch(
-      /leftJoin\(\s*users,\s*and\(\s*eq\(appointments\.doctorId, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\)\s*\)\s*\)/s
+      /leftJoin\(\s*users,\s*and\(\s*eq\(appointments\.doctorId, users\.id\),\s*eq\(users\.practiceId, ctx\.practiceId\),?\s*\),?\s*\)/s,
     );
     expect(source).not.toMatch(
-      /eq\(appointments\.doctorId, users\.id\)[\s\S]{0,120}?isNull\(users\.deletedAt\)/s
+      /eq\(appointments\.doctorId, users\.id\)[\s\S]{0,120}?isNull\(users\.deletedAt\)/s,
     );
   });
 
   it("keeps displayed patients tied to the appointment client", () => {
     const joins = source.match(
-      /leftJoin\(\s*patients,\s*and\(\s*eq\(appointments\.patientId, patients\.id\),\s*eq\(patients\.clientId, appointments\.clientId\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*isNull\(patients\.deletedAt\)\s*\)\s*\)/gs
+      /leftJoin\(\s*patients,\s*and\(\s*eq\(appointments\.patientId, patients\.id\),\s*eq\(patients\.clientId, appointments\.clientId\),\s*eq\(patients\.practiceId, ctx\.practiceId\),\s*isNull\(patients\.deletedAt\),?\s*\),?\s*\)/gs,
     );
 
     expect(joins?.length).toBeGreaterThanOrEqual(2);
@@ -1805,7 +1803,9 @@ describe("appointments display join scoping", () => {
   });
 
   it("uses the practice timezone for date-only list ranges", () => {
-    expect(source).toContain("const range = await appointmentListRange(ctx, input)");
+    expect(source).toContain(
+      "const range = await appointmentListRange(ctx, input)",
+    );
     expect(source).toContain("dateInputDayUtcRange(value, timeZone).start");
     expect(source).toContain("return new Date(end.getTime() - 1)");
   });
@@ -1815,34 +1815,36 @@ describe("appointments display join scoping", () => {
     expect(source).toContain("function assertActivePractice");
     expect(source).toContain('message: "Practice not found"');
     expect(
-      source.match(/activePracticePredicate\(ctx\.practiceId\)/g)?.length ?? 0
+      source.match(/activePracticePredicate\(ctx\.practiceId\)/g)?.length ?? 0,
     ).toBeGreaterThanOrEqual(14);
     expect(source).toContain("activePracticePredicate(practiceId)");
     expect(source).toMatch(
-      /eq\(appointments\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(appointments\.deletedAt\)/
+      /eq\(appointments\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(appointments\.deletedAt\)/,
     );
     expect(source).toMatch(
-      /eq\(recurringSeries\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(recurringSeries\.deletedAt\)/
+      /eq\(recurringSeries\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(recurringSeries\.deletedAt\)/,
     );
     expect(source).toMatch(
-      /eq\(clients\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(clients\.deletedAt\)/
+      /eq\(clients\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(clients\.deletedAt\)/,
     );
     expect(source).toMatch(
-      /eq\(users\.practiceId, ctx\.practiceId\),\s+eq\(users\.isVeterinarian, true\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(users\.deletedAt\)/
+      /eq\(users\.practiceId, ctx\.practiceId\),\s+eq\(users\.isVeterinarian, true\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(users\.deletedAt\)/,
     );
   });
 
   it("exposes and safely cancels recurring series from schedule appointments", () => {
     const recurringSeriesSelects = source.match(
-      /recurringSeriesId: appointments\.recurringSeriesId/g
+      /recurringSeriesId: appointments\.recurringSeriesId/g,
     );
 
     expect(recurringSeriesSelects?.length).toBeGreaterThanOrEqual(2);
     expect(source).toContain("cancelRecurringSeries: protectedProcedure");
     expect(source).toContain("eq(recurringSeries.practiceId, ctx.practiceId)");
-    expect(source).toContain("eq(appointments.recurringSeriesId, input.seriesId)");
     expect(source).toContain(
-      'inArray(appointments.status, ["scheduled", "confirmed"])'
+      "eq(appointments.recurringSeriesId, input.seriesId)",
+    );
+    expect(source).toContain(
+      'inArray(appointments.status, ["scheduled", "confirmed"])',
     );
     expect(source).toContain("gte(appointments.startTime, now)");
   });
@@ -1853,10 +1855,10 @@ describe("appointments display join scoping", () => {
     expect(source).toContain("recurrenceBaseParts");
     expect(source).toContain("dateInputTimeUtcInstant(");
     expect(source).toContain(
-      "formatDateInputForTimeZone(\n              lastOccurrenceDate"
+      "formatDateInputForTimeZone(\n              lastOccurrenceDate",
     );
     expect(source).not.toContain(
-      'lastOccurrenceDate.toISOString().split("T")[0]'
+      'lastOccurrenceDate.toISOString().split("T")[0]',
     );
   });
 });

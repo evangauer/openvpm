@@ -6,21 +6,14 @@ import Link from "next/link";
 import { Activity, AlertCircle, Download, Pill, Shield } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
+import { PATIENT_SPECIES_EMOJI } from "@/lib/patients/species";
 import {
   calculatePortalAge,
   formatPortalDate,
   portalCalendarDayDifference,
 } from "@/lib/portal/date";
 
-const speciesEmoji: Record<string, string> = {
-  canine: "🐶",
-  feline: "🐱",
-  avian: "🐦",
-  rabbit: "🐇",
-  reptile: "🦎",
-  equine: "🐴",
-  other: "🐾",
-};
+const speciesEmoji: Record<string, string> = PATIENT_SPECIES_EMOJI;
 
 function formatDate(
   d: string | Date | null,

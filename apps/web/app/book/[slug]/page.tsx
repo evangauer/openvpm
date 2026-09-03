@@ -6,18 +6,10 @@ import { AlertCircle, CalendarX2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
 import { BOOKING_REASON_MAX_LENGTH } from "@/lib/booking/page-config";
-
-const SPECIES_OPTIONS = [
-  { value: "canine", label: "Dog" },
-  { value: "feline", label: "Cat" },
-  { value: "avian", label: "Bird" },
-  { value: "rabbit", label: "Rabbit" },
-  { value: "reptile", label: "Reptile" },
-  { value: "equine", label: "Horse" },
-  { value: "other", label: "Other" },
-] as const;
-
-type SpeciesValue = (typeof SPECIES_OPTIONS)[number]["value"];
+import {
+  PATIENT_SPECIES_OPTIONS,
+  type PatientSpecies,
+} from "@/lib/patients/species";
 
 function dateInputValue(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -51,14 +43,14 @@ export default function PublicBookingPage() {
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [petName, setPetName] = useState("");
-  const [species, setSpecies] = useState<SpeciesValue>("canine");
+  const [species, setSpecies] = useState<PatientSpecies>("canine");
   const [reason, setReason] = useState("");
   // Honeypot: hidden from humans, filled by bots.
   const [website, setWebsite] = useState("");
 
   const slots = trpc.booking.availableSlots.useQuery(
     { slug, date, typeId, locationId: locationId || undefined },
-    { enabled: !!slug && !!date && !!typeId && !!locationId }
+    { enabled: !!slug && !!date && !!typeId && !!locationId },
   );
 
   useEffect(() => {
@@ -71,7 +63,7 @@ export default function PublicBookingPage() {
     if (!page.data) return null;
     const now = new Date();
     const max = new Date(
-      now.getTime() + page.data.bookingWindowDays * 24 * 60 * 60 * 1000
+      now.getTime() + page.data.bookingWindowDays * 24 * 60 * 60 * 1000,
     );
     return { min: dateInputValue(now), max: dateInputValue(max) };
   }, [page.data]);
@@ -111,7 +103,7 @@ export default function PublicBookingPage() {
     email.trim() &&
     petName.trim() &&
     reason.trim() &&
-    !book.isPending
+    !book.isPending,
   );
 
   function submit(e: React.FormEvent) {
@@ -149,7 +141,11 @@ export default function PublicBookingPage() {
             strokeWidth={2}
             stroke="currentColor"
           >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M4.5 12.75l6 6 9-13.5"
+            />
           </svg>
         </div>
         <h1 className="text-xl font-bold text-gray-900 mb-2">Request sent!</h1>
@@ -171,7 +167,9 @@ export default function PublicBookingPage() {
             </div>
             <div className="flex justify-between gap-4">
               <dt>Preferred time</dt>
-              <dd className="font-medium text-gray-900">{date} at {time}</dd>
+              <dd className="font-medium text-gray-900">
+                {date} at {time}
+              </dd>
             </div>
             <div className="flex justify-between gap-4">
               <dt>Clinic</dt>
@@ -183,7 +181,9 @@ export default function PublicBookingPage() {
         </div>
         <p className="text-gray-500 text-sm mt-4">
           We sent the details to the clinic. Questions?{" "}
-          {data.practice.phone ? `Call ${data.practice.phone}.` : "Contact the clinic."}
+          {data.practice.phone
+            ? `Call ${data.practice.phone}.`
+            : "Contact the clinic."}
         </p>
       </div>
     );
@@ -209,7 +209,9 @@ export default function PublicBookingPage() {
             </div>
           )}
           <div>
-            <h1 className="text-xl font-bold text-gray-900">{data.practice.name}</h1>
+            <h1 className="text-xl font-bold text-gray-900">
+              {data.practice.name}
+            </h1>
             <p className="text-sm text-gray-500">
               {[
                 selectedLocation?.address ?? data.practice.address,
@@ -225,7 +227,10 @@ export default function PublicBookingPage() {
         )}
       </header>
 
-      <form onSubmit={submit} className="rounded-2xl bg-white p-6 shadow-sm space-y-5">
+      <form
+        onSubmit={submit}
+        className="rounded-2xl bg-white p-6 shadow-sm space-y-5"
+      >
         <div>
           <h2 className="text-base font-semibold text-gray-900">
             Request an appointment
@@ -341,46 +346,52 @@ export default function PublicBookingPage() {
                 Suggested times could not be loaded. Please try again.
               </p>
             )}
-            {!slots.isLoading && !slots.error && slots.data && slots.data.length === 0 && (
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <CalendarX2 className="h-4 w-4" />
-                No suggested request times that day. Try another date.
-              </div>
-            )}
-            {!slots.isLoading && !slots.error && slots.data && slots.data.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {slots.data.map((s) => {
-                  const selected = time === s.time;
-                  return (
-                    <label key={s.iso} className="cursor-pointer">
-                      <input
-                        type="radio"
-                        name={`${formId}-time`}
-                        value={s.time}
-                        checked={selected}
-                        onChange={() => setTime(s.time)}
-                        required
-                        className="peer sr-only"
-                      />
-                      <span
-                        className={`block rounded-md border px-3 py-1.5 text-sm transition-colors peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 peer-focus-visible:ring-offset-2 ${
-                          selected
-                            ? "text-white"
-                            : "border-gray-200 text-gray-600 hover:border-gray-400"
-                        }`}
-                        style={
-                          selected
-                            ? { backgroundColor: accent, borderColor: accent }
-                            : undefined
-                        }
-                      >
-                        {s.time}
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-            )}
+            {!slots.isLoading &&
+              !slots.error &&
+              slots.data &&
+              slots.data.length === 0 && (
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <CalendarX2 className="h-4 w-4" />
+                  No suggested request times that day. Try another date.
+                </div>
+              )}
+            {!slots.isLoading &&
+              !slots.error &&
+              slots.data &&
+              slots.data.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {slots.data.map((s) => {
+                    const selected = time === s.time;
+                    return (
+                      <label key={s.iso} className="cursor-pointer">
+                        <input
+                          type="radio"
+                          name={`${formId}-time`}
+                          value={s.time}
+                          checked={selected}
+                          onChange={() => setTime(s.time)}
+                          required
+                          className="peer sr-only"
+                        />
+                        <span
+                          className={`block rounded-md border px-3 py-1.5 text-sm transition-colors peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 peer-focus-visible:ring-offset-2 ${
+                            selected
+                              ? "text-white"
+                              : "border-gray-200 text-gray-600 hover:border-gray-400"
+                          }`}
+                          style={
+                            selected
+                              ? { backgroundColor: accent, borderColor: accent }
+                              : undefined
+                          }
+                        >
+                          {s.time}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
           </fieldset>
         )}
 
@@ -446,7 +457,8 @@ export default function PublicBookingPage() {
                 htmlFor={phoneFieldId}
                 className="block text-sm font-medium text-gray-700 mb-1.5"
               >
-                Phone <span className="text-gray-400 font-normal">(optional)</span>
+                Phone{" "}
+                <span className="text-gray-400 font-normal">(optional)</span>
               </label>
               <input
                 id={phoneFieldId}
@@ -501,10 +513,10 @@ export default function PublicBookingPage() {
               <select
                 id={speciesFieldId}
                 value={species}
-                onChange={(e) => setSpecies(e.target.value as SpeciesValue)}
+                onChange={(e) => setSpecies(e.target.value as PatientSpecies)}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
               >
-                {SPECIES_OPTIONS.map((s) => (
+                {PATIENT_SPECIES_OPTIONS.map((s) => (
                   <option key={s.value} value={s.value}>
                     {s.label}
                   </option>
@@ -533,7 +545,9 @@ export default function PublicBookingPage() {
           </div>
         </div>
 
-        {book.error && <p className="text-sm text-red-600">{book.error.message}</p>}
+        {book.error && (
+          <p className="text-sm text-red-600">{book.error.message}</p>
+        )}
 
         <button
           type="submit"
@@ -549,7 +563,9 @@ export default function PublicBookingPage() {
         </button>
         <p className="text-center text-xs text-gray-400">
           Prefer to talk to a person?
-          {data.practice.phone ? ` Call ${data.practice.phone}.` : " Contact the clinic."}
+          {data.practice.phone
+            ? ` Call ${data.practice.phone}.`
+            : " Contact the clinic."}
         </p>
       </form>
     </div>

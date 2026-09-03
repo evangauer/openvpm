@@ -25,16 +25,9 @@ import {
   Archive,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { PATIENT_SPECIES_EMOJI } from "@/lib/patients/species";
 
-const speciesEmoji: Record<string, string> = {
-  canine: "\uD83D\uDC36",
-  feline: "\uD83D\uDC31",
-  avian: "\uD83D\uDC26",
-  rabbit: "\uD83D\uDC30",
-  reptile: "\uD83E\uDD8E",
-  equine: "\uD83D\uDC34",
-  other: "\uD83D\uDC3E",
-};
+const speciesEmoji: Record<string, string> = PATIENT_SPECIES_EMOJI;
 
 type UserRole =
   | "admin"

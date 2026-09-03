@@ -23,6 +23,7 @@ import {
   VITALS_TEMPERATURE_STEP,
   VITALS_WEIGHT_MAX_KG,
   VITALS_WEIGHT_MIN_KG,
+  VITALS_WEIGHT_SCALE,
   VITALS_WEIGHT_STEP,
   isVitalsOptionalBodyConditionInputValid,
   isVitalsOptionalCapillaryRefillInputValid,
@@ -47,6 +48,15 @@ import { ClinicalCorrectionControl } from "@/components/records/clinical-correct
 import { cn } from "@/lib/utils";
 import { useOnlineStatus } from "@/lib/use-online-status";
 import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes-guard";
+import {
+  celsiusToFahrenheit,
+  fahrenheitToCelsius,
+  kilogramsToPounds,
+  poundsToKilograms,
+  roundClinicalMeasurement,
+  type BodyConditionScale,
+  type MeasurementSystem,
+} from "@/lib/ambulatory-workspace";
 
 type VitalsFormState = {
   temperatureC: string;
@@ -79,6 +89,27 @@ function optionalNumber(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function canonicalMeasurementInput(
+  value: string,
+  converter: ((value: number) => number) | undefined,
+  scale: number,
+): string {
+  const trimmed = value.trim();
+  if (!trimmed || !converter) return trimmed;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return trimmed;
+  return String(roundClinicalMeasurement(converter(parsed), scale));
+}
+
+function weightInputMinimum(measurementSystem: MeasurementSystem): number {
+  if (measurementSystem === "metric") return VITALS_WEIGHT_MIN_KG;
+  const minimumPounds = kilogramsToPounds(VITALS_WEIGHT_MIN_KG);
+  return roundClinicalMeasurement(
+    Math.ceil(minimumPounds / VITALS_WEIGHT_STEP) * VITALS_WEIGHT_STEP,
+    VITALS_WEIGHT_SCALE,
+  );
+}
+
 function formatRecordedAt(
   value: Date | string,
   timeZone?: string | null,
@@ -107,6 +138,30 @@ function displayMeasurement(
 ): string {
   if (value === null || value === undefined || value === "") return "—";
   return `${value}${unit}`;
+}
+
+function displayClinicalTemperature(
+  value: number | string | null | undefined,
+  measurementSystem: MeasurementSystem,
+): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "—";
+  return measurementSystem === "us_customary"
+    ? `${roundClinicalMeasurement(celsiusToFahrenheit(parsed))} F`
+    : `${roundClinicalMeasurement(parsed)} C`;
+}
+
+function displayClinicalWeight(
+  value: number | string | null | undefined,
+  measurementSystem: MeasurementSystem,
+): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "—";
+  return measurementSystem === "us_customary"
+    ? `${roundClinicalMeasurement(kilogramsToPounds(parsed))} lb`
+    : `${roundClinicalMeasurement(parsed, 3)} kg`;
 }
 
 function VitalNumberInput({
@@ -153,6 +208,8 @@ export function EncounterVitalsCard({
   visitStateReady,
   visitOpen,
   timeZone,
+  measurementSystem = "metric",
+  bodyConditionScale = 9,
 }: {
   patientId: string;
   appointmentId: string;
@@ -161,6 +218,8 @@ export function EncounterVitalsCard({
   visitStateReady: boolean;
   visitOpen: boolean;
   timeZone?: string | null;
+  measurementSystem?: MeasurementSystem;
+  bodyConditionScale?: BodyConditionScale;
 }) {
   const utils = trpc.useUtils();
   const isOnline = useOnlineStatus();
@@ -208,16 +267,29 @@ export function EncounterVitalsCard({
     "Vitals have not been recorded on the server. Leave and lose these values?",
   );
   const vitalsReady = Boolean(vitalsQuery.data) && !vitalsQuery.error;
+  const canonicalTemperature = canonicalMeasurementInput(
+    form.temperatureC,
+    measurementSystem === "us_customary" ? fahrenheitToCelsius : undefined,
+    1,
+  );
+  const canonicalWeight = canonicalMeasurementInput(
+    form.weightKg,
+    measurementSystem === "us_customary" ? poundsToKilograms : undefined,
+    3,
+  );
   const canSubmit =
     canRecord &&
     isOnline &&
     vitalsReady &&
     hasContent &&
-    isVitalsOptionalTemperatureInputValid(form.temperatureC) &&
+    isVitalsOptionalTemperatureInputValid(canonicalTemperature) &&
     isVitalsOptionalHeartRateInputValid(form.heartRateBpm) &&
     isVitalsOptionalRespiratoryRateInputValid(form.respiratoryRateBpm) &&
-    isVitalsOptionalWeightInputValid(form.weightKg) &&
-    isVitalsOptionalBodyConditionInputValid(form.bodyConditionScore) &&
+    isVitalsOptionalWeightInputValid(canonicalWeight) &&
+    isVitalsOptionalBodyConditionInputValid(
+      form.bodyConditionScore,
+      bodyConditionScale,
+    ) &&
     isVitalsOptionalPainScoreInputValid(form.painScore) &&
     isVitalsOptionalCapillaryRefillInputValid(form.capillaryRefillSec) &&
     isVitalsOptionalTextInputValid(
@@ -233,11 +305,12 @@ export function EncounterVitalsCard({
     recordVitals.mutate({
       patientId,
       appointmentId,
-      temperatureC: optionalNumber(form.temperatureC),
+      temperatureC: optionalNumber(canonicalTemperature),
       heartRateBpm: optionalNumber(form.heartRateBpm),
       respiratoryRateBpm: optionalNumber(form.respiratoryRateBpm),
-      weightKg: optionalNumber(form.weightKg),
+      weightKg: optionalNumber(canonicalWeight),
       bodyConditionScore: optionalNumber(form.bodyConditionScore),
+      bodyConditionScale,
       painScore: optionalNumber(form.painScore),
       mucousMembrane: form.mucousMembrane.trim() || undefined,
       capillaryRefillSec: optionalNumber(form.capillaryRefillSec),
@@ -276,13 +349,27 @@ export function EncounterVitalsCard({
             ) : null}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               <VitalNumberInput
-                label="Temp (C)"
+                label={`Temp (${measurementSystem === "us_customary" ? "F" : "C"})`}
                 name="temperatureC"
-                min={VITALS_TEMPERATURE_MIN_C}
-                max={VITALS_TEMPERATURE_MAX_C}
+                min={
+                  measurementSystem === "us_customary"
+                    ? roundClinicalMeasurement(
+                        celsiusToFahrenheit(VITALS_TEMPERATURE_MIN_C),
+                      )
+                    : VITALS_TEMPERATURE_MIN_C
+                }
+                max={
+                  measurementSystem === "us_customary"
+                    ? roundClinicalMeasurement(
+                        celsiusToFahrenheit(VITALS_TEMPERATURE_MAX_C),
+                      )
+                    : VITALS_TEMPERATURE_MAX_C
+                }
                 step={VITALS_TEMPERATURE_STEP}
                 value={form.temperatureC}
-                valid={isVitalsOptionalTemperatureInputValid(form.temperatureC)}
+                valid={isVitalsOptionalTemperatureInputValid(
+                  canonicalTemperature,
+                )}
                 onChange={updateField}
               />
               <VitalNumberInput
@@ -308,24 +395,29 @@ export function EncounterVitalsCard({
                 onChange={updateField}
               />
               <VitalNumberInput
-                label="Weight (kg)"
+                label={`Weight (${measurementSystem === "us_customary" ? "lb" : "kg"})`}
                 name="weightKg"
-                min={VITALS_WEIGHT_MIN_KG}
-                max={VITALS_WEIGHT_MAX_KG}
+                min={weightInputMinimum(measurementSystem)}
+                max={
+                  measurementSystem === "us_customary"
+                    ? Math.floor(kilogramsToPounds(VITALS_WEIGHT_MAX_KG))
+                    : VITALS_WEIGHT_MAX_KG
+                }
                 step={VITALS_WEIGHT_STEP}
                 value={form.weightKg}
-                valid={isVitalsOptionalWeightInputValid(form.weightKg)}
+                valid={isVitalsOptionalWeightInputValid(canonicalWeight)}
                 onChange={updateField}
               />
               <VitalNumberInput
-                label="BCS (1-9)"
+                label={`BCS (1-${bodyConditionScale})`}
                 name="bodyConditionScore"
                 min={VITALS_BODY_CONDITION_MIN}
-                max={VITALS_BODY_CONDITION_MAX}
+                max={bodyConditionScale}
                 step={1}
                 value={form.bodyConditionScore}
                 valid={isVitalsOptionalBodyConditionInputValid(
                   form.bodyConditionScore,
+                  bodyConditionScale,
                 )}
                 onChange={updateField}
               />
@@ -415,7 +507,8 @@ export function EncounterVitalsCard({
                   key={vital.id}
                   className={cn(
                     "rounded-md border border-border bg-muted/10 p-3",
-                    vital.correctionId && "border-destructive/40 bg-destructive/5",
+                    vital.correctionId &&
+                      "border-destructive/40 bg-destructive/5",
                   )}
                 >
                   <p className="mb-2 text-xs font-medium text-muted-foreground">
@@ -424,7 +517,12 @@ export function EncounterVitalsCard({
                   <dl className="grid grid-cols-3 gap-x-3 gap-y-2 text-sm sm:grid-cols-6">
                     <div>
                       <dt className="text-xs text-muted-foreground">Temp</dt>
-                      <dd>{displayMeasurement(vital.temperatureC, " C")}</dd>
+                      <dd>
+                        {displayClinicalTemperature(
+                          vital.temperatureC,
+                          measurementSystem,
+                        )}
+                      </dd>
                     </div>
                     <div>
                       <dt className="text-xs text-muted-foreground">HR</dt>
@@ -438,11 +536,21 @@ export function EncounterVitalsCard({
                     </div>
                     <div>
                       <dt className="text-xs text-muted-foreground">Weight</dt>
-                      <dd>{displayMeasurement(vital.weightKg, " kg")}</dd>
+                      <dd>
+                        {displayClinicalWeight(
+                          vital.weightKg,
+                          measurementSystem,
+                        )}
+                      </dd>
                     </div>
                     <div>
                       <dt className="text-xs text-muted-foreground">BCS</dt>
-                      <dd>{displayMeasurement(vital.bodyConditionScore)}</dd>
+                      <dd>
+                        {displayMeasurement(vital.bodyConditionScore)}
+                        {vital.bodyConditionScore
+                          ? ` / ${vital.bodyConditionScale}`
+                          : ""}
+                      </dd>
                     </div>
                     <div>
                       <dt className="text-xs text-muted-foreground">Pain</dt>

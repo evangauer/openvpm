@@ -8,18 +8,11 @@ import {
   PawPrint,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { PATIENT_SPECIES_EMOJI } from "@/lib/patients/species";
 import { EmptyState } from "@/components/common/empty-state";
 import { calculatePortalAge } from "@/lib/portal/date";
 
-const speciesEmoji: Record<string, string> = {
-  canine: "🐶",
-  feline: "🐱",
-  avian: "🐦",
-  rabbit: "🐇",
-  reptile: "🦎",
-  equine: "🐴",
-  other: "🐾",
-};
+const speciesEmoji: Record<string, string> = PATIENT_SPECIES_EMOJI;
 
 export default function PortalHomePage() {
   const { data, isLoading, error } = trpc.portal.getClient.useQuery({});

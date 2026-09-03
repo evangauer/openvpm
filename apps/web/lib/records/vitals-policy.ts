@@ -7,7 +7,9 @@ export const VITALS_HEART_RATE_MAX_BPM = 400;
 export const VITALS_RESPIRATORY_RATE_MIN_BPM = 0;
 export const VITALS_RESPIRATORY_RATE_MAX_BPM = 300;
 export const VITALS_WEIGHT_MIN_KG = 0.001;
-export const VITALS_WEIGHT_MAX_KG = 200;
+// Numeric storage supports 99,999.999 kg. Keep a conservative clinical ceiling
+// that still accommodates large bovine/equine patients and group weights.
+export const VITALS_WEIGHT_MAX_KG = 10_000;
 export const VITALS_WEIGHT_STEP = 0.001;
 export const VITALS_WEIGHT_SCALE = 3;
 export const VITALS_BODY_CONDITION_MIN = 1;
@@ -36,14 +38,12 @@ function isOptionalDecimalInputValid(
     min: number;
     max: number;
     scale: number;
-  }
+  },
 ): boolean {
   const trimmed = value.trim();
   if (!trimmed) return true;
   const parsed = decimalInputToNumber(trimmed, options.scale);
-  return (
-    parsed !== null && parsed >= options.min && parsed <= options.max
-  );
+  return parsed !== null && parsed >= options.min && parsed <= options.max;
 }
 
 function isOptionalIntegerInputValid(
@@ -51,7 +51,7 @@ function isOptionalIntegerInputValid(
   options: {
     min: number;
     max: number;
-  }
+  },
 ): boolean {
   const trimmed = value.trim();
   if (!trimmed) return true;
@@ -80,7 +80,7 @@ export function isVitalsOptionalHeartRateInputValid(value: string): boolean {
 }
 
 export function isVitalsOptionalRespiratoryRateInputValid(
-  value: string
+  value: string,
 ): boolean {
   return isOptionalIntegerInputValid(value, {
     min: VITALS_RESPIRATORY_RATE_MIN_BPM,
@@ -97,11 +97,12 @@ export function isVitalsOptionalWeightInputValid(value: string): boolean {
 }
 
 export function isVitalsOptionalBodyConditionInputValid(
-  value: string
+  value: string,
+  max: 5 | 9 = VITALS_BODY_CONDITION_MAX,
 ): boolean {
   return isOptionalIntegerInputValid(value, {
     min: VITALS_BODY_CONDITION_MIN,
-    max: VITALS_BODY_CONDITION_MAX,
+    max,
   });
 }
 
@@ -113,7 +114,7 @@ export function isVitalsOptionalPainScoreInputValid(value: string): boolean {
 }
 
 export function isVitalsOptionalCapillaryRefillInputValid(
-  value: string
+  value: string,
 ): boolean {
   return isOptionalDecimalInputValid(value, {
     min: VITALS_CAPILLARY_REFILL_MIN_SEC,
@@ -124,7 +125,7 @@ export function isVitalsOptionalCapillaryRefillInputValid(
 
 export function isVitalsOptionalTextInputValid(
   value: string,
-  maxLength: number
+  maxLength: number,
 ): boolean {
   return value.trim().length <= maxLength;
 }

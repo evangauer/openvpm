@@ -153,6 +153,7 @@ import {
   buildPatientHistoryQuery,
   type PatientHistoryRawRow,
 } from "../patient-history";
+import { ambulatoryWorkspaceSettings } from "@/lib/ambulatory-workspace";
 
 export { PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH } from "@/lib/records/prescription-policy";
 export {
@@ -263,6 +264,7 @@ async function practiceSettings(ctx: RecordsContext): Promise<{
   phone: string | null;
   email: string | null;
   timezone: string | null;
+  ambulatoryWorkspace: ReturnType<typeof ambulatoryWorkspaceSettings>;
 }> {
   const [practice] = await ctx.db
     .select({
@@ -271,6 +273,7 @@ async function practiceSettings(ctx: RecordsContext): Promise<{
       phone: practices.phone,
       email: practices.email,
       timezone: practices.timezone,
+      settings: practices.settings,
     })
     .from(practices)
     .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
@@ -289,6 +292,7 @@ async function practiceSettings(ctx: RecordsContext): Promise<{
     phone: practice.phone ?? null,
     email: practice.email ?? null,
     timezone: practice.timezone ?? null,
+    ambulatoryWorkspace: ambulatoryWorkspaceSettings(practice.settings),
   };
 }
 

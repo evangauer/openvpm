@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import { PATIENT_SPECIES_EMOJI } from "@/lib/patients/species";
 import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -119,13 +120,7 @@ const STATUS_COLORS: Record<AppointmentStatus, string> = {
   cancelled: "bg-red-500",
 };
 
-const SPECIES_EMOJI: Record<string, string> = {
-  canine: "\uD83D\uDC36",
-  feline: "\uD83D\uDC31",
-  rabbit: "\uD83D\uDC30",
-  avian: "\uD83D\uDC26",
-  reptile: "\uD83E\uDD8E",
-};
+const SPECIES_EMOJI: Record<string, string> = PATIENT_SPECIES_EMOJI;
 
 function canUpdateWhiteboardStatusRole(role?: string | null): boolean {
   return (

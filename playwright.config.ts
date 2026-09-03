@@ -2,7 +2,8 @@ import { defineConfig } from "@playwright/test";
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
 const webServerCommand =
-  process.env.PLAYWRIGHT_WEB_SERVER_COMMAND ?? "pnpm dev --filter=@openpims/web";
+  process.env.PLAYWRIGHT_WEB_SERVER_COMMAND ??
+  "pnpm dev --filter=@openpims/web";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -18,7 +19,10 @@ export default defineConfig({
   webServer: {
     command: webServerCommand,
     url: baseURL,
-    reuseExistingServer: !process.env.CI,
+    // The ambulatory acceptance spec mutates a disposable clinical record and
+    // must never attach to a pre-existing server with an unknown DATABASE_URL.
+    reuseExistingServer:
+      process.env.AMBULATORY_E2E === "1" ? false : !process.env.CI,
     timeout: 30000,
   },
 });

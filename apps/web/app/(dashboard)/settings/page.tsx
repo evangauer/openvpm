@@ -47,6 +47,7 @@ import { BookingTab } from "@/components/settings/booking-tab";
 import { ProviderHours } from "@/components/settings/provider-hours";
 import { MigrationHelpRequest } from "@/components/onboarding/migration-help-request";
 import { ServicesTab } from "@/components/settings/services-tab";
+import { AmbulatoryWorkspaceSettingsCard } from "@/components/settings/ambulatory-workspace-settings";
 import {
   TemplateCatalogPicker,
   type TemplateCatalogItem,
@@ -950,6 +951,8 @@ function PracticeInfoTab() {
             </div>
           )}
         </div>
+
+        <AmbulatoryWorkspaceSettingsCard settings={practice.settings} />
       </div>
 
       <Button

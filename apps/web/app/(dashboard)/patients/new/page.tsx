@@ -21,16 +21,9 @@ import {
   isOptionalPatientTextValid,
   isRequiredPatientTextValid,
 } from "@/lib/patients/policy";
+import { PATIENT_SPECIES_OPTIONS } from "@/lib/patients/species";
 
-const speciesOptions = [
-  { value: "canine", label: "Canine" },
-  { value: "feline", label: "Feline" },
-  { value: "avian", label: "Avian" },
-  { value: "rabbit", label: "Rabbit" },
-  { value: "reptile", label: "Reptile" },
-  { value: "equine", label: "Equine" },
-  { value: "other", label: "Other" },
-] as const;
+const speciesOptions = PATIENT_SPECIES_OPTIONS;
 
 const sexOptions = [
   { value: "male", label: "Male (Intact)" },
@@ -129,7 +122,7 @@ function NewPatientForm() {
     error: clientSearchError,
   } = trpc.clients.search.useQuery(
     { query: trimmedClientSearch },
-    { enabled: canSearchClients }
+    { enabled: canSearchClients },
   );
   const clientSearchMissing =
     canSearchClients &&
@@ -141,7 +134,7 @@ function NewPatientForm() {
   useEffect(() => {
     if (
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-        preselectedClientId
+        preselectedClientId,
       ) ||
       !preselectedClientName ||
       preselectedClientName.length > CLIENT_SEARCH_MAX_LENGTH
@@ -151,7 +144,7 @@ function NewPatientForm() {
     setForm((current) =>
       current.clientId
         ? current
-        : { ...current, clientId: preselectedClientId }
+        : { ...current, clientId: preselectedClientId },
     );
     setSelectedClientName((current) => current || preselectedClientName);
   }, [preselectedClientId, preselectedClientName]);
@@ -161,7 +154,7 @@ function NewPatientForm() {
       toast.success("Patient created");
       if (firstClinicDay) {
         router.push(
-          `/schedule?setup=first-visit&patient=${encodeURIComponent(patient.name)}`
+          `/schedule?setup=first-visit&patient=${encodeURIComponent(patient.name)}`,
         );
         return;
       }
@@ -180,16 +173,16 @@ function NewPatientForm() {
     isOptionalPatientTextValid(form.color, PATIENT_COLOR_MAX_LENGTH) &&
     isOptionalPatientTextValid(
       form.microchipNumber,
-      PATIENT_MICROCHIP_NUMBER_MAX_LENGTH
+      PATIENT_MICROCHIP_NUMBER_MAX_LENGTH,
     );
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
 
-    const submittedDob = (
-      e.currentTarget.elements.namedItem("dob") as HTMLInputElement | null
-    )?.value ?? form.dob;
+    const submittedDob =
+      (e.currentTarget.elements.namedItem("dob") as HTMLInputElement | null)
+        ?.value ?? form.dob;
 
     if (!form.clientId) {
       setError("Please select an owner (client).");
@@ -446,7 +439,10 @@ function NewPatientForm() {
         </div>
 
         <div className="flex gap-3 pt-4">
-          <Button type="submit" disabled={!canSubmit || createPatient.isPending}>
+          <Button
+            type="submit"
+            disabled={!canSubmit || createPatient.isPending}
+          >
             {createPatient.isPending ? "Creating..." : "Create Patient"}
           </Button>
           <Button

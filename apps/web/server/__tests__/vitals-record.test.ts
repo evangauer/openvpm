@@ -38,8 +38,10 @@ function thenableRows(result: unknown[]) {
     limit: vi.fn(async () => result),
     for: vi.fn(async () => result),
     orderBy: vi.fn(() => query),
-    then: (resolve: (value: unknown[]) => unknown, reject?: (e: unknown) => unknown) =>
-      Promise.resolve(result).then(resolve, reject),
+    then: (
+      resolve: (value: unknown[]) => unknown,
+      reject?: (e: unknown) => unknown,
+    ) => Promise.resolve(result).then(resolve, reject),
   };
   return query;
 }
@@ -97,7 +99,7 @@ describe("vitals.record tenant safety", () => {
         callerWithDb(db, role).record({
           patientId: PATIENT_ID,
           temperatureC: 38.6,
-        })
+        }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
     }
 
@@ -112,35 +114,35 @@ describe("vitals.record tenant safety", () => {
       callerWithDb(db).listByPatient({
         patientId: PATIENT_ID,
         limit: 1.5,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).listByAppointment({
         appointmentId: APPOINTMENT_ID,
         limit: 1.5,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).record({
         patientId: PATIENT_ID,
         temperatureC: 38.66,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).record({
         patientId: PATIENT_ID,
         weightKg: 12.3456,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).record({
         patientId: PATIENT_ID,
         capillaryRefillSec: 1.55,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -154,14 +156,14 @@ describe("vitals.record tenant safety", () => {
       callerWithDb(db).record({
         patientId: PATIENT_ID,
         mucousMembrane: "A".repeat(VITALS_MUCOUS_MEMBRANE_MAX_LENGTH + 1),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       callerWithDb(db).record({
         patientId: PATIENT_ID,
         notes: "A".repeat(VITALS_NOTES_MAX_LENGTH + 1),
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -174,7 +176,22 @@ describe("vitals.record tenant safety", () => {
     await expect(
       callerWithDb(db).record({
         patientId: PATIENT_ID,
-      })
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("enforces the configured body-condition scale before querying", async () => {
+    const { db, select, insertValues } = createDb({});
+
+    await expect(
+      callerWithDb(db).record({
+        patientId: PATIENT_ID,
+        bodyConditionScore: 6,
+        bodyConditionScale: 5,
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
@@ -188,7 +205,7 @@ describe("vitals.record tenant safety", () => {
       callerWithDb(db).record({
         patientId: PATIENT_ID,
         temperatureC: 38.6,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
@@ -197,31 +214,31 @@ describe("vitals.record tenant safety", () => {
   it("requires active practice predicates for vitals history and recording", () => {
     const source = readFileSync(
       new URL("../routers/vitals.ts", import.meta.url),
-      "utf8"
+      "utf8",
     );
     const visitIntegritySource = readFileSync(
       new URL("../../lib/records/visit-integrity.ts", import.meta.url),
-      "utf8"
+      "utf8",
     );
 
     expect(source).toContain("function activePracticePredicate");
     expect(source).toContain("from ${practices}");
     expect(source).toContain("${practices.deletedAt} is null");
     expect(
-      source.match(/activePracticePredicate\(practiceId\)/g)?.length ?? 0
+      source.match(/activePracticePredicate\(practiceId\)/g)?.length ?? 0,
     ).toBeGreaterThanOrEqual(1);
     expect(source).toContain("activePracticePredicate(ctx.practiceId)");
     expect(source).toMatch(
-      /eq\(patients\.practiceId, practiceId\),\s+activePracticePredicate\(practiceId\),\s+isNull\(patients\.deletedAt\)/
+      /eq\(patients\.practiceId, practiceId\),\s+activePracticePredicate\(practiceId\),\s+isNull\(patients\.deletedAt\)/,
     );
     expect(source).toContain("lockOpenVisitForClinicalAppend");
     expect(visitIntegritySource).toContain("from ${practices}");
     expect(visitIntegritySource).toContain("${practices.deletedAt} is null");
     expect(source).toMatch(
-      /eq\(vitalSigns\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(vitalSigns\.deletedAt\)/
+      /eq\(vitalSigns\.practiceId, ctx\.practiceId\),\s+activePracticePredicate\(ctx\.practiceId\),\s+isNull\(vitalSigns\.deletedAt\)/,
     );
     expect(source).toContain(
-      "eq(vitalSigns.appointmentId, input.appointmentId)"
+      "eq(vitalSigns.appointmentId, input.appointmentId)",
     );
     expect(source).toContain("return ctx.db.transaction(async (tx) =>");
   });
@@ -241,7 +258,7 @@ describe("vitals.record tenant safety", () => {
     await expect(
       callerWithDb(db, "front_desk").listByAppointment({
         appointmentId: APPOINTMENT_ID,
-      })
+      }),
     ).resolves.toEqual([recorded]);
 
     expect(select).toHaveBeenCalledTimes(1);
@@ -258,14 +275,16 @@ describe("vitals.record tenant safety", () => {
         patientId: PATIENT_ID,
         appointmentId: APPOINTMENT_ID,
         temperatureC: 38.6,
-      })
+      }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("records vitals for a patient in the current practice", async () => {
-    const { db, insertValues } = createDb({ patientRows: [{ id: PATIENT_ID }] });
+    const { db, insertValues } = createDb({
+      patientRows: [{ id: PATIENT_ID }],
+    });
 
     await expect(
       callerWithDb(db).record({
@@ -274,7 +293,9 @@ describe("vitals.record tenant safety", () => {
         weightKg: 12.4,
         capillaryRefillSec: 1.5,
         heartRateBpm: 110,
-      })
+        bodyConditionScore: 4,
+        bodyConditionScale: 5,
+      }),
     ).resolves.toMatchObject({ patientId: PATIENT_ID });
 
     expect(insertValues).toHaveBeenCalledWith(
@@ -286,7 +307,9 @@ describe("vitals.record tenant safety", () => {
         weightKg: "12.4",
         capillaryRefillSec: "1.5",
         heartRateBpm: 110,
-      })
+        bodyConditionScore: 4,
+        bodyConditionScale: 5,
+      }),
     );
   });
 
@@ -304,7 +327,7 @@ describe("vitals.record tenant safety", () => {
         patientId: PATIENT_ID,
         appointmentId: APPOINTMENT_ID,
         weightKg: 12.4,
-      })
+      }),
     ).resolves.toMatchObject({ patientId: PATIENT_ID });
 
     expect(insertValues).toHaveBeenCalledWith(
@@ -314,7 +337,7 @@ describe("vitals.record tenant safety", () => {
         patientId: PATIENT_ID,
         appointmentId: APPOINTMENT_ID,
         weightKg: "12.4",
-      })
+      }),
     );
   });
 });

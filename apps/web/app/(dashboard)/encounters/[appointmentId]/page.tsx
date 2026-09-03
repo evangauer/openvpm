@@ -21,6 +21,7 @@ import {
   Check,
   ClipboardCheck,
   ClipboardList,
+  Copy,
   Download,
   FileText,
   FlaskConical,
@@ -62,6 +63,9 @@ import { ServicePicker } from "@/components/billing/service-picker";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
 import { EncounterVitalsCard } from "@/components/records/encounter-vitals-card";
+import { AmbulatorySoapCard } from "@/components/records/ambulatory-soap-card";
+import { AmbulatoryVisitRecordsCard } from "@/components/records/ambulatory-visit-records-card";
+import { RecentClinicalItems } from "@/components/records/recent-clinical-items";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -121,6 +125,14 @@ type ClinicalDraftFields = {
   followUpAssignedTo: string;
   documentationExceptionReason: string;
 };
+
+function providerDisplayName(name: string | null): string {
+  const normalized = name?.trim();
+  if (!normalized) return "Unassigned provider";
+  return /^(dr\.?|doctor)\s/i.test(normalized)
+    ? normalized
+    : `Dr. ${normalized}`;
+}
 
 function chargeItemsFingerprint(items: ChargeItem[]): string {
   return JSON.stringify(
@@ -434,6 +446,7 @@ export default function EncounterWorkspacePage() {
   const { data: session, status: sessionStatus } = useSession();
   const appointmentId = params.appointmentId;
   const utils = trpc.useUtils();
+  const [ambulatorySoapPlan, setAmbulatorySoapPlan] = useState("");
 
   const appointmentQuery = trpc.appointments.getById.useQuery(
     { id: appointmentId },
@@ -455,6 +468,9 @@ export default function EncounterWorkspacePage() {
     { appointmentId },
     { enabled: Boolean(appointmentId) },
   );
+  const recordsSettingsQuery = trpc.records.settings.useQuery(undefined, {
+    staleTime: 5 * 60 * 1000,
+  });
 
   const updateStatus = trpc.appointments.updateStatus.useMutation({
     onSuccess: () => {
@@ -489,12 +505,19 @@ export default function EncounterWorkspacePage() {
 
   const role = session?.user?.role;
   const patient = patientQuery.data;
+  const ambulatoryProfile = recordsSettingsQuery.data?.ambulatoryWorkspace;
+  const isAmbulatoryWorkspace = appointment.origin === "field";
+  const ambulatorySettingsReady =
+    appointment.origin !== "field" ||
+    (Boolean(ambulatoryProfile) && !recordsSettingsQuery.error);
   const clientName = [appointment.clientFirstName, appointment.clientLastName]
     .filter(Boolean)
     .join(" ");
   const nextAction = nextVisitAction(appointment.status);
   const visitClinicalStateReady =
-    Boolean(closeoutQuery.data) && !closeoutQuery.error;
+    Boolean(closeoutQuery.data) &&
+    !closeoutQuery.error &&
+    ambulatorySettingsReady;
   const visitOpenForClinicalEntry =
     visitClinicalStateReady &&
     appointment.status === "in_exam" &&
@@ -518,6 +541,14 @@ export default function EncounterWorkspacePage() {
         </Button>
       </div>
 
+      {appointment.patientId ? (
+        <RecentClinicalItems
+          patientId={appointment.patientId}
+          appointmentId={appointmentId}
+          enabled={isAmbulatoryWorkspace}
+        />
+      ) : null}
+
       <header className="flex flex-col gap-4 rounded-lg border border-border bg-card p-5 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -534,8 +565,10 @@ export default function EncounterWorkspacePage() {
               </Badge>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
-              {appointment.typeName ?? "Appointment"} ·{" "}
-              {clientName || "No client"}
+              {appointment.origin === "field"
+                ? "Field visit"
+                : (appointment.typeName ?? "Appointment")}{" "}
+              · {clientName || "No client"}
             </p>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted-foreground">
               <span className="inline-flex items-center gap-1.5">
@@ -547,9 +580,7 @@ export default function EncounterWorkspacePage() {
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <UserRound className="h-4 w-4" />
-                {appointment.doctorName
-                  ? `Dr. ${appointment.doctorName}`
-                  : "Unassigned provider"}
+                {providerDisplayName(appointment.doctorName)}
               </span>
               {appointment.locationName || appointment.roomName ? (
                 <span className="inline-flex items-center gap-1.5">
@@ -614,6 +645,14 @@ export default function EncounterWorkspacePage() {
       {appointment.notes ? (
         <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm">
           <span className="font-medium">Visit note:</span> {appointment.notes}
+        </div>
+      ) : null}
+
+      {appointment.origin === "field" &&
+      (recordsSettingsQuery.error || !ambulatoryProfile) ? (
+        <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+          Ambulatory settings could not be verified. Clinical writes are locked
+          until the practice profile reloads.
         </div>
       ) : null}
 
@@ -697,6 +736,7 @@ export default function EncounterWorkspacePage() {
 
                   <div className="flex flex-wrap gap-2">
                     {canCreateSoap(role) &&
+                    !isAmbulatoryWorkspace &&
                     closeoutQuery.data?.linkedSoapCount === 0 &&
                     !closeoutQuery.data?.soapDraft &&
                     closeoutQuery.data?.missingSoapReplacement ? (
@@ -710,6 +750,7 @@ export default function EncounterWorkspacePage() {
                       </Button>
                     ) : null}
                     {canCreateSoap(role) &&
+                    !isAmbulatoryWorkspace &&
                     appointment.status === "in_exam" &&
                     closeoutQuery.data?.linkedSoapCount === 0 &&
                     !closeoutQuery.data?.missingSoapReplacement &&
@@ -727,7 +768,9 @@ export default function EncounterWorkspacePage() {
                         </a>
                       </Button>
                     ) : null}
-                    {canCreateSoap(role) && visitOpenForClinicalEntry ? (
+                    {canCreateSoap(role) &&
+                    !isAmbulatoryWorkspace &&
+                    visitOpenForClinicalEntry ? (
                       <Button size="sm" variant="outline" asChild>
                         <Link
                           href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=prescriptions&new=1`}
@@ -739,14 +782,16 @@ export default function EncounterWorkspacePage() {
                     ) : null}
                     {canRecordVisitWork(role) && visitOpenForClinicalEntry ? (
                       <>
-                        <Button size="sm" variant="outline" asChild>
-                          <Link
-                            href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=vaccinations&new=1`}
-                          >
-                            <Syringe className="mr-2 h-4 w-4" />
-                            Vaccination
-                          </Link>
-                        </Button>
+                        {!isAmbulatoryWorkspace ? (
+                          <Button size="sm" variant="outline" asChild>
+                            <Link
+                              href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=vaccinations&new=1`}
+                            >
+                              <Syringe className="mr-2 h-4 w-4" />
+                              Vaccination
+                            </Link>
+                          </Button>
+                        ) : null}
                         <Button size="sm" variant="outline" asChild>
                           <Link
                             href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=labResults&new=1`}
@@ -798,6 +843,17 @@ export default function EncounterWorkspacePage() {
             </CardContent>
           </Card>
 
+          {isAmbulatoryWorkspace && appointment.patientId ? (
+            <AmbulatorySoapCard
+              patientId={appointment.patientId}
+              appointmentId={appointmentId}
+              canWrite={canCreateSoap(role)}
+              visitOpen={visitOpenForClinicalEntry}
+              linkedSoapCount={closeoutQuery.data?.linkedSoapCount ?? 0}
+              onPlanChange={setAmbulatorySoapPlan}
+            />
+          ) : null}
+
           {appointment.patientId ? (
             <EncounterVitalsCard
               patientId={appointment.patientId}
@@ -807,10 +863,43 @@ export default function EncounterWorkspacePage() {
               visitStateReady={visitClinicalStateReady}
               visitOpen={visitOpenForClinicalEntry}
               timeZone={taxConfigQuery.data?.timezone}
+              measurementSystem={
+                isAmbulatoryWorkspace
+                  ? ambulatoryProfile?.measurementSystem
+                  : "metric"
+              }
+              bodyConditionScale={
+                isAmbulatoryWorkspace
+                  ? ambulatoryProfile?.bodyConditionScale
+                  : 9
+              }
             />
           ) : null}
 
-          {canRecordVitals(role) &&
+          {isAmbulatoryWorkspace && appointment.patientId ? (
+            <AmbulatoryVisitRecordsCard
+              patientId={appointment.patientId}
+              appointmentId={appointmentId}
+              role={role}
+              visitOpen={visitOpenForClinicalEntry}
+              timeZone={taxConfigQuery.data?.timezone}
+            />
+          ) : null}
+
+          {isAmbulatoryWorkspace && appointment.patientId ? (
+            <VisitCloseout
+              appointment={appointment}
+              appointmentId={appointmentId}
+              role={role}
+              closeoutQuery={closeoutQuery}
+              invoicesQuery={invoicesQuery}
+              compact={ambulatoryProfile?.compactCloseout === true}
+              soapPlan={ambulatorySoapPlan}
+            />
+          ) : null}
+
+          {!isAmbulatoryWorkspace &&
+          canRecordVitals(role) &&
           appointment.patientId &&
           appointment.clientId ? (
             <TreatmentPlanComposer
@@ -821,13 +910,15 @@ export default function EncounterWorkspacePage() {
             />
           ) : null}
 
-          <VisitCloseout
-            appointment={appointment}
-            appointmentId={appointmentId}
-            role={role}
-            closeoutQuery={closeoutQuery}
-            invoicesQuery={invoicesQuery}
-          />
+          {!isAmbulatoryWorkspace ? (
+            <VisitCloseout
+              appointment={appointment}
+              appointmentId={appointmentId}
+              role={role}
+              closeoutQuery={closeoutQuery}
+              invoicesQuery={invoicesQuery}
+            />
+          ) : null}
 
           <EncounterInvoices
             appointmentId={appointmentId}
@@ -1067,6 +1158,8 @@ function VisitCloseout({
   role,
   closeoutQuery,
   invoicesQuery,
+  compact = false,
+  soapPlan = "",
 }: {
   appointment: {
     status: string;
@@ -1083,9 +1176,12 @@ function VisitCloseout({
   role?: string | null;
   closeoutQuery: CloseoutQueryState;
   invoicesQuery: InvoiceQueryState;
+  compact?: boolean;
+  soapPlan?: string;
 }) {
   const utils = trpc.useUtils();
   const isOnline = useOnlineStatus();
+  const [compactExpanded, setCompactExpanded] = useState(!compact);
   const data = closeoutQuery.data;
   const closeout = data?.closeout ?? null;
   const activeInvoice = data?.invoices[0] ?? null;
@@ -1126,6 +1222,10 @@ function VisitCloseout({
   >("idle");
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState<Date | null>(null);
   const [conflictRevision, setConflictRevision] = useState<number | null>(null);
+  const [copiedPlanSnapshot, setCopiedPlanSnapshot] = useState<{
+    plan: string;
+    instructions: string;
+  } | null>(null);
   const draftInitializedRef = useRef(false);
   const revisionRef = useRef(0);
   const lastSavedFingerprintRef = useRef("");
@@ -1171,6 +1271,7 @@ function VisitCloseout({
     setFollowUpDueDate(fields.followUpDueDate);
     setFollowUpAssignedTo(fields.followUpAssignedTo);
     setDocumentationExceptionReason(fields.documentationExceptionReason);
+    setCopiedPlanSnapshot(null);
     fieldsRef.current = fields;
   }, []);
 
@@ -1320,6 +1421,25 @@ function VisitCloseout({
   const amendingClinical = Boolean(closeout?.amendmentDraft);
   const clinicalLocked = signedClinical && !amendingClinical;
   const isCompleted = closeout?.status === "completed";
+  const normalizedSoapPlan = soapPlan.trim();
+  const planCopyState = !copiedPlanSnapshot
+    ? "available"
+    : normalizedSoapPlan !== copiedPlanSnapshot.plan
+      ? "plan_changed"
+      : dischargeInstructions !== copiedPlanSnapshot.instructions
+        ? "instructions_edited"
+        : "copied";
+
+  function copySoapPlanToOwnerInstructions() {
+    if (!normalizedSoapPlan || clinicalLocked || !canDraftClinical) return;
+    setDischargeInstructions(normalizedSoapPlan);
+    setNoInstructionsReason("");
+    setCopiedPlanSnapshot({
+      plan: normalizedSoapPlan,
+      instructions: normalizedSoapPlan,
+    });
+    toast.success("Plan copied to owner instructions for review");
+  }
   const persistCloseoutDraft = useCallback(async () => {
     if (!draftInitializedRef.current || clinicalLocked || !canDraftClinical) {
       return null;
@@ -1679,15 +1799,117 @@ function VisitCloseout({
     );
   }
 
+  const compactPendingActions = isCompleted
+    ? []
+    : !signedClinical
+      ? [
+          appointment.status !== "in_exam" && !amendingClinical
+            ? "Start the exam"
+            : null,
+          data.soapDraft
+            ? "Finalize or discard the SOAP draft"
+            : data.linkedSoapCount === 0 && !documentationExceptionReason.trim()
+              ? "Link SOAP documentation or record an exception"
+              : null,
+          !dischargeInstructions.trim() && !noInstructionsReason.trim()
+            ? "Prepare owner home-care instructions"
+            : null,
+          !prescriptionDisposition
+            ? "Confirm prescription disposition"
+            : data.activeMedications.length > 0 &&
+                prescriptionDisposition !== "prescribed"
+              ? "Include linked prescriptions in the handoff"
+              : data.activeMedications.length === 0 &&
+                  prescriptionDisposition !== "not_needed"
+                ? "Confirm that no prescription is needed"
+                : null,
+          !followUpDisposition
+            ? "Confirm follow-up disposition"
+            : followUpDisposition === "scheduled" && !followUpAppointmentId
+              ? "Choose the scheduled follow-up"
+              : followUpDisposition === "needed" &&
+                  (!followUpDueDate || !followUpAssignedTo)
+                ? "Set a due date and accountable follow-up owner"
+                : null,
+        ].filter((action): action is string => Boolean(action))
+      : [
+          !chargeDisposition ? "Resolve billing disposition" : null,
+          !handoffMethod ? "Record the owner handoff method" : null,
+        ].filter((action): action is string => Boolean(action));
+
+  if (compact && !compactExpanded) {
+    return (
+      <Card id="visit-closeout" className="scroll-mt-4" tabIndex={-1}>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle>Finish field visit</CardTitle>
+              <CardDescription>
+                Review only the clinical, billing, or owner-handoff decisions
+                still needed before safe checkout.
+              </CardDescription>
+            </div>
+            <Badge variant={isCompleted ? "success" : "outline"}>
+              {isCompleted
+                ? "Completed"
+                : signedClinical
+                  ? "Clinical instructions signed"
+                  : closeout
+                    ? "Draft saved"
+                    : "Ready for review"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {compactPendingActions.length > 0 ? (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+              <p className="text-sm font-medium">
+                {compactPendingActions.length} decision
+                {compactPendingActions.length === 1 ? "" : "s"} still needed
+              </p>
+              <ul className="mt-2 grid gap-1 text-sm text-muted-foreground sm:grid-cols-2">
+                {compactPendingActions.map((action) => (
+                  <li key={action} className="flex items-start gap-2">
+                    <span aria-hidden="true">•</span>
+                    <span>{action}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm">
+              {isCompleted
+                ? "The field visit has a durable clinical and operational closeout."
+                : "Visible field decisions are complete. Review the final server-validated safety checks."}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              SOAP, performed-work reconciliation, and payment controls remain
+              enforced. Only outstanding field decisions are surfaced here.
+            </p>
+            <Button type="button" onClick={() => setCompactExpanded(true)}>
+              <ClipboardCheck className="mr-2 h-4 w-4" />
+              {isCompleted ? "View closeout" : "Review and finish"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card id="visit-closeout" className="scroll-mt-4" tabIndex={-1}>
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <CardTitle>Visit closeout</CardTitle>
+            <CardTitle>
+              {compact ? "Finish field visit" : "Visit closeout"}
+            </CardTitle>
             <CardDescription>
-              Finalize clinical instructions, then verify billing and owner
-              handoff before checkout.
+              {compact
+                ? "Resolve the remaining owner, clinical, and billing decisions without bypassing checkout safeguards."
+                : "Finalize clinical instructions, then verify billing and owner handoff before checkout."}
             </CardDescription>
           </div>
           <Badge variant={isCompleted ? "success" : "outline"}>
@@ -1703,6 +1925,16 @@ function VisitCloseout({
                     ? "Draft saved"
                     : "Not started"}
           </Badge>
+          {compact ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setCompactExpanded(false)}
+            >
+              Collapse
+            </Button>
+          ) : null}
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -1769,6 +2001,10 @@ function VisitCloseout({
               setFollowUpAssignedTo={setFollowUpAssignedTo}
               documentationExceptionReason={documentationExceptionReason}
               setDocumentationExceptionReason={setDocumentationExceptionReason}
+              compact={compact}
+              soapPlan={soapPlan}
+              planCopyState={planCopyState}
+              onCopySoapPlan={copySoapPlanToOwnerInstructions}
               linkedSoapCount={data.linkedSoapCount}
               missingSoapReplacement={data.missingSoapReplacement}
               soapReplacementHref={
@@ -2175,6 +2411,14 @@ type ClinicalCloseoutFormProps = {
   setFollowUpAssignedTo: (value: string) => void;
   documentationExceptionReason: string;
   setDocumentationExceptionReason: (value: string) => void;
+  compact: boolean;
+  soapPlan: string;
+  planCopyState:
+    | "available"
+    | "copied"
+    | "instructions_edited"
+    | "plan_changed";
+  onCopySoapPlan: () => void;
   linkedSoapCount: number;
   missingSoapReplacement: { sourceNoteId: string } | null;
   soapReplacementHref: string | null;
@@ -2263,17 +2507,35 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
             : props.saveState === "unsaved"
               ? "Changes have not reached the server yet."
               : "Server draft recovery is ready.";
+  const diagnosisField = (
+    <div>
+      <label className="text-sm font-medium" htmlFor="closeout-diagnosis">
+        Diagnosis or visit summary{" "}
+        <span className="text-muted-foreground">(optional)</span>
+      </label>
+      <Textarea
+        id="closeout-diagnosis"
+        value={props.diagnosisSummary}
+        onChange={(event) => props.setDiagnosisSummary(event.target.value)}
+        rows={3}
+        className="mt-1"
+      />
+    </div>
+  );
 
   return (
     <div className="space-y-4 rounded-md border border-border p-4">
       <div>
         <h3 className="font-medium">
-          1. Clinical owner handoff{props.isAmendment ? " amendment" : ""}
+          1. {props.compact ? "Field owner handoff" : "Clinical owner handoff"}
+          {props.isAmendment ? " amendment" : ""}
         </h3>
         <p className="text-sm text-muted-foreground">
           {props.isAmendment
             ? "The current signed discharge remains active until this attributed replacement is finalized."
-            : "Finalized content becomes the durable discharge record and cannot be silently edited."}
+            : props.compact
+              ? "Complete only the outstanding owner-facing decisions. Finalization still creates the same durable discharge record."
+              : "Finalized content becomes the durable discharge record and cannot be silently edited."}
         </p>
       </div>
       <div
@@ -2311,23 +2573,54 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
           </div>
         </div>
       ) : null}
+      {!props.compact ? diagnosisField : null}
       <div>
-        <label className="text-sm font-medium" htmlFor="closeout-diagnosis">
-          Diagnosis or visit summary{" "}
-          <span className="text-muted-foreground">(optional)</span>
-        </label>
-        <Textarea
-          id="closeout-diagnosis"
-          value={props.diagnosisSummary}
-          onChange={(event) => props.setDiagnosisSummary(event.target.value)}
-          rows={3}
-          className="mt-1"
-        />
-      </div>
-      <div>
-        <label className="text-sm font-medium" htmlFor="closeout-instructions">
-          Home-care instructions <span aria-hidden="true">*</span>
-        </label>
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <label
+              className="text-sm font-medium"
+              htmlFor="closeout-instructions"
+            >
+              Home-care instructions <span aria-hidden="true">*</span>
+            </label>
+            <p className="text-xs text-muted-foreground">
+              Internal SOAP content is never added automatically. Copy the Plan
+              only as a starting point, then review the owner-facing wording.
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={!props.soapPlan.trim() || props.isSaving}
+            onClick={props.onCopySoapPlan}
+          >
+            <Copy className="mr-2 h-4 w-4" />
+            Copy from Plan
+          </Button>
+        </div>
+        <div
+          className={`mt-2 rounded-md border px-3 py-2 text-xs ${
+            props.planCopyState === "copied" ||
+            props.planCopyState === "plan_changed"
+              ? "border-amber-500/40 bg-amber-500/10"
+              : props.planCopyState === "instructions_edited"
+                ? "border-emerald-500/40 bg-emerald-500/10"
+                : "border-border bg-muted/20 text-muted-foreground"
+          }`}
+          role="status"
+          aria-live="polite"
+        >
+          {props.planCopyState === "copied"
+            ? "Copied from the current Plan. Review and edit the text below before signing the owner handoff."
+            : props.planCopyState === "instructions_edited"
+              ? "Owner instructions were edited after the Plan was copied. Verify the final wording before signing."
+              : props.planCopyState === "plan_changed"
+                ? "The SOAP Plan changed after the last copy. Review both records and copy again only if the owner instructions should be replaced."
+                : props.soapPlan.trim()
+                  ? "The current Plan is available. Existing owner instructions stay unchanged unless you copy it."
+                  : "Add or load a SOAP Plan before using the copy action."}
+        </div>
         <Textarea
           id="closeout-instructions"
           value={props.dischargeInstructions}
@@ -2371,6 +2664,7 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
           className="mt-1"
         />
       </div>
+      {props.compact ? diagnosisField : null}
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
           <label
@@ -2846,12 +3140,12 @@ function OperationalCloseoutForm({
   );
   const zeroDollarInvoiceReady = Boolean(
     activeInvoice &&
-      activeInvoice.itemCount > 0 &&
-      activeInvoice.status === "draft" &&
-      moneyToCents(activeInvoice.total) === 0 &&
-      moneyToCents(activeInvoice.paidAmount) === 0 &&
-      moneyToCents(activeInvoice.adjustedAmount) === 0 &&
-      activeInvoice.balanceDueCents === 0,
+    activeInvoice.itemCount > 0 &&
+    activeInvoice.status === "draft" &&
+    moneyToCents(activeInvoice.total) === 0 &&
+    moneyToCents(activeInvoice.paidAmount) === 0 &&
+    moneyToCents(activeInvoice.adjustedAmount) === 0 &&
+    activeInvoice.balanceDueCents === 0,
   );
   const noChargeReady = !activeInvoice || zeroDollarInvoiceReady;
   const selectedDispositionReady =

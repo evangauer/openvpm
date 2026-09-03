@@ -65,13 +65,13 @@ const WAITLIST_ID = "00000000-0000-0000-0000-000000000006";
 const SCHEDULE_ID = "00000000-0000-0000-0000-000000000007";
 const LOCATION_ID = "00000000-0000-0000-0000-000000000008";
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, role = "admin") {
   const session = {
     user: {
       id: USER_ID,
       email: "admin@example.com",
       name: "Admin",
-      role: "admin",
+      role,
       practiceId: PRACTICE_ID,
     },
   };
@@ -136,6 +136,48 @@ beforeEach(() => {
 });
 
 describe("settings admin stale target safety", () => {
+  it("updates the explicit ambulatory profile without replacing other settings", async () => {
+    const ambulatoryWorkspace = {
+      enabled: true,
+      measurementSystem: "us_customary" as const,
+      bodyConditionScale: 5 as const,
+      compactCloseout: true,
+    };
+    const { db, updateSet } = createDb({
+      updatedRows: [{ settings: { ambulatoryWorkspace } }],
+    });
+
+    await expect(
+      callerWithDb(db).updateAmbulatoryWorkspace(ambulatoryWorkspace),
+    ).resolves.toEqual(ambulatoryWorkspace);
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ settings: expect.anything() }),
+    );
+    expect(SETTINGS_SOURCE).toContain(
+      "settingsMergePatch({ ambulatoryWorkspace: input })",
+    );
+  });
+
+  it("keeps ambulatory configuration admin-only and fails closed on missing practice", async () => {
+    const input = {
+      enabled: true,
+      measurementSystem: "metric" as const,
+      bodyConditionScale: 9 as const,
+      compactCloseout: true,
+    };
+    const forbidden = createDb();
+    await expect(
+      callerWithDb(forbidden.db, "front_desk").updateAmbulatoryWorkspace(input),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(forbidden.updateSet).not.toHaveBeenCalled();
+
+    const missing = createDb({ updatedRows: [] });
+    await expect(
+      callerWithDb(missing.db).updateAmbulatoryWorkspace(input),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
   it("rejects settings strings that exceed storage bounds before writes", async () => {
     const { db, updateSet, insertValues } = createDb();
 

@@ -10,36 +10,19 @@ import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
 import { TableSkeleton } from "@/components/common/loading";
 import { PATIENT_SEARCH_MAX_LENGTH } from "@/lib/patients/policy";
+import {
+  PATIENT_SPECIES_EMOJI,
+  PATIENT_SPECIES_OPTIONS,
+  type PatientSpecies,
+} from "@/lib/patients/species";
 
-const speciesEmoji: Record<string, string> = {
-  canine: "\uD83D\uDC36",
-  feline: "\uD83D\uDC31",
-  avian: "\uD83D\uDC26",
-  rabbit: "\uD83D\uDC30",
-  reptile: "\uD83E\uDD8E",
-  equine: "\uD83D\uDC34",
-  other: "\uD83D\uDC3E",
-};
+const speciesEmoji: Record<string, string> = PATIENT_SPECIES_EMOJI;
 
-type SpeciesFilter =
-  | ""
-  | "canine"
-  | "feline"
-  | "avian"
-  | "rabbit"
-  | "reptile"
-  | "equine"
-  | "other";
+type SpeciesFilter = "" | PatientSpecies;
 
 const speciesOptions: Array<{ value: SpeciesFilter; label: string }> = [
   { value: "", label: "All Species" },
-  { value: "canine", label: "Canine" },
-  { value: "feline", label: "Feline" },
-  { value: "avian", label: "Avian" },
-  { value: "rabbit", label: "Rabbit" },
-  { value: "reptile", label: "Reptile" },
-  { value: "equine", label: "Equine" },
-  { value: "other", label: "Other" },
+  ...PATIENT_SPECIES_OPTIONS,
 ];
 
 function canManagePatientsRole(role?: string | null): boolean {
@@ -201,74 +184,77 @@ export default function PatientsPage() {
           </div>
 
           <div className="mt-6 hidden overflow-x-auto rounded-lg border border-border sm:block">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-muted/50">
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                  Name
-                </th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                  Breed
-                </th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                  Owner
-                </th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                  Sex
-                </th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                  Status
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.items.map((patient) => (
-                <tr
-                  key={patient.id}
-                  onClick={() => router.push(`/patients/${patient.id}`)}
-                  className="cursor-pointer border-b border-border last:border-0 hover:bg-muted/30 transition-colors"
-                >
-                  <td className="px-4 py-3 font-medium">
-                    <span className="mr-1.5">
-                      {speciesEmoji[patient.species ?? "other"] ?? "\uD83D\uDC3E"}
-                    </span>
-                    {patient.name}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {patient.breed || "\u2014"}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {patient.clientFirstName && patient.clientLastName
-                      ? `${patient.clientFirstName} ${patient.clientLastName}`
-                      : "\u2014"}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {formatSex(patient.sex)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-                        patient.status === "active"
-                          ? "bg-emerald-100 text-emerald-700"
-                          : patient.status === "deceased"
-                            ? "bg-gray-100 text-gray-600"
-                            : "bg-amber-100 text-amber-700"
-                      }`}
-                    >
-                      {patient.status ?? "active"}
-                    </span>
-                  </td>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/50">
+                  <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    Name
+                  </th>
+                  <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    Breed
+                  </th>
+                  <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    Owner
+                  </th>
+                  <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    Sex
+                  </th>
+                  <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    Status
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data.items.map((patient) => (
+                  <tr
+                    key={patient.id}
+                    onClick={() => router.push(`/patients/${patient.id}`)}
+                    className="cursor-pointer border-b border-border last:border-0 hover:bg-muted/30 transition-colors"
+                  >
+                    <td className="px-4 py-3 font-medium">
+                      <span className="mr-1.5">
+                        {speciesEmoji[patient.species ?? "other"] ??
+                          "\uD83D\uDC3E"}
+                      </span>
+                      {patient.name}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {patient.breed || "\u2014"}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {patient.clientFirstName && patient.clientLastName
+                        ? `${patient.clientFirstName} ${patient.clientLastName}`
+                        : "\u2014"}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {formatSex(patient.sex)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                          patient.status === "active"
+                            ? "bg-emerald-100 text-emerald-700"
+                            : patient.status === "deceased"
+                              ? "bg-gray-100 text-gray-600"
+                              : "bg-amber-100 text-amber-700"
+                        }`}
+                      >
+                        {patient.status ?? "active"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </>
       ) : (
         <EmptyState
           className="mt-6"
           icon={PawPrint}
-          title={hasFilters ? "No patients match your filters" : "No patients yet"}
+          title={
+            hasFilters ? "No patients match your filters" : "No patients yet"
+          }
           description={
             hasFilters
               ? "Clear the search or species filter to broaden the list."

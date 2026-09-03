@@ -73,7 +73,7 @@ function activePracticePredicate(practiceId: string) {
 async function assertPatientBelongsToPractice(
   db: Database,
   practiceId: string,
-  patientId: string
+  patientId: string,
 ) {
   const [patient] = await db
     .select({ id: patients.id })
@@ -83,8 +83,8 @@ async function assertPatientBelongsToPractice(
         eq(patients.id, patientId),
         eq(patients.practiceId, practiceId),
         activePracticePredicate(practiceId),
-        isNull(patients.deletedAt)
-      )
+        isNull(patients.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -97,7 +97,7 @@ async function assertAppointmentBelongsToPatient(
   db: Database,
   practiceId: string,
   appointmentId: string,
-  patientId: string
+  patientId: string,
 ) {
   const visit = await lockOpenVisitForClinicalAppend(db, {
     practiceId,
@@ -125,7 +125,7 @@ export const vitalsRouter = createRouter({
       z.object({
         patientId: z.string().uuid(),
         limit: z.number().int().min(1).max(100).default(50),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       return ctx.db
@@ -143,16 +143,16 @@ export const vitalsRouter = createRouter({
           clinicalRecordCorrections,
           and(
             eq(clinicalRecordCorrections.vitalSignId, vitalSigns.id),
-            eq(clinicalRecordCorrections.practiceId, ctx.practiceId)
-          )
+            eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+          ),
         )
         .where(
           and(
             eq(vitalSigns.patientId, input.patientId),
             eq(vitalSigns.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(vitalSigns.deletedAt)
-          )
+            isNull(vitalSigns.deletedAt),
+          ),
         )
         .orderBy(desc(vitalSigns.recordedAt))
         .limit(input.limit);
@@ -164,7 +164,7 @@ export const vitalsRouter = createRouter({
       z.object({
         appointmentId: z.string().uuid(),
         limit: z.number().int().min(1).max(100).default(100),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       return ctx.db
@@ -182,16 +182,16 @@ export const vitalsRouter = createRouter({
           clinicalRecordCorrections,
           and(
             eq(clinicalRecordCorrections.vitalSignId, vitalSigns.id),
-            eq(clinicalRecordCorrections.practiceId, ctx.practiceId)
-          )
+            eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
+          ),
         )
         .where(
           and(
             eq(vitalSigns.appointmentId, input.appointmentId),
             eq(vitalSigns.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(vitalSigns.deletedAt)
-          )
+            isNull(vitalSigns.deletedAt),
+          ),
         )
         .orderBy(desc(vitalSigns.recordedAt))
         .limit(input.limit);
@@ -208,7 +208,7 @@ export const vitalsRouter = createRouter({
           .trim()
           .min(CLINICAL_CORRECTION_REASON_MIN_LENGTH)
           .max(CLINICAL_CORRECTION_REASON_MAX_LENGTH),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) =>
       ctx.db.transaction(async (tx) => {
@@ -225,8 +225,8 @@ export const vitalsRouter = createRouter({
               eq(vitalSigns.patientId, input.patientId),
               eq(vitalSigns.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(vitalSigns.deletedAt)
-            )
+              isNull(vitalSigns.deletedAt),
+            ),
           )
           .limit(1);
 
@@ -260,8 +260,8 @@ export const vitalsRouter = createRouter({
           .where(
             and(
               eq(clinicalRecordCorrections.practiceId, ctx.practiceId),
-              eq(clinicalRecordCorrections.vitalSignId, source.id)
-            )
+              eq(clinicalRecordCorrections.vitalSignId, source.id),
+            ),
           )
           .limit(1);
         if (existing) return existing;
@@ -270,7 +270,7 @@ export const vitalsRouter = createRouter({
           code: "CONFLICT",
           message: "Clinical correction changed; refresh and retry.",
         });
-      })
+      }),
     ),
 
   record: protectedProcedure
@@ -301,6 +301,7 @@ export const vitalsRouter = createRouter({
             .min(VITALS_BODY_CONDITION_MIN)
             .max(VITALS_BODY_CONDITION_MAX)
             .optional(),
+          bodyConditionScale: z.union([z.literal(5), z.literal(9)]).default(9),
           painScore: z
             .number()
             .int()
@@ -309,12 +310,12 @@ export const vitalsRouter = createRouter({
             .optional(),
           mucousMembrane: optionalClinicalTextInput(
             "Mucous membrane",
-            VITALS_MUCOUS_MEMBRANE_MAX_LENGTH
+            VITALS_MUCOUS_MEMBRANE_MAX_LENGTH,
           ),
           capillaryRefillSec: capillaryRefillInput.optional(),
           notes: optionalClinicalTextInput(
             "Vitals notes",
-            VITALS_NOTES_MAX_LENGTH
+            VITALS_NOTES_MAX_LENGTH,
           ),
         })
         .superRefine((input, ctx) => {
@@ -337,7 +338,17 @@ export const vitalsRouter = createRouter({
               message: "At least one vital measurement or note is required.",
             });
           }
-        })
+          if (
+            input.bodyConditionScore !== undefined &&
+            input.bodyConditionScore > input.bodyConditionScale
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["bodyConditionScore"],
+              message: `Body condition score must be on the 1–${input.bodyConditionScale} scale.`,
+            });
+          }
+        }),
     )
     .mutation(async ({ ctx, input }) => {
       return ctx.db.transaction(async (tx) => {
@@ -345,14 +356,14 @@ export const vitalsRouter = createRouter({
         await assertPatientBelongsToPractice(
           txDb,
           ctx.practiceId,
-          input.patientId
+          input.patientId,
         );
         if (input.appointmentId) {
           await assertAppointmentBelongsToPatient(
             txDb,
             ctx.practiceId,
             input.appointmentId,
-            input.patientId
+            input.patientId,
           );
         }
         const { temperatureC, weightKg, capillaryRefillSec, ...rest } = input;

@@ -13,6 +13,7 @@ import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
 import { splitPortalAppointments } from "@/lib/portal/appointments";
 import { formatPortalDateTime } from "@/lib/portal/date";
+import { PATIENT_SPECIES_EMOJI } from "@/lib/patients/species";
 
 const statusStyles: Record<string, string> = {
   scheduled: "bg-blue-100 text-blue-700",
@@ -24,15 +25,7 @@ const statusStyles: Record<string, string> = {
   cancelled: "bg-gray-100 text-gray-500",
 };
 
-const speciesEmoji: Record<string, string> = {
-  canine: "🐶",
-  feline: "🐱",
-  avian: "🐦",
-  rabbit: "🐇",
-  reptile: "🦎",
-  equine: "🐴",
-  other: "🐾",
-};
+const speciesEmoji: Record<string, string> = PATIENT_SPECIES_EMOJI;
 
 function formatDateTime(d: string | Date, timeZone?: string | null): string {
   return formatPortalDateTime(d, undefined, timeZone);

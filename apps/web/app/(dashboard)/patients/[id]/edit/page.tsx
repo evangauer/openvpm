@@ -17,6 +17,7 @@ import {
   isOptionalPatientTextValid,
   isRequiredPatientTextValid,
 } from "@/lib/patients/policy";
+import { PATIENT_SPECIES_OPTIONS } from "@/lib/patients/species";
 
 function EditPatientLoadingPanel() {
   return (
@@ -27,15 +28,7 @@ function EditPatientLoadingPanel() {
   );
 }
 
-const speciesOptions = [
-  { value: "canine", label: "Canine" },
-  { value: "feline", label: "Feline" },
-  { value: "avian", label: "Avian" },
-  { value: "rabbit", label: "Rabbit" },
-  { value: "reptile", label: "Reptile" },
-  { value: "equine", label: "Equine" },
-  { value: "other", label: "Other" },
-] as const;
+const speciesOptions = PATIENT_SPECIES_OPTIONS;
 
 const sexOptions = [
   { value: "male", label: "Male (Intact)" },
@@ -123,7 +116,7 @@ function EditPatientForm() {
     error: loadError,
   } = trpc.patients.getById.useQuery(
     { id: params.id },
-    { enabled: !!params.id }
+    { enabled: !!params.id },
   );
 
   useEffect(() => {
@@ -146,7 +139,7 @@ function EditPatientForm() {
       utils.patients.getById.setData({ id: params.id }, (currentPatient) =>
         currentPatient
           ? { ...currentPatient, ...updatedPatient }
-          : currentPatient
+          : currentPatient,
       );
       toast.success("Patient updated");
       router.push(`/patients/${params.id}`);
@@ -163,16 +156,16 @@ function EditPatientForm() {
     isOptionalPatientTextValid(form.color, PATIENT_COLOR_MAX_LENGTH) &&
     isOptionalPatientTextValid(
       form.microchipNumber,
-      PATIENT_MICROCHIP_NUMBER_MAX_LENGTH
+      PATIENT_MICROCHIP_NUMBER_MAX_LENGTH,
     );
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
 
-    const submittedDob = (
-      e.currentTarget.elements.namedItem("dob") as HTMLInputElement | null
-    )?.value ?? form.dob;
+    const submittedDob =
+      (e.currentTarget.elements.namedItem("dob") as HTMLInputElement | null)
+        ?.value ?? form.dob;
 
     if (!patient) {
       setError("Load the patient before saving changes.");
@@ -380,7 +373,10 @@ function EditPatientForm() {
         </div>
 
         <div className="flex gap-3 pt-4">
-          <Button type="submit" disabled={!canSubmit || updatePatient.isPending}>
+          <Button
+            type="submit"
+            disabled={!canSubmit || updatePatient.isPending}
+          >
             {updatePatient.isPending ? "Saving..." : "Save Changes"}
           </Button>
           <Button

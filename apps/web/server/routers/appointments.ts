@@ -1,5 +1,17 @@
 import { z } from "zod";
-import { eq, and, isNull, gte, lte, lt, gt, sql, desc, not, inArray } from "drizzle-orm";
+import {
+  eq,
+  and,
+  isNull,
+  gte,
+  lte,
+  lt,
+  gt,
+  sql,
+  desc,
+  not,
+  inArray,
+} from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import type { Database } from "@openpims/db/client";
@@ -64,6 +76,7 @@ import {
   takeAppointmentSchedulingLock,
   type AppointmentLocationFailure,
 } from "@/lib/scheduling/location";
+import { ambulatoryWorkspaceSettings } from "@/lib/ambulatory-workspace";
 
 type AppointmentsContext = {
   db: Database;
@@ -76,18 +89,20 @@ const appointmentNotesInput = z
   .trim()
   .max(
     APPOINTMENT_NOTES_MAX_LENGTH,
-    `Appointment notes must be at most ${APPOINTMENT_NOTES_MAX_LENGTH} characters.`
+    `Appointment notes must be at most ${APPOINTMENT_NOTES_MAX_LENGTH} characters.`,
   )
   .optional()
   .transform((value) => value || undefined);
 const appointmentStatusInput = z.enum(appointmentStatusValues);
 const confirmationContactMethodInput = z.enum(["phone", "email"]);
-const appointmentRangeInput = z.string().refine(
-  (value) =>
-    isValidClinicalDateInput(value) ||
-    appointmentDateTimeInput.safeParse(value).success,
-  "Date range values must be valid YYYY-MM-DD dates or ISO datetimes with offsets."
-);
+const appointmentRangeInput = z
+  .string()
+  .refine(
+    (value) =>
+      isValidClinicalDateInput(value) ||
+      appointmentDateTimeInput.safeParse(value).success,
+    "Date range values must be valid YYYY-MM-DD dates or ISO datetimes with offsets.",
+  );
 
 const listAppointmentsInput = z
   .object({
@@ -97,7 +112,10 @@ const listAppointmentsInput = z
     locationId: z.string().uuid().optional(),
   })
   .superRefine((input, ctx) => {
-    if (appointmentRangeEnd(input.endDate) < appointmentRangeStart(input.startDate)) {
+    if (
+      appointmentRangeEnd(input.endDate) <
+      appointmentRangeStart(input.startDate)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["endDate"],
@@ -206,19 +224,13 @@ const createRecurringInput = z
     }
   });
 
-function appointmentRangeStart(
-  value: string,
-  timeZone?: string | null
-): Date {
+function appointmentRangeStart(value: string, timeZone?: string | null): Date {
   if (!isValidClinicalDateInput(value)) return new Date(value);
   if (timeZone) return dateInputDayUtcRange(value, timeZone).start;
   return new Date(`${value}T00:00:00.000Z`);
 }
 
-function appointmentRangeEnd(
-  value: string,
-  timeZone?: string | null
-): Date {
+function appointmentRangeEnd(value: string, timeZone?: string | null): Date {
   if (!isValidClinicalDateInput(value)) return new Date(value);
   if (timeZone) {
     const { end } = dateInputDayUtcRange(value, timeZone);
@@ -260,7 +272,7 @@ async function assertActivePractice(ctx: AppointmentsContext) {
 }
 
 async function practiceTimeZone(
-  ctx: AppointmentsContext
+  ctx: AppointmentsContext,
 ): Promise<string | null> {
   const [practice] = await ctx.db
     .select({ timezone: practices.timezone })
@@ -280,7 +292,7 @@ async function practiceTimeZone(
 
 async function appointmentListRange(
   ctx: AppointmentsContext,
-  input: z.infer<typeof listAppointmentsInput>
+  input: z.infer<typeof listAppointmentsInput>,
 ): Promise<{ start: Date; end: Date }> {
   const hasDateOnlyRange =
     isValidClinicalDateInput(input.startDate) ||
@@ -295,7 +307,7 @@ async function appointmentListRange(
 
 async function assertClientBelongsToPractice(
   ctx: AppointmentsContext,
-  clientId: string
+  clientId: string,
 ) {
   const [client] = await ctx.db
     .select({ id: clients.id })
@@ -305,8 +317,8 @@ async function assertClientBelongsToPractice(
         eq(clients.id, clientId),
         eq(clients.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(clients.deletedAt)
-      )
+        isNull(clients.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -319,7 +331,7 @@ async function assertClientBelongsToPractice(
 
 async function assertPatientBelongsToPractice(
   ctx: AppointmentsContext,
-  patientId: string
+  patientId: string,
 ) {
   const [patient] = await ctx.db
     .select({ id: patients.id, clientId: patients.clientId })
@@ -329,8 +341,8 @@ async function assertPatientBelongsToPractice(
         eq(patients.id, patientId),
         eq(patients.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(patients.deletedAt)
-      )
+        isNull(patients.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -343,7 +355,7 @@ async function assertPatientBelongsToPractice(
 
 async function assertAppointmentTypeBelongsToPractice(
   ctx: AppointmentsContext,
-  typeId: string
+  typeId: string,
 ) {
   const [type] = await ctx.db
     .select({ id: appointmentTypes.id })
@@ -353,8 +365,8 @@ async function assertAppointmentTypeBelongsToPractice(
         eq(appointmentTypes.id, typeId),
         eq(appointmentTypes.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(appointmentTypes.deletedAt)
-      )
+        isNull(appointmentTypes.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -370,7 +382,7 @@ async function assertAppointmentTypeBelongsToPractice(
 
 async function assertDoctorBelongsToPractice(
   ctx: AppointmentsContext,
-  doctorId: string
+  doctorId: string,
 ) {
   const [doctor] = await ctx.db
     .select({ id: users.id })
@@ -381,8 +393,8 @@ async function assertDoctorBelongsToPractice(
         eq(users.practiceId, ctx.practiceId),
         eq(users.isVeterinarian, true),
         activePracticePredicate(ctx.practiceId),
-        isNull(users.deletedAt)
-      )
+        isNull(users.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -395,7 +407,7 @@ async function assertDoctorBelongsToPractice(
 
 async function assertRoomBelongsToPractice(
   ctx: AppointmentsContext,
-  roomId: string
+  roomId: string,
 ) {
   const [room] = await ctx.db
     .select({ id: rooms.id })
@@ -405,8 +417,8 @@ async function assertRoomBelongsToPractice(
         eq(rooms.id, roomId),
         eq(rooms.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(rooms.deletedAt)
-      )
+        isNull(rooms.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -425,7 +437,7 @@ async function assertAppointmentTargets(
     typeId?: string;
     doctorId?: string | null;
     roomId?: string | null;
-  }
+  },
 ): Promise<{ clientId?: string }> {
   let patientClientId: string | undefined;
   if (input.patientId) {
@@ -481,7 +493,7 @@ async function fetchOverlapping(
   practiceId: string,
   start: Date,
   end: Date,
-  excludeId?: string
+  excludeId?: string,
 ): Promise<ExistingBooking[]> {
   const rows = await db
     .select({
@@ -490,16 +502,15 @@ async function fetchOverlapping(
       endTime: appointments.endTime,
       doctorId: appointments.doctorId,
       roomId: appointments.roomId,
-      locationId: sql<string | null>`coalesce(${appointments.locationId}, ${rooms.locationId})`,
+      locationId: sql<
+        string | null
+      >`coalesce(${appointments.locationId}, ${rooms.locationId})`,
       status: appointments.status,
     })
     .from(appointments)
     .leftJoin(
       rooms,
-      and(
-        eq(appointments.roomId, rooms.id),
-        eq(rooms.practiceId, practiceId),
-      ),
+      and(eq(appointments.roomId, rooms.id), eq(rooms.practiceId, practiceId)),
     )
     .where(
       and(
@@ -509,8 +520,8 @@ async function fetchOverlapping(
         not(inArray(appointments.status, ["cancelled", "no_show"])),
         // Strict time overlap pre-filter; detectConflicts re-checks precisely.
         lt(appointments.startTime, end),
-        gt(appointments.endTime, start)
-      )
+        gt(appointments.endTime, start),
+      ),
     );
   return excludeId ? rows.filter((r) => r.id !== excludeId) : rows;
 }
@@ -541,6 +552,7 @@ export const appointmentsRouter = createRouter({
           startTime: appointments.startTime,
           endTime: appointments.endTime,
           status: appointments.status,
+          origin: appointments.origin,
           notes: appointments.notes,
           recurringSeriesId: appointments.recurringSeriesId,
           patientName: patients.name,
@@ -569,39 +581,39 @@ export const appointmentsRouter = createRouter({
             eq(appointments.patientId, patients.id),
             eq(patients.clientId, appointments.clientId),
             eq(patients.practiceId, ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+            isNull(patients.deletedAt),
+          ),
         )
         .leftJoin(
           clients,
           and(
             eq(appointments.clientId, clients.id),
             eq(clients.practiceId, ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .leftJoin(
           users,
           and(
             eq(appointments.doctorId, users.id),
-            eq(users.practiceId, ctx.practiceId)
-          )
+            eq(users.practiceId, ctx.practiceId),
+          ),
         )
         .leftJoin(
           appointmentTypes,
           and(
             eq(appointments.typeId, appointmentTypes.id),
             eq(appointmentTypes.practiceId, ctx.practiceId),
-            isNull(appointmentTypes.deletedAt)
-          )
+            isNull(appointmentTypes.deletedAt),
+          ),
         )
         .leftJoin(
           rooms,
           and(
             eq(appointments.roomId, rooms.id),
             eq(rooms.practiceId, ctx.practiceId),
-            isNull(rooms.deletedAt)
-          )
+            isNull(rooms.deletedAt),
+          ),
         )
         .leftJoin(
           locations,
@@ -620,7 +632,7 @@ export const appointmentsRouter = createRouter({
       z.object({
         patientId: z.string().uuid(),
         limit: z.number().int().min(1).max(100).default(50),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       return ctx.db
@@ -629,6 +641,7 @@ export const appointmentsRouter = createRouter({
           startTime: appointments.startTime,
           endTime: appointments.endTime,
           status: appointments.status,
+          origin: appointments.origin,
           notes: appointments.notes,
           doctorName: users.name,
           typeName: appointmentTypes.name,
@@ -639,24 +652,24 @@ export const appointmentsRouter = createRouter({
           users,
           and(
             eq(appointments.doctorId, users.id),
-            eq(users.practiceId, ctx.practiceId)
-          )
+            eq(users.practiceId, ctx.practiceId),
+          ),
         )
         .leftJoin(
           appointmentTypes,
           and(
             eq(appointments.typeId, appointmentTypes.id),
             eq(appointmentTypes.practiceId, ctx.practiceId),
-            isNull(appointmentTypes.deletedAt)
-          )
+            isNull(appointmentTypes.deletedAt),
+          ),
         )
         .where(
           and(
             eq(appointments.patientId, input.patientId),
             eq(appointments.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(appointments.deletedAt)
-          )
+            isNull(appointments.deletedAt),
+          ),
         )
         .orderBy(desc(appointments.startTime))
         .limit(input.limit);
@@ -671,6 +684,7 @@ export const appointmentsRouter = createRouter({
           startTime: appointments.startTime,
           endTime: appointments.endTime,
           status: appointments.status,
+          origin: appointments.origin,
           notes: appointments.notes,
           recurringSeriesId: appointments.recurringSeriesId,
           patientName: patients.name,
@@ -696,39 +710,39 @@ export const appointmentsRouter = createRouter({
             eq(appointments.patientId, patients.id),
             eq(patients.clientId, appointments.clientId),
             eq(patients.practiceId, ctx.practiceId),
-            isNull(patients.deletedAt)
-          )
+            isNull(patients.deletedAt),
+          ),
         )
         .leftJoin(
           clients,
           and(
             eq(appointments.clientId, clients.id),
             eq(clients.practiceId, ctx.practiceId),
-            isNull(clients.deletedAt)
-          )
+            isNull(clients.deletedAt),
+          ),
         )
         .leftJoin(
           users,
           and(
             eq(appointments.doctorId, users.id),
-            eq(users.practiceId, ctx.practiceId)
-          )
+            eq(users.practiceId, ctx.practiceId),
+          ),
         )
         .leftJoin(
           appointmentTypes,
           and(
             eq(appointments.typeId, appointmentTypes.id),
             eq(appointmentTypes.practiceId, ctx.practiceId),
-            isNull(appointmentTypes.deletedAt)
-          )
+            isNull(appointmentTypes.deletedAt),
+          ),
         )
         .leftJoin(
           rooms,
           and(
             eq(appointments.roomId, rooms.id),
             eq(rooms.practiceId, ctx.practiceId),
-            isNull(rooms.deletedAt)
-          )
+            isNull(rooms.deletedAt),
+          ),
         )
         .leftJoin(
           locations,
@@ -742,8 +756,8 @@ export const appointmentsRouter = createRouter({
             eq(appointments.id, input.id),
             eq(appointments.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(appointments.deletedAt)
-          )
+            isNull(appointments.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -788,7 +802,7 @@ export const appointmentsRouter = createRouter({
         ctx.db,
         ctx.practiceId,
         startTime,
-        endTime
+        endTime,
       );
       const result = detectConflicts(
         {
@@ -798,7 +812,7 @@ export const appointmentsRouter = createRouter({
           roomId: input.roomId,
           locationId,
         },
-        existing
+        existing,
       );
       const message = conflictMessage(result);
       if (message) throw new TRPCError({ code: "CONFLICT", message });
@@ -817,15 +831,198 @@ export const appointmentsRouter = createRouter({
       await recordActivationAfterAppointmentCreated(
         ctx.db,
         ctx.practiceId,
-        "appointments.create"
+        "appointments.create",
       );
       await dispatchAppointmentWebhookAfterCommit(
         ctx,
         ctx.practiceId,
         "appointment.created",
-        appointmentCreatedWebhookPayload(appt!, "dashboard")
+        appointmentCreatedWebhookPayload(appt!, "dashboard"),
       );
       return appt!;
+    }),
+
+  /**
+   * Creates an auditable encounter directly from an active patient chart. The
+   * operation is idempotent for an already-open patient visit, preserves the
+   * ordinary closeout gates, and never creates an appointment when the
+   * practice has not explicitly enabled the field workflow.
+   */
+  startFieldVisit: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician"))
+    .input(
+      z
+        .object({
+          patientId: z.string().uuid(),
+          locationId: z.string().uuid().optional(),
+        })
+        .strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await ctx.db.transaction(async (tx) => {
+        const txDb = tx as unknown as Database;
+        await takeAppointmentSchedulingLock(txDb, ctx.practiceId);
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`field-visit:${ctx.practiceId}:${input.patientId}`}, 0))`,
+        );
+
+        const [practice] = await tx
+          .select({ settings: practices.settings })
+          .from(practices)
+          .where(
+            and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)),
+          )
+          .limit(1);
+        if (!practice) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Practice not found",
+          });
+        }
+        if (!ambulatoryWorkspaceSettings(practice.settings).enabled) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Enable the ambulatory workspace before starting a field visit.",
+          });
+        }
+
+        const [patient] = await tx
+          .select({ id: patients.id, clientId: patients.clientId })
+          .from(patients)
+          .innerJoin(
+            clients,
+            and(
+              eq(clients.id, patients.clientId),
+              eq(clients.practiceId, ctx.practiceId),
+              isNull(clients.deletedAt),
+            ),
+          )
+          .where(
+            and(
+              eq(patients.id, input.patientId),
+              eq(patients.practiceId, ctx.practiceId),
+              eq(patients.status, "active"),
+              isNull(patients.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!patient) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Active patient and owner not found",
+          });
+        }
+
+        const [openVisit] = await tx
+          .select({
+            id: appointments.id,
+            origin: appointments.origin,
+          })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.practiceId, ctx.practiceId),
+              eq(appointments.patientId, patient.id),
+              eq(appointments.clientId, patient.clientId),
+              eq(appointments.status, "in_exam"),
+              isNull(appointments.deletedAt),
+            ),
+          )
+          .orderBy(desc(appointments.startTime))
+          .limit(1);
+        if (openVisit) {
+          if (openVisit.origin === "field") {
+            return {
+              appointment: { id: openVisit.id },
+              created: false as const,
+            };
+          }
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "This patient already has an active scheduled visit. Resume or complete that visit before starting a field visit.",
+          });
+        }
+
+        const [actor] = await tx
+          .select({ isVeterinarian: users.isVeterinarian })
+          .from(users)
+          .where(
+            and(
+              eq(users.id, ctx.user.id),
+              eq(users.practiceId, ctx.practiceId),
+              isNull(users.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (!actor) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+        }
+        const doctorId = actor.isVeterinarian ? ctx.user.id : null;
+        const locationId = await appointmentLocationOrThrow(
+          { db: txDb, practiceId: ctx.practiceId },
+          { doctorId, locationId: input.locationId },
+        );
+        const startTime = new Date();
+        const endTime = new Date(startTime.getTime() + 30 * 60 * 1000);
+        const existing = await fetchOverlapping(
+          txDb,
+          ctx.practiceId,
+          startTime,
+          endTime,
+        );
+        const conflict = conflictMessage(
+          detectConflicts(
+            {
+              startTime,
+              endTime,
+              doctorId,
+              locationId,
+            },
+            existing,
+          ),
+        );
+        if (conflict) {
+          throw new TRPCError({ code: "CONFLICT", message: conflict });
+        }
+        const [appointment] = await tx
+          .insert(appointments)
+          .values({
+            practiceId: ctx.practiceId,
+            patientId: patient.id,
+            clientId: patient.clientId,
+            doctorId,
+            locationId,
+            startTime,
+            endTime,
+            status: "in_exam",
+            origin: "field",
+          })
+          .returning();
+        if (!appointment) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Field visit could not be started",
+          });
+        }
+        await recordActivationAfterAppointmentCreated(
+          txDb,
+          ctx.practiceId,
+          "appointments.startFieldVisit",
+        );
+        return { appointment, created: true as const };
+      });
+
+      if (result.created) {
+        await dispatchAppointmentWebhookAfterCommit(
+          ctx,
+          ctx.practiceId,
+          "appointment.created",
+          appointmentCreatedWebhookPayload(result.appointment, "dashboard"),
+        );
+      }
+      return result;
     }),
 
   updateStatus: protectedProcedure
@@ -835,7 +1032,7 @@ export const appointmentsRouter = createRouter({
         id: z.string().uuid(),
         status: appointmentStatusInput,
         confirmationContactMethod: confirmationContactMethodInput.optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       const { current, appt } = await ctx.db.transaction(async (tx) => {
@@ -865,8 +1062,8 @@ export const appointmentsRouter = createRouter({
             and(
               eq(appointments.typeId, appointmentTypes.id),
               eq(appointmentTypes.practiceId, ctx.practiceId),
-              isNull(appointmentTypes.deletedAt)
-            )
+              isNull(appointmentTypes.deletedAt),
+            ),
           )
           .leftJoin(
             patients,
@@ -875,24 +1072,24 @@ export const appointmentsRouter = createRouter({
               eq(patients.clientId, appointments.clientId),
               eq(patients.practiceId, ctx.practiceId),
               eq(patients.status, "active"),
-              isNull(patients.deletedAt)
-            )
+              isNull(patients.deletedAt),
+            ),
           )
           .leftJoin(
             clients,
             and(
               eq(appointments.clientId, clients.id),
               eq(clients.practiceId, ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
+              isNull(clients.deletedAt),
+            ),
           )
           .where(
             and(
               eq(appointments.id, input.id),
               eq(appointments.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(appointments.deletedAt)
-            )
+              isNull(appointments.deletedAt),
+            ),
           )
           // PostgreSQL cannot lock the nullable side of the appointment type
           // LEFT JOIN. Lock only the appointment row that owns the status
@@ -998,7 +1195,8 @@ export const appointmentsRouter = createRouter({
           if (!current.clientId) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
-              message: "Assign an active client before confirming this appointment.",
+              message:
+                "Assign an active client before confirming this appointment.",
             });
           }
           const [client] = await tx
@@ -1013,8 +1211,8 @@ export const appointmentsRouter = createRouter({
                 eq(clients.id, current.clientId),
                 eq(clients.practiceId, ctx.practiceId),
                 activePracticePredicate(ctx.practiceId),
-                isNull(clients.deletedAt)
-              )
+                isNull(clients.deletedAt),
+              ),
             )
             .limit(1);
           if (!client) {
@@ -1055,8 +1253,8 @@ export const appointmentsRouter = createRouter({
             and(
               eq(visitCloseouts.appointmentId, input.id),
               eq(visitCloseouts.practiceId, ctx.practiceId),
-              isNull(visitCloseouts.deletedAt)
-            )
+              isNull(visitCloseouts.deletedAt),
+            ),
           )
           .limit(1);
         if (
@@ -1096,8 +1294,8 @@ export const appointmentsRouter = createRouter({
               eq(appointments.practiceId, ctx.practiceId),
               eq(appointments.status, current.status),
               activePracticePredicate(ctx.practiceId),
-              isNull(appointments.deletedAt)
-            )
+              isNull(appointments.deletedAt),
+            ),
           )
           .returning();
         if (!appt) {
@@ -1119,45 +1317,55 @@ export const appointmentsRouter = createRouter({
                 eq(visitCloseouts.id, closeout.id),
                 eq(visitCloseouts.practiceId, ctx.practiceId),
                 eq(visitCloseouts.status, "draft"),
-                isNull(visitCloseouts.deletedAt)
-              )
+                isNull(visitCloseouts.deletedAt),
+              ),
             );
         }
         return { current, appt };
       });
       if (appt.status === "checked_in") {
-        await dispatchAppointmentWebhookAfterCommit(ctx, ctx.practiceId, "appointment.checked_in", {
-          id: appt.id,
-          appointmentId: appt.id,
-          startTime: appt.startTime,
-          endTime: appt.endTime,
-          status: appt.status,
-          previousStatus: current.status,
-          patientId: appt.patientId,
-          clientId: appt.clientId,
-          doctorId: appt.doctorId,
-          roomId: appt.roomId,
-          locationId: appt.locationId,
-          typeId: appt.typeId,
-          source: "dashboard",
-        });
+        await dispatchAppointmentWebhookAfterCommit(
+          ctx,
+          ctx.practiceId,
+          "appointment.checked_in",
+          {
+            id: appt.id,
+            appointmentId: appt.id,
+            startTime: appt.startTime,
+            endTime: appt.endTime,
+            status: appt.status,
+            previousStatus: current.status,
+            patientId: appt.patientId,
+            clientId: appt.clientId,
+            doctorId: appt.doctorId,
+            roomId: appt.roomId,
+            locationId: appt.locationId,
+            typeId: appt.typeId,
+            source: "dashboard",
+          },
+        );
       }
       if (appt.status === "cancelled") {
-        await dispatchAppointmentWebhookAfterCommit(ctx, ctx.practiceId, "appointment.cancelled", {
-          id: appt.id,
-          appointmentId: appt.id,
-          startTime: appt.startTime,
-          endTime: appt.endTime,
-          status: appt.status,
-          previousStatus: current.status,
-          patientId: appt.patientId,
-          clientId: appt.clientId,
-          doctorId: appt.doctorId,
-          roomId: appt.roomId,
-          locationId: appt.locationId,
-          typeId: appt.typeId,
-          source: "dashboard",
-        });
+        await dispatchAppointmentWebhookAfterCommit(
+          ctx,
+          ctx.practiceId,
+          "appointment.cancelled",
+          {
+            id: appt.id,
+            appointmentId: appt.id,
+            startTime: appt.startTime,
+            endTime: appt.endTime,
+            status: appt.status,
+            previousStatus: current.status,
+            patientId: appt.patientId,
+            clientId: appt.clientId,
+            doctorId: appt.doctorId,
+            roomId: appt.roomId,
+            locationId: appt.locationId,
+            typeId: appt.typeId,
+            source: "dashboard",
+          },
+        );
       }
       return appt;
     }),
@@ -1168,7 +1376,7 @@ export const appointmentsRouter = createRouter({
       z.object({
         id: z.string().uuid(),
         patientId: z.string().uuid(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) =>
       ctx.db.transaction(async (tx) => {
@@ -1185,8 +1393,8 @@ export const appointmentsRouter = createRouter({
               eq(appointments.id, input.id),
               eq(appointments.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(appointments.deletedAt)
-            )
+              isNull(appointments.deletedAt),
+            ),
           )
           .for("update");
 
@@ -1198,7 +1406,7 @@ export const appointmentsRouter = createRouter({
         }
         if (
           !["scheduled", "confirmed", "checked_in", "in_exam"].includes(
-            current.status
+            current.status,
           )
         ) {
           throw new TRPCError({
@@ -1219,16 +1427,16 @@ export const appointmentsRouter = createRouter({
             and(
               eq(patients.clientId, clients.id),
               eq(clients.practiceId, ctx.practiceId),
-              isNull(clients.deletedAt)
-            )
+              isNull(clients.deletedAt),
+            ),
           )
           .where(
             and(
               eq(patients.id, input.patientId),
               eq(patients.practiceId, ctx.practiceId),
               eq(patients.status, "active"),
-              isNull(patients.deletedAt)
-            )
+              isNull(patients.deletedAt),
+            ),
           )
           .for("share");
 
@@ -1275,8 +1483,8 @@ export const appointmentsRouter = createRouter({
                 ? eq(appointments.clientId, current.clientId)
                 : isNull(appointments.clientId),
               activePracticePredicate(ctx.practiceId),
-              isNull(appointments.deletedAt)
-            )
+              isNull(appointments.deletedAt),
+            ),
           )
           .returning({
             id: appointments.id,
@@ -1287,11 +1495,12 @@ export const appointmentsRouter = createRouter({
         if (!updated) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "Appointment changed while attaching the patient. Refresh and retry.",
+            message:
+              "Appointment changed while attaching the patient. Refresh and retry.",
           });
         }
         return updated;
-      })
+      }),
     ),
 
   cancelRecurringSeries: protectedProcedure
@@ -1309,8 +1518,8 @@ export const appointmentsRouter = createRouter({
               eq(recurringSeries.id, input.seriesId),
               eq(recurringSeries.practiceId, ctx.practiceId),
               activePracticePredicate(ctx.practiceId),
-              isNull(recurringSeries.deletedAt)
-            )
+              isNull(recurringSeries.deletedAt),
+            ),
           )
           .returning({ id: recurringSeries.id });
 
@@ -1331,8 +1540,8 @@ export const appointmentsRouter = createRouter({
               eq(appointments.recurringSeriesId, input.seriesId),
               isNull(appointments.deletedAt),
               gte(appointments.startTime, now),
-              inArray(appointments.status, ["scheduled", "confirmed"])
-            )
+              inArray(appointments.status, ["scheduled", "confirmed"]),
+            ),
           )
           .returning({
             id: appointments.id,
@@ -1353,22 +1562,27 @@ export const appointmentsRouter = createRouter({
 
       await Promise.all(
         result.cancelled.map((appt) =>
-          dispatchAppointmentWebhookAfterCommit(ctx, ctx.practiceId, "appointment.cancelled", {
-            id: appt.id,
-            appointmentId: appt.id,
-            startTime: appt.startTime,
-            endTime: appt.endTime,
-            status: appt.status,
-            patientId: appt.patientId,
-            clientId: appt.clientId,
-            doctorId: appt.doctorId,
-            roomId: appt.roomId,
-            locationId: appt.locationId,
-            typeId: appt.typeId,
-            recurringSeriesId: appt.recurringSeriesId,
-            source: "recurring_series",
-          })
-        )
+          dispatchAppointmentWebhookAfterCommit(
+            ctx,
+            ctx.practiceId,
+            "appointment.cancelled",
+            {
+              id: appt.id,
+              appointmentId: appt.id,
+              startTime: appt.startTime,
+              endTime: appt.endTime,
+              status: appt.status,
+              patientId: appt.patientId,
+              clientId: appt.clientId,
+              doctorId: appt.doctorId,
+              roomId: appt.roomId,
+              locationId: appt.locationId,
+              typeId: appt.typeId,
+              recurringSeriesId: appt.recurringSeriesId,
+              source: "recurring_series",
+            },
+          ),
+        ),
       );
 
       return {
@@ -1411,16 +1625,16 @@ export const appointmentsRouter = createRouter({
           and(
             eq(appointments.typeId, appointmentTypes.id),
             eq(appointmentTypes.practiceId, ctx.practiceId),
-            isNull(appointmentTypes.deletedAt)
-          )
+            isNull(appointmentTypes.deletedAt),
+          ),
         )
         .where(
           and(
             eq(appointments.id, input.id),
             eq(appointments.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
-            isNull(appointments.deletedAt)
-          )
+            isNull(appointments.deletedAt),
+          ),
         )
         .limit(1);
       if (!current) {
@@ -1432,7 +1646,8 @@ export const appointmentsRouter = createRouter({
       if (current.status !== "scheduled" && current.status !== "confirmed") {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "Only scheduled or confirmed appointments can be rescheduled.",
+          message:
+            "Only scheduled or confirmed appointments can be rescheduled.",
         });
       }
 
@@ -1476,7 +1691,7 @@ export const appointmentsRouter = createRouter({
         ctx.practiceId,
         startTime,
         endTime,
-        input.id // exclude the appointment being moved
+        input.id, // exclude the appointment being moved
       );
       const result = detectConflicts(
         {
@@ -1487,7 +1702,7 @@ export const appointmentsRouter = createRouter({
           locationId,
           excludeId: input.id,
         },
-        existing
+        existing,
       );
       const message = conflictMessage(result);
       if (message) throw new TRPCError({ code: "CONFLICT", message });
@@ -1508,32 +1723,38 @@ export const appointmentsRouter = createRouter({
             eq(appointments.practiceId, ctx.practiceId),
             eq(appointments.status, current.status),
             activePracticePredicate(ctx.practiceId),
-            isNull(appointments.deletedAt)
-          )
+            isNull(appointments.deletedAt),
+          ),
         )
         .returning();
       if (!updated) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "Appointment changed while rescheduling. Refresh and try again.",
+          message:
+            "Appointment changed while rescheduling. Refresh and try again.",
         });
       }
-      await dispatchAppointmentWebhookAfterCommit(ctx, ctx.practiceId, "appointment.rescheduled", {
-        id: updated.id,
-        appointmentId: updated.id,
-        previousStartTime: current.startTime,
-        previousEndTime: current.endTime,
-        startTime: updated.startTime,
-        endTime: updated.endTime,
-        status: updated.status,
-        patientId: updated.patientId,
-        clientId: updated.clientId,
-        doctorId: updated.doctorId,
-        roomId: updated.roomId,
-        locationId: updated.locationId,
-        typeId: updated.typeId,
-        source: "dashboard",
-      });
+      await dispatchAppointmentWebhookAfterCommit(
+        ctx,
+        ctx.practiceId,
+        "appointment.rescheduled",
+        {
+          id: updated.id,
+          appointmentId: updated.id,
+          previousStartTime: current.startTime,
+          previousEndTime: current.endTime,
+          startTime: updated.startTime,
+          endTime: updated.endTime,
+          status: updated.status,
+          patientId: updated.patientId,
+          clientId: updated.clientId,
+          doctorId: updated.doctorId,
+          roomId: updated.roomId,
+          locationId: updated.locationId,
+          typeId: updated.typeId,
+          source: "dashboard",
+        },
+      );
       return { ...updated, confirmationRequired };
     }),
 
@@ -1545,12 +1766,12 @@ export const appointmentsRouter = createRouter({
       const dayStart = dateInputTimeUtcInstant(
         input.date,
         { hour: input.dayStartHour },
-        timezone
+        timezone,
       );
       const dayEnd = dateInputTimeUtcInstant(
         input.date,
         { hour: input.dayEndHour },
-        timezone
+        timezone,
       );
 
       await assertAppointmentTargets(ctx, {
@@ -1576,7 +1797,12 @@ export const appointmentsRouter = createRouter({
         : [{ start: dayStart, end: dayEnd }];
       if (windows.length === 0) return [];
 
-      const existing = await fetchOverlapping(ctx.db, ctx.practiceId, dayStart, dayEnd);
+      const existing = await fetchOverlapping(
+        ctx.db,
+        ctx.practiceId,
+        dayStart,
+        dayEnd,
+      );
       // Only the chosen doctor/room blocks availability; if neither given, any
       // booking on the day blocks (treat the schedule as a single resource).
       const busy = existing.filter((b) => {
@@ -1605,8 +1831,8 @@ export const appointmentsRouter = createRouter({
         and(
           eq(appointmentTypes.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
-          isNull(appointmentTypes.deletedAt)
-        )
+          isNull(appointmentTypes.deletedAt),
+        ),
       );
   }),
 
@@ -1623,8 +1849,8 @@ export const appointmentsRouter = createRouter({
           eq(users.practiceId, ctx.practiceId),
           eq(users.isVeterinarian, true),
           activePracticePredicate(ctx.practiceId),
-          isNull(users.deletedAt)
-        )
+          isNull(users.deletedAt),
+        ),
       );
   }),
 
@@ -1634,7 +1860,7 @@ export const appointmentsRouter = createRouter({
       const conditions = [
         eq(rooms.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
-        isNull(rooms.deletedAt)
+        isNull(rooms.deletedAt),
       ];
       if (input?.locationId)
         conditions.push(eq(rooms.locationId, input.locationId));
@@ -1678,7 +1904,7 @@ export const appointmentsRouter = createRouter({
           input.frequency,
           input.interval,
           input.occurrences - 1,
-          timezone
+          timezone,
         );
 
         const [series] = await tx
@@ -1689,7 +1915,7 @@ export const appointmentsRouter = createRouter({
             interval: input.interval,
             endDate: formatDateInputForTimeZone(
               lastOccurrenceDate,
-              resolveRecurrenceTimeZone(timezone)
+              resolveRecurrenceTimeZone(timezone),
             ),
           })
           .returning();
@@ -1703,7 +1929,7 @@ export const appointmentsRouter = createRouter({
             input.frequency,
             input.interval,
             i,
-            timezone
+            timezone,
           );
           const occEnd = new Date(occStart.getTime() + durationMs);
 
@@ -1713,7 +1939,7 @@ export const appointmentsRouter = createRouter({
             txCtx.db,
             ctx.practiceId,
             occStart,
-            occEnd
+            occEnd,
           );
           const result = detectConflicts(
             {
@@ -1723,7 +1949,7 @@ export const appointmentsRouter = createRouter({
               roomId: input.roomId,
               locationId,
             },
-            existing
+            existing,
           );
           if (hasConflict(result)) {
             skipped++;
@@ -1753,7 +1979,7 @@ export const appointmentsRouter = createRouter({
         await recordActivationAfterAppointmentCreated(
           ctx.db,
           ctx.practiceId,
-          "appointments.createRecurring"
+          "appointments.createRecurring",
         );
       }
       return result;
@@ -1806,7 +2032,7 @@ export const appointmentsRouter = createRouter({
         .update(practices)
         .set({ calendarFeedToken: generateCalendarFeedToken() })
         .where(
-          and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt))
+          and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)),
         )
         .returning({ token: practices.calendarFeedToken });
       if (!updated?.token) {
@@ -1829,7 +2055,7 @@ function computeOccurrenceDate(
   frequency: "weekly" | "monthly" | "annual",
   interval: number,
   n: number,
-  timeZone?: string | null
+  timeZone?: string | null,
 ): Date {
   const resolvedTimeZone = resolveRecurrenceTimeZone(timeZone);
   const base = recurrenceBaseParts(baseDate, resolvedTimeZone);
@@ -1837,7 +2063,7 @@ function computeOccurrenceDate(
     base.dateInput,
     frequency,
     interval,
-    n
+    n,
   );
 
   return dateInputTimeUtcInstant(
@@ -1847,7 +2073,7 @@ function computeOccurrenceDate(
       minute: base.minute,
       second: base.second,
     },
-    resolvedTimeZone
+    resolvedTimeZone,
   );
 }
 
@@ -1855,7 +2081,7 @@ function resolveRecurrenceTimeZone(timeZone?: string | null): string {
   const resolved = timeZone?.trim() || "UTC";
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: resolved }).format(
-      new Date(0)
+      new Date(0),
     );
     return resolved;
   } catch {
@@ -1865,7 +2091,7 @@ function resolveRecurrenceTimeZone(timeZone?: string | null): string {
 
 function recurrenceBaseParts(
   date: Date,
-  timeZone: string
+  timeZone: string,
 ): { dateInput: string; hour: number; minute: number; second: number } {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -1909,7 +2135,7 @@ function recurrenceDateInput(
   baseDateInput: string,
   frequency: "weekly" | "monthly" | "annual",
   interval: number,
-  n: number
+  n: number,
 ): string {
   const [year, month, day] = baseDateInput.split("-").map(Number) as [
     number,

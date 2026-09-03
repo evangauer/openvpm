@@ -61,6 +61,18 @@ export function shouldReplaceGuardedHashNavigation(input: {
   );
 }
 
+export function canDetachUnsavedListeners(input: {
+  listenersAttached: boolean;
+  activeGuardCount: number;
+  pendingAction: "leave" | "restore" | "cleanup" | null;
+}): boolean {
+  return (
+    input.listenersAttached &&
+    input.activeGuardCount === 0 &&
+    input.pendingAction === null
+  );
+}
+
 function replaceSentinelHash(targetHref: string) {
   const oldUrl = window.location.href;
   const target = new URL(targetHref, oldUrl);
@@ -237,7 +249,15 @@ function attachListeners() {
 }
 
 function detachListenersIfIdle() {
-  if (!listenersAttached || activeGuards.size > 0) return;
+  if (
+    !canDetachUnsavedListeners({
+      listenersAttached,
+      activeGuardCount: activeGuards.size,
+      pendingAction: pendingPopAction,
+    })
+  ) {
+    return;
+  }
   if (sentinelActive) {
     pendingPopAction = "cleanup";
     window.history.back();

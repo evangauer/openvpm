@@ -26,6 +26,11 @@ import {
   isVitalsOptionalTextInputValid,
   isVitalsOptionalWeightInputValid,
 } from "../records/vitals-policy";
+import {
+  fahrenheitToCelsius,
+  poundsToKilograms,
+  roundClinicalMeasurement,
+} from "../ambulatory-workspace";
 
 describe("patient detail UI states", () => {
   it("resolves merged source charts to the canonical identity with attribution", () => {
@@ -317,7 +322,7 @@ describe("patient detail UI states", () => {
     expect(VITALS_HEART_RATE_MIN_BPM).toBe(0);
     expect(VITALS_HEART_RATE_MAX_BPM).toBe(400);
     expect(VITALS_WEIGHT_MIN_KG).toBe(0.001);
-    expect(VITALS_WEIGHT_MAX_KG).toBe(200);
+    expect(VITALS_WEIGHT_MAX_KG).toBe(10_000);
     expect(VITALS_WEIGHT_STEP).toBe(0.001);
     expect(VITALS_CAPILLARY_REFILL_MIN_SEC).toBe(0);
     expect(VITALS_CAPILLARY_REFILL_MAX_SEC).toBe(10);
@@ -337,11 +342,11 @@ describe("patient detail UI states", () => {
     expect(source).toContain("type VitalsFormState =");
     expect(source).toContain("const canSubmitVitals =");
     expect(source).toContain("hasVitalsFormContent");
-    expect(source).toContain("min={VITALS_TEMPERATURE_MIN_C}");
-    expect(source).toContain("max={VITALS_TEMPERATURE_MAX_C}");
+    expect(source).toContain("celsiusToFahrenheit(VITALS_TEMPERATURE_MIN_C)");
+    expect(source).toContain("celsiusToFahrenheit(VITALS_TEMPERATURE_MAX_C)");
     expect(source).toContain("step={VITALS_TEMPERATURE_STEP}");
-    expect(source).toContain("min={VITALS_WEIGHT_MIN_KG}");
-    expect(source).toContain("max={VITALS_WEIGHT_MAX_KG}");
+    expect(source).toContain("kilogramsToPounds(VITALS_WEIGHT_MIN_KG)");
+    expect(source).toContain("kilogramsToPounds(VITALS_WEIGHT_MAX_KG)");
     expect(source).toContain("step={VITALS_WEIGHT_STEP}");
     expect(source).toContain("maxLength={VITALS_MUCOUS_MEMBRANE_MAX_LENGTH}");
     expect(source).toContain("maxLength={VITALS_NOTES_MAX_LENGTH}");
@@ -351,6 +356,9 @@ describe("patient detail UI states", () => {
     expect(source).toContain(
       "capillaryRefillSec: num(form.capillaryRefillSec)",
     );
+    expect(source).toContain("temperatureC: num(canonicalTemperature)");
+    expect(source).toContain("weightKg: num(canonicalWeight)");
+    expect(source).toContain("bodyConditionScale,");
     expect(source).toContain("disabled={!canSubmitVitals}");
     expect(source).not.toContain("disabled={record.isPending}");
   });
@@ -373,12 +381,93 @@ describe("patient detail UI states", () => {
     );
     expect(source).toContain("const canSubmitWeight =");
     expect(source).toContain("handleRecordWeight");
-    expect(source).toContain("min={PATIENT_WEIGHT_MIN_KG}");
-    expect(source).toContain("max={PATIENT_WEIGHT_MAX_KG}");
+    expect(source).toContain("kilogramsToPounds(PATIENT_WEIGHT_MIN_KG)");
+    expect(source).toContain("kilogramsToPounds(PATIENT_WEIGHT_MAX_KG)");
     expect(source).toContain("step={PATIENT_WEIGHT_STEP}");
     expect(source).toContain("disabled={!canSubmitWeight}");
-    expect(source).toContain("weightKg: weightKg.trim()");
+    expect(source).toContain("weightKg: canonicalPatientWeight");
     expect(source).toContain('toast.success("Weight recorded")');
+  });
+
+  it("applies ambulatory units and the stored BCS scale across chart entry and history", () => {
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
+
+    expect(roundClinicalMeasurement(fahrenheitToCelsius(101.5), 1)).toBe(38.6);
+    expect(roundClinicalMeasurement(poundsToKilograms(1600), 3)).toBe(725.748);
+    expect(source).toContain(
+      'const chartMeasurementSystem =\n    recordsSettings?.ambulatoryWorkspace.measurementSystem ?? "metric"',
+    );
+    expect(source).toContain(
+      "recordsSettings?.ambulatoryWorkspace.bodyConditionScale ?? 9",
+    );
+    expect(source).toContain(
+      'chartMeasurementSystem === "us_customary" ? poundsToKilograms : undefined',
+    );
+    expect(source).toContain(
+      'measurementSystem === "us_customary" ? fahrenheitToCelsius : undefined',
+    );
+    expect(source).toContain(
+      'measurementSystem === "us_customary" ? poundsToKilograms : undefined',
+    );
+    expect(source).toContain(
+      'Temp ({measurementSystem === "us_customary" ? "F" : "C"})',
+    );
+    expect(source).toContain(
+      'Weight ({measurementSystem === "us_customary" ? "lb" : "kg"})',
+    );
+    expect(source).toContain("BCS (1-{bodyConditionScale})");
+    expect(source).toContain(
+      "formatClinicalTemperature(\n                        v.temperatureC,\n                        measurementSystem",
+    );
+    expect(source).toContain(
+      "formatClinicalWeight(v.weightKg, measurementSystem)",
+    );
+    expect(source).toContain("{v.bodyConditionScore} / {v.bodyConditionScale}");
+  });
+
+  it("fails the ambulatory snapshot closed and excludes corrected clinical observations", () => {
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
+
+    expect(source).toContain(
+      "const snapshotVitalsQuery = trpc.vitals.listByPatient.useQuery",
+    );
+    expect(source).toContain(
+      "const latestSnapshotVitals = snapshotVitalsQuery.data?.find",
+    );
+    expect(source).toContain("(vital) => !vital.correctionId");
+    expect(source).toContain("(vaccination) => !vaccination.correctionId");
+    expect(source).toContain("snapshotVitalsQuery.error");
+    expect(source).toContain("vaccinationsQuery.error");
+    expect(source).toContain("!snapshotVitalsQuery.data");
+    expect(source).toContain("!vaccinationsQuery.data");
+    expect(source).toContain("Latest vitals");
+    expect(source).toContain("BCS / vaccines");
+    expect(source).toContain("latestSnapshotBcs.bodyConditionScale");
+  });
+
+  it("requires an explicit active location for multi-location field visits", () => {
+    const source = readFileSync(
+      "app/(dashboard)/patients/[id]/page.tsx",
+      "utf8",
+    );
+
+    expect(source).toContain(
+      "trpc.appointments.listLocations.useQuery(\n    undefined,",
+    );
+    expect(source).toContain("fieldVisitLocations.length === 1");
+    expect(source).toContain('aria-label="Field visit location"');
+    expect(source).toContain("fieldVisitLocations.length > 1");
+    expect(source).toContain("!selectedFieldVisitLocationId");
+    expect(source).toContain("locationId: selectedFieldVisitLocationId");
+    expect(source).toContain(
+      "Add an active location before starting a field visit.",
+    );
   });
 
   it("keeps allergy reactions visible and uses permanent clinician corrections", () => {

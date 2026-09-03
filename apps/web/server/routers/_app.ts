@@ -3,6 +3,7 @@ import { authRouter } from "./auth";
 import { clientsRouter } from "./clients";
 import { patientsRouter } from "./patients";
 import { appointmentsRouter } from "./appointments";
+import { recentClinicalItemsRouter } from "./recent-clinical-items";
 import { recordsRouter } from "./records";
 import { billingRouter } from "./billing";
 import { dashboardRouter } from "./dashboard";
@@ -40,6 +41,7 @@ export const appRouter = createRouter({
   clients: clientsRouter,
   patients: patientsRouter,
   appointments: appointmentsRouter,
+  recentClinicalItems: recentClinicalItemsRouter,
   records: recordsRouter,
   billing: billingRouter,
   dashboard: dashboardRouter,
