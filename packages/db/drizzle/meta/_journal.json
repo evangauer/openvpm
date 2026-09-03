@@ -694,34 +694,6 @@
       "when": 1787775474728,
       "tag": "0098_bitter_midnight",
       "breakpoints": true
-    },
-    {
-      "idx": 99,
-      "version": "7",
-      "when": 1788369770310,
-      "tag": "0099_closed_jigsaw",
-      "breakpoints": true
-    },
-    {
-      "idx": 100,
-      "version": "7",
-      "when": 1788374626753,
-      "tag": "0100_restrict_soap_addendum_execute",
-      "breakpoints": true
-    },
-    {
-      "idx": 101,
-      "version": "7",
-      "when": 1788443729834,
-      "tag": "0101_consent_capability_hardening",
-      "breakpoints": true
-    },
-    {
-      "idx": 102,
-      "version": "7",
-      "when": 1788449958836,
-      "tag": "0102_equal_fantastic_four",
-      "breakpoints": true
     }
   ]
 }
