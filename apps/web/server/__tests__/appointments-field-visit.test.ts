@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   dispatchCreated: vi.fn(async () => undefined),
@@ -89,9 +89,29 @@ const enabledSettings = {
   },
 };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.stubEnv("AMBULATORY_WORKSPACE_ENABLED", "true");
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
 describe("appointments.startFieldVisit", () => {
+  it("does not reach the database while the deployment rollout is dark", async () => {
+    vi.stubEnv("AMBULATORY_WORKSPACE_ENABLED", "false");
+    const { db, select, insert } = createDb([]);
+
+    await expect(
+      callerWithDb(db).startFieldVisit({ patientId: PATIENT_ID }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it("fails closed until the practice explicitly enables field workflow", async () => {
     const { db, select, insert } = createDb([[{ settings: null }]]);
 

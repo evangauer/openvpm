@@ -77,6 +77,7 @@ import {
   type AppointmentLocationFailure,
 } from "@/lib/scheduling/location";
 import { ambulatoryWorkspaceSettings } from "@/lib/ambulatory-workspace";
+import { ambulatoryWorkspaceRolloutEnabled } from "@/server/ambulatory-rollout";
 
 type AppointmentsContext = {
   db: Database;
@@ -859,6 +860,12 @@ export const appointmentsRouter = createRouter({
         .strict(),
     )
     .mutation(async ({ ctx, input }) => {
+      if (!ambulatoryWorkspaceRolloutEnabled()) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Ambulatory workspace is not available.",
+        });
+      }
       const result = await ctx.db.transaction(async (tx) => {
         const txDb = tx as unknown as Database;
         await takeAppointmentSchedulingLock(txDb, ctx.practiceId);

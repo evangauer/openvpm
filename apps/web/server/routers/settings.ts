@@ -100,8 +100,11 @@ import { assertOutboundEmailAllowed } from "@/lib/outbound-email-security";
 import {
   BODY_CONDITION_SCALES,
   MEASUREMENT_SYSTEMS,
-  ambulatoryWorkspaceSettings,
 } from "@/lib/ambulatory-workspace";
+import {
+  ambulatoryWorkspaceRolloutEnabled,
+  effectiveAmbulatoryWorkspaceSettings,
+} from "@/server/ambulatory-rollout";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -615,6 +618,7 @@ export const settingsRouter = createRouter({
     }
     return {
       ...practice,
+      ambulatoryWorkspaceRolloutEnabled: ambulatoryWorkspaceRolloutEnabled(),
       jurisdictionConfirmed: hasExplicitPracticeJurisdiction(
         practice.settings,
         practice.country,
@@ -898,6 +902,12 @@ export const settingsRouter = createRouter({
         .strict(),
     )
     .mutation(async ({ ctx, input }) => {
+      if (input.enabled && !ambulatoryWorkspaceRolloutEnabled()) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Ambulatory workspace rollout is not enabled.",
+        });
+      }
       const [updated] = await ctx.db
         .update(practices)
         .set({
@@ -906,7 +916,7 @@ export const settingsRouter = createRouter({
         .where(activePracticeWhere(ctx.practiceId))
         .returning({ settings: practices.settings });
       if (!updated) throw practiceNotFound();
-      return ambulatoryWorkspaceSettings(updated.settings);
+      return effectiveAmbulatoryWorkspaceSettings(updated.settings);
     }),
 
   setMarketingEmailPreference: adminProcedure

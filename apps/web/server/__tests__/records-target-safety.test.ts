@@ -120,6 +120,7 @@ function createDb(opts?: {
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("records target safety", () => {
@@ -173,6 +174,39 @@ describe("records target safety", () => {
     });
 
     expect(select).toHaveBeenCalledTimes(1);
+  });
+
+  it("masks stored ambulatory enablement while the deployment is dark", async () => {
+    vi.stubEnv("AMBULATORY_WORKSPACE_ENABLED", "false");
+    const { db } = createDb({
+      selectResults: [
+        [
+          {
+            name: "Field Veterinary",
+            address: null,
+            phone: null,
+            email: null,
+            timezone: "UTC",
+            settings: {
+              ambulatoryWorkspace: {
+                enabled: true,
+                measurementSystem: "us_customary",
+                bodyConditionScale: 5,
+                compactCloseout: true,
+              },
+            },
+          },
+        ],
+      ],
+    });
+
+    await expect(callerWithDb(db).settings()).resolves.toMatchObject({
+      ambulatoryWorkspace: {
+        enabled: false,
+        measurementSystem: "us_customary",
+        bodyConditionScale: 5,
+      },
+    });
   });
 
   it("rejects missing or deleted practice identity instead of using fallback settings", async () => {

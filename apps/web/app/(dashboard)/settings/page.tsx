@@ -952,7 +952,10 @@ function PracticeInfoTab() {
           )}
         </div>
 
-        <AmbulatoryWorkspaceSettingsCard settings={practice.settings} />
+        <AmbulatoryWorkspaceSettingsCard
+          settings={practice.settings}
+          rolloutEnabled={practice.ambulatoryWorkspaceRolloutEnabled === true}
+        />
       </div>
 
       <Button

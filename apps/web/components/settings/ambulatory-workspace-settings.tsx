@@ -13,8 +13,10 @@ import {
 
 export function AmbulatoryWorkspaceSettingsCard({
   settings,
+  rolloutEnabled,
 }: {
   settings: unknown;
+  rolloutEnabled: boolean;
 }) {
   const utils = trpc.useUtils();
   const [draft, setDraft] = useState<AmbulatoryWorkspaceSettings | null>(null);
@@ -28,6 +30,8 @@ export function AmbulatoryWorkspaceSettingsCard({
     },
     onError: (error) => toast.error(error.message),
   });
+
+  if (!rolloutEnabled) return null;
 
   return (
     <section className="space-y-5 rounded-lg border border-border bg-card p-6 xl:col-span-2">

@@ -153,7 +153,7 @@ import {
   buildPatientHistoryQuery,
   type PatientHistoryRawRow,
 } from "../patient-history";
-import { ambulatoryWorkspaceSettings } from "@/lib/ambulatory-workspace";
+import { effectiveAmbulatoryWorkspaceSettings } from "@/server/ambulatory-rollout";
 
 export { PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH } from "@/lib/records/prescription-policy";
 export {
@@ -264,7 +264,7 @@ async function practiceSettings(ctx: RecordsContext): Promise<{
   phone: string | null;
   email: string | null;
   timezone: string | null;
-  ambulatoryWorkspace: ReturnType<typeof ambulatoryWorkspaceSettings>;
+  ambulatoryWorkspace: ReturnType<typeof effectiveAmbulatoryWorkspaceSettings>;
 }> {
   const [practice] = await ctx.db
     .select({
@@ -292,7 +292,9 @@ async function practiceSettings(ctx: RecordsContext): Promise<{
     phone: practice.phone ?? null,
     email: practice.email ?? null,
     timezone: practice.timezone ?? null,
-    ambulatoryWorkspace: ambulatoryWorkspaceSettings(practice.settings),
+    ambulatoryWorkspace: effectiveAmbulatoryWorkspaceSettings(
+      practice.settings,
+    ),
   };
 }
 

@@ -8,6 +8,16 @@ import {
   practices,
   recentClinicalItems,
 } from "@openpims/db";
+import { ambulatoryWorkspaceRolloutEnabled } from "@/server/ambulatory-rollout";
+
+function assertAmbulatoryWorkspaceAvailable(): void {
+  if (!ambulatoryWorkspaceRolloutEnabled()) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "Ambulatory workspace is not available.",
+    });
+  }
+}
 
 function activePracticePredicate(practiceId: string) {
   return sql`exists (
@@ -18,8 +28,9 @@ function activePracticePredicate(practiceId: string) {
 }
 
 export const recentClinicalItemsRouter = createRouter({
-  list: protectedProcedure.query(async ({ ctx }) =>
-    ctx.db
+  list: protectedProcedure.query(async ({ ctx }) => {
+    assertAmbulatoryWorkspaceAvailable();
+    return ctx.db
       .select({
         patientId: patients.id,
         patientName: patients.name,
@@ -55,8 +66,8 @@ export const recentClinicalItemsRouter = createRouter({
         ),
       )
       .orderBy(desc(recentClinicalItems.viewedAt))
-      .limit(10),
-  ),
+      .limit(10);
+  }),
 
   record: protectedProcedure
     .input(
@@ -68,6 +79,7 @@ export const recentClinicalItemsRouter = createRouter({
         .strict(),
     )
     .mutation(async ({ ctx, input }) => {
+      assertAmbulatoryWorkspaceAvailable();
       const [target] = await ctx.db
         .select({
           patientId: patients.id,

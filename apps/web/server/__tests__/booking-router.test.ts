@@ -464,7 +464,7 @@ describe("public booking", () => {
     };
     const { db, insertedValues, execute } = createDb({
       selectResults: [
-        [pageRow()],
+        [pageRow({ intakeFieldKeys: ["serviceAddress"] })],
         [{ id: TYPE_A, name: "Wellness Exam", durationMinutes: 30 }],
         [],
         [],
@@ -472,13 +472,18 @@ describe("public booking", () => {
       ],
       insertResults: [
         [{ id: CLIENT_ID }],
-        [{ id: PATIENT_ID, name: "Milo" }],
+        [{ id: PATIENT_ID, name: "Maple" }],
         [appt],
         [],
       ],
     });
 
-    const result = await publicCaller(db).book(bookInput());
+    const result = await publicCaller(db).book(
+      bookInput({
+        pet: { name: "Maple", species: "bovine" as const },
+        intake: { serviceAddress: "North pasture, 10 Farm Road" },
+      }),
+    );
     expect(result.success).toBe(true);
     expect(result.requiresConfirmation).toBe(true);
     // withSystem establishes the RLS bypass, then booking takes the
@@ -501,8 +506,8 @@ describe("public booking", () => {
     expect(clientValues!.accessToken).toBeNull();
     expect(patientValues).toMatchObject({
       clientId: CLIENT_ID,
-      name: "Milo",
-      species: "canine",
+      name: "Maple",
+      species: "bovine",
     });
     expect(apptValues).toMatchObject({
       practiceId: PRACTICE_ID,
@@ -513,12 +518,15 @@ describe("public booking", () => {
       status: "scheduled",
     });
     expect(apptValues!.notes).toContain("[Online request]");
+    expect(apptValues!.notes).toContain(
+      "Service/farm address (owner-reported): North pasture, 10 Farm Road",
+    );
     expect(commValues).toMatchObject({
       practiceId: PRACTICE_ID,
       clientId: CLIENT_ID,
       channel: "portal",
       direction: "inbound",
-      subject: "New appointment request for Milo",
+      subject: "New appointment request for Maple",
       status: "pending",
     });
     expect(mocks.dispatchWebhookEvent).toHaveBeenCalledWith(

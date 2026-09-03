@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
 const { recentClinicalItemsRouter } =
@@ -66,7 +66,30 @@ function createDb(
   };
 }
 
+beforeEach(() => {
+  vi.stubEnv("AMBULATORY_WORKSPACE_ENABLED", "true");
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("recent clinical items", () => {
+  it("keeps both new procedures dark before database work", async () => {
+    vi.stubEnv("AMBULATORY_WORKSPACE_ENABLED", "false");
+    const { db, select, insert } = createDb([]);
+
+    await expect(callerWithDb(db).list()).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    await expect(
+      callerWithDb(db).record({ patientId: PATIENT_ID }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    expect(select).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it("validates identifiers before database work", async () => {
     const { db, select, insert } = createDb([]);
 
