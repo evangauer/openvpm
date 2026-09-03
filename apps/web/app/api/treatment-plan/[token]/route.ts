@@ -3,6 +3,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import {
+  consentForms,
   consentRequests,
   patients,
   practices,
@@ -18,6 +19,9 @@ import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
 import {
   buildTreatmentPlanConsentBody,
   canonicalTreatmentPlanDecisions,
+  TREATMENT_PLAN_CONSENT_FORM_BODY,
+  TREATMENT_PLAN_CONSENT_FORM_SLUG,
+  TREATMENT_PLAN_CONSENT_FORM_TITLE,
   treatmentPlanDecisionsEqual,
   type OfferedTreatmentPlanLine,
 } from "@/lib/treatment-plan-presentations/decision-policy";
@@ -29,7 +33,8 @@ import {
 import {
   CONSENT_TOKEN_TTL_MS,
   captureRateLimitKey,
-  generateCaptureToken,
+  deriveTreatmentPlanConsentToken,
+  hashConsentToken,
 } from "@/lib/consult/tokens";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
 import { lockPracticeForExternalSideEffects } from "@/lib/recovery-hold";
@@ -262,20 +267,23 @@ async function lookupPresentation(
 async function signUrl(
   database: Database,
   session: PresentationLookup,
+  treatmentPlanToken: string,
 ): Promise<string | null> {
   if (!session.consentRequestId) return null;
+  const consentToken = deriveTreatmentPlanConsentToken(treatmentPlanToken);
   const [consent] = await database
-    .select({ token: consentRequests.token })
+    .select({ id: consentRequests.id })
     .from(consentRequests)
     .where(
       and(
         eq(consentRequests.practiceId, session.practiceId),
         eq(consentRequests.id, session.consentRequestId),
+        eq(consentRequests.tokenHash, hashConsentToken(consentToken)),
         isNull(consentRequests.deletedAt),
       ),
     )
     .limit(1);
-  return consent ? `${appBaseUrl()}/sign/${consent.token}` : null;
+  return consent ? `${appBaseUrl()}/sign/${consentToken}` : null;
 }
 
 async function handleGet(
@@ -289,6 +297,12 @@ async function handleGet(
   ) {
     return notFound();
   }
+  const limited = await enforceRateLimits(
+    request,
+    token,
+    "treatment-plan-view",
+  );
+  if (limited) return limited;
   return withSystem(db, async (systemTx) => {
     const found = await lookupPresentation(systemTx, token);
     if (!found || billingBlocked(found.session)) return notFound();
@@ -300,17 +314,11 @@ async function handleGet(
     ) {
       return notFound();
     }
-    const limited = await enforceRateLimits(
-      request,
-      token,
-      "treatment-plan-view",
-    );
-    if (limited) return limited;
     if (found.session.status !== "pending") {
       if (found.session.status === "completed") {
         return NextResponse.json({ status: "completed", signUrl: null });
       }
-      const url = await signUrl(systemTx, found.session);
+      const url = await signUrl(systemTx, found.session, token);
       return NextResponse.json({
         status: found.session.status,
         signUrl: url,
@@ -341,129 +349,151 @@ async function handlePost(
   ) {
     return notFound();
   }
-  return withSystem(db, async (systemTx) => {
-    const found = await lookupPresentation(systemTx, token);
-    if (!found || billingBlocked(found.session)) return notFound();
+  const limited = await enforceRateLimits(
+    request,
+    token,
+    "treatment-plan-decide",
+  );
+  if (limited) return limited;
+  const found = await withSystem(db, async (systemTx) => {
+    const resolved = await lookupPresentation(systemTx, token);
+    if (!resolved || billingBlocked(resolved.session)) return null;
     if (
       !(await lockPracticeForExternalSideEffects(
         systemTx,
-        found.session.practiceId,
+        resolved.session.practiceId,
       ))
     ) {
-      return notFound();
+      return null;
     }
-    const limited = await enforceRateLimits(
-      request,
-      token,
-      "treatment-plan-decide",
+    return resolved;
+  });
+  if (!found) return notFound();
+  const body = await readRequestBytesWithLimit(
+    request,
+    DECISIONS_REQUEST_MAX_BYTES,
+  );
+  if (!body.ok) {
+    return NextResponse.json(
+      { error: "Request exceeds maximum size" },
+      { status: 413 },
     );
-    if (limited) return limited;
-    const body = await readRequestBytesWithLimit(
-      request,
-      DECISIONS_REQUEST_MAX_BYTES,
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(body.bytes).toString("utf8"));
+  } catch {
+    return NextResponse.json({ error: "Invalid decisions" }, { status: 400 });
+  }
+  const validated = decisionsInput.safeParse(parsed);
+  if (!validated.success) {
+    return NextResponse.json({ error: "Invalid decisions" }, { status: 400 });
+  }
+  const decisions = canonicalTreatmentPlanDecisions(
+    validated.data.decisions,
+    found.lines,
+  );
+  if (!decisions) {
+    return NextResponse.json(
+      { error: "Decide every line using a valid quantity" },
+      { status: 400 },
     );
-    if (!body.ok) {
+  }
+  if (found.session.status === "completed") {
+    return NextResponse.json({ status: "completed" });
+  }
+  if (found.session.status === "awaiting_signature") {
+    if (!treatmentPlanDecisionsEqual(found.session.decisions, decisions)) {
       return NextResponse.json(
-        { error: "Request exceeds maximum size" },
-        { status: 413 },
+        { error: "These decisions do not match the saved response" },
+        { status: 409 },
       );
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(Buffer.from(body.bytes).toString("utf8"));
-    } catch {
-      return NextResponse.json({ error: "Invalid decisions" }, { status: 400 });
-    }
-    const validated = decisionsInput.safeParse(parsed);
-    if (!validated.success) {
-      return NextResponse.json({ error: "Invalid decisions" }, { status: 400 });
-    }
-    const decisions = canonicalTreatmentPlanDecisions(
-      validated.data.decisions,
-      found.lines,
-    );
-    if (!decisions) {
-      return NextResponse.json(
-        { error: "Decide every line using a valid quantity" },
-        { status: 400 },
-      );
-    }
-    if (found.session.status === "completed") {
-      return NextResponse.json({ status: "completed" });
-    }
-    if (found.session.status === "awaiting_signature") {
-      if (!treatmentPlanDecisionsEqual(found.session.decisions, decisions)) {
-        return NextResponse.json(
-          { error: "These decisions do not match the saved response" },
-          { status: 409 },
-        );
+    const url = await withSystem(db, async (systemTx) => {
+      if (
+        !(await lockPracticeForExternalSideEffects(
+          systemTx,
+          found.session.practiceId,
+        ))
+      ) {
+        return null;
       }
-      const url = await signUrl(systemTx, found.session);
-      return url
-        ? NextResponse.json({ status: "awaiting_signature", signUrl: url })
-        : notFound();
-    }
+      return signUrl(systemTx, found.session, token);
+    });
+    return url
+      ? NextResponse.json({ status: "awaiting_signature", signUrl: url })
+      : notFound();
+  }
 
-    const consentToken = generateCaptureToken();
-    const now = Date.now();
-    const consentExpiresAt = new Date(
-      Math.min(found.session.expiresAt.getTime(), now + CONSENT_TOKEN_TTL_MS),
-    );
-    try {
-      const result = await withTenant(
-        db,
-        found.session.practiceId,
-        async (tx) => {
-          const [plan] = await tx
-            .select({ id: visitTreatmentPlans.id })
-            .from(visitTreatmentPlans)
-            .where(
-              and(
-                eq(visitTreatmentPlans.practiceId, found.session.practiceId),
-                eq(visitTreatmentPlans.id, found.session.planId),
-                eq(visitTreatmentPlans.status, "open"),
+  const consentToken = deriveTreatmentPlanConsentToken(token);
+  const consentTokenHash = hashConsentToken(consentToken);
+  const now = Date.now();
+  const consentExpiresAt = new Date(
+    Math.min(found.session.expiresAt.getTime(), now + CONSENT_TOKEN_TTL_MS),
+  );
+  try {
+    const result = await withTenant(
+      db,
+      found.session.practiceId,
+      async (tx) => {
+        if (
+          !(await lockPracticeForExternalSideEffects(
+            tx,
+            found.session.practiceId,
+          ))
+        ) {
+          return null;
+        }
+        const [plan] = await tx
+          .select({ id: visitTreatmentPlans.id })
+          .from(visitTreatmentPlans)
+          .where(
+            and(
+              eq(visitTreatmentPlans.practiceId, found.session.practiceId),
+              eq(visitTreatmentPlans.id, found.session.planId),
+              eq(visitTreatmentPlans.status, "open"),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!plan) return null;
+        const [presentation] = await tx
+          .select({ status: visitTreatmentPlanPresentations.status })
+          .from(visitTreatmentPlanPresentations)
+          .where(
+            and(
+              eq(visitTreatmentPlanPresentations.id, found.session.id),
+              eq(
+                visitTreatmentPlanPresentations.practiceId,
+                found.session.practiceId,
               ),
-            )
-            .for("update")
-            .limit(1);
-          if (!plan) return null;
-          const [presentation] = await tx
-            .select({ status: visitTreatmentPlanPresentations.status })
-            .from(visitTreatmentPlanPresentations)
-            .where(
-              and(
-                eq(visitTreatmentPlanPresentations.id, found.session.id),
-                eq(
-                  visitTreatmentPlanPresentations.practiceId,
-                  found.session.practiceId,
-                ),
-                eq(visitTreatmentPlanPresentations.status, "pending"),
-                gt(
-                  visitTreatmentPlanPresentations.expiresAt,
-                  sql`clock_timestamp()`,
-                ),
+              eq(visitTreatmentPlanPresentations.status, "pending"),
+              gt(
+                visitTreatmentPlanPresentations.expiresAt,
+                sql`clock_timestamp()`,
               ),
-            )
-            .for("update")
-            .limit(1);
-          if (!presentation) return null;
-          const [latest] = await tx
-            .select({ id: visitTreatmentPlanRevisions.id })
-            .from(visitTreatmentPlanRevisions)
-            .where(
-              and(
-                eq(
-                  visitTreatmentPlanRevisions.practiceId,
-                  found.session.practiceId,
-                ),
-                eq(visitTreatmentPlanRevisions.planId, found.session.planId),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!presentation) return null;
+        const [latest] = await tx
+          .select({ id: visitTreatmentPlanRevisions.id })
+          .from(visitTreatmentPlanRevisions)
+          .where(
+            and(
+              eq(
+                visitTreatmentPlanRevisions.practiceId,
+                found.session.practiceId,
               ),
-            )
-            .orderBy(desc(visitTreatmentPlanRevisions.revisionNumber))
-            .limit(1);
-          if (!latest || latest.id !== found.session.revisionId) return null;
-          const hashRows = rowsFromExecute<{ responseSha256: string }>(
-            await tx.execute(sql`
+              eq(visitTreatmentPlanRevisions.planId, found.session.planId),
+            ),
+          )
+          .orderBy(desc(visitTreatmentPlanRevisions.revisionNumber))
+          .limit(1);
+        if (!latest || latest.id !== found.session.revisionId) return null;
+        const hashRows = rowsFromExecute<{ responseSha256: string }>(
+          await tx.execute(sql`
             select public.compute_visit_treatment_plan_response_sha256_from_decisions(
               ${found.session.practiceId}::uuid,
               ${found.session.planId}::uuid,
@@ -472,71 +502,93 @@ async function handlePost(
               ${JSON.stringify(decisions)}::jsonb
             ) as "responseSha256"
           `),
-          );
-          const responseSha256 = hashRows[0]?.responseSha256;
-          if (!responseSha256)
-            throw new Error("Response hash could not be computed");
-          const [consent] = await tx
-            .insert(consentRequests)
-            .values({
-              practiceId: found.session.practiceId,
-              patientId: found.session.patientId,
-              createdBy: found.session.createdBy,
-              appointmentId: found.session.appointmentId,
-              formId: null,
-              token: consentToken,
-              expiresAt: consentExpiresAt,
-              title: `${found.session.title.slice(0, 190)} decisions`,
-              bodyText: buildTreatmentPlanConsentBody(
-                found.session,
-                found.lines,
-                decisions,
-                responseSha256,
-              ),
-            })
-            .returning({ id: consentRequests.id });
-          if (!consent) throw new Error("Consent request could not be created");
-          const [claimed] = await tx
-            .update(visitTreatmentPlanPresentations)
-            .set({
-              status: "awaiting_signature",
+        );
+        const responseSha256 = hashRows[0]?.responseSha256;
+        if (!responseSha256)
+          throw new Error("Response hash could not be computed");
+        await tx
+          .insert(consentForms)
+          .values({
+            practiceId: found.session.practiceId,
+            slug: TREATMENT_PLAN_CONSENT_FORM_SLUG,
+            title: TREATMENT_PLAN_CONSENT_FORM_TITLE,
+            body: TREATMENT_PLAN_CONSENT_FORM_BODY,
+            sortOrder: 1_000,
+            isActive: false,
+          })
+          .onConflictDoNothing();
+        const [form] = await tx
+          .select({ id: consentForms.id })
+          .from(consentForms)
+          .where(
+            and(
+              eq(consentForms.practiceId, found.session.practiceId),
+              eq(consentForms.slug, TREATMENT_PLAN_CONSENT_FORM_SLUG),
+            ),
+          )
+          .limit(1);
+        if (!form) throw new Error("Consent form provenance is unavailable");
+        const [consent] = await tx
+          .insert(consentRequests)
+          .values({
+            practiceId: found.session.practiceId,
+            patientId: found.session.patientId,
+            createdBy: found.session.createdBy,
+            appointmentId: found.session.appointmentId,
+            formId: form.id,
+            token: null,
+            tokenHash: consentTokenHash,
+            expiresAt: consentExpiresAt,
+            title: `${found.session.title.slice(0, 190)} decisions`,
+            bodyText: buildTreatmentPlanConsentBody(
+              found.session,
+              found.lines,
               decisions,
               responseSha256,
-              consentRequestId: consent.id,
-            })
-            .where(
-              and(
-                eq(visitTreatmentPlanPresentations.id, found.session.id),
-                eq(
-                  visitTreatmentPlanPresentations.practiceId,
-                  found.session.practiceId,
-                ),
-                eq(visitTreatmentPlanPresentations.status, "pending"),
+            ),
+          })
+          .returning({ id: consentRequests.id });
+        if (!consent) throw new Error("Consent request could not be created");
+        const [claimed] = await tx
+          .update(visitTreatmentPlanPresentations)
+          .set({
+            status: "awaiting_signature",
+            decisions,
+            responseSha256,
+            consentRequestId: consent.id,
+          })
+          .where(
+            and(
+              eq(visitTreatmentPlanPresentations.id, found.session.id),
+              eq(
+                visitTreatmentPlanPresentations.practiceId,
+                found.session.practiceId,
               ),
-            )
-            .returning({ id: visitTreatmentPlanPresentations.id });
-          return claimed ? { responseSha256 } : null;
-        },
-      );
-      if (!result) return notFound();
-      return NextResponse.json(
-        {
-          status: "awaiting_signature",
-          signUrl: `${appBaseUrl()}/sign/${consentToken}`,
-        },
-        { status: 201 },
-      );
-    } catch (error) {
-      console.error(
-        "Treatment-plan decision claim failed:",
-        sanitizedExceptionTelemetry(error),
-      );
-      return NextResponse.json(
-        { error: "Could not save decisions" },
-        { status: 500 },
-      );
-    }
-  });
+              eq(visitTreatmentPlanPresentations.status, "pending"),
+            ),
+          )
+          .returning({ id: visitTreatmentPlanPresentations.id });
+        return claimed ? { responseSha256 } : null;
+      },
+    );
+    if (!result) return notFound();
+    return NextResponse.json(
+      {
+        status: "awaiting_signature",
+        signUrl: `${appBaseUrl()}/sign/${consentToken}`,
+      },
+      { status: 201 },
+    );
+  } catch (error) {
+    console.error(
+      "Treatment-plan decision claim failed:",
+      sanitizedExceptionTelemetry(error),
+    );
+    return NextResponse.json(
+      { error: "Could not save decisions" },
+      { status: 500 },
+    );
+  }
 }
 
 export async function GET(

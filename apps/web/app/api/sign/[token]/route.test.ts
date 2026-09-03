@@ -36,6 +36,8 @@ const mocks = vi.hoisted(() => {
       signedAt: null,
       signaturePngBytes: status === "pending" ? null : signaturePngBytes,
       signatureSha256: status === "pending" ? null : signatureSha256,
+      signerAttestationVersion:
+        status === "pending" ? null : "owner-authority-v1",
       fileId: null,
       expiresAt: new Date("2099-01-01T00:00:00Z"),
       patientName: "Peanut",
@@ -261,6 +263,7 @@ function queueHappyPending() {
         signedAt: mocks.signedAt,
         signaturePngBytes: mocks.signaturePngBytes,
         signatureSha256: mocks.signatureSha256,
+        signerAttestationVersion: "owner-authority-v1",
       },
     ],
     [{ id: mocks.consentId }],
@@ -361,14 +364,14 @@ describe("GET /api/sign/[token]", () => {
     });
   });
 
-  it("returns generic misses before rate limiting and enforces limits for live capabilities", async () => {
+  it("rate-limits shaped tokens before generic database misses", async () => {
     for (const _state of ["missing", "deleted", "recovery-held"]) {
       mocks.selectResults.push([]);
       const missing = await callGet(TOKEN);
       expect(missing.status).toBe(404);
       await expect(missing.json()).resolves.toEqual({ error: "Not found" });
     }
-    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(6);
 
     mocks.selectResults.push([mocks.consentRow()]);
     mocks.rateLimit.mockResolvedValueOnce({
@@ -380,7 +383,7 @@ describe("GET /api/sign/[token]", () => {
     expect(limited.status).toBe(429);
   });
 
-  it("fails closed before rate limiting when recovery wins after lookup", async () => {
+  it("fails closed after rate limiting when recovery wins after lookup", async () => {
     mocks.selectResults.push([mocks.consentRow()]);
     mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
 
@@ -392,7 +395,7 @@ describe("GET /api/sign/[token]", () => {
       expect.anything(),
       mocks.practiceId,
     );
-    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -502,7 +505,7 @@ describe("POST /api/sign/[token]", () => {
       await expect(response.json()).resolves.toEqual({ error: "Not found" });
     }
     expect(mocks.readRequestBytesWithLimit).not.toHaveBeenCalled();
-    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(6);
     expect(mocks.withTenant).not.toHaveBeenCalled();
     expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
     expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
@@ -521,7 +524,7 @@ describe("POST /api/sign/[token]", () => {
       mocks.practiceId,
     );
     expect(mocks.readRequestBytesWithLimit).not.toHaveBeenCalled();
-    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(2);
     expect(mocks.withTenant).not.toHaveBeenCalled();
     expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
   });
@@ -536,7 +539,7 @@ describe("POST /api/sign/[token]", () => {
     const response = await callPost(TOKEN, validBody());
     expect(response.status).toBe(404);
     expect(mocks.readRequestBytesWithLimit).not.toHaveBeenCalled();
-    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(2);
     expect(mocks.withTenant).not.toHaveBeenCalled();
     expect(mocks.updateSet).not.toHaveBeenCalled();
     expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
@@ -654,6 +657,7 @@ describe("POST /api/sign/[token]", () => {
         signedAt: expect.anything(),
         signaturePngBytes: mocks.signaturePngBytes,
         signatureSha256: mocks.signatureSha256,
+        signerAttestationVersion: "owner-authority-v1",
       }),
     );
     expect(mocks.reserveManagedUpload).toHaveBeenCalledWith(
@@ -713,7 +717,7 @@ describe("POST /api/sign/[token]", () => {
     expect(mocks.queueManagedUploadReplication).toHaveBeenCalledTimes(1);
   });
 
-  it("retains the shared-lock transaction until signing storage and commit finish", async () => {
+  it("uses one connection at a time and retains the final tenant lease through provider commit", async () => {
     queueHappyPending();
     let releaseProvider!: () => void;
     const providerGate = new Promise<void>((resolve) => {
@@ -733,18 +737,35 @@ describe("POST /api/sign/[token]", () => {
       systemTransactionFinished = true;
       return result;
     });
+    let activeTenantTransactions = 0;
+    let maxTenantTransactions = 0;
+    mocks.withTenant.mockImplementation(async (_db, _practiceId, fn) => {
+      activeTenantTransactions += 1;
+      maxTenantTransactions = Math.max(
+        maxTenantTransactions,
+        activeTenantTransactions,
+      );
+      try {
+        return await fn(mocks.tx);
+      } finally {
+        activeTenantTransactions -= 1;
+      }
+    });
 
     const responsePromise = callPost(TOKEN, validBody());
     await vi.waitFor(() => {
       expect(mocks.putAndVerifyManagedUpload).toHaveBeenCalledTimes(1);
     });
-    expect(mocks.lockPracticeForExternalSideEffects).toHaveBeenCalledTimes(1);
-    expect(systemTransactionFinished).toBe(false);
+    expect(mocks.lockPracticeForExternalSideEffects).toHaveBeenCalledTimes(4);
+    expect(systemTransactionFinished).toBe(true);
+    expect(activeTenantTransactions).toBe(1);
+    expect(maxTenantTransactions).toBe(1);
 
     releaseProvider();
     expect((await responsePromise).status).toBe(201);
     expect(mocks.finalizeManagedUploadManifest).toHaveBeenCalledTimes(1);
-    expect(systemTransactionFinished).toBe(true);
+    expect(activeTenantTransactions).toBe(0);
+    expect(maxTenantTransactions).toBe(1);
   });
 
   it("makes the compare-and-swap loser exit before reservation or provider I/O", async () => {
@@ -778,6 +799,56 @@ describe("POST /api/sign/[token]", () => {
     );
     expect(mocks.reserveManagedUpload).toHaveBeenCalledTimes(1);
     expect(mocks.putAndVerifyManagedUpload).toHaveBeenCalledTimes(1);
+  });
+
+  it("upgrades a live legacy in-progress signature only after fresh authority acknowledgement", async () => {
+    mocks.selectResults.push([
+      mocks.consentRow({
+        status: "signing",
+        signerName: "Jordan Marsh",
+        signedAt: mocks.signedAt,
+        signerAttestationVersion: null,
+        fileId: mocks.fileId,
+      }),
+    ]);
+    mocks.updateReturningResults.push(
+      [{ signerAttestationVersion: "owner-authority-v1" }],
+      [{ id: mocks.consentId }],
+      [{ id: mocks.consentId }],
+    );
+
+    const response = await callPost(TOKEN, {
+      resume: true,
+      signerAuthorityAccepted: true,
+    });
+
+    expect(response.status).toBe(201);
+    expect(mocks.updateSet).toHaveBeenNthCalledWith(1, {
+      signerAttestationVersion: "owner-authority-v1",
+    });
+    expect(mocks.putAndVerifyManagedUpload).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retrofit authority evidence after a legacy signing link expires", async () => {
+    mocks.selectResults.push([
+      mocks.consentRow({
+        status: "signing",
+        signerName: "Jordan Marsh",
+        signedAt: mocks.signedAt,
+        signerAttestationVersion: null,
+        expiresAt: new Date("2000-01-01T00:00:00Z"),
+        fileId: mocks.fileId,
+      }),
+    ]);
+
+    const response = await callPost(TOKEN, {
+      resume: true,
+      signerAuthorityAccepted: true,
+    });
+
+    expect(response.status).toBe(404);
+    expect(mocks.readRequestBytesWithLimit).not.toHaveBeenCalled();
+    expect(mocks.updateSet).not.toHaveBeenCalled();
   });
 
   it("resumes persisted signing evidence after expiry without accepting new bytes", async () => {
@@ -1046,13 +1117,18 @@ describe("POST /api/sign/[token]", () => {
       ROUTE_SOURCE.indexOf("async function handlePost("),
       ROUTE_SOURCE.indexOf("export async function GET("),
     );
-    expect(postSource).toContain("return withSystem(db, async (systemTx) => {");
+    expect(postSource).toContain("const session = await withSystem(");
+    expect(postSource.indexOf("enforceRateLimits(")).toBeLessThan(
+      postSource.indexOf("withSystem("),
+    );
     expect(
       postSource.indexOf("lockPracticeForExternalSideEffects("),
     ).toBeLessThan(postSource.indexOf("readRequestBytesWithLimit("));
-    expect(postSource.lastIndexOf("});")).toBeGreaterThan(
+    expect(
       postSource.indexOf("queueManagedUploadReplication("),
-    );
+    ).toBeGreaterThan(postSource.lastIndexOf("withTenant("));
+    expect(ROUTE_SOURCE).toContain("consentRequests.tokenHash");
+    expect(ROUTE_SOURCE).toContain("hashConsentToken(token)");
     expect(ROUTE_SOURCE).toContain(
       'response.headers.set("Cache-Control", "private, no-store, max-age=0")',
     );

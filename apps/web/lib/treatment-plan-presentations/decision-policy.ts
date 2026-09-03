@@ -28,6 +28,16 @@ export type TreatmentPlanDecisionInput = {
 
 export const TREATMENT_PLAN_IN_FLIGHT_CONSENT_STATUSES = ["signing", "signed"];
 
+export const TREATMENT_PLAN_CONSENT_FORM_SLUG =
+  "system-treatment-plan-decision-v1";
+export const TREATMENT_PLAN_CONSENT_FORM_TITLE = "Treatment plan decision";
+export const TREATMENT_PLAN_CONSENT_FORM_BODY = [
+  "System template for a treatment-plan decision tied to an immutable priced revision.",
+  CONSENT_SIGNER_AUTHORITY_ATTESTATION,
+  CONSENT_ELECTRONIC_SIGNATURE_INTENT,
+  "The exact offered lines, selected quantities, totals, and response digest are snapshotted on each consent request.",
+].join("\n\n");
+
 export function treatmentPlanPresentationBlocksReplacement(
   presentation: {
     status: string;

@@ -708,6 +708,13 @@
       "when": 1788374626753,
       "tag": "0100_restrict_soap_addendum_execute",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1788443729834,
+      "tag": "0101_consent_capability_hardening",
+      "breakpoints": true
     }
   ]
 }

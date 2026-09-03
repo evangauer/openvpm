@@ -204,7 +204,15 @@ describe("e-sign consent UI states", () => {
   it("lets a refreshed in-progress signing page finish from persisted evidence", () => {
     expect(signClient).toContain('state.consent.status === "signing"');
     expect(signClient).toContain("Your signature is safe");
-    expect(signClient).toContain("submitSigningPayload({ resume: true })");
+    const resumeHandler = signClient.slice(
+      signClient.indexOf("async function handleResume"),
+      signClient.indexOf(
+        "if (state.kind",
+        signClient.indexOf("async function handleResume"),
+      ),
+    );
+    expect(resumeHandler).toContain("resume: true");
+    expect(resumeHandler).toContain("signerAuthorityAccepted: true");
     expect(signClient).toContain("Finish saving");
   });
 

@@ -222,7 +222,11 @@ export function SignClient({ token }: { token: string }) {
   }
 
   async function handleResume() {
-    await submitSigningPayload({ resume: true });
+    if (!signerAuthorityAccepted) return;
+    await submitSigningPayload({
+      resume: true,
+      signerAuthorityAccepted: true,
+    });
   }
 
   if (state.kind === "loading") {
@@ -281,9 +285,20 @@ export function SignClient({ token }: { token: string }) {
             {submitError}
           </p>
         )}
+        <label className="flex max-w-sm items-start gap-3 rounded-lg border border-gray-200 p-3 text-left text-sm leading-5 text-gray-700">
+          <input
+            type="checkbox"
+            checked={signerAuthorityAccepted}
+            onChange={(event) =>
+              setSignerAuthorityAccepted(event.target.checked)
+            }
+            className="mt-0.5 h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+          />
+          <span>{CONSENT_SIGNER_AUTHORITY_ATTESTATION}</span>
+        </label>
         <button
           type="button"
-          disabled={submitting}
+          disabled={submitting || !signerAuthorityAccepted}
           onClick={() => void handleResume()}
           className="w-full max-w-sm rounded-lg bg-teal-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
         >

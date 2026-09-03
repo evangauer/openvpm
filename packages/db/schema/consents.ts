@@ -99,8 +99,12 @@ export const consentRequests = pgTable(
      * Nullable only for requests that predate the form library; the title
      * and body below stay the durable snapshot either way. */
     formId: uuid("form_id").references(() => consentForms.id),
-    /** 64-hex capability token embedded in the QR link. */
-    token: varchar("token", { length: 64 }).notNull(),
+    /** Legacy plaintext capability token. New treatment-plan signing links
+     * store only tokenHash so a database read cannot recover the credential. */
+    token: varchar("token", { length: 64 }),
+    /** SHA-256 digest of a capability token. Exactly one of token/tokenHash
+     * is present during the backwards-compatible expand/contract rollout. */
+    tokenHash: varchar("token_hash", { length: 64 }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     /** Consent copy is snapshotted at dispatch time so later template edits
      * never change what someone already signed. */
@@ -114,11 +118,19 @@ export const consentRequests = pgTable(
      * persist this before rendering or provider I/O and always reuse it. */
     signaturePngBytes: bytea("signature_png_bytes"),
     signatureSha256: varchar("signature_sha256", { length: 64 }),
+    /** Versioned evidence that the signer explicitly confirmed owner or
+     * authorized-agent authority before the signature was accepted. */
+    signerAttestationVersion: varchar("signer_attestation_version", {
+      length: 64,
+    }),
     /** The signed consent PDF in the files table. */
     fileId: uuid("file_id").references(() => files.id),
   },
   (table) => ({
     tokenUq: uniqueIndex("consent_requests_token_uq").on(table.token),
+    tokenHashUq: uniqueIndex("consent_requests_token_hash_uq").on(
+      table.tokenHash,
+    ),
     practiceIdUq: uniqueIndex("consent_requests_practice_id_uq").on(
       table.practiceId,
       table.id,
@@ -160,6 +172,14 @@ export const consentRequests = pgTable(
     statusCheck: check(
       "consent_requests_status_check",
       sql`${table.status} in ('pending', 'signing', 'signed')`,
+    ),
+    credentialStorageCheck: check(
+      "consent_requests_credential_storage_check",
+      sql`(${table.token} is not null and ${table.tokenHash} is null) or (${table.token} is null and ${table.tokenHash} is not null)`,
+    ),
+    tokenHashFormatCheck: check(
+      "consent_requests_token_hash_format_check",
+      sql`${table.tokenHash} is null or ${table.tokenHash} ~ '^[0-9a-f]{64}$'`,
     ),
     signingEvidenceCheck: check(
       "consent_requests_signing_evidence_check",

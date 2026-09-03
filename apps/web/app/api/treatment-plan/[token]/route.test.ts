@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { deriveTreatmentPlanConsentToken } from "@/lib/consult/tokens";
 
 const ROUTE_SOURCE = readFileSync(
   fileURLToPath(new URL("./route.ts", import.meta.url)),
@@ -153,7 +154,7 @@ describe("public treatment-plan capability route", () => {
     const response = await callGet();
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "Not found" });
-    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(2);
   });
 
   it("returns a generic miss when a capability points at stale plan state", async () => {
@@ -163,7 +164,7 @@ describe("public treatment-plan capability route", () => {
     const response = await callGet();
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "Not found" });
-    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.rateLimit).toHaveBeenCalledTimes(2);
   });
 
   it("returns only the exact priced revision while pending", async () => {
@@ -219,7 +220,7 @@ describe("public treatment-plan capability route", () => {
         },
       ],
       [line],
-      [{ token: "cd".repeat(32) }],
+      [{ id: "00000000-0000-0000-0000-000000000007" }],
     );
     const response = await callPost({
       decisions: [
@@ -233,7 +234,7 @@ describe("public treatment-plan capability route", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       status: "awaiting_signature",
-      signUrl: `https://openvpm.test/sign/${"cd".repeat(32)}`,
+      signUrl: `https://openvpm.test/sign/${deriveTreatmentPlanConsentToken(TOKEN)}`,
     });
     expect(mocks.withTenant).not.toHaveBeenCalled();
   });
@@ -249,6 +250,18 @@ describe("public treatment-plan capability route", () => {
     );
     expect(ROUTE_SOURCE).toContain(
       'session.status !== "completed" && session.planStatus !== "open"',
+    );
+    expect(ROUTE_SOURCE).toContain("deriveTreatmentPlanConsentToken(token)");
+    expect(ROUTE_SOURCE).toContain("token: null");
+    expect(ROUTE_SOURCE).toContain("tokenHash: consentTokenHash");
+    expect(ROUTE_SOURCE).toContain("formId: form.id");
+    expect(ROUTE_SOURCE).not.toContain("formId: null");
+    const postSource = ROUTE_SOURCE.slice(
+      ROUTE_SOURCE.indexOf("async function handlePost("),
+      ROUTE_SOURCE.indexOf("export async function GET("),
+    );
+    expect(postSource.indexOf("enforceRateLimits(")).toBeLessThan(
+      postSource.indexOf("withSystem("),
     );
   });
 });

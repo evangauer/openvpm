@@ -21,7 +21,25 @@ export function isCaptureTokenShape(value: string): boolean {
   return CAPTURE_TOKEN_PATTERN.test(value);
 }
 
+export function hashConsentToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * A treatment-plan holder already possesses a random, expiring bearer
+ * credential. Derive its downstream signing capability deterministically so
+ * retries can reconstruct the URL while the database stores only a digest.
+ */
+export function deriveTreatmentPlanConsentToken(
+  treatmentPlanToken: string,
+): string {
+  return createHash("sha256")
+    .update("openvpm:treatment-plan-consent:v1:")
+    .update(treatmentPlanToken)
+    .digest("hex");
+}
+
 export function captureRateLimitKey(prefix: string, token: string): string {
-  const digest = createHash("sha256").update(token).digest("hex");
+  const digest = hashConsentToken(token);
   return `${prefix}:token:${digest}`;
 }

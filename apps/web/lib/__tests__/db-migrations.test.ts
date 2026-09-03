@@ -15,6 +15,20 @@ function readRepoFile(path: string): string {
 }
 
 describe("committed Drizzle migrations", () => {
+  it("expands consent credentials to digests without invalidating live legacy links", () => {
+    const migration = readRepoFile(
+      "packages/db/drizzle/0101_consent_capability_hardening.sql",
+    );
+    expect(migration).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(migration).toContain('ALTER COLUMN "token" DROP NOT NULL');
+    expect(migration).toContain('ADD COLUMN "token_hash" varchar(64)');
+    expect(migration).toContain("consent_requests_token_hash_uq");
+    expect(migration).toContain("consent_requests_credential_storage_check");
+    expect(migration).toContain("consent_requests_token_hash_format_check");
+    expect(migration.match(/NOT VALID/g)).toHaveLength(2);
+    expect(migration.match(/VALIDATE CONSTRAINT/g)).toHaveLength(2);
+    expect(migration).not.toMatch(/UPDATE\s+"?consent_requests"?/i);
+  });
   it("exercises committed migrations in the CI RLS isolation job", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
     const migrationIntegrityJob = ci.slice(
@@ -315,9 +329,7 @@ describe("committed Drizzle migrations", () => {
       expect(source).toContain(
         `REVOKE ALL ON FUNCTION ${signature} FROM PUBLIC`,
       );
-      expect(source).toContain(
-        `REVOKE ALL ON FUNCTION ${signature} FROM anon`,
-      );
+      expect(source).toContain(`REVOKE ALL ON FUNCTION ${signature} FROM anon`);
       expect(source).toContain(
         `REVOKE ALL ON FUNCTION ${signature} FROM authenticated`,
       );

@@ -4,7 +4,9 @@ import {
   CAPTURE_TOKEN_TTL_MS,
   CONSENT_TOKEN_TTL_MS,
   captureRateLimitKey,
+  deriveTreatmentPlanConsentToken,
   generateCaptureToken,
+  hashConsentToken,
   isCaptureTokenShape,
 } from "../tokens";
 
@@ -16,9 +18,18 @@ describe("capture tokens", () => {
     expect(isCaptureTokenShape(token)).toBe(true);
   });
 
+  it("derives a stable, domain-separated downstream consent capability", () => {
+    const treatmentPlanToken = "ab".repeat(32);
+    const derived = deriveTreatmentPlanConsentToken(treatmentPlanToken);
+    expect(derived).toMatch(/^[0-9a-f]{64}$/);
+    expect(derived).not.toBe(treatmentPlanToken);
+    expect(deriveTreatmentPlanConsentToken(treatmentPlanToken)).toBe(derived);
+    expect(hashConsentToken(derived)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it("generates unique tokens", () => {
     const tokens = new Set(
-      Array.from({ length: 32 }, () => generateCaptureToken())
+      Array.from({ length: 32 }, () => generateCaptureToken()),
     );
     expect(tokens.size).toBe(32);
   });
@@ -56,7 +67,7 @@ describe("capture tokens", () => {
     // Deterministic per token, distinct across tokens.
     expect(captureRateLimitKey("capture-upload", token)).toBe(key);
     expect(
-      captureRateLimitKey("capture-upload", generateCaptureToken())
+      captureRateLimitKey("capture-upload", generateCaptureToken()),
     ).not.toBe(key);
   });
 });

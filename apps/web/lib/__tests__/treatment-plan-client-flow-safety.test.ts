@@ -47,7 +47,22 @@ describe("treatment-plan client flow safety", () => {
     expect(finalizer).toContain("signedDocumentSha256");
     expect(finalizer).toContain("signatureSha256");
     expect(finalizer).toContain("responseSha256: presentation.responseSha256");
+    expect(finalizer).toContain("select ${consentRequests.signedAt}");
+    expect(finalizer).not.toContain("decidedAt: input.signedAt");
     expect(finalizer).toContain("set constraints all immediate");
+  });
+
+  it("uses digest-only downstream signing credentials with form provenance", () => {
+    expect(signer).toContain("eq(consentRequests.tokenHash");
+    const treatmentRoute = readFileSync(
+      "app/api/treatment-plan/[token]/route.ts",
+      "utf8",
+    );
+    expect(treatmentRoute).toContain("deriveTreatmentPlanConsentToken(token)");
+    expect(treatmentRoute).toContain("token: null");
+    expect(treatmentRoute).toContain("tokenHash: consentTokenHash");
+    expect(treatmentRoute).toContain("formId: form.id");
+    expect(treatmentRoute).not.toContain("formId: null");
   });
 
   it("shows evidence in the encounter without billing, inventory, or work-item writes", () => {
