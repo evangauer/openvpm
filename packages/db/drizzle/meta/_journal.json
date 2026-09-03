@@ -701,6 +701,13 @@
       "when": 1788445202236,
       "tag": "0099_tenant_read_conversion_milestones",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1788450436585,
+      "tag": "0100_small_kylun",
+      "breakpoints": true
     }
   ]
 }
