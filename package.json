@@ -36,6 +36,7 @@
       "dompurify": "3.4.13",
       "fast-xml-builder": "1.1.7",
       "fast-xml-parser": "5.10.1",
+      "fflate": "0.8.3",
       "form-data": "4.0.6",
       "@tiptap/extension-bubble-menu": "3.30.5",
       "@tiptap/extension-floating-menu": "3.30.5",
