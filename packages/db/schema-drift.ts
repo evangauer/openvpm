@@ -224,19 +224,30 @@ export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
       "consent_requests_storage_lease_pair_check",
       "consent_requests_storage_lease_state_check",
       "consent_requests_signature_method_check",
+      "consent_requests_signed_file_binding_check",
     ].map((name) => ({
       kind: "constraint" as const,
       table: "consent_requests",
       name,
     })),
     ...[
-      "consent_requests_document_render_guard",
-      "consent_requests_signature_method_guard",
+      "consent_requests_evidence_guard",
+      "consent_requests_signed_file_binding_guard",
     ].map((name) => ({
       kind: "trigger" as const,
       table: "consent_requests",
       name,
     })),
+    {
+      kind: "trigger" as const,
+      table: "files",
+      name: "consent_signature_files_guard",
+    },
+    {
+      kind: "trigger" as const,
+      table: "files",
+      name: "consent_files_signed_binding_guard",
+    },
     ...[
       "consent_receipt_capabilities_consent_tenant_fk",
       "consent_receipt_capabilities_file_tenant_fk",

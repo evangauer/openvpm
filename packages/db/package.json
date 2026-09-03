@@ -25,6 +25,7 @@
     "db:demo-schema-reconciliation:test": "tsx test-demo-schema-reconciliation.ts",
     "db:treatment-plan-evidence:test": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f test-treatment-plan-evidence.sql",
     "db:treatment-plan-concurrency:test": "tsx test-treatment-plan-concurrency.ts",
+    "db:consent-evidence:test": "tsx test-consent-evidence-integrity.ts",
     "db:sms-provider-resolutions:test": "tsx test-sms-provider-event-resolutions.ts",
     "db:migration-runs:test": "tsx test-migration-runs.ts",
     "db:migrations:check": "pnpm --filter @openpims/web exec vitest run lib/__tests__/migration-journal-integrity.test.ts lib/__tests__/db-migrations.test.ts",

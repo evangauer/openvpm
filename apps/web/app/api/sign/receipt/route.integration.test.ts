@@ -1,5 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import * as schema from "@openpims/db";
 import {
   consentReceiptCapabilities,
   consentRequests,
@@ -40,6 +43,22 @@ const RECEIPT_TOKEN = "e4".repeat(32);
 const INTEGRITY_RECEIPT_TOKEN = "e5".repeat(32);
 const PDF = Buffer.from("%PDF-1.4\nexact signed copy\n%%EOF");
 
+async function withFixtureOwner<T>(
+  fn: (ownerDb: typeof db) => Promise<T>,
+): Promise<T> {
+  const ownerUrl = process.env.CONSENT_TEST_OWNER_DATABASE_URL?.trim();
+  if (!ownerUrl) {
+    throw new Error("CONSENT_TEST_OWNER_DATABASE_URL is required");
+  }
+  const ownerSql = postgres(ownerUrl, { max: 1 });
+  try {
+    const ownerDb = drizzle(ownerSql, { schema }) as unknown as typeof db;
+    return await fn(ownerDb);
+  } finally {
+    await ownerSql.end();
+  }
+}
+
 async function insertSignedReceiptFixture({
   consentId,
   fileId,
@@ -54,7 +73,7 @@ async function insertSignedReceiptFixture({
   maxClaims: number;
 }) {
   const checksum = checksumSha256Hex(PDF);
-  await withTenant(db, PRACTICE_ID, async (tx) => {
+  await withFixtureOwner(async (tx) => {
     await tx.insert(files).values({
       id: fileId,
       practiceId: PRACTICE_ID,
@@ -89,6 +108,10 @@ async function insertSignedReceiptFixture({
       signerName: "Receipt Client",
       signedAt: new Date(),
       fileId,
+      signedFileKey: `${PRACTICE_ID}/consents/${fileId}`,
+      signedFileChecksumSha256: checksum,
+      signedFileSizeBytes: PDF.length,
+      signedFileObjectVersionId: "receipt-version-1",
     });
     await tx.insert(consentReceiptCapabilities).values({
       id: capabilityId,

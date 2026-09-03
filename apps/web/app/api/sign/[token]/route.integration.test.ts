@@ -8,6 +8,9 @@ import {
   vi,
 } from "vitest";
 import { and, eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import * as schema from "@openpims/db";
 import { consentRequests, files, practices } from "@openpims/db";
 import { db } from "@openpims/db/client";
 import { hashConsentToken } from "@/lib/consult/tokens";
@@ -76,6 +79,22 @@ const PARENT_V2_TOKEN = "d0".repeat(32);
 const MISMATCH_TOKEN = "d1".repeat(32);
 const SIGNATURE_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+async function withFixtureOwner<T>(
+  fn: (ownerDb: typeof db) => Promise<T>,
+): Promise<T> {
+  const ownerUrl = process.env.CONSENT_TEST_OWNER_DATABASE_URL?.trim();
+  if (!ownerUrl) {
+    throw new Error("CONSENT_TEST_OWNER_DATABASE_URL is required");
+  }
+  const ownerSql = postgres(ownerUrl, { max: 1 });
+  try {
+    const ownerDb = drizzle(ownerSql, { schema }) as unknown as typeof db;
+    return await fn(ownerDb);
+  } finally {
+    await ownerSql.end();
+  }
+}
 
 runDatabaseIntegration("consent signing pool-size-one route", () => {
   beforeAll(() => {
@@ -183,7 +202,7 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
         (rendererMutationError as Error).message,
         (rendererMutationError as Error & { cause?: Error }).cause?.message,
       ].join("\n"),
-    ).toContain("Consent document renderer is immutable");
+    ).toContain("Signed consent evidence is terminal");
 
     const replay = await POST(
       new Request(`https://openvpm.test/api/sign/${TOKEN}`, {
@@ -215,7 +234,7 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
     });
     const legacyChecksum = checksumSha256Hex(legacyPdf);
 
-    await withTenant(db, PRACTICE_ID, async (tx) => {
+    await withFixtureOwner(async (tx) => {
       await tx.insert(files).values({
         id: LEGACY_FILE_ID,
         practiceId: PRACTICE_ID,
@@ -328,7 +347,7 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
     });
     const v2Checksum = checksumSha256Hex(v2Pdf);
 
-    await withTenant(db, PRACTICE_ID, async (tx) => {
+    await withFixtureOwner(async (tx) => {
       await tx.insert(files).values({
         id: PARENT_V2_FILE_ID,
         practiceId: PRACTICE_ID,
@@ -417,7 +436,7 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
       SIGNATURE_DATA_URL.slice("data:image/png;base64,".length),
       "base64",
     );
-    await withTenant(db, PRACTICE_ID, async (tx) => {
+    await withFixtureOwner(async (tx) => {
       await tx.insert(files).values({
         id: MISMATCH_FILE_ID,
         practiceId: PRACTICE_ID,

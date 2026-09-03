@@ -17,7 +17,7 @@ function readRepoFile(path: string): string {
 describe("committed Drizzle migrations", () => {
   it("expands consent credentials to digests without invalidating live legacy links", () => {
     const migration = readRepoFile(
-      "packages/db/drizzle/0101_consent_capability_hardening.sql",
+      "packages/db/drizzle/0102_curved_guardian.sql",
     );
     expect(migration).toContain("SET LOCAL lock_timeout = '5s'");
     expect(migration).toContain('ALTER COLUMN "token" DROP NOT NULL');
@@ -30,20 +30,23 @@ describe("committed Drizzle migrations", () => {
     expect(migration).toContain(
       "consent_requests_document_render_version_check",
     );
-    expect(migration).toContain("consent_requests_document_render_guard");
-    expect(migration.match(/NOT VALID/g)).toHaveLength(5);
-    expect(migration.match(/VALIDATE CONSTRAINT/g)).toHaveLength(5);
-    expect(migration).toContain("AND file_id IS NULL");
+    expect(migration).toContain("consent_requests_evidence_guard");
     expect(migration).toContain(
-      "signer_attestation_version = 'owner-authority-v1'",
+      "resolve_consent_document_render_version",
+    );
+    expect(migration).toContain("p_original_file_id IS NULL");
+    expect(migration).toContain(
+      "p_original_attestation_version = 'owner-authority-v1'",
     );
     expect(migration).toContain("THEN 'consent-pdf-v2'");
-    expect(migration).toContain("ELSE 'consent-pdf-v1'");
+    expect(migration).toContain(
+      "WHEN p_original_attestation_version IS NULL THEN 'consent-pdf-v1'",
+    );
   });
 
   it("adds bounded, digest-only signed-copy capabilities and signature methods", () => {
     const migration = readRepoFile(
-      "packages/db/drizzle/0102_equal_fantastic_four.sql",
+      "packages/db/drizzle/0102_curved_guardian.sql",
     );
     expect(migration).toContain('CREATE TABLE "consent_receipt_capabilities"');
     expect(migration).toContain("consent_receipt_capabilities_token_hash_uq");
@@ -61,10 +64,12 @@ describe("committed Drizzle migrations", () => {
     );
     expect(migration).toContain("BEFORE INSERT OR UPDATE OR DELETE");
     expect(migration).toContain('ADD COLUMN "signature_method"');
-    expect(migration).toContain("consent_requests_signature_method_guard");
+    expect(migration).toContain("consent_requests_evidence_guard");
     expect(migration).toContain(
-      "CREATE OR REPLACE FUNCTION public.protect_consent_document_render_version()",
+      "CREATE OR REPLACE FUNCTION public.validate_signed_consent_file_binding()",
     );
+    expect(migration).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(migration).toContain("transition_signed_consent_file_storage");
     const rls = readRepoFile("packages/db/rls/enable-rls.sql");
     expect(rls).toContain("'consent_receipt_capabilities'");
     expect(rls).toContain(
@@ -362,15 +367,9 @@ describe("committed Drizzle migrations", () => {
   it("restricts SOAP addendum restoration to the application role", () => {
     const signature =
       "public.restore_soap_note_addendum(uuid,timestamptz,uuid,uuid,uuid,text,text,uuid,text)";
-    const journal = JSON.parse(
-      readRepoFile("packages/db/drizzle/meta/_journal.json"),
-    ) as { entries: Array<{ tag: string }> };
-    const tag = journal.entries.find((entry) =>
-      entry.tag.startsWith("0100_"),
-    )?.tag;
-
-    expect(tag).toBe("0100_restrict_soap_addendum_execute");
-    const migration = readRepoFile(`packages/db/drizzle/${tag}.sql`);
+    const migration = readRepoFile(
+      "packages/db/drizzle/0102_curved_guardian.sql",
+    );
     const rls = readRepoFile("packages/db/rls/enable-rls.sql");
 
     for (const source of [migration, rls]) {

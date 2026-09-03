@@ -715,6 +715,13 @@
       "when": 1788452499771,
       "tag": "0101_colorful_stark_industries",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1788454525213,
+      "tag": "0102_curved_guardian",
+      "breakpoints": true
     }
   ]
 }

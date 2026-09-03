@@ -140,6 +140,19 @@ export const consentRequests = pgTable(
     }),
     /** The signed consent PDF in the files table. */
     fileId: uuid("file_id").references(() => files.id),
+    /** Frozen manifest evidence captured by the signing -> signed transition.
+     * These columns let PostgreSQL prove that the referenced file still names
+     * the exact PDF generation that completed the consent. Older signed rows
+     * may keep the whole group null; every new finalization supplies it. */
+    signedFileKey: varchar("signed_file_key", { length: 512 }),
+    signedFileChecksumSha256: varchar("signed_file_checksum_sha256", {
+      length: 64,
+    }),
+    signedFileSizeBytes: integer("signed_file_size_bytes"),
+    signedFileObjectEtag: varchar("signed_file_object_etag", { length: 255 }),
+    signedFileObjectVersionId: varchar("signed_file_object_version_id", {
+      length: 255,
+    }),
   },
   (table) => ({
     tokenUq: uniqueIndex("consent_requests_token_uq").on(table.token),
@@ -227,6 +240,10 @@ export const consentRequests = pgTable(
     signatureMethodCheck: check(
       "consent_requests_signature_method_check",
       sql`${table.signatureMethod} is null or ${table.signatureMethod} in ('drawn', 'typed')`,
+    ),
+    signedFileBindingCheck: check(
+      "consent_requests_signed_file_binding_check",
+      sql`(${table.signedFileKey} is null and ${table.signedFileChecksumSha256} is null and ${table.signedFileSizeBytes} is null and ${table.signedFileObjectEtag} is null and ${table.signedFileObjectVersionId} is null) or (${table.fileId} is not null and ${table.signedFileKey} is not null and ${table.signedFileChecksumSha256} ~ '^[0-9a-f]{64}$' and ${table.signedFileSizeBytes} > 0)`,
     ),
   }),
 );

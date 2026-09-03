@@ -75,7 +75,9 @@ const mocks = vi.hoisted(() => {
   const update = vi.fn(() => ({ set: updateSet }));
   const insertValues = vi.fn(async () => undefined);
   const insert = vi.fn(() => ({ values: insertValues }));
-  const tx = { select, insert, update };
+  const executeResults: unknown[] = [];
+  const execute = vi.fn(async () => executeResults.shift() ?? []);
+  const tx = { select, insert, update, execute };
 
   const reservation = {
     id: fileId,
@@ -112,6 +114,7 @@ const mocks = vi.hoisted(() => {
     tx,
     consentRow,
     selectResults,
+    executeResults,
     updateReturningResults,
     updateReturning,
     updateSet,
@@ -266,6 +269,7 @@ function validBody(overrides: Record<string, unknown> = {}) {
 
 function queueHappyPending(signatureMethod: "drawn" | "typed" = "drawn") {
   mocks.selectResults.push([mocks.consentRow()]);
+  mocks.executeResults.push([{ finalized: true }]);
   mocks.updateReturningResults.push(
     [
       {
@@ -285,6 +289,7 @@ function queueHappyPending(signatureMethod: "drawn" | "typed" = "drawn") {
 }
 
 function queueHappySigning() {
+  mocks.executeResults.push([{ finalized: true }]);
   mocks.updateReturningResults.push(
     [{ id: mocks.consentId }],
     [{ token: "00000000-0000-4000-8000-000000000099" }],
@@ -296,6 +301,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
   mocks.selectResults.length = 0;
+  mocks.executeResults.length = 0;
   mocks.updateReturningResults.length = 0;
   mocks.billingEnforced.mockReturnValue(false);
   mocks.hasHostedFullAccess.mockReturnValue(true);
@@ -880,6 +886,7 @@ describe("POST /api/sign/[token]", () => {
       [{ token: "00000000-0000-4000-8000-000000000099" }],
       [{ id: mocks.consentId }],
     );
+    mocks.executeResults.push([{ finalized: true }]);
 
     const response = await callPost(TOKEN, {
       resume: true,
@@ -1097,6 +1104,7 @@ describe("POST /api/sign/[token]", () => {
       [{ token: "00000000-0000-4000-8000-000000000099" }],
       [{ id: mocks.consentId }],
     );
+    mocks.executeResults.push([{ released: true }]);
     mocks.putAndVerifyManagedUpload.mockResolvedValueOnce({
       status: "corrupt",
     });

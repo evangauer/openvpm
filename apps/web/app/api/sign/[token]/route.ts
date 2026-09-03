@@ -51,6 +51,7 @@ import {
 import { finalizeTreatmentPlanResponseForConsent } from "@/lib/treatment-plan-presentations/finalize";
 import { treatmentPlanClientDecisionsEnabled } from "@/lib/treatment-plan-presentations/policy";
 import { sanitizedExceptionTelemetry } from "@/lib/sanitized-exception-telemetry";
+import { rowsFromExecute } from "@/lib/db/execute-rows";
 
 export const dynamic = "force-dynamic";
 
@@ -337,73 +338,23 @@ async function recordDocumentRenderVersion(
     if (!(await lockPracticeForExternalSideEffects(tx, session.practiceId))) {
       return null;
     }
-
-    let selectedVersion: ConsentPdfRendererVersion;
-    let expectedChecksum: string | null = null;
-    let expectedSize: number | null = null;
-    if (originalFileId) {
-      const [reservation] = await tx
-        .select({
-          checksum: files.checksumSha256,
-          size: files.fileSizeBytes,
-        })
-        .from(files)
-        .where(
-          and(
-            eq(files.id, originalFileId),
-            eq(files.practiceId, session.practiceId),
-            isNull(files.deletedAt),
-          ),
-        )
-        .limit(1);
-      if (!reservation?.checksum || reservation.size === null) return null;
-      const v1Matches =
-        reservation.checksum === v1Evidence!.checksum &&
-        reservation.size === v1Evidence!.size;
-      const v2Matches =
-        reservation.checksum === v2Evidence!.checksum &&
-        reservation.size === v2Evidence!.size;
-      if (v1Matches === v2Matches) return null;
-      selectedVersion = v1Matches
-        ? CONSENT_PDF_RENDERER_V1
-        : CONSENT_PDF_RENDERER_V2;
-      expectedChecksum = reservation.checksum;
-      expectedSize = reservation.size;
-    } else {
-      selectedVersion =
-        originalAttestationVersion === CONSENT_SIGNER_ATTESTATION_VERSION
-          ? CONSENT_PDF_RENDERER_V2
-          : CONSENT_PDF_RENDERER_V1;
-    }
-
-    const [recorded] = await tx
-      .update(consentRequests)
-      .set({ documentRenderVersion: selectedVersion })
-      .where(
-        and(
-          eq(consentRequests.id, session.id),
-          eq(consentRequests.practiceId, session.practiceId),
-          eq(consentRequests.status, "signing"),
-          isNull(consentRequests.documentRenderVersion),
-          sql`${consentRequests.signerAttestationVersion} IS NOT DISTINCT FROM ${originalAttestationVersion}`,
-          sql`${consentRequests.fileId} IS NOT DISTINCT FROM ${originalFileId}`,
-          originalFileId
-            ? sql`EXISTS (
-                SELECT 1 FROM ${files}
-                WHERE ${files.id} = ${originalFileId}
-                  AND ${files.practiceId} = ${session.practiceId}
-                  AND ${files.checksumSha256} = ${expectedChecksum}
-                  AND ${files.fileSizeBytes} = ${expectedSize}
-                  AND ${files.deletedAt} IS NULL
-              )`
-            : sql`TRUE`,
-          isNull(consentRequests.deletedAt),
-        ),
-      )
-      .returning({
-        documentRenderVersion: consentRequests.documentRenderVersion,
-      });
-    return recorded?.documentRenderVersion === selectedVersion
+    const resolved = await tx.execute(sql`
+      select public.resolve_consent_document_render_version(
+        ${session.practiceId}::uuid,
+        ${session.id}::uuid,
+        ${originalFileId}::uuid,
+        ${originalAttestationVersion}::text,
+        ${v1Evidence?.checksum ?? null}::text,
+        ${v1Evidence?.size ?? null}::integer,
+        ${v2Evidence?.checksum ?? null}::text,
+        ${v2Evidence?.size ?? null}::integer
+      ) as document_render_version
+    `);
+    const selectedVersion = rowsFromExecute<{
+      document_render_version: ConsentPdfRendererVersion | null;
+    }>(resolved)[0]?.document_render_version;
+    return selectedVersion === CONSENT_PDF_RENDERER_V1 ||
+      selectedVersion === CONSENT_PDF_RENDERER_V2
       ? { ...session, documentRenderVersion: selectedVersion }
       : null;
   });
@@ -970,20 +921,20 @@ async function handlePost(
           // provider attempt may finish after its lease expires and a newer
           // attempt takes over; the stale worker must not quarantine the newer
           // worker's reservation.
-          const [released] = await tx
-            .update(consentRequests)
-            .set({ storageLeaseToken: null, storageLeaseExpiresAt: null })
-            .where(
-              and(
-                eq(consentRequests.id, signing.id),
-                eq(consentRequests.practiceId, signing.practiceId),
-                eq(consentRequests.status, "signing"),
-                eq(consentRequests.storageLeaseToken, storageLeaseToken),
-                isNull(consentRequests.deletedAt),
-              ),
-            )
-            .returning({ id: consentRequests.id });
-          if (!released) return false;
+          const releaseResult = await tx.execute(sql`
+            select public.release_consent_storage_lease(
+              ${signing.practiceId}::uuid,
+              ${signing.id}::uuid,
+              ${reservation.id}::uuid,
+              ${storageLeaseToken}::uuid
+            ) as released
+          `);
+          if (
+            rowsFromExecute<{ released: boolean }>(releaseResult)[0]
+              ?.released !== true
+          ) {
+            return false;
+          }
           if (!(await markManagedUploadCorrupt(tx, reservation))) {
             throw new Error("Consent reservation changed before quarantine");
           }
@@ -1002,25 +953,25 @@ async function handlePost(
       if (!(await lockPracticeForExternalSideEffects(tx, signing.practiceId))) {
         return { status: "not_found" as const };
       }
-      const [completed] = await tx
-        .update(consentRequests)
-        .set({
-          status: "signed",
-          storageLeaseToken: null,
-          storageLeaseExpiresAt: null,
-        })
-        .where(
-          and(
-            eq(consentRequests.id, signing.id),
-            eq(consentRequests.practiceId, signing.practiceId),
-            eq(consentRequests.status, "signing"),
-            eq(consentRequests.fileId, reservation.id),
-            eq(consentRequests.storageLeaseToken, storageLeaseToken),
-            isNull(consentRequests.deletedAt),
-          ),
-        )
-        .returning({ id: consentRequests.id });
-      if (!completed) return { status: "not_found" as const };
+      const finalizeResult = await tx.execute(sql`
+        select public.finalize_consent_request(
+          ${signing.practiceId}::uuid,
+          ${signing.id}::uuid,
+          ${reservation.id}::uuid,
+          ${storageLeaseToken}::uuid,
+          ${reservation.fileKey}::text,
+          ${reservation.checksumSha256}::text,
+          ${reservation.fileSizeBytes}::integer,
+          ${writeResult.evidence.etag ?? null}::text,
+          ${writeResult.evidence.versionId ?? null}::text
+        ) as finalized
+      `);
+      if (
+        rowsFromExecute<{ finalized: boolean }>(finalizeResult)[0]
+          ?.finalized !== true
+      ) {
+        return { status: "not_found" as const };
+      }
 
       if (
         !(await finalizeManagedUploadManifest(

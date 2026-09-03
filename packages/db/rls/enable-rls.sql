@@ -94,6 +94,37 @@ GRANT SELECT, INSERT, UPDATE ON consent_receipt_capabilities TO openpims_app;
 REVOKE ALL ON FUNCTION public.protect_consent_receipt_capability()
   FROM PUBLIC, openpims_app;
 
+-- Consent snapshots and signed evidence are protected by state-machine and
+-- deferred cross-table triggers. The application can advance the narrowly
+-- enumerated transitions but cannot delete a request or call trigger bodies.
+REVOKE DELETE ON consent_requests FROM openpims_app;
+REVOKE ALL ON FUNCTION public.protect_consent_request_evidence()
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.protect_consent_signature_file()
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.validate_signed_consent_file_binding()
+  FROM PUBLIC, openpims_app;
+REVOKE ALL ON FUNCTION public.resolve_consent_document_render_version(uuid,uuid,uuid,text,text,integer,text,integer)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.resolve_consent_document_render_version(uuid,uuid,uuid,text,text,integer,text,integer)
+  TO openpims_app;
+REVOKE ALL ON FUNCTION public.release_consent_storage_lease(uuid,uuid,uuid,uuid)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.release_consent_storage_lease(uuid,uuid,uuid,uuid)
+  TO openpims_app;
+REVOKE ALL ON FUNCTION public.finalize_consent_request(uuid,uuid,uuid,uuid,text,text,integer,text,text)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.finalize_consent_request(uuid,uuid,uuid,uuid,text,text,integer,text,text)
+  TO openpims_app;
+REVOKE ALL ON FUNCTION public.transition_signed_consent_file_storage(uuid,uuid,text,text,integer,public.file_storage_status,public.file_storage_status,timestamptz,text,text)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.transition_signed_consent_file_storage(uuid,uuid,text,text,integer,public.file_storage_status,public.file_storage_status,timestamptz,text,text)
+  TO openpims_app;
+REVOKE ALL ON FUNCTION public.delete_expired_consent_receipt_capabilities(timestamptz,integer)
+  FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.delete_expired_consent_receipt_capabilities(timestamptz,integer)
+  TO openpims_app;
+
 -- Processor evidence is clinic-scoped but never deletable. Settlement,
 -- refund, payout, and dispute projections may be reconciled in place by a
 -- provider worker. A financial close is an append-only staff attestation.

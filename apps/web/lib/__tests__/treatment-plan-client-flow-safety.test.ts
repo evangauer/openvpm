@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
 const migration = readFileSync(
-  "../../packages/db/drizzle/0099_closed_jigsaw.sql",
+  "../../packages/db/drizzle/0102_curved_guardian.sql",
   "utf8",
 );
 const finalizer = readFileSync(
