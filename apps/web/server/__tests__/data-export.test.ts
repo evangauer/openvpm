@@ -259,6 +259,38 @@ describe("data full backup restore", () => {
     expect(mocks.restorePracticeData).not.toHaveBeenCalled();
   });
 
+  it("rejects legacy consent-signature manifests before web restore starts", async () => {
+    const { db, select } = createRestoreDb();
+    mocks.validatePracticeExportRestore.mockReturnValueOnce({
+      valid: false,
+      errors: [
+        "This legacy backup contains signed-consent files or dependent treatment-plan decisions without their signed consent evidence; a format v9 export or full database recovery is required.",
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).restoreBackup({
+        backup: {
+          formatVersion: 8,
+          files: [{ source: "consent_signature" }],
+        },
+        dryRun: false,
+        confirmFreshPractice: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining(
+        "format v9 export or full database recovery",
+      ),
+    });
+
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.practiceBackupContainsSealedConsentEvidence,
+    ).toHaveBeenCalled();
+    expect(mocks.restorePracticeData).not.toHaveBeenCalled();
+  });
+
   it("refuses live restore when backup references are invalid", async () => {
     const { db, select } = createRestoreDb();
     mocks.validatePracticeExportRestore.mockReturnValueOnce({

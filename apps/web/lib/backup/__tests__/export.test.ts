@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
   backupKey,
   coerceRowDates,
+  LEGACY_SIGNED_CONSENT_RECOVERY_MESSAGE,
   PRACTICE_RECOVERY_HOLD_REASON,
   PRACTICE_EXPORT_SECRET_REPLACEMENTS,
   PRACTICE_EXPORT_AUDIT_ONLY_SECTIONS,
@@ -485,8 +486,37 @@ describe("sealed signed-consent backup v9", () => {
       ],
     };
     expect(validatePracticeExportRestore(dangling).errors).toContain(
-      "This legacy backup contains treatment-plan decisions without their signed consent parent; a format v9 export or full database recovery is required.",
+      LEGACY_SIGNED_CONSENT_RECOVERY_MESSAGE,
     );
+  });
+
+  it("fails preflight before restore mutates state for a legacy consent-signature manifest", async () => {
+    const current = signedConsentBackup();
+    const {
+      consentForms: _consentForms,
+      signedConsentEvidence: _signedConsentEvidence,
+      counts: _counts,
+      practice: _practice,
+      ...legacyBase
+    } = current;
+    const legacy = {
+      ...legacyBase,
+      formatVersion: 8,
+    };
+    const rootDb = {
+      transaction: vi.fn(),
+      update: vi.fn(),
+    };
+
+    expect(validatePracticeExportRestore(legacy).errors).toContain(
+      LEGACY_SIGNED_CONSENT_RECOVERY_MESSAGE,
+    );
+    expect(practiceBackupContainsSealedConsentEvidence(legacy)).toBe(false);
+    await expect(
+      restorePracticeData(rootDb as never, legacy.practiceId, legacy),
+    ).rejects.toThrow(LEGACY_SIGNED_CONSENT_RECOVERY_MESSAGE);
+    expect(rootDb.update).not.toHaveBeenCalled();
+    expect(rootDb.transaction).not.toHaveBeenCalled();
   });
 
   it("keeps restore order and projection explicit in source", () => {

@@ -323,6 +323,8 @@ export type PracticeExport = {
 export const PRACTICE_EXPORT_FORMAT_VERSION = 9;
 export const PRACTICE_RECOVERY_HOLD_REASON =
   "Practice data restore pending owner reconciliation";
+export const LEGACY_SIGNED_CONSENT_RECOVERY_MESSAGE =
+  "This legacy backup contains signed-consent files or dependent treatment-plan decisions without their signed consent evidence; a format v9 export or full database recovery is required.";
 
 const PRACTICE_RECOVERY_SNAPSHOT_KEYS = new Set([
   "id",
@@ -1186,14 +1188,13 @@ export function validatePracticeExportRestore(data: unknown): {
   if (
     typeof exportRecord.formatVersion === "number" &&
     exportRecord.formatVersion < 9 &&
-    rowsFor(data, "visitTreatmentPlanResponses").some(
-      (row) => typeof row.consentRequestId === "string",
-    ) &&
-    rowsFor(data, "signedConsentEvidence").length === 0
+    rowsFor(data, "signedConsentEvidence").length === 0 &&
+    (rowsFor(data, "files").some((row) => row.source === "consent_signature") ||
+      rowsFor(data, "visitTreatmentPlanResponses").some(
+        (row) => typeof row.consentRequestId === "string",
+      ))
   ) {
-    pushError(
-      "This legacy backup contains treatment-plan decisions without their signed consent parent; a format v9 export or full database recovery is required.",
-    );
+    pushError(LEGACY_SIGNED_CONSENT_RECOVERY_MESSAGE);
   }
 
   for (const rule of RESTORE_REFERENCE_RULES) {
