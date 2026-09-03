@@ -262,7 +262,7 @@ export const inventoryRouter = createRouter({
           .select()
           .from(products)
           .where(and(...conditions))
-          .orderBy(products.name)
+          .orderBy(products.name, products.id)
           .limit(input.limit)
           .offset(input.offset),
         countWhere(alertCondition ?? undefined),

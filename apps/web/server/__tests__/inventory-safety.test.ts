@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { products } from "@openpims/db";
 
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
@@ -49,21 +50,22 @@ function createDb(opts?: {
   updatedRows?: unknown[];
 }) {
   const selectResults = [...(opts?.selectResults ?? [])];
+  const orderBy = vi.fn();
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
-    const afterWhere = {
-      limit: vi.fn(async () => result),
+    const builder = {
+      from: vi.fn(() => builder),
+      where: vi.fn(() => builder),
+      orderBy: vi.fn((...columns: unknown[]) => {
+        orderBy(...columns);
+        return builder;
+      }),
+      limit: vi.fn(() => builder),
+      offset: vi.fn(() => builder),
       then: (
         resolve: (value: unknown[]) => unknown,
         reject?: (error: unknown) => unknown
       ) => Promise.resolve(result).then(resolve, reject),
-    };
-    const builder = {
-      from: vi.fn(() => builder),
-      where: vi.fn(() => afterWhere),
-      orderBy: vi.fn(() => builder),
-      limit: vi.fn(async () => result),
-      offset: vi.fn(() => builder),
     };
     return builder;
   });
@@ -89,7 +91,7 @@ function createDb(opts?: {
     update,
   };
 
-  return { db, select, insertValues, updateSet };
+  return { db, select, orderBy, insertValues, updateSet };
 }
 
 afterEach(() => {
@@ -223,6 +225,40 @@ describe("inventory mutation safety", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
+  });
+
+  it("uses a total product order across duplicate names and multiple pages", async () => {
+    const catalog = Array.from({ length: 60 }, (_, index) => ({
+      id: `00000000-0000-0000-0000-${String(index).padStart(12, "0")}`,
+      name: "Carprofen",
+      inventoryTracked: false,
+      stockQuantity: 0,
+      reorderPoint: null,
+      expirationDate: null,
+    }));
+    const countRows = Array.from({ length: 5 }, () => [{ count: 60 }]);
+    const { db, orderBy } = createDb({
+      selectResults: [
+        [{ timezone: "UTC" }],
+        catalog.slice(0, 50),
+        ...countRows,
+        [{ timezone: "UTC" }],
+        catalog.slice(50),
+        ...countRows,
+      ],
+    });
+    const caller = callerWithDb(db);
+
+    const firstPage = await caller.list({ limit: 50, offset: 0 });
+    const secondPage = await caller.list({ limit: 50, offset: 50 });
+
+    expect(orderBy).toHaveBeenCalledTimes(2);
+    expect(orderBy).toHaveBeenNthCalledWith(1, products.name, products.id);
+    expect(orderBy).toHaveBeenNthCalledWith(2, products.name, products.id);
+    expect(
+      new Set([...firstPage.items, ...secondPage.items].map((item) => item.id))
+        .size
+    ).toBe(60);
   });
 
   it("rejects invalid product list filters before DB work", async () => {

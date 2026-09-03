@@ -318,16 +318,25 @@ describe("records prescription form UX", () => {
     expect(inventoryPicker).toContain("onScroll={(event) => {");
     expect(inventoryPicker).toContain("loadNextPage();");
     expect(inventoryPicker).toContain(
-      "setPageOffset(pageOffset + products.data.items.length)"
+      "advancePrescriptionProductPagination(current, currentPage)"
     );
     expect(inventoryPicker).toContain("Load more inventory items");
     expect(inventoryPicker).toMatch(/Scroll for more or\s+use search/);
     expect(inventoryPicker).toContain("Inventory unavailable. Please retry.");
+    expect(inventoryPicker).toContain('role="status"');
+    expect(inventoryPicker).toContain('aria-live="polite"');
+    expect(inventoryPicker).toContain("Refresh inventory items");
+    expect(inventoryPicker).toContain(
+      "trpcUtils.inventory.list.invalidate()"
+    );
+    expect(inventoryPicker).toContain('contentVisibility: "auto"');
     expect(source).not.toContain("{ limit: 100, offset: 0 }");
     expect(source).toContain("prescriptionQuantity <= linkedPrescriptionProduct.stockQuantity");
     expect(source).toContain("Quantity (inventory units)");
     expect(inventoryPicker).toContain("{product.stockQuantity} units on hand");
-    expect(inventoryPicker).toContain("{product.unitPrice} each");
+    expect(inventoryPicker).toMatch(
+      /\{product\.unitPrice\}\s*(?:\{" "\})?\s*each/
+    );
     expect(source).toContain("The prescription quantity will be");
     expect(source).toContain("charged in that same unit.");
     expect(source).toContain("isPrescriptionOptionalPositiveIntegerInputValid");

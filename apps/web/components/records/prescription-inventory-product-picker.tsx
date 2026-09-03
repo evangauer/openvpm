@@ -7,6 +7,12 @@ import { Command } from "cmdk";
 import type { AppRouter } from "@/server/routers/_app";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import {
+  advancePrescriptionProductPagination,
+  createPrescriptionProductPaginationState,
+  mergePrescriptionProductPages,
+  resetPrescriptionProductPagination,
+} from "@/lib/inventory/prescription-product-pagination";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -43,11 +49,18 @@ export function PrescriptionInventoryProductPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [pageOffset, setPageOffset] = useState(0);
-  const [loadedProducts, setLoadedProducts] = useState<
-    PrescriptionInventoryProduct[]
-  >([]);
-  const [resultTotal, setResultTotal] = useState(0);
+  const trpcUtils = trpc.useUtils();
+  const [pagination, setPagination] = useState(() =>
+    createPrescriptionProductPaginationState<PrescriptionInventoryProduct>(),
+  );
+  const {
+    catalogChanged,
+    exhausted,
+    loadedProducts,
+    pageOffset,
+    resultTotal,
+    revision,
+  } = pagination;
   const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   const normalizedSearch = debouncedSearch.trim();
   const searchSettled = search.trim() === normalizedSearch;
@@ -61,52 +74,48 @@ export function PrescriptionInventoryProductPicker({
   );
 
   const visibleProducts = useMemo(() => {
-    const productsById = new Map(
-      loadedProducts.map((product) => [product.id, product]),
+    return mergePrescriptionProductPages(
+      loadedProducts,
+      searchSettled ? (products.data?.items ?? []) : [],
     );
-    if (searchSettled) {
-      for (const product of products.data?.items ?? []) {
-        productsById.set(product.id, product);
-      }
-    }
-    return [...productsById.values()];
   }, [loadedProducts, products.data?.items, searchSettled]);
 
-  const total = products.data?.total ?? resultTotal;
-  const hasMore = visibleProducts.length < total;
+  const total = exhausted
+    ? visibleProducts.length
+    : (products.data?.total ?? resultTotal);
+  const hasMore = !exhausted && visibleProducts.length < total;
 
   function changeSearch(nextSearch: string) {
     setSearch(nextSearch);
-    setPageOffset(0);
-    setLoadedProducts([]);
-    setResultTotal(0);
+    setPagination(resetPrescriptionProductPagination);
   }
 
   function loadNextPage() {
-    if (
-      !products.data ||
-      products.isFetching ||
-      !hasMore ||
-      products.data.items.length === 0
-    ) {
+    if (!products.data || products.isFetching || !hasMore) {
       return;
     }
 
-    setLoadedProducts(visibleProducts);
-    setResultTotal(products.data.total);
-    // A native scroll and a synthetic scroll can arrive before React renders
-    // again. Set this render's absolute next page so duplicate events cannot
-    // increment twice and skip an entire page.
-    setPageOffset(pageOffset + products.data.items.length);
+    const currentPage = {
+      revision,
+      offset: pageOffset,
+      items: products.data.items,
+      total: products.data.total,
+    };
+    setPagination((current) =>
+      advancePrescriptionProductPagination(current, currentPage),
+    );
+  }
+
+  function refreshProducts() {
+    setPagination(resetPrescriptionProductPagination);
+    void trpcUtils.inventory.list.invalidate();
   }
 
   function changeOpen(nextOpen: boolean) {
     setOpen(nextOpen);
     if (!nextOpen) {
       setSearch("");
-      setPageOffset(0);
-      setLoadedProducts([]);
-      setResultTotal(0);
+      setPagination(resetPrescriptionProductPagination);
     }
   }
 
@@ -158,6 +167,7 @@ export function PrescriptionInventoryProductPicker({
           </div>
           <Command.List
             className="max-h-64 overflow-y-auto p-1"
+            aria-busy={products.isFetching}
             onScroll={(event) => {
               const list = event.currentTarget;
               if (
@@ -202,32 +212,59 @@ export function PrescriptionInventoryProductPicker({
                 No inventory items found.
               </div>
             ) : null}
-            {!products.error
-              ? visibleProducts.map((product) => (
-                  <Command.Item
-                    key={product.id}
-                    value={product.id}
-                    onSelect={() => selectProduct(product)}
-                    className="flex cursor-pointer items-start rounded-sm px-2 py-2 text-sm aria-selected:bg-accent"
-                  >
-                    <Check
-                      className={cn(
-                        "mr-2 mt-0.5 h-4 w-4 shrink-0",
-                        value === product.id ? "opacity-100" : "opacity-0",
-                      )}
-                    />
-                    <span className="min-w-0">
-                      <span className="block truncate">{product.name}</span>
-                      <span className="block text-xs text-muted-foreground">
-                        {product.stockQuantity} units on hand ·{" "}
-                        {product.unitPrice} each
-                        {product.sku ? ` · SKU ${product.sku}` : ""}
-                      </span>
-                    </span>
-                  </Command.Item>
-                ))
-              : null}
+            {visibleProducts.map((product) => (
+              <Command.Item
+                key={product.id}
+                value={product.id}
+                onSelect={() => selectProduct(product)}
+                className="flex cursor-pointer items-start rounded-sm px-2 py-2 text-sm aria-selected:bg-accent"
+                style={{
+                  contentVisibility: "auto",
+                  containIntrinsicSize: "auto 48px",
+                }}
+              >
+                <Check
+                  className={cn(
+                    "mr-2 mt-0.5 h-4 w-4 shrink-0",
+                    value === product.id ? "opacity-100" : "opacity-0",
+                  )}
+                />
+                <span className="min-w-0">
+                  <span className="block truncate">{product.name}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {product.stockQuantity} units on hand · {product.unitPrice}{" "}
+                    each
+                    {product.sku ? ` · SKU ${product.sku}` : ""}
+                  </span>
+                </span>
+              </Command.Item>
+            ))}
           </Command.List>
+          <div className="sr-only" role="status" aria-live="polite">
+            {catalogChanged
+              ? "Inventory changed while loading. Refresh inventory items."
+              : products.error
+                ? "Inventory items could not be loaded."
+                : products.isFetching || !searchSettled
+                  ? "Loading inventory items."
+                  : `${visibleProducts.length} of ${total} inventory items loaded.`}
+          </div>
+          {catalogChanged ? (
+            <div className="border-t border-border px-3 py-2 text-center">
+              <p className="text-xs text-muted-foreground">
+                Inventory changed while this list was loading.
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="mt-1 h-auto py-1 text-xs"
+                onClick={refreshProducts}
+              >
+                Refresh inventory items
+              </Button>
+            </div>
+          ) : null}
           {!products.error && hasMore ? (
             <div className="border-t border-border px-3 py-2">
               <Button
