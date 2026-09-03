@@ -34,6 +34,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
+import {
+  PrescriptionInventoryProductPicker,
+  type PrescriptionInventoryProduct,
+} from "@/components/records/prescription-inventory-product-picker";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
@@ -635,6 +639,8 @@ function RecordsPageContent() {
   const [prescriptionForm, setPrescriptionForm] = useState<PrescriptionFormState>(
     () => initialPrescriptionForm()
   );
+  const [selectedPrescriptionProduct, setSelectedPrescriptionProduct] =
+    useState<PrescriptionInventoryProduct | null>(null);
   const trimmedSearchQuery = searchQuery.trim();
   const canSearchPatients = isPatientSearchInputValid(searchQuery);
   const canSearchReplacementPatients =
@@ -985,36 +991,16 @@ function RecordsPageContent() {
     prescriptionSafety.data
       ? prescriptionSafety.data
       : null;
-  const inventoryProducts = trpc.inventory.list.useQuery(
-    { limit: 100, offset: 0 },
-    {
-      enabled: canPrescribe && showPrescriptionForm,
-    }
-  );
-  const inventoryProductsMissing =
-    canPrescribe &&
-    showPrescriptionForm &&
-    !inventoryProducts.isLoading &&
-    !inventoryProducts.error &&
-    !inventoryProducts.data;
-  const verifiedInventoryProducts =
-    inventoryProducts.error ||
-    inventoryProductsMissing ||
-    !inventoryProducts.data
-      ? null
-      : inventoryProducts.data;
-  const selectedPrescriptionProduct = verifiedInventoryProducts
-    ? verifiedInventoryProducts.items.find(
-        (product) => product.id === prescriptionForm.productId
-      )
-    : undefined;
+  const linkedPrescriptionProduct = prescriptionForm.productId
+    ? selectedPrescriptionProduct
+    : null;
   const prescriptionQuantity = optionalNumber(prescriptionForm.quantity);
   const hasValidPrescriptionQuantityForInventory =
     !prescriptionForm.productId ||
     (isPrescriptionPositiveIntegerInputValid(prescriptionForm.quantity) &&
-      selectedPrescriptionProduct !== undefined &&
+      linkedPrescriptionProduct !== null &&
       prescriptionQuantity !== undefined &&
-      prescriptionQuantity <= selectedPrescriptionProduct.stockQuantity);
+      prescriptionQuantity <= linkedPrescriptionProduct.stockQuantity);
   const visibleTabs = tabs.filter(
     (tab) =>
       userRole !== "front_desk" || !frontDeskRestrictedTabs.includes(tab.id)
@@ -2160,15 +2146,12 @@ function RecordsPageContent() {
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
                           Inventory Item
                         </label>
-                        <select
+                        <PrescriptionInventoryProductPicker
                           value={prescriptionForm.productId}
-                          onChange={(e) => {
-                            const productId = e.target.value;
-                            const selectedProduct = verifiedInventoryProducts
-                              ? verifiedInventoryProducts.items.find(
-                                  (product) => product.id === productId
-                                )
-                              : undefined;
+                          selectedProduct={linkedPrescriptionProduct}
+                          onChange={(selectedProduct) => {
+                            const productId = selectedProduct?.id ?? "";
+                            setSelectedPrescriptionProduct(selectedProduct);
                             setPrescriptionForm((current) => ({
                               ...current,
                               productId,
@@ -2179,34 +2162,12 @@ function RecordsPageContent() {
                               acknowledgeSafetyWarnings: false,
                             }));
                           }}
-                          className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        >
-                          <option value="">Not dispensed from inventory</option>
-                          {inventoryProducts.isLoading ? (
-                            <option disabled>Loading inventory...</option>
-                          ) : null}
-                          {inventoryProducts.error || inventoryProductsMissing ? (
-                            <option disabled>Inventory unavailable</option>
-                          ) : null}
-                          {verifiedInventoryProducts
-                            ? verifiedInventoryProducts.items.map((product) => (
-                                <option key={product.id} value={product.id}>
-                                  {product.name} ({product.stockQuantity} units
-                                  on hand · {product.unitPrice} each)
-                                </option>
-                              ))
-                            : null}
-                        </select>
-                        {inventoryProducts.error || inventoryProductsMissing ? (
-                          <p className="mt-1 text-xs text-destructive">
-                            {inventoryProducts.error?.message ??
-                              "Unable to load inventory products. Please retry."}
-                          </p>
-                        ) : prescriptionForm.productId &&
-                          selectedPrescriptionProduct ? (
+                        />
+                        {prescriptionForm.productId &&
+                        linkedPrescriptionProduct ? (
                           <p className="mt-1 text-xs text-muted-foreground">
                             Stock and billing both use individual units at{" "}
-                            {selectedPrescriptionProduct.unitPrice} per unit.
+                            {linkedPrescriptionProduct.unitPrice} per unit.
                             The prescription quantity will be deducted and
                             charged in that same unit.
                           </p>
@@ -2248,7 +2209,7 @@ function RecordsPageContent() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
-                          {selectedPrescriptionProduct
+                          {linkedPrescriptionProduct
                             ? "Quantity (inventory units)"
                             : "Quantity"}
                         </label>

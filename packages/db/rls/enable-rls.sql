@@ -383,13 +383,31 @@ CREATE POLICY system_only ON stripe_events
   WITH CHECK (app_rls_bypass());
 
 -- Canonical conversion milestones are a cross-tenant, repairable system
--- projection. Product routes trigger projection under explicit system context;
--- ordinary clinic sessions never need direct table access.
+-- projection. Product routes write under explicit system context. Ordinary
+-- clinic sessions may read their own verified milestones for feature gates,
+-- but may not create or change them.
 ALTER TABLE practice_conversion_milestones ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS system_only ON practice_conversion_milestones;
-CREATE POLICY system_only ON practice_conversion_milestones
+DROP POLICY IF EXISTS tenant_select ON practice_conversion_milestones;
+CREATE POLICY tenant_select ON practice_conversion_milestones
+  FOR SELECT
+  USING (
+    app_rls_bypass()
+    OR practice_id = app_current_practice_id()
+  );
+DROP POLICY IF EXISTS system_insert ON practice_conversion_milestones;
+CREATE POLICY system_insert ON practice_conversion_milestones
+  FOR INSERT
+  WITH CHECK (app_rls_bypass());
+DROP POLICY IF EXISTS system_update ON practice_conversion_milestones;
+CREATE POLICY system_update ON practice_conversion_milestones
+  FOR UPDATE
   USING (app_rls_bypass())
   WITH CHECK (app_rls_bypass());
+DROP POLICY IF EXISTS system_delete ON practice_conversion_milestones;
+CREATE POLICY system_delete ON practice_conversion_milestones
+  FOR DELETE
+  USING (app_rls_bypass());
 
 -- Controlled clinic-pilot state spans tenants and belongs only to platform
 -- operators. Clinics cannot inspect cohort decisions, other practices, or the

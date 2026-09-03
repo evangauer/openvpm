@@ -1631,6 +1631,35 @@ describe("committed Drizzle migrations", () => {
     );
   });
 
+  it("allows clinics to read only their own verified conversion milestones", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json")
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0099_tenant_read_conversion_milestones"
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0099_tenant_read_conversion_milestones.sql"
+    );
+    expect(sql).toContain(
+      "CREATE POLICY tenant_select ON practice_conversion_milestones"
+    );
+    expect(sql).toContain("FOR SELECT");
+    expect(sql).toContain(
+      "OR practice_id = app_current_practice_id()"
+    );
+    expect(sql).toContain("FOR INSERT");
+    expect(sql).toContain("FOR UPDATE");
+    expect(sql).toContain("FOR DELETE");
+    expect(sql).toContain("WITH CHECK (app_rls_bypass())");
+
+    const canonicalRls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(canonicalRls).toContain(
+      "CREATE POLICY tenant_select ON practice_conversion_milestones"
+    );
+  });
+
   it("creates the append-only SMS delivery ledger with valid self-FK ordering", () => {
     const journal = JSON.parse(
       readRepoFile("packages/db/drizzle/meta/_journal.json"),
