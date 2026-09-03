@@ -9,6 +9,11 @@
 
 import { z } from "zod";
 import { dateInputTimeUtcInstant } from "@/lib/date-input";
+import {
+  PREVISIT_INTAKE_FIELD_DEFINITIONS,
+  previsitIntakeFieldKeyInput,
+  type PrevisitIntakeFieldKey,
+} from "@/lib/booking/previsit-intake";
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -61,7 +66,10 @@ export function suggestBookingSlug(practiceName: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, BOOKING_SLUG_MAX_LENGTH)
     .replace(/-+$/g, "");
-  if (slug.length >= BOOKING_SLUG_MIN_LENGTH && !RESERVED_BOOKING_SLUGS.has(slug)) {
+  if (
+    slug.length >= BOOKING_SLUG_MIN_LENGTH &&
+    !RESERVED_BOOKING_SLUGS.has(slug)
+  ) {
     return slug;
   }
   return slug ? `${slug}-clinic`.slice(0, BOOKING_SLUG_MAX_LENGTH) : "";
@@ -114,7 +122,29 @@ export const BOOKING_LEAD_TIME_DEFAULT_MINUTES = 60;
 export const BOOKING_WINDOW_DEFAULT_DAYS = 60;
 export const BOOKING_WINDOW_MAX_DAYS = 365;
 
-const configSchema = z.object({
+export const DEFAULT_PREVISIT_INTAKE_FIELD_KEYS: PrevisitIntakeFieldKey[] = [];
+
+function catalogOrderedIntakeFieldKeys(
+  keys: readonly PrevisitIntakeFieldKey[],
+): PrevisitIntakeFieldKey[] {
+  const selected = new Set(keys);
+  return PREVISIT_INTAKE_FIELD_DEFINITIONS.flatMap(({ key }) =>
+    selected.has(key) ? [key] : [],
+  );
+}
+
+const intakeFieldKeysReadSchema = z
+  .array(previsitIntakeFieldKeyInput)
+  .catch(() => DEFAULT_PREVISIT_INTAKE_FIELD_KEYS)
+  .default(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS)
+  .transform(catalogOrderedIntakeFieldKeys);
+
+const intakeFieldKeysWriteSchema = z
+  .array(previsitIntakeFieldKeyInput)
+  .default(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS)
+  .transform(catalogOrderedIntakeFieldKeys);
+
+const configReadSchema = z.object({
   hours: weeklyHoursSchema.catch(() => DEFAULT_WEEKLY_HOURS),
   /** Explicitly selected active appointment types; empty fails public booking closed. */
   bookableTypeIds: z
@@ -149,6 +179,12 @@ const configSchema = z.object({
     .max(BOOKING_WELCOME_MAX_LENGTH)
     .catch("")
     .default(""),
+  /**
+   * Optional owner-reported pre-visit fields shown on this public page.
+   * Missing or malformed legacy values expose no optional sensitive fields.
+   * Values are deduplicated into stable catalog order.
+   */
+  intakeFieldKeys: intakeFieldKeysReadSchema,
   /** Hex accent for the public page, e.g. "#0d9488". */
   accentColor: z
     .string()
@@ -156,7 +192,41 @@ const configSchema = z.object({
     .catch("#0d9488"),
 });
 
-export type BookingPageConfig = z.infer<typeof configSchema>;
+const configWriteSchema = z
+  .object({
+    hours: weeklyHoursSchema.default(DEFAULT_WEEKLY_HOURS),
+    bookableTypeIds: z
+      .array(z.string().uuid())
+      .nullable()
+      .default([])
+      .transform((ids) => ids ?? []),
+    autoConfirm: z
+      .boolean()
+      .default(false)
+      .transform(() => false),
+    allowNewClients: z.boolean().default(true),
+    leadTimeMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(7 * 24 * 60)
+      .default(BOOKING_LEAD_TIME_DEFAULT_MINUTES),
+    bookingWindowDays: z
+      .number()
+      .int()
+      .min(1)
+      .max(BOOKING_WINDOW_MAX_DAYS)
+      .default(BOOKING_WINDOW_DEFAULT_DAYS),
+    welcomeText: z.string().trim().max(BOOKING_WELCOME_MAX_LENGTH).default(""),
+    intakeFieldKeys: intakeFieldKeysWriteSchema,
+    accentColor: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/)
+      .default("#0d9488"),
+  })
+  .strict();
+
+export type BookingPageConfig = z.infer<typeof configWriteSchema>;
 
 export const DEFAULT_BOOKING_PAGE_CONFIG: BookingPageConfig = {
   hours: DEFAULT_WEEKLY_HOURS,
@@ -166,18 +236,19 @@ export const DEFAULT_BOOKING_PAGE_CONFIG: BookingPageConfig = {
   leadTimeMinutes: BOOKING_LEAD_TIME_DEFAULT_MINUTES,
   bookingWindowDays: BOOKING_WINDOW_DEFAULT_DAYS,
   welcomeText: "",
+  intakeFieldKeys: DEFAULT_PREVISIT_INTAKE_FIELD_KEYS,
   accentColor: "#0d9488",
 };
 
 /** Tolerant parse: unknown/invalid fields fall back to defaults, never throws. */
 export function parseBookingPageConfig(raw: unknown): BookingPageConfig {
-  const result = configSchema.safeParse(raw ?? {});
+  const result = configReadSchema.safeParse(raw ?? {});
   if (result.success) return result.data;
   return { ...DEFAULT_BOOKING_PAGE_CONFIG };
 }
 
-/** Strict parse for writes from the settings UI: throws on invalid input. */
-export const bookingPageConfigInput = configSchema;
+/** Strict parse for writes from the settings UI: throws on malformed input. */
+export const bookingPageConfigInput = configWriteSchema;
 
 function isValidDateInput(value: string): boolean {
   if (!DATE_RE.test(value)) return false;
@@ -208,7 +279,7 @@ export interface BookingDayWindow {
 export function bookingWindowForDate(
   config: BookingPageConfig,
   date: string,
-  timeZone?: string | null
+  timeZone?: string | null,
 ): BookingDayWindow | null {
   if (!isValidDateInput(date)) {
     throw new Error("date must be a valid YYYY-MM-DD date.");
@@ -222,12 +293,12 @@ export function bookingWindowForDate(
     dayStart: dateInputTimeUtcInstant(
       date,
       { hour: openHour!, minute: openMinute! },
-      timeZone
+      timeZone,
     ),
     dayEnd: dateInputTimeUtcInstant(
       date,
       { hour: closeHour!, minute: closeMinute! },
-      timeZone
+      timeZone,
     ),
   };
 }
@@ -239,21 +310,23 @@ export function bookingWindowForDate(
 export function isDateWithinBookingWindow(
   config: BookingPageConfig,
   date: string,
-  now: Date = new Date()
+  now: Date = new Date(),
 ): boolean {
   if (!isValidDateInput(date)) return false;
-  const endOfDate = new Date(`${date}T23:59:59Z`).getTime() + 14 * 60 * 60 * 1000;
+  const endOfDate =
+    new Date(`${date}T23:59:59Z`).getTime() + 14 * 60 * 60 * 1000;
   if (endOfDate < now.getTime()) return false;
   const horizon =
     now.getTime() + config.bookingWindowDays * 24 * 60 * 60 * 1000;
-  const startOfDate = new Date(`${date}T00:00:00Z`).getTime() - 14 * 60 * 60 * 1000;
+  const startOfDate =
+    new Date(`${date}T00:00:00Z`).getTime() - 14 * 60 * 60 * 1000;
   return startOfDate <= horizon;
 }
 
 /** Earliest bookable instant given the page's lead time. */
 export function minimumBookableInstant(
   config: BookingPageConfig,
-  now: Date = new Date()
+  now: Date = new Date(),
 ): Date {
   return new Date(now.getTime() + config.leadTimeMinutes * 60_000);
 }

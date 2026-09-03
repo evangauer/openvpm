@@ -45,6 +45,11 @@ import {
   BOOKING_SLUG_MAX_LENGTH,
 } from "@/lib/booking/page-config";
 import {
+  filterPrevisitIntakeByFieldKeys,
+  preflightOnlineBookingAppointmentNote,
+  previsitIntakeInput,
+} from "@/lib/booking/previsit-intake";
+import {
   listActiveAppointmentLocations,
   resolveAppointmentLocation,
   takeAppointmentSchedulingLock,
@@ -349,6 +354,7 @@ export const bookingRouter = createRouter({
         hours: config.hours,
         leadTimeMinutes: config.leadTimeMinutes,
         bookingWindowDays: config.bookingWindowDays,
+        intakeFieldKeys: config.intakeFieldKeys,
         types,
         locations: bookingLocations,
       };
@@ -472,6 +478,7 @@ export const bookingRouter = createRouter({
         contact: contactInput,
         pet: petInput,
         reason: z.string().trim().min(1).max(BOOKING_REASON_MAX_LENGTH),
+        intake: previsitIntakeInput.optional(),
         /** Honeypot — humans never fill this; bots do. */
         website: z.string().max(255).optional(),
       }),
@@ -500,6 +507,38 @@ export const bookingRouter = createRouter({
 
       const { practice, config } = await getLivePage(ctx.db, input.slug);
       assertBookingBillingAccess(practice);
+
+      const enabledIntake = input.intake
+        ? filterPrevisitIntakeByFieldKeys(input.intake, config.intakeFieldKeys)
+        : undefined;
+      const submittedDisabledIntakeField = input.intake
+        ? Object.entries(input.intake).some(
+            ([key, value]) =>
+              value !== undefined &&
+              !config.intakeFieldKeys.includes(
+                key as (typeof config.intakeFieldKeys)[number],
+              ),
+          )
+        : false;
+      if (submittedDisabledIntakeField) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "One or more optional intake fields are no longer enabled. Refresh the page and try again.",
+        });
+      }
+
+      const appointmentNotePreflight = preflightOnlineBookingAppointmentNote({
+        reason: input.reason,
+        intake: enabledIntake,
+      });
+      if (!appointmentNotePreflight.ok) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appointmentNotePreflight.message,
+        });
+      }
+      const appointmentNote = appointmentNotePreflight.note;
 
       // Public and portal requests for one practice share a transaction lock,
       // so neither path can pass the conflict check concurrently. Take it
@@ -719,7 +758,7 @@ export const bookingRouter = createRouter({
           // Public booking is deliberately request-only. Keep this invariant
           // independent of legacy booking-page config stored in jsonb.
           status: "scheduled",
-          notes: `[Online request] ${input.reason}`,
+          notes: appointmentNote,
         })
         .returning();
       await recordActivationAfterAppointmentCreated(
@@ -741,7 +780,7 @@ export const bookingRouter = createRouter({
           `Pet: ${petName}`,
           `Requested: ${input.date} ${input.time}`,
           `Location: ${selectedLocation.name}`,
-          `Reason: ${input.reason}`,
+          `Details: ${appointmentNote}`,
         ].join("\n"),
         status: "pending",
         assignedTo: latestAssignedToForClient(practice.id, clientId),

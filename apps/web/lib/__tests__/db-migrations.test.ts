@@ -1631,6 +1631,35 @@ describe("committed Drizzle migrations", () => {
     );
   });
 
+  it("allows clinics to read only their own verified conversion milestones", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json")
+    ) as { entries?: Array<{ tag?: string }> };
+    expect(journal.entries?.map((entry) => entry.tag)).toContain(
+      "0099_tenant_read_conversion_milestones"
+    );
+
+    const sql = readRepoFile(
+      "packages/db/drizzle/0099_tenant_read_conversion_milestones.sql"
+    );
+    expect(sql).toContain(
+      "CREATE POLICY tenant_select ON practice_conversion_milestones"
+    );
+    expect(sql).toContain("FOR SELECT");
+    expect(sql).toContain(
+      "OR practice_id = app_current_practice_id()"
+    );
+    expect(sql).toContain("FOR INSERT");
+    expect(sql).toContain("FOR UPDATE");
+    expect(sql).toContain("FOR DELETE");
+    expect(sql).toContain("WITH CHECK (app_rls_bypass())");
+
+    const canonicalRls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(canonicalRls).toContain(
+      "CREATE POLICY tenant_select ON practice_conversion_milestones"
+    );
+  });
+
   it("creates the append-only SMS delivery ledger with valid self-FK ordering", () => {
     const journal = JSON.parse(
       readRepoFile("packages/db/drizzle/meta/_journal.json"),
@@ -2127,5 +2156,72 @@ describe("committed Drizzle migrations", () => {
     expect(rls).toContain(
       "GRANT SELECT, INSERT ON messaging_registration_events TO openpims_app",
     );
+  });
+
+  it("canonically reconciles demo's dormant backup and MFA schema without data replay", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    const entry = journal.entries.find((candidate) => candidate.idx === 100);
+    expect(entry?.tag).toBe("0100_small_kylun");
+    // Drizzle orders pending migrations by this timestamp. It must remain
+    // newer than demo's rogue 0101 timestamp so the reconciliation is not
+    // skipped merely because that non-main ledger entry already exists.
+    expect(entry?.when).toBeGreaterThan(1_788_016_103_861);
+
+    const migration = readRepoFile(
+      "packages/db/drizzle/0100_small_kylun.sql",
+    );
+    expect(migration).toContain(
+      "0100 reconciliation refused: public.backup_run_status has an incompatible shape",
+    );
+    expect(migration).toContain(
+      "0100 reconciliation refused: public.backup_runs has incompatible columns",
+    );
+    expect(migration).toContain(
+      "0100 reconciliation refused: public.users.% has an incompatible shape",
+    );
+    expect(migration).toContain("LOCK TABLE public.backup_runs");
+    expect(migration).toContain("LOCK TABLE public.users");
+    expect(migration).toContain(
+      "CREATE TYPE public.backup_run_status AS ENUM ('ok', 'degraded', 'failed')",
+    );
+    expect(migration).toContain("ADD COLUMN IF NOT EXISTS mfa_secret_encrypted");
+    expect(migration).toContain("users_mfa_active_shape_check");
+    expect(migration).toContain("users_mfa_pending_shape_check");
+    expect(migration).toContain("users_mfa_totp_counter_check");
+    expect(migration).toContain(
+      "ALTER TABLE public.backup_runs ENABLE ROW LEVEL SECURITY",
+    );
+    expect(migration).toContain(
+      "GRANT SELECT, INSERT ON TABLE public.backup_runs TO openpims_app",
+    );
+    expect(migration).not.toMatch(/\b(?:UPDATE|DELETE)\s+public\.(?:users|backup_runs)\b/i);
+    expect(migration).not.toMatch(
+      /cron\.schedule|CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+[^\s(]*(?:totp|mfa)|CREATE\s+TRIGGER\s+[^\s]*(?:totp|mfa)/i,
+    );
+
+    const fixture = readRepoFile(
+      "packages/db/fixtures/demo-rogue-0099-0101.sql",
+    );
+    expect(fixture.match(/10000000-0000-4000-8000-00000000000[1-3]/g)).toHaveLength(
+      3,
+    );
+    expect(fixture).toContain("CREATE POLICY system_only");
+    expect(fixture).toContain("users_mfa_active_shape_check");
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    expect(rls).toContain(
+      "CREATE POLICY system_only ON backup_runs",
+    );
+    expect(rls).toContain(
+      "GRANT SELECT, INSERT ON backup_runs TO openpims_app",
+    );
+    expect(rls).not.toContain(
+      "GRANT SELECT, INSERT, UPDATE ON backup_runs TO openpims_app",
+    );
+
+    const ci = readRepoFile(".github/workflows/ci.yml");
+    expect(ci).toContain("db:demo-schema-reconciliation:test");
   });
 });

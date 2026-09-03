@@ -5,7 +5,13 @@ import { useParams } from "next/navigation";
 import { AlertCircle, CalendarX2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
+import { PrevisitIntakeFields } from "@/components/booking/previsit-intake-fields";
 import { BOOKING_REASON_MAX_LENGTH } from "@/lib/booking/page-config";
+import {
+  filterPrevisitIntakeByFieldKeys,
+  preflightOnlineBookingAppointmentNote,
+  type PrevisitIntake,
+} from "@/lib/booking/previsit-intake";
 import {
   PATIENT_SPECIES_OPTIONS,
   type PatientSpecies,
@@ -45,6 +51,7 @@ export default function PublicBookingPage() {
   const [petName, setPetName] = useState("");
   const [species, setSpecies] = useState<PatientSpecies>("canine");
   const [reason, setReason] = useState("");
+  const [intake, setIntake] = useState<PrevisitIntake>({});
   // Honeypot: hidden from humans, filled by bots.
   const [website, setWebsite] = useState("");
 
@@ -93,6 +100,13 @@ export default function PublicBookingPage() {
   const selectedLocation = data.locations.find(
     (item) => item.id === locationId,
   );
+  const appointmentNotePreflight = preflightOnlineBookingAppointmentNote({
+    reason: reason.trim(),
+    intake: filterPrevisitIntakeByFieldKeys(intake, data.intakeFieldKeys),
+  });
+  const intakeLengthError = appointmentNotePreflight.ok
+    ? null
+    : appointmentNotePreflight.message;
   const canSubmit = Boolean(
     date &&
     time &&
@@ -103,6 +117,7 @@ export default function PublicBookingPage() {
     email.trim() &&
     petName.trim() &&
     reason.trim() &&
+    appointmentNotePreflight.ok &&
     !book.isPending,
   );
 
@@ -123,6 +138,7 @@ export default function PublicBookingPage() {
       },
       pet: { name: petName.trim(), species },
       reason: reason.trim(),
+      intake,
       website,
     });
   }
@@ -543,6 +559,18 @@ export default function PublicBookingPage() {
               className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
             />
           </div>
+
+          <PrevisitIntakeFields
+            enabledFieldKeys={data.intakeFieldKeys}
+            value={intake}
+            onChange={setIntake}
+            disabled={book.isPending}
+          />
+          {intakeLengthError ? (
+            <p className="text-sm text-red-600" role="alert">
+              {intakeLengthError}
+            </p>
+          ) : null}
         </div>
 
         {book.error && (

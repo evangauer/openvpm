@@ -157,6 +157,12 @@ jobs:
       - name: Execute finance schema adoption contract
         run: pnpm --filter @openpims/db db:finance-adoption:test
 
+      # Demo received the dormant backup/MFA objects from non-main migrations.
+      # Rebuild both a fresh-main database and that exact populated object shape,
+      # then prove the canonical forward migration is lossless and fail closed.
+      - name: Execute demo schema reconciliation contract
+        run: pnpm --filter @openpims/db db:demo-schema-reconciliation:test
+
       # Exercise the clinic-facing patient + owner search through the real
       # router and least-privilege RLS role. The fixture proves literal LIKE
       # escaping, deterministic bounds, context cleanup, and cross-tenant deny.
