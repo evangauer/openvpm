@@ -1,15 +1,39 @@
-import { afterAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { and, eq } from "drizzle-orm";
-import { consentRequests, files } from "@openpims/db";
+import { consentRequests, files, practices } from "@openpims/db";
 import { db } from "@openpims/db/client";
 import { hashConsentToken } from "@/lib/consult/tokens";
 import { withTenant } from "@/lib/tenant-db";
+import { checksumSha256Hex } from "@/lib/file-replication";
+import {
+  buildConsentPdfV1,
+  CONSENT_PDF_RENDERER_V1,
+} from "@/lib/consult/consent-pdf";
+import { CONSENT_SIGNER_ATTESTATION_VERSION } from "@/lib/consult/consent-template";
+import type { ManagedUploadReservation } from "@/lib/managed-file-upload";
+import {
+  PRACTICE_EXPORT_SECTIONS,
+  restorePracticeData,
+} from "@/lib/backup/export";
 
 const storageMocks = vi.hoisted(() => ({
-  putAndVerifyManagedUpload: vi.fn(async () => ({
-    status: "verified" as const,
-    evidence: { etag: "isolated-etag", versionId: "isolated-version" },
-  })),
+  putAndVerifyManagedUpload: vi.fn(
+    async (_input: {
+      reservation: ManagedUploadReservation;
+      body: Buffer;
+    }) => ({
+      status: "verified" as const,
+      evidence: { etag: "isolated-etag", versionId: "isolated-version" },
+    }),
+  ),
   queueManagedUploadReplication: vi.fn(async () => true),
 }));
 
@@ -32,12 +56,27 @@ const PRACTICE_ID = "33333333-3333-4333-8333-333333333331";
 const PATIENT_ID = "33333333-3333-4333-8333-333333333334";
 const CREATED_BY = "33333333-3333-4333-8333-333333333332";
 const CONSENT_ID = "33333333-3333-4333-8333-333333333344";
+const LEGACY_CONSENT_ID = "33333333-3333-4333-8333-333333333345";
+const LEGACY_FILE_ID = "33333333-3333-4333-8333-333333333346";
+const LEASE_CONSENT_ID = "33333333-3333-4333-8333-333333333347";
 const TOKEN = "cd".repeat(32);
+const LEGACY_TOKEN = "ce".repeat(32);
+const LEASE_TOKEN = "cf".repeat(32);
 const SIGNATURE_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 runDatabaseIntegration("consent signing pool-size-one route", () => {
+  beforeAll(() => {
+    process.env.TREATMENT_PLAN_CLIENT_DECISIONS_ENABLED = "true";
+  });
+
+  beforeEach(() => {
+    storageMocks.putAndVerifyManagedUpload.mockClear();
+    storageMocks.queueManagedUploadReplication.mockClear();
+  });
+
   afterAll(async () => {
+    delete process.env.TREATMENT_PLAN_CLIENT_DECISIONS_ENABLED;
     await globalThis.__openpimsDb?.client.end();
     globalThis.__openpimsDb = undefined;
   });
@@ -79,6 +118,9 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
           status: consentRequests.status,
           token: consentRequests.token,
           signerAttestationVersion: consentRequests.signerAttestationVersion,
+          documentRenderVersion: consentRequests.documentRenderVersion,
+          storageLeaseToken: consentRequests.storageLeaseToken,
+          storageLeaseExpiresAt: consentRequests.storageLeaseExpiresAt,
           storageStatus: files.storageStatus,
         })
         .from(consentRequests)
@@ -101,9 +143,221 @@ runDatabaseIntegration("consent signing pool-size-one route", () => {
       status: "signed",
       token: null,
       signerAttestationVersion: "owner-authority-v1",
+      documentRenderVersion: "consent-pdf-v2",
+      storageLeaseToken: null,
+      storageLeaseExpiresAt: null,
       storageStatus: "available",
     });
     expect(storageMocks.putAndVerifyManagedUpload).toHaveBeenCalledOnce();
     expect(storageMocks.queueManagedUploadReplication).toHaveBeenCalledOnce();
+
+    let rendererMutationError: unknown;
+    try {
+      await withTenant(db, PRACTICE_ID, (tx) =>
+        tx
+          .update(consentRequests)
+          .set({ documentRenderVersion: CONSENT_PDF_RENDERER_V1 })
+          .where(eq(consentRequests.id, CONSENT_ID)),
+      );
+    } catch (error) {
+      rendererMutationError = error;
+    }
+    expect(rendererMutationError).toBeInstanceOf(Error);
+    expect(
+      [
+        (rendererMutationError as Error).message,
+        (rendererMutationError as Error & { cause?: Error }).cause?.message,
+      ].join("\n"),
+    ).toContain("Consent document renderer is immutable");
+
+    const replay = await POST(
+      new Request(`https://openvpm.test/api/sign/${TOKEN}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resume: true }),
+      }) as never,
+      { params: Promise.resolve({ token: TOKEN }) },
+    );
+    expect(replay.status).toBe(200);
+    expect(storageMocks.putAndVerifyManagedUpload).toHaveBeenCalledOnce();
+  }, 5_000);
+
+  it("replays a preexisting v1 reservation byte-for-byte without a checksum conflict", async () => {
+    const signedAt = new Date();
+    const signatureBytes = Buffer.from(
+      SIGNATURE_DATA_URL.slice("data:image/png;base64,".length),
+      "base64",
+    );
+    const legacyPdf = buildConsentPdfV1({
+      documentId: LEGACY_CONSENT_ID,
+      practiceId: PRACTICE_ID,
+      patientId: PATIENT_ID,
+      title: "Legacy in-flight consent",
+      bodyText: "These bytes were reserved by the pre-version renderer.",
+      signerName: "Legacy Client",
+      signedAtIso: signedAt.toISOString(),
+      signaturePngDataUrl: SIGNATURE_DATA_URL,
+    });
+    const legacyChecksum = checksumSha256Hex(legacyPdf);
+
+    await withTenant(db, PRACTICE_ID, async (tx) => {
+      await tx.insert(files).values({
+        id: LEGACY_FILE_ID,
+        practiceId: PRACTICE_ID,
+        uploadedBy: CREATED_BY,
+        idempotencyKey: LEGACY_CONSENT_ID,
+        fileName: `signed-consent-${LEGACY_CONSENT_ID.slice(0, 8)}.pdf`,
+        fileKey: `${PRACTICE_ID}/consents/${LEGACY_FILE_ID}`,
+        fileUrl: `/api/files/${PRACTICE_ID}/consents/${LEGACY_FILE_ID}`,
+        mimeType: "application/pdf",
+        fileSizeBytes: legacyPdf.length,
+        checksumSha256: legacyChecksum,
+        storageStatus: "pending_upload",
+        category: "consents",
+        source: "consent_signature",
+        entityType: "patient",
+        entityId: PATIENT_ID,
+        patientId: PATIENT_ID,
+      });
+      await tx.insert(consentRequests).values({
+        id: LEGACY_CONSENT_ID,
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        createdBy: CREATED_BY,
+        token: LEGACY_TOKEN,
+        tokenHash: null,
+        expiresAt: new Date(Date.now() + 60_000),
+        title: "Legacy in-flight consent",
+        bodyText: "These bytes were reserved by the pre-version renderer.",
+        status: "signing",
+        signerName: "Legacy Client",
+        signedAt,
+        signaturePngBytes: signatureBytes,
+        signatureSha256: checksumSha256Hex(signatureBytes),
+        // This row models a reservation created before the hardening
+        // migration, when neither attestation nor renderer version existed.
+        signerAttestationVersion: null,
+        documentRenderVersion: null,
+        fileId: LEGACY_FILE_ID,
+      });
+    });
+
+    storageMocks.putAndVerifyManagedUpload.mockImplementationOnce(
+      async ({ reservation, body }) => {
+        expect(reservation.id).toBe(LEGACY_FILE_ID);
+        expect(reservation.checksumSha256).toBe(legacyChecksum);
+        expect(body).toEqual(legacyPdf);
+        return {
+          status: "verified" as const,
+          evidence: {
+            etag: "legacy-isolated-etag",
+            versionId: "legacy-isolated-version",
+          },
+        };
+      },
+    );
+
+    const { POST } = await import("./route");
+    const response = await POST(
+      new Request(`https://openvpm.test/api/sign/${LEGACY_TOKEN}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resume: true,
+          signerAuthorityAccepted: true,
+        }),
+      }) as never,
+      { params: Promise.resolve({ token: LEGACY_TOKEN }) },
+    );
+
+    expect(response.status).toBe(201);
+    const [completed] = await withTenant(db, PRACTICE_ID, (tx) =>
+      tx
+        .select({
+          status: consentRequests.status,
+          signerAttestationVersion: consentRequests.signerAttestationVersion,
+          documentRenderVersion: consentRequests.documentRenderVersion,
+          storageLeaseToken: consentRequests.storageLeaseToken,
+          storageStatus: files.storageStatus,
+        })
+        .from(consentRequests)
+        .innerJoin(files, eq(files.id, consentRequests.fileId))
+        .where(eq(consentRequests.id, LEGACY_CONSENT_ID))
+        .limit(1),
+    );
+    expect(completed).toEqual({
+      status: "signed",
+      signerAttestationVersion: CONSENT_SIGNER_ATTESTATION_VERSION,
+      documentRenderVersion: null,
+      storageLeaseToken: null,
+      storageStatus: "available",
+    });
+  }, 5_000);
+
+  it("leaves pool=1 free while the durable lease blocks concurrent recovery", async () => {
+    await withTenant(db, PRACTICE_ID, (tx) =>
+      tx.insert(consentRequests).values({
+        id: LEASE_CONSENT_ID,
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        createdBy: CREATED_BY,
+        token: LEASE_TOKEN,
+        expiresAt: new Date(Date.now() + 60_000),
+        title: "Recovery fence consent",
+        bodyText: "Provider I/O must not hold the only database connection.",
+      }),
+    );
+
+    let releaseProvider!: () => void;
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    storageMocks.putAndVerifyManagedUpload.mockImplementationOnce(async () => {
+      await providerGate;
+      return {
+        status: "verified" as const,
+        evidence: {
+          etag: "lease-isolated-etag",
+          versionId: "lease-isolated-version",
+        },
+      };
+    });
+
+    const { POST } = await import("./route");
+    const signing = POST(
+      new Request(`https://openvpm.test/api/sign/${LEASE_TOKEN}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          signerName: "Lease Client",
+          signerAuthorityAccepted: true,
+          signaturePngDataUrl: SIGNATURE_DATA_URL,
+        }),
+      }) as never,
+      { params: Promise.resolve({ token: LEASE_TOKEN }) },
+    );
+    await vi.waitFor(() =>
+      expect(storageMocks.putAndVerifyManagedUpload).toHaveBeenCalledOnce(),
+    );
+
+    const emptyBackup = Object.fromEntries(
+      PRACTICE_EXPORT_SECTIONS.map((section) => [section, []]),
+    );
+    await expect(
+      restorePracticeData(db, PRACTICE_ID, emptyBackup, {
+        recoveryHoldDb: db,
+      }),
+    ).rejects.toThrow(
+      "Recovery cannot begin while a signed-document storage operation is in flight",
+    );
+    const [practice] = await db
+      .select({ recoveryHold: practices.recoveryHold })
+      .from(practices)
+      .where(eq(practices.id, PRACTICE_ID))
+      .limit(1);
+    expect(practice?.recoveryHold).toBe(false);
+
+    releaseProvider();
+    expect((await signing).status).toBe(201);
   }, 5_000);
 });

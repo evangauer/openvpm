@@ -304,6 +304,7 @@ function restoreDb(executeResults: unknown[][] = []) {
   const executed: unknown[] = [];
   const timeline: string[] = [];
   const pendingExecuteResults = [...executeResults];
+  let recoverySelectCount = 0;
   const db = {
     execute: vi.fn(async (query: unknown) => {
       executed.push(query);
@@ -319,6 +320,17 @@ function restoreDb(executeResults: unknown[][] = []) {
           },
         ]
       );
+    }),
+    select: vi.fn(() => {
+      const result =
+        recoverySelectCount++ === 0 ? [{ id: "target-practice" }] : [];
+      const builder = {
+        from: vi.fn(() => builder),
+        where: vi.fn(() => builder),
+        for: vi.fn(() => builder),
+        limit: vi.fn(async () => result),
+      };
+      return builder;
     }),
     insert: vi.fn(() => ({
       values: vi.fn((values: Record<string, unknown>[]) => ({
@@ -3008,14 +3020,14 @@ describe("restorePracticeData", () => {
     );
     const restoredRows = inserted.flatMap(({ rows }) => rows);
 
-    expect(rootDb.transaction).toHaveBeenCalledTimes(1);
+    expect(rootDb.transaction).toHaveBeenCalledTimes(2);
     expect(updates[0]).toMatchObject({
       recoveryHold: true,
       recoveryHoldReason: PRACTICE_RECOVERY_HOLD_REASON,
       recoveryHoldSetAt: expect.any(Date),
       recoveryHoldReleasedAt: null,
     });
-    expect(timeline[0]).toBe("recovery-hold");
+    expect(timeline).toContain("recovery-hold");
     expect(timeline.indexOf("recovery-hold")).toBeLessThan(
       timeline.indexOf("insert:client-1"),
     );
@@ -3088,6 +3100,40 @@ describe("restorePracticeData", () => {
     );
   });
 
+  it("refuses to start recovery while a bounded consent storage lease is active", async () => {
+    let selectCount = 0;
+    const select = vi.fn(() => {
+      const result =
+        selectCount++ === 0
+          ? [{ id: "target-practice" }]
+          : [{ id: "active-consent" }];
+      const builder = {
+        from: vi.fn(() => builder),
+        where: vi.fn(() => builder),
+        for: vi.fn(() => builder),
+        limit: vi.fn(async () => result),
+      };
+      return builder;
+    });
+    const update = vi.fn();
+    const recoveryDb = {
+      transaction: vi.fn(async (fn: (tx: unknown) => unknown) =>
+        fn({ execute: vi.fn(async () => []), select, update }),
+      ),
+    };
+    const bulkDb = { transaction: vi.fn() };
+
+    await expect(
+      restorePracticeData(bulkDb as never, "target-practice", emptyBackup(), {
+        recoveryHoldDb: recoveryDb as never,
+      }),
+    ).rejects.toThrow(
+      "Recovery cannot begin while a signed-document storage operation is in flight",
+    );
+    expect(update).not.toHaveBeenCalled();
+    expect(bulkDb.transaction).not.toHaveBeenCalled();
+  });
+
   it("commits the recovery hold before bulk restore and leaves it set on failure", async () => {
     const backup = emptyBackup();
     const holdValues: Record<string, unknown>[] = [];
@@ -3097,9 +3143,28 @@ describe("restorePracticeData", () => {
       holdValues.push(values);
       return { where };
     });
-    const transaction = vi.fn(async () => {
-      throw new Error("bulk restore failed");
+    let selectCount = 0;
+    const select = vi.fn(() => {
+      const result = selectCount++ === 0 ? [{ id: "target-practice" }] : [];
+      const builder = {
+        from: vi.fn(() => builder),
+        where: vi.fn(() => builder),
+        for: vi.fn(() => builder),
+        limit: vi.fn(async () => result),
+      };
+      return builder;
     });
+    const holdTx = {
+      execute: vi.fn(async () => []),
+      select,
+      update: vi.fn(() => ({ set })),
+    };
+    const transaction = vi
+      .fn()
+      .mockImplementationOnce(async (fn: (tx: unknown) => unknown) =>
+        fn(holdTx),
+      )
+      .mockRejectedValueOnce(new Error("bulk restore failed"));
     const rootDb = {
       update: vi.fn(() => ({ set })),
       transaction,
@@ -3117,8 +3182,7 @@ describe("restorePracticeData", () => {
       }),
     ]);
     expect(returning).toHaveBeenCalledOnce();
-    expect(transaction).toHaveBeenCalledOnce();
-    expect(rootDb.update).toHaveBeenCalledOnce();
+    expect(transaction).toHaveBeenCalledTimes(2);
   });
 
   it("rewrites practice-scoped rows and leaves parent-scoped child rows intact", async () => {

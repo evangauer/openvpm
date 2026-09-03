@@ -15,6 +15,11 @@ describe("consent signature persistence schema", () => {
     expect(consentRequests.signatureSha256.notNull).toBe(false);
     expect(columns.get("token_hash")).toBe("varchar(64)");
     expect(columns.get("signer_attestation_version")).toBe("varchar(64)");
+    expect(columns.get("document_render_version")).toBe("varchar(32)");
+    expect(columns.get("storage_lease_token")).toBe("uuid");
+    expect(columns.get("storage_lease_expires_at")).toBe(
+      "timestamp with time zone",
+    );
     expect(consentRequests.token.notNull).toBe(false);
     expect(consentRequests.tokenHash.notNull).toBe(false);
   });
@@ -30,6 +35,9 @@ describe("consent signature persistence schema", () => {
         "consent_requests_signature_evidence_hash_check",
         "consent_requests_credential_storage_check",
         "consent_requests_token_hash_format_check",
+        "consent_requests_document_render_version_check",
+        "consent_requests_storage_lease_pair_check",
+        "consent_requests_storage_lease_state_check",
       ]),
     );
 

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildConsentPdf, consentSignaturePngDecodes } from "../consent-pdf";
+import { createHash } from "node:crypto";
+import {
+  buildConsentPdf,
+  buildConsentPdfForVersion,
+  buildConsentPdfV1,
+  CONSENT_PDF_RENDERER_V1,
+  CONSENT_PDF_RENDERER_V2,
+  consentSignaturePngDecodes,
+} from "../consent-pdf";
 import {
   CONSENT_ELECTRONIC_SIGNATURE_INTENT,
   CONSENT_SIGNER_AUTHORITY_ATTESTATION,
@@ -56,6 +64,21 @@ describe("buildConsentPdf", () => {
     expect(buildConsentPdf(consentInput())).toEqual(
       buildConsentPdf(consentInput()),
     );
+  });
+
+  it("freezes the pre-attestation v1 bytes for existing reservations", () => {
+    const input = consentInput();
+    const legacy = buildConsentPdfV1(input);
+
+    expect(legacy).toEqual(
+      buildConsentPdfForVersion(CONSENT_PDF_RENDERER_V1, input),
+    );
+    expect(createHash("sha256").update(legacy).digest("hex")).toBe(
+      "dc113f9150853453a27fca6be7296fa43defa55c0ab4d5c53380636468efd466",
+    );
+    expect(
+      buildConsentPdfForVersion(CONSENT_PDF_RENDERER_V2, input),
+    ).not.toEqual(legacy);
   });
 
   it("fully decodes PNG chunks before signature evidence is claimed", () => {

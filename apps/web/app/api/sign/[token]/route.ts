@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
-import { and, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import { auditLog, consentRequests, patients, practices } from "@openpims/db";
 import { db, type Database } from "@openpims/db/client";
 import { withSystem, withTenant } from "@/lib/tenant-db";
@@ -19,8 +19,11 @@ import {
   CONSENT_SIGNER_NAME_MAX_LENGTH,
 } from "@/lib/consult/consent-template";
 import {
-  buildConsentPdf,
+  buildConsentPdfForVersion,
+  CONSENT_PDF_RENDERER_V1,
+  CONSENT_PDF_RENDERER_V2,
   consentSignaturePngDecodes,
+  type ConsentPdfRendererVersion,
 } from "@/lib/consult/consent-pdf";
 import { uploadBytesMatchMimeType } from "@/lib/upload-security";
 import { readRequestBytesWithLimit } from "@/lib/request-body";
@@ -37,6 +40,7 @@ import {
   type ManagedUploadReservation,
 } from "@/lib/managed-file-upload";
 import { finalizeTreatmentPlanResponseForConsent } from "@/lib/treatment-plan-presentations/finalize";
+import { treatmentPlanClientDecisionsEnabled } from "@/lib/treatment-plan-presentations/policy";
 import { sanitizedExceptionTelemetry } from "@/lib/sanitized-exception-telemetry";
 
 export const dynamic = "force-dynamic";
@@ -65,6 +69,13 @@ const SIGNATURE_PNG_MAX_DIMENSION = 2_048;
 const SIGNATURE_PNG_MAX_PIXELS = 2_000_000;
 const SIGNATURE_DATA_URL_PREFIX = "data:image/png;base64,";
 const CONSENT_FILE_CATEGORY = CONSENT_CATEGORY;
+/** Public recovery is deliberately short. After this window an operator must
+ * reconcile the pending manifest; an expired bearer can never retry forever. */
+const CONSENT_SIGNING_RECOVERY_WINDOW_MS = 15 * 60 * 1000;
+/** Object storage performs at most three 15-second bounded operations. This
+ * fence is longer than that full path and prevents recovery from starting
+ * while the database connection is released for provider I/O. */
+const CONSENT_STORAGE_LEASE_MS = 2 * 60 * 1000;
 
 function signaturePngDimensionsAllowed(bytes: Buffer): boolean {
   // A PNG must begin with a 13-byte IHDR chunk. Bounding both dimensions and
@@ -137,6 +148,7 @@ type ConsentLookup = {
   patientId: string;
   createdBy: string | null;
   appointmentId: string | null;
+  tokenHash: string | null;
   title: string;
   bodyText: string;
   status: string;
@@ -145,6 +157,9 @@ type ConsentLookup = {
   signaturePngBytes: Uint8Array | null;
   signatureSha256: string | null;
   signerAttestationVersion: string | null;
+  documentRenderVersion: string | null;
+  storageLeaseToken: string | null;
+  storageLeaseExpiresAt: Date | null;
   fileId: string | null;
   expiresAt: Date;
   patientName: string;
@@ -166,6 +181,7 @@ async function lookupConsent(
       patientId: consentRequests.patientId,
       createdBy: consentRequests.createdBy,
       appointmentId: consentRequests.appointmentId,
+      tokenHash: consentRequests.tokenHash,
       title: consentRequests.title,
       bodyText: consentRequests.bodyText,
       status: consentRequests.status,
@@ -174,6 +190,9 @@ async function lookupConsent(
       signaturePngBytes: consentRequests.signaturePngBytes,
       signatureSha256: consentRequests.signatureSha256,
       signerAttestationVersion: consentRequests.signerAttestationVersion,
+      documentRenderVersion: consentRequests.documentRenderVersion,
+      storageLeaseToken: consentRequests.storageLeaseToken,
+      storageLeaseExpiresAt: consentRequests.storageLeaseExpiresAt,
       fileId: consentRequests.fileId,
       expiresAt: consentRequests.expiresAt,
       patientName: patients.name,
@@ -209,11 +228,11 @@ async function lookupConsent(
         or(
           gt(consentRequests.expiresAt, now),
           and(
-            inArray(consentRequests.status, ["signing", "signed"]),
-            isNotNull(consentRequests.signerName),
-            isNotNull(consentRequests.signedAt),
-            isNotNull(consentRequests.signaturePngBytes),
-            isNotNull(consentRequests.signatureSha256),
+            eq(consentRequests.status, "signing"),
+            gt(
+              consentRequests.signedAt,
+              new Date(now.getTime() - CONSENT_SIGNING_RECOVERY_WINDOW_MS),
+            ),
           ),
         ),
       ),
@@ -236,37 +255,62 @@ function billingBlocked(session: ConsentLookup): boolean {
 class ConsentFileBindingConflictError extends Error {}
 class ConsentSignatureConflictError extends Error {}
 class ConsentRecoveryHoldError extends Error {}
+class ConsentStorageBusyError extends Error {}
 
 type SigningSession = ConsentLookup & {
-  status: "signing" | "signed";
+  status: "signing";
   signerName: string;
   signedAt: Date;
   signaturePngBytes: Buffer;
   signatureSha256: string;
   signerAttestationVersion: string;
+  documentRenderVersion: ConsentPdfRendererVersion;
 };
+
+function persistedRendererVersion(
+  session: ConsentLookup,
+): ConsentPdfRendererVersion | null {
+  if (session.documentRenderVersion === null) {
+    return CONSENT_PDF_RENDERER_V1;
+  }
+  return session.documentRenderVersion === CONSENT_PDF_RENDERER_V1 ||
+    session.documentRenderVersion === CONSENT_PDF_RENDERER_V2
+    ? session.documentRenderVersion
+    : null;
+}
+
+function signingRecoveryIsLive(session: ConsentLookup): boolean {
+  return (
+    session.status === "signing" &&
+    session.signedAt !== null &&
+    session.signedAt.getTime() + CONSENT_SIGNING_RECOVERY_WINDOW_MS > Date.now()
+  );
+}
 
 function signingFromPersistedEvidence(
   session: ConsentLookup,
 ): SigningSession | null {
   if (
-    (session.status !== "signing" && session.status !== "signed") ||
+    session.status !== "signing" ||
+    !signingRecoveryIsLive(session) ||
     !session.signerName ||
     !session.signedAt ||
     !session.signaturePngBytes ||
     !session.signatureSha256 ||
-    session.signerAttestationVersion !== CONSENT_SIGNER_ATTESTATION_VERSION
+    session.signerAttestationVersion !== CONSENT_SIGNER_ATTESTATION_VERSION ||
+    !persistedRendererVersion(session)
   ) {
     return null;
   }
   return {
     ...session,
-    status: session.status,
+    status: "signing",
     signerName: session.signerName,
     signedAt: session.signedAt,
     signaturePngBytes: Buffer.from(session.signaturePngBytes),
     signatureSha256: session.signatureSha256,
     signerAttestationVersion: session.signerAttestationVersion,
+    documentRenderVersion: persistedRendererVersion(session)!,
   };
 }
 
@@ -310,6 +354,7 @@ async function claimSigning(
           signaturePngBytes,
           signatureSha256,
           signerAttestationVersion: CONSENT_SIGNER_ATTESTATION_VERSION,
+          documentRenderVersion: CONSENT_PDF_RENDERER_V2,
         })
         .where(
           and(
@@ -329,6 +374,7 @@ async function claimSigning(
           signaturePngBytes: consentRequests.signaturePngBytes,
           signatureSha256: consentRequests.signatureSha256,
           signerAttestationVersion: consentRequests.signerAttestationVersion,
+          documentRenderVersion: consentRequests.documentRenderVersion,
         });
       return row ?? null;
     });
@@ -337,7 +383,8 @@ async function claimSigning(
       !claimed.signedAt ||
       !claimed.signaturePngBytes ||
       !claimed.signatureSha256 ||
-      claimed.signerAttestationVersion !== CONSENT_SIGNER_ATTESTATION_VERSION
+      claimed.signerAttestationVersion !== CONSENT_SIGNER_ATTESTATION_VERSION ||
+      claimed.documentRenderVersion !== CONSENT_PDF_RENDERER_V2
     ) {
       return null;
     }
@@ -349,10 +396,11 @@ async function claimSigning(
       signaturePngBytes: Buffer.from(claimed.signaturePngBytes),
       signatureSha256: claimed.signatureSha256,
       signerAttestationVersion: claimed.signerAttestationVersion,
+      documentRenderVersion: claimed.documentRenderVersion,
     };
   }
 
-  if (session.signerName === signerName) {
+  if (session.status === "signing" && session.signerName === signerName) {
     const signing = signingFromPersistedEvidence(session);
     if (!signing) return null;
     if (
@@ -436,13 +484,6 @@ async function reserveConsentFile(
       appointmentId: session.appointmentId,
     });
 
-    if (session.status === "signed") {
-      if (session.fileId !== reservation.id) {
-        throw new ConsentFileBindingConflictError();
-      }
-      return reservation;
-    }
-
     const [bound] = await tx
       .update(consentRequests)
       .set({ fileId: reservation.id })
@@ -464,6 +505,50 @@ async function reserveConsentFile(
   });
 }
 
+/**
+ * Acquire a durable, bounded provider-I/O fence in a short transaction. The
+ * recovery path takes an exclusive practice lock before checking this marker,
+ * while this path takes a shared lock before creating it. That ordering closes
+ * the check/start race without retaining a database connection during storage
+ * calls. A crashed worker can be superseded only after every bounded object
+ * storage operation for this attempt has timed out.
+ */
+async function beginConsentStorageLease(
+  session: SigningSession,
+  reservation: ManagedUploadReservation,
+): Promise<string | null> {
+  return withTenant(db, session.practiceId, async (tx) => {
+    if (!(await lockPracticeForExternalSideEffects(tx, session.practiceId))) {
+      return null;
+    }
+    const [leased] = await tx
+      .update(consentRequests)
+      .set({
+        storageLeaseToken: sql`gen_random_uuid()`,
+        storageLeaseExpiresAt: sql`clock_timestamp() + (${CONSENT_STORAGE_LEASE_MS} * interval '1 millisecond')`,
+      })
+      .where(
+        and(
+          eq(consentRequests.id, session.id),
+          eq(consentRequests.practiceId, session.practiceId),
+          eq(consentRequests.status, "signing"),
+          eq(consentRequests.fileId, reservation.id),
+          or(
+            isNull(consentRequests.storageLeaseToken),
+            lte(consentRequests.storageLeaseExpiresAt, sql`clock_timestamp()`),
+          ),
+          gt(
+            consentRequests.signedAt,
+            sql`clock_timestamp() - (${CONSENT_SIGNING_RECOVERY_WINDOW_MS} * interval '1 millisecond')`,
+          ),
+          isNull(consentRequests.deletedAt),
+        ),
+      )
+      .returning({ token: consentRequests.storageLeaseToken });
+    return leased?.token ?? null;
+  });
+}
+
 async function handleGet(
   request: NextRequest,
   { params }: { params: Promise<{ token: string }> },
@@ -479,6 +564,9 @@ async function handleGet(
   return withSystem(db, async (systemTx) => {
     const session = await lookupConsent(systemTx, token);
     if (!session || !session.createdBy || billingBlocked(session)) {
+      return notFound();
+    }
+    if (session.tokenHash !== null && !treatmentPlanClientDecisionsEnabled()) {
       return notFound();
     }
     // Keep the shared practice-row lease until the response is constructed,
@@ -533,6 +621,9 @@ async function handlePost(
     if (!found || !found.createdBy || billingBlocked(found)) {
       return null;
     }
+    if (found.tokenHash !== null && !treatmentPlanClientDecisionsEnabled()) {
+      return null;
+    }
     // This first lease makes capability resolution fail closed. Every later
     // tenant transaction re-acquires the same lease, so no transaction ever
     // needs a nested pool connection when DATABASE_POOL_MAX=1.
@@ -547,6 +638,12 @@ async function handlePost(
     return found;
   });
   if (!session) return notFound();
+  // Signed is a terminal state. A live capability may acknowledge a lost
+  // response, but it must never render, reserve, read, write, or reverify the
+  // signed artifact. Expired signed rows were excluded by lookupConsent.
+  if (session.status === "signed") {
+    return NextResponse.json({ ok: true }, { status: 200 });
+  }
 
   const body = await readRequestBytesWithLimit(request, SIGN_REQUEST_MAX_BYTES);
   if (!body.ok) {
@@ -664,7 +761,7 @@ async function handlePost(
     if (!signing) return notFound();
 
     const persistedSignatureDataUrl = `${SIGNATURE_DATA_URL_PREFIX}${signing.signaturePngBytes.toString("base64")}`;
-    const pdf = buildConsentPdf({
+    const pdf = buildConsentPdfForVersion(signing.documentRenderVersion, {
       documentId: signing.id,
       practiceId: signing.practiceId,
       patientId: signing.patientId,
@@ -676,163 +773,156 @@ async function handlePost(
       signaturePngDataUrl: persistedSignatureDataUrl,
     });
     const reservation = await reserveConsentFile(signing, pdf);
-    const outcome = await withTenant(db, signing.practiceId, async (tx) => {
-      // The provider write intentionally stays inside this single-connection
-      // transaction so the practice recovery lease remains held from the PUT
-      // through manifest/consent finalization. A durable lease table would be
-      // required to shorten this transaction without reopening that race.
-      if (!(await lockPracticeForExternalSideEffects(tx, signing.practiceId))) {
-        return { status: "not_found" as const };
-      }
-      const writeResult = await putAndVerifyManagedUpload({
-        reservation,
-        body: pdf,
-      });
-      if (writeResult.status === "unavailable") {
-        return { status: "unavailable" as const };
-      }
-      if (writeResult.status === "corrupt") {
-        if (!(await markManagedUploadCorrupt(tx, reservation))) {
-          throw new Error("Consent reservation changed before quarantine");
-        }
-        return { status: "corrupt" as const };
-      }
+    const storageLeaseToken = await beginConsentStorageLease(
+      signing,
+      reservation,
+    );
+    if (!storageLeaseToken) throw new ConsentStorageBusyError();
 
-      if (signing.status === "signed") {
-        // A response may have been lost after commit. Verify the exact bytes and
-        // heal manifest evidence, but never duplicate the audit event.
-        if (
-          !(await finalizeManagedUploadManifest(
-            tx,
-            reservation,
-            writeResult.evidence,
-          ))
-        ) {
-          throw new Error("Consent file disappeared before finalization");
-        }
-        await finalizeTreatmentPlanResponseForConsent(tx, {
-          practiceId: signing.practiceId,
-          consentRequestId: signing.id,
-          signedFileId: reservation.id,
-          signedDocumentSha256: reservation.checksumSha256,
-          signatureSha256: signing.signatureSha256,
-          signerName: signing.signerName,
-        });
-        return {
-          status: "verified" as const,
-          created: false,
-          evidence: writeResult.evidence,
-        };
-      } else {
-        const [completed] = await tx
-          .update(consentRequests)
-          .set({ status: "signed" })
-          .where(
-            and(
-              eq(consentRequests.id, signing.id),
-              eq(consentRequests.practiceId, signing.practiceId),
-              eq(consentRequests.status, "signing"),
-              eq(consentRequests.fileId, reservation.id),
-              isNull(consentRequests.deletedAt),
-            ),
-          )
-          .returning({ id: consentRequests.id });
-        if (!completed) {
-          const [committed] = await tx
-            .select({
-              status: consentRequests.status,
-              fileId: consentRequests.fileId,
-            })
-            .from(consentRequests)
+    // No transaction, RLS context, pooled connection, or practice row lock is
+    // retained across provider I/O. The durable lease above is what recovery
+    // checks before it may commit a hold.
+    const writeResult = await putAndVerifyManagedUpload({
+      reservation,
+      body: pdf,
+    });
+    if (writeResult.status === "unavailable") {
+      // The provider result is ambiguous. Keep the short lease until its
+      // conservative timeout so recovery and another writer cannot overlap a
+      // late provider completion.
+      return NextResponse.json(
+        { error: "Signing outcome is still being verified. Please retry." },
+        { status: 503, headers: { "Retry-After": "120" } },
+      );
+    }
+    if (writeResult.status === "corrupt") {
+      const quarantined = await withTenant(
+        db,
+        signing.practiceId,
+        async (tx) => {
+          if (
+            !(await lockPracticeForExternalSideEffects(tx, signing.practiceId))
+          ) {
+            return false;
+          }
+          // Claim this exact lease before mutating the shared manifest. An old
+          // provider attempt may finish after its lease expires and a newer
+          // attempt takes over; the stale worker must not quarantine the newer
+          // worker's reservation.
+          const [released] = await tx
+            .update(consentRequests)
+            .set({ storageLeaseToken: null, storageLeaseExpiresAt: null })
             .where(
               and(
                 eq(consentRequests.id, signing.id),
                 eq(consentRequests.practiceId, signing.practiceId),
+                eq(consentRequests.status, "signing"),
+                eq(consentRequests.storageLeaseToken, storageLeaseToken),
                 isNull(consentRequests.deletedAt),
               ),
             )
-            .limit(1);
-          return committed?.status === "signed" &&
-            committed.fileId === reservation.id
-            ? {
-                status: "verified" as const,
-                created: false,
-                evidence: writeResult.evidence,
-              }
-            : { status: "not_found" as const };
-        }
-
-        if (
-          !(await finalizeManagedUploadManifest(
-            tx,
-            reservation,
-            writeResult.evidence,
-          ))
-        ) {
-          throw new Error("Consent file disappeared before finalization");
-        }
-
-        await finalizeTreatmentPlanResponseForConsent(tx, {
-          practiceId: signing.practiceId,
-          consentRequestId: signing.id,
-          signedFileId: reservation.id,
-          signedDocumentSha256: reservation.checksumSha256,
-          signatureSha256: signing.signatureSha256,
-          signerName: signing.signerName,
-        });
-
-        await tx.insert(auditLog).values({
-          practiceId: signing.practiceId,
-          // The client performed this public capability action. The staff
-          // dispatcher remains explicit provenance, but must not be recorded
-          // as the signer merely because they minted the link.
-          userId: null,
-          action: "sign",
-          entityType: "consent",
-          entityId: signing.id,
-          ipAddress: clientIpFromRequest(request),
-          changes: {
-            actorType: "client",
-            provenance: "public_consent_capability",
-            dispatchedByUserId: signing.createdBy,
-            signerName: signing.signerName,
-            signerAuthorityAccepted: true,
-            signerAttestationVersion: CONSENT_SIGNER_ATTESTATION_VERSION,
-            signedAt: signing.signedAt.toISOString(),
-            signatureSha256: signing.signatureSha256,
-            patientId: signing.patientId,
-            fileId: reservation.id,
-          },
-        });
-        return {
-          status: "verified" as const,
-          created: true,
-          evidence: writeResult.evidence,
-        };
-      }
-    });
-
-    if (outcome.status === "not_found") return notFound();
-    if (outcome.status === "unavailable") {
-      return NextResponse.json(
-        { error: "Signing outcome is still being verified. Please retry." },
-        { status: 503, headers: { "Retry-After": "5" } },
+            .returning({ id: consentRequests.id });
+          if (!released) return false;
+          if (!(await markManagedUploadCorrupt(tx, reservation))) {
+            throw new Error("Consent reservation changed before quarantine");
+          }
+          return true;
+        },
       );
-    }
-    if (outcome.status === "corrupt") {
+      if (!quarantined) return notFound();
       return NextResponse.json(
         { error: "Signed document failed integrity verification" },
         { status: 503, headers: { "Retry-After": "5" } },
       );
     }
 
+    const outcome = await withTenant(db, signing.practiceId, async (tx) => {
+      if (!(await lockPracticeForExternalSideEffects(tx, signing.practiceId))) {
+        return { status: "not_found" as const };
+      }
+      const [completed] = await tx
+        .update(consentRequests)
+        .set({
+          status: "signed",
+          storageLeaseToken: null,
+          storageLeaseExpiresAt: null,
+        })
+        .where(
+          and(
+            eq(consentRequests.id, signing.id),
+            eq(consentRequests.practiceId, signing.practiceId),
+            eq(consentRequests.status, "signing"),
+            eq(consentRequests.fileId, reservation.id),
+            eq(consentRequests.storageLeaseToken, storageLeaseToken),
+            isNull(consentRequests.deletedAt),
+          ),
+        )
+        .returning({ id: consentRequests.id });
+      if (!completed) return { status: "not_found" as const };
+
+      if (
+        !(await finalizeManagedUploadManifest(
+          tx,
+          reservation,
+          writeResult.evidence,
+        ))
+      ) {
+        throw new Error("Consent file disappeared before finalization");
+      }
+
+      if (signing.tokenHash !== null) {
+        await finalizeTreatmentPlanResponseForConsent(tx, {
+          practiceId: signing.practiceId,
+          consentRequestId: signing.id,
+          signedFileId: reservation.id,
+          signedDocumentSha256: reservation.checksumSha256,
+          signatureSha256: signing.signatureSha256,
+          signerName: signing.signerName,
+        });
+      }
+
+      await tx.insert(auditLog).values({
+        practiceId: signing.practiceId,
+        // The client performed this public capability action. The staff
+        // dispatcher remains explicit provenance, but must not be recorded
+        // as the signer merely because they minted the link.
+        userId: null,
+        action: "sign",
+        entityType: "consent",
+        entityId: signing.id,
+        ipAddress: clientIpFromRequest(request),
+        changes: {
+          actorType: "client",
+          provenance: "public_consent_capability",
+          dispatchedByUserId: signing.createdBy,
+          signerName: signing.signerName,
+          signerAuthorityAccepted: true,
+          signerAttestationVersion: CONSENT_SIGNER_ATTESTATION_VERSION,
+          documentRenderVersion: signing.documentRenderVersion,
+          signedAt: signing.signedAt.toISOString(),
+          signatureSha256: signing.signatureSha256,
+          patientId: signing.patientId,
+          fileId: reservation.id,
+        },
+      });
+      return {
+        status: "verified" as const,
+        evidence: writeResult.evidence,
+      };
+    });
+
+    if (outcome.status === "not_found") return notFound();
+
     await queueManagedUploadReplication(reservation, outcome.evidence);
-    return NextResponse.json(
-      { ok: true },
-      { status: outcome.created ? 201 : 200 },
-    );
+    return NextResponse.json({ ok: true }, { status: 201 });
   } catch (err) {
     if (err instanceof ConsentRecoveryHoldError) return notFound();
+    if (err instanceof ConsentStorageBusyError) {
+      return NextResponse.json(
+        { error: "Signing is already being finalized. Please retry." },
+        { status: 503, headers: { "Retry-After": "5" } },
+      );
+    }
     if (
       err instanceof ManagedUploadConflictError ||
       err instanceof ConsentFileBindingConflictError ||

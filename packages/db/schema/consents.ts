@@ -123,6 +123,16 @@ export const consentRequests = pgTable(
     signerAttestationVersion: varchar("signer_attestation_version", {
       length: 64,
     }),
+    /** Immutable renderer selected by the pending -> signing claim. Null is
+     * reserved for pre-migration signing rows and means consent-pdf-v1. */
+    documentRenderVersion: varchar("document_render_version", { length: 32 }),
+    /** Short durable fence around object-store work. Recovery acquires the
+     * practice row exclusively and refuses to start while an unexpired fence
+     * exists, so provider I/O never needs to hold a database connection. */
+    storageLeaseToken: uuid("storage_lease_token"),
+    storageLeaseExpiresAt: timestamp("storage_lease_expires_at", {
+      withTimezone: true,
+    }),
     /** The signed consent PDF in the files table. */
     fileId: uuid("file_id").references(() => files.id),
   },
@@ -180,6 +190,18 @@ export const consentRequests = pgTable(
     tokenHashFormatCheck: check(
       "consent_requests_token_hash_format_check",
       sql`${table.tokenHash} is null or ${table.tokenHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    documentRenderVersionCheck: check(
+      "consent_requests_document_render_version_check",
+      sql`${table.documentRenderVersion} is null or ${table.documentRenderVersion} in ('consent-pdf-v1', 'consent-pdf-v2')`,
+    ),
+    storageLeasePairCheck: check(
+      "consent_requests_storage_lease_pair_check",
+      sql`(${table.storageLeaseToken} is null and ${table.storageLeaseExpiresAt} is null) or (${table.storageLeaseToken} is not null and ${table.storageLeaseExpiresAt} is not null)`,
+    ),
+    storageLeaseStateCheck: check(
+      "consent_requests_storage_lease_state_check",
+      sql`${table.storageLeaseToken} is null or ${table.status} = 'signing'`,
     ),
     signingEvidenceCheck: check(
       "consent_requests_signing_evidence_check",

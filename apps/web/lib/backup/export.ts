@@ -32,6 +32,7 @@ import {
   clinicalNotes,
   clients,
   communications,
+  consentRequests,
   controlledSubstanceLog,
   dispenseChargeQueue,
   emailSuppressions,
@@ -3702,7 +3703,7 @@ export async function restorePracticeData(
     throw new Error(targetValidation.errors.join("; "));
   }
 
-  const setRecoveryHold = async (holdDb: Database) => {
+  const commitRecoveryHold = async (holdDb: Database) => {
     const holdSetAt = new Date();
     const [heldPractice] = await holdDb
       .update(practices)
@@ -3717,13 +3718,55 @@ export async function restorePracticeData(
       .returning({ id: practices.id });
     return heldPractice;
   };
+  const setRecoveryHold = async (holdDb: Database) => {
+    // Serialize recovery with creation of a consent storage lease. A signing
+    // request takes a shared lock before persisting its lease; recovery takes
+    // the exclusive lock first, then checks the committed lease in a fresh
+    // statement snapshot. This closes the check/start race without retaining
+    // a database connection across object-storage I/O.
+    const [practice] = await holdDb
+      .select({ id: practices.id })
+      .from(practices)
+      .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
+      .for("update")
+      .limit(1);
+    if (!practice) return undefined;
+
+    const [activeConsentStorage] = await holdDb
+      .select({ id: consentRequests.id })
+      .from(consentRequests)
+      .where(
+        and(
+          eq(consentRequests.practiceId, practiceId),
+          eq(consentRequests.status, "signing"),
+          sql`${consentRequests.storageLeaseToken} is not null`,
+          sql`${consentRequests.storageLeaseExpiresAt} > clock_timestamp()`,
+          isNull(consentRequests.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (activeConsentStorage) {
+      throw new Error(
+        "Recovery cannot begin while a signed-document storage operation is in flight. Retry after the bounded provider lease expires.",
+      );
+    }
+
+    return commitRecoveryHold(holdDb);
+  };
   // A router passes the root pool here because its `db` argument is already
   // the outer tenant transaction. withSystem opens and commits an independent
   // transaction so the hold is visible before that outer transaction mutates
   // restore rows. Direct/CLI callers use their autocommit database handle.
-  const heldPractice = options.recoveryHoldDb
-    ? await withSystem(options.recoveryHoldDb, setRecoveryHold)
-    : await setRecoveryHold(db);
+  const recoveryDb = options.recoveryHoldDb ?? db;
+  const supportsTransactions =
+    typeof (recoveryDb as unknown as { transaction?: unknown }).transaction ===
+    "function";
+  // Database production handles always support transactions. The fallback is
+  // retained only for small pure unit-test adapters that implement the older
+  // update-only Database shape.
+  const heldPractice = supportsTransactions
+    ? await withSystem(recoveryDb, setRecoveryHold)
+    : await commitRecoveryHold(recoveryDb);
   if (!heldPractice) {
     throw new Error(
       "Restore target must be an existing active practice before recovery can begin.",

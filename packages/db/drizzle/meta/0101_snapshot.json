@@ -15900,6 +15900,24 @@
           "primaryKey": false,
           "notNull": false
         },
+        "document_render_version": {
+          "name": "document_render_version",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "storage_lease_token": {
+          "name": "storage_lease_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "storage_lease_expires_at": {
+          "name": "storage_lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "file_id": {
           "name": "file_id",
           "type": "uuid",
@@ -16168,6 +16186,18 @@
         "consent_requests_token_hash_format_check": {
           "name": "consent_requests_token_hash_format_check",
           "value": "\"consent_requests\".\"token_hash\" is null or \"consent_requests\".\"token_hash\" ~ '^[0-9a-f]{64}$'"
+        },
+        "consent_requests_document_render_version_check": {
+          "name": "consent_requests_document_render_version_check",
+          "value": "\"consent_requests\".\"document_render_version\" is null or \"consent_requests\".\"document_render_version\" in ('consent-pdf-v1', 'consent-pdf-v2')"
+        },
+        "consent_requests_storage_lease_pair_check": {
+          "name": "consent_requests_storage_lease_pair_check",
+          "value": "(\"consent_requests\".\"storage_lease_token\" is null and \"consent_requests\".\"storage_lease_expires_at\" is null) or (\"consent_requests\".\"storage_lease_token\" is not null and \"consent_requests\".\"storage_lease_expires_at\" is not null)"
+        },
+        "consent_requests_storage_lease_state_check": {
+          "name": "consent_requests_storage_lease_state_check",
+          "value": "\"consent_requests\".\"storage_lease_token\" is null or \"consent_requests\".\"status\" = 'signing'"
         },
         "consent_requests_signing_evidence_check": {
           "name": "consent_requests_signing_evidence_check",

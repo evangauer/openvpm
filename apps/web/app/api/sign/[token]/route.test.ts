@@ -29,15 +29,19 @@ const mocks = vi.hoisted(() => {
       patientId,
       createdBy,
       appointmentId: null,
+      tokenHash: null,
       title: "Consent to treatment",
       bodyText: "I agree to treatment for my pet.",
       status,
       signerName: null,
-      signedAt: null,
+      signedAt: status === "pending" ? null : new Date(),
       signaturePngBytes: status === "pending" ? null : signaturePngBytes,
       signatureSha256: status === "pending" ? null : signatureSha256,
       signerAttestationVersion:
         status === "pending" ? null : "owner-authority-v1",
+      documentRenderVersion: status === "pending" ? null : "consent-pdf-v2",
+      storageLeaseToken: null,
+      storageLeaseExpiresAt: null,
       fileId: null,
       expiresAt: new Date("2099-01-01T00:00:00Z"),
       patientName: "Peanut",
@@ -152,6 +156,7 @@ const mocks = vi.hoisted(() => {
     ),
     readRequestBytesWithLimit: vi.fn(),
     finalizeTreatmentPlanResponseForConsent: vi.fn(async () => null),
+    treatmentPlanClientDecisionsEnabled: vi.fn(() => false),
   };
 });
 
@@ -177,6 +182,10 @@ vi.mock("@/lib/file-replication", () => ({
 vi.mock("@/lib/treatment-plan-presentations/finalize", () => ({
   finalizeTreatmentPlanResponseForConsent:
     mocks.finalizeTreatmentPlanResponseForConsent,
+}));
+vi.mock("@/lib/treatment-plan-presentations/policy", () => ({
+  treatmentPlanClientDecisionsEnabled:
+    mocks.treatmentPlanClientDecisionsEnabled,
 }));
 vi.mock("@/lib/billing/plans", () => ({
   billingEnforced: mocks.billingEnforced,
@@ -264,9 +273,19 @@ function queueHappyPending() {
         signaturePngBytes: mocks.signaturePngBytes,
         signatureSha256: mocks.signatureSha256,
         signerAttestationVersion: "owner-authority-v1",
+        documentRenderVersion: "consent-pdf-v2",
       },
     ],
     [{ id: mocks.consentId }],
+    [{ token: "00000000-0000-4000-8000-000000000099" }],
+    [{ id: mocks.consentId }],
+  );
+}
+
+function queueHappySigning() {
+  mocks.updateReturningResults.push(
+    [{ id: mocks.consentId }],
+    [{ token: "00000000-0000-4000-8000-000000000099" }],
     [{ id: mocks.consentId }],
   );
 }
@@ -298,6 +317,7 @@ afterEach(() => {
   });
   mocks.finalizeManagedUploadManifest.mockResolvedValue(true);
   mocks.finalizeTreatmentPlanResponseForConsent.mockResolvedValue(null);
+  mocks.treatmentPlanClientDecisionsEnabled.mockReturnValue(false);
   mocks.queueManagedUploadReplication.mockResolvedValue(true);
 });
 
@@ -337,12 +357,12 @@ describe("GET /api/sign/[token]", () => {
     );
   });
 
-  it("returns only minimal persisted states after the original expiry", async () => {
+  it("allows only bounded incomplete recovery after the original expiry", async () => {
     mocks.selectResults.push([
       mocks.consentRow({
         status: "signing",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         expiresAt: new Date("2000-01-01T00:00:00Z"),
       }),
     ]);
@@ -359,9 +379,9 @@ describe("GET /api/sign/[token]", () => {
         expiresAt: new Date("2000-01-01T00:00:00Z"),
       }),
     ]);
-    await expect((await callGet(TOKEN)).json()).resolves.toEqual({
-      status: "signed",
-    });
+    const signed = await callGet(TOKEN);
+    expect(signed.status).toBe(404);
+    await expect(signed.json()).resolves.toEqual({ error: "Not found" });
   });
 
   it("rate-limits shaped tokens before generic database misses", async () => {
@@ -658,6 +678,7 @@ describe("POST /api/sign/[token]", () => {
         signaturePngBytes: mocks.signaturePngBytes,
         signatureSha256: mocks.signatureSha256,
         signerAttestationVersion: "owner-authority-v1",
+        documentRenderVersion: "consent-pdf-v2",
       }),
     );
     expect(mocks.reserveManagedUpload).toHaveBeenCalledWith(
@@ -709,6 +730,7 @@ describe("POST /api/sign/[token]", () => {
           provenance: "public_consent_capability",
           signerAuthorityAccepted: true,
           signerAttestationVersion: "owner-authority-v1",
+          documentRenderVersion: "consent-pdf-v2",
           dispatchedByUserId: mocks.createdBy,
           signatureSha256: mocks.signatureSha256,
         }),
@@ -717,7 +739,7 @@ describe("POST /api/sign/[token]", () => {
     expect(mocks.queueManagedUploadReplication).toHaveBeenCalledTimes(1);
   });
 
-  it("uses one connection at a time and retains the final tenant lease through provider commit", async () => {
+  it("releases every database connection before provider I/O", async () => {
     queueHappyPending();
     let releaseProvider!: () => void;
     const providerGate = new Promise<void>((resolve) => {
@@ -758,7 +780,7 @@ describe("POST /api/sign/[token]", () => {
     });
     expect(mocks.lockPracticeForExternalSideEffects).toHaveBeenCalledTimes(4);
     expect(systemTransactionFinished).toBe(true);
-    expect(activeTenantTransactions).toBe(1);
+    expect(activeTenantTransactions).toBe(0);
     expect(maxTenantTransactions).toBe(1);
 
     releaseProvider();
@@ -782,15 +804,12 @@ describe("POST /api/sign/[token]", () => {
       mocks.consentRow({
         status: "signing",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         fileId: mocks.fileId,
         updatedAt: new Date("2026-07-01T00:00:00Z"),
       }),
     ]);
-    mocks.updateReturningResults.push(
-      [{ id: mocks.consentId }],
-      [{ id: mocks.consentId }],
-    );
+    queueHappySigning();
 
     const res = await callPost(TOKEN, validBody());
     expect(res.status).toBe(201);
@@ -806,7 +825,7 @@ describe("POST /api/sign/[token]", () => {
       mocks.consentRow({
         status: "signing",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         signerAttestationVersion: null,
         fileId: mocks.fileId,
       }),
@@ -814,6 +833,7 @@ describe("POST /api/sign/[token]", () => {
     mocks.updateReturningResults.push(
       [{ signerAttestationVersion: "owner-authority-v1" }],
       [{ id: mocks.consentId }],
+      [{ token: "00000000-0000-4000-8000-000000000099" }],
       [{ id: mocks.consentId }],
     );
 
@@ -834,7 +854,7 @@ describe("POST /api/sign/[token]", () => {
       mocks.consentRow({
         status: "signing",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         signerAttestationVersion: null,
         expiresAt: new Date("2000-01-01T00:00:00Z"),
         fileId: mocks.fileId,
@@ -851,20 +871,47 @@ describe("POST /api/sign/[token]", () => {
     expect(mocks.updateSet).not.toHaveBeenCalled();
   });
 
+  it("rejects expired incomplete signing after the bounded recovery window", async () => {
+    mocks.selectResults.push([
+      mocks.consentRow({
+        status: "signing",
+        signerName: "Jordan Marsh",
+        signedAt: new Date(Date.now() - 16 * 60 * 1000),
+        expiresAt: new Date("2000-01-01T00:00:00Z"),
+        fileId: mocks.fileId,
+      }),
+    ]);
+
+    const response = await callPost(TOKEN, { resume: true });
+
+    expect(response.status).toBe(404);
+    expect(mocks.readRequestBytesWithLimit).not.toHaveBeenCalled();
+    expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
+    expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+  });
+
+  it("keeps digest-only treatment-plan signing dark with the default-off flag", async () => {
+    mocks.selectResults.push([
+      mocks.consentRow({ tokenHash: "d".repeat(64), token: null }),
+    ]);
+
+    expect((await callPost(TOKEN, validBody())).status).toBe(404);
+    expect(mocks.treatmentPlanClientDecisionsEnabled).toHaveBeenCalledOnce();
+    expect(mocks.readRequestBytesWithLimit).not.toHaveBeenCalled();
+    expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+  });
+
   it("resumes persisted signing evidence after expiry without accepting new bytes", async () => {
     mocks.selectResults.push([
       mocks.consentRow({
         status: "signing",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         fileId: mocks.fileId,
         expiresAt: new Date("2000-01-01T00:00:00Z"),
       }),
     ]);
-    mocks.updateReturningResults.push(
-      [{ id: mocks.consentId }],
-      [{ id: mocks.consentId }],
-    );
+    queueHappySigning();
 
     const res = await callPost(TOKEN, { resume: true });
     expect(res.status).toBe(201);
@@ -887,7 +934,7 @@ describe("POST /api/sign/[token]", () => {
       mocks.consentRow({
         status: "signing",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         fileId: mocks.fileId,
         expiresAt: new Date("2000-01-01T00:00:00Z"),
       }),
@@ -917,7 +964,7 @@ describe("POST /api/sign/[token]", () => {
       mocks.consentRow({
         status: "signing",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         fileId: mocks.fileId,
       }),
     ]);
@@ -936,7 +983,7 @@ describe("POST /api/sign/[token]", () => {
     );
   });
 
-  it("fails closed for legacy signed rows without persisted signature bytes", async () => {
+  it("treats even legacy signed rows as terminal without touching storage", async () => {
     mocks.selectResults.push([
       mocks.consentRow({
         status: "signed",
@@ -949,7 +996,7 @@ describe("POST /api/sign/[token]", () => {
     ]);
 
     const res = await callPost(TOKEN, validBody());
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
     expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
     expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
   });
@@ -959,7 +1006,7 @@ describe("POST /api/sign/[token]", () => {
       mocks.consentRow({
         status: "signing",
         signerName: "First Signer",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         fileId: mocks.fileId,
       }),
     ]);
@@ -973,18 +1020,21 @@ describe("POST /api/sign/[token]", () => {
       mocks.consentRow({
         status: "signing",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         fileId: mocks.fileId,
       }),
     ]);
-    mocks.updateReturningResults.push([{ id: mocks.consentId }]);
+    mocks.updateReturningResults.push(
+      [{ id: mocks.consentId }],
+      [{ token: "00000000-0000-4000-8000-000000000099" }],
+    );
     mocks.putAndVerifyManagedUpload.mockResolvedValueOnce({
       status: "unavailable",
     });
 
     const res = await callPost(TOKEN, validBody());
     expect(res.status).toBe(503);
-    expect(res.headers.get("retry-after")).toBe("5");
+    expect(res.headers.get("retry-after")).toBe("120");
     expect(mocks.finalizeManagedUploadManifest).not.toHaveBeenCalled();
     expect(mocks.queueManagedUploadReplication).not.toHaveBeenCalled();
   });
@@ -994,11 +1044,15 @@ describe("POST /api/sign/[token]", () => {
       mocks.consentRow({
         status: "signing",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         fileId: mocks.fileId,
       }),
     ]);
-    mocks.updateReturningResults.push([{ id: mocks.consentId }]);
+    mocks.updateReturningResults.push(
+      [{ id: mocks.consentId }],
+      [{ token: "00000000-0000-4000-8000-000000000099" }],
+      [{ id: mocks.consentId }],
+    );
     mocks.putAndVerifyManagedUpload.mockResolvedValueOnce({
       status: "corrupt",
     });
@@ -1010,47 +1064,44 @@ describe("POST /api/sign/[token]", () => {
     );
   });
 
-  it("fails closed when a stale request loses the corrupt-state claim", async () => {
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
+  it("does not quarantine a newer attempt when a stale corrupt result loses its lease", async () => {
     mocks.selectResults.push([
       mocks.consentRow({
         status: "signing",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         fileId: mocks.fileId,
       }),
     ]);
-    mocks.updateReturningResults.push([{ id: mocks.consentId }]);
+    mocks.updateReturningResults.push(
+      [{ id: mocks.consentId }],
+      [{ token: "00000000-0000-4000-8000-000000000099" }],
+    );
     mocks.putAndVerifyManagedUpload.mockResolvedValueOnce({
       status: "corrupt",
     });
-    mocks.markManagedUploadCorrupt.mockResolvedValueOnce(false);
-
     const res = await callPost(TOKEN, validBody());
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(404);
+    expect(mocks.markManagedUploadCorrupt).not.toHaveBeenCalled();
     expect(mocks.finalizeManagedUploadManifest).not.toHaveBeenCalled();
-    expect(consoleError).toHaveBeenCalledWith("Consent signing failed:", {
-      errorName: "Error",
-    });
-    consoleError.mockRestore();
   });
 
-  it("returns an idempotent 200 for an already-committed exact retry without another audit", async () => {
+  it("returns an idempotent terminal 200 without render, storage, or audit", async () => {
     mocks.selectResults.push([
       mocks.consentRow({
         status: "signed",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         fileId: mocks.fileId,
       }),
     ]);
     const res = await callPost(TOKEN, validBody());
     expect(res.status).toBe(200);
-    expect(mocks.finalizeManagedUploadManifest).toHaveBeenCalledTimes(1);
+    expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
+    expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+    expect(mocks.finalizeManagedUploadManifest).not.toHaveBeenCalled();
     expect(mocks.insertValues).not.toHaveBeenCalled();
-    expect(mocks.queueManagedUploadReplication).toHaveBeenCalledTimes(1);
+    expect(mocks.queueManagedUploadReplication).not.toHaveBeenCalled();
   });
 
   it("returns 409 when the durable reservation does not match retry bytes", async () => {
@@ -1058,7 +1109,7 @@ describe("POST /api/sign/[token]", () => {
       mocks.consentRow({
         status: "signing",
         signerName: "Jordan Marsh",
-        signedAt: mocks.signedAt,
+        signedAt: new Date(),
         fileId: mocks.fileId,
       }),
     ]);
@@ -1101,12 +1152,14 @@ describe("POST /api/sign/[token]", () => {
     expect(ROUTE_SOURCE).toContain('eq(consentRequests.status, "pending")');
     const claimIndex = ROUTE_SOURCE.lastIndexOf("await claimSigning(");
     expect(claimIndex).toBeGreaterThan(0);
-    expect(claimIndex).toBeLessThan(ROUTE_SOURCE.indexOf("buildConsentPdf({"));
+    expect(claimIndex).toBeLessThan(
+      ROUTE_SOURCE.indexOf("buildConsentPdfForVersion("),
+    );
     expect(ROUTE_SOURCE.indexOf("consentSignaturePngDecodes(")).toBeLessThan(
       claimIndex,
     );
     const renderSource = ROUTE_SOURCE.slice(
-      ROUTE_SOURCE.indexOf("const pdf = buildConsentPdf({"),
+      ROUTE_SOURCE.indexOf("const pdf = buildConsentPdfForVersion("),
       ROUTE_SOURCE.indexOf("const reservation = await reserveConsentFile"),
     );
     expect(renderSource).toContain("practiceId: signing.practiceId");

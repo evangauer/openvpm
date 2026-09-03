@@ -25,9 +25,15 @@ describe("committed Drizzle migrations", () => {
     expect(migration).toContain("consent_requests_token_hash_uq");
     expect(migration).toContain("consent_requests_credential_storage_check");
     expect(migration).toContain("consent_requests_token_hash_format_check");
-    expect(migration.match(/NOT VALID/g)).toHaveLength(2);
-    expect(migration.match(/VALIDATE CONSTRAINT/g)).toHaveLength(2);
-    expect(migration).not.toMatch(/UPDATE\s+"?consent_requests"?/i);
+    expect(migration).toContain('ADD COLUMN "document_render_version"');
+    expect(migration).toContain('ADD COLUMN "storage_lease_token" uuid');
+    expect(migration).toContain(
+      "consent_requests_document_render_version_check",
+    );
+    expect(migration).toContain("consent_requests_document_render_guard");
+    expect(migration.match(/NOT VALID/g)).toHaveLength(5);
+    expect(migration.match(/VALIDATE CONSTRAINT/g)).toHaveLength(5);
+    expect(migration).not.toMatch(/UPDATE\s+"?consent_requests"?\s+SET/i);
   });
   it("exercises committed migrations in the CI RLS isolation job", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
