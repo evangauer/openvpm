@@ -102,6 +102,7 @@ const HOSTED_EMAIL_ENV_NAMES = [
   "EMAIL_SUPPORT_ADDRESS",
   "EMAIL_COMPANY_ADDRESS",
 ];
+const EMAIL_PREFERENCE_IDENTITY_ENV_NAME = "EMAIL_PREFERENCE_IDENTITY_SECRET";
 const HOSTED_SMS_PROVISIONING_PRACTICE_IDS_ENV =
   "MESSAGING_PROVISIONING_PRACTICE_IDS";
 const HOSTED_SMS_SENDING_PRACTICE_IDS_ENV = "MESSAGING_SENDING_PRACTICE_IDS";
@@ -220,6 +221,53 @@ async function hostedEmailCheck(): Promise<{ ok: boolean; detail: string }> {
     return {
       ok: false,
       detail: "Hosted email identity readiness check failed",
+    };
+  }
+}
+
+function emailPreferenceIdentityReadinessRequired(): boolean {
+  return (
+    envFlagEnabled("NEXT_PUBLIC_DEMO_MODE") ||
+    configured(EMAIL_PREFERENCE_IDENTITY_ENV_NAME)
+  );
+}
+
+async function emailPreferenceIdentityCheck(): Promise<{
+  ok: boolean;
+  detail: string;
+}> {
+  if (!configured(EMAIL_PREFERENCE_IDENTITY_ENV_NAME)) {
+    return {
+      ok: false,
+      detail: "1 required email preference configuration value is missing",
+    };
+  }
+  if (
+    !isValidEmailPreferenceSecret(
+      process.env[EMAIL_PREFERENCE_IDENTITY_ENV_NAME],
+    )
+  ) {
+    return {
+      ok: false,
+      detail: "1 required email preference configuration value is invalid",
+    };
+  }
+
+  try {
+    const identity = await platformEmailIdentityConfigurationReady();
+    return identity.ready
+      ? {
+          ok: true,
+          detail: "Email preference identity configuration ready",
+        }
+      : {
+          ok: false,
+          detail: "Email preference identity configuration does not match",
+        };
+  } catch {
+    return {
+      ok: false,
+      detail: "Email preference identity readiness check failed",
     };
   }
 }
@@ -611,6 +659,13 @@ export async function GET() {
       ok: true,
       detail: "Hosted checks disabled; self-host mode",
     };
+    // Demo uses the self-host billing mode but still exposes the platform email
+    // preference surface. Once preference identity is intended, validate the
+    // durable key binding so a rotated or malformed key cannot hide behind a
+    // healthy deployment while preference reads fail closed.
+    if (emailPreferenceIdentityReadinessRequired()) {
+      checks.emailPreferenceIdentity = await emailPreferenceIdentityCheck();
+    }
   }
 
   // Advisory checks are excluded from the readiness gate (status code) but are

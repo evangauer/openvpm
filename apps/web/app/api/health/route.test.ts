@@ -329,6 +329,91 @@ describe("health route", () => {
     expect(JSON.stringify(json)).not.toContain("prod-db");
   });
 
+  it("keeps email preference identity optional in an unconfigured self-host", async () => {
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.emailPreferenceIdentity).toBeUndefined();
+    expect(
+      mocks.platformEmailIdentityConfigurationReady,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("requires preference identity configuration when demo mode exposes the surface", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.emailPreferenceIdentity).toEqual({
+      ok: false,
+      detail: "1 required email preference configuration value is missing",
+    });
+    expect(JSON.stringify(json)).not.toContain(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+    );
+  });
+
+  it("rejects a malformed demo preference identity without exposing it", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+    vi.stubEnv("EMAIL_PREFERENCE_IDENTITY_SECRET", "too-short");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.emailPreferenceIdentity).toEqual({
+      ok: false,
+      detail: "1 required email preference configuration value is invalid",
+    });
+    expect(JSON.stringify(json)).not.toContain("too-short");
+  });
+
+  it("fails demo readiness when persisted preference identity does not match", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    mocks.platformEmailIdentityConfigurationReady.mockResolvedValueOnce({
+      ready: false,
+      initialized: true,
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.emailPreferenceIdentity).toEqual({
+      ok: false,
+      detail: "Email preference identity configuration does not match",
+    });
+    expect(JSON.stringify(json)).not.toContain("identityKeyFingerprint");
+  });
+
+  it("accepts a bound demo preference identity without requiring email delivery", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.emailPreferenceIdentity).toEqual({
+      ok: true,
+      detail: "Email preference identity configuration ready",
+    });
+    expect(json.checks.hostedEmail).toBeUndefined();
+    expect(
+      mocks.platformEmailIdentityConfigurationReady,
+    ).toHaveBeenCalledOnce();
+  });
+
   it("reports hosted config readiness without listing env variable names", async () => {
     mocks.billingEnforced.mockReturnValue(true);
     vi.stubEnv("AI_MODEL", "gemini-2.5-flash");
