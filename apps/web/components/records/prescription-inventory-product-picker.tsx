@@ -91,7 +91,16 @@ export function PrescriptionInventoryProductPicker({
   }
 
   function loadNextPage() {
-    if (!products.data || products.isFetching || !hasMore) {
+    // Scroll events can fire while closing or while the debounced query still
+    // belongs to the previous search. Never save that page into the new list.
+    if (
+      !open ||
+      !searchSettled ||
+      !products.data ||
+      products.error ||
+      products.isFetching ||
+      !hasMore
+    ) {
       return;
     }
 
