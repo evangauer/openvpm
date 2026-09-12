@@ -15,6 +15,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { ActivationChecklist } from "@/components/dashboard/activation-checklist";
+import { UnfinishedFieldVisits } from "@/components/dashboard/unfinished-field-visits";
 import { EmptyState } from "@/components/common/empty-state";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
@@ -265,6 +266,7 @@ export default function DashboardPage() {
   return (
     <div className="space-y-8">
       <ActivationChecklist />
+      <UnfinishedFieldVisits />
       {/* KPI Cards */}
       {statsError || statsDisplayMissing ? (
         <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">

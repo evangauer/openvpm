@@ -596,7 +596,7 @@ async function lockInitialDispenseCharge(
       )
     )
     .limit(1)
-    .for("update");
+    .for("update", { of: dispenseChargeQueue });
   return charge ?? null;
 }
 

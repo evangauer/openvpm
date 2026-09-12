@@ -14,6 +14,11 @@ import {
   dateInputUtcRangeForTimeZone,
 } from "@/lib/date-input";
 import { PATIENT_SPECIES_LABELS } from "@/lib/patients/species";
+import { z } from "zod";
+import {
+  effectiveAmbulatoryWorkspaceSettings,
+  ambulatoryWorkspaceRolloutEnabled,
+} from "@/server/ambulatory-rollout";
 
 type DashboardContext = {
   db: Database;
@@ -56,7 +61,7 @@ function addDateInputDays(dateInput: string, days: number): string {
   const date = new Date(Date.UTC(year, month - 1, day + days));
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
     2,
-    "0"
+    "0",
   )}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
@@ -76,6 +81,60 @@ function sqlStringLiteral(value: string) {
 }
 
 export const dashboardRouter = createRouter({
+  unfinishedFieldVisits: protectedProcedure
+    .input(
+      z
+        .object({ offset: z.number().int().min(0).max(100000).default(0) })
+        .default({}),
+    )
+    .query(async ({ ctx, input }) => {
+      if (!ambulatoryWorkspaceRolloutEnabled())
+        return { enabled: false, items: [], hasMore: false };
+      const [practice] = await ctx.db
+        .select({ settings: practices.settings })
+        .from(practices)
+        .where(
+          and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)),
+        )
+        .limit(1);
+      if (!practice) throw practiceNotFound();
+      if (!effectiveAmbulatoryWorkspaceSettings(practice.settings).enabled) {
+        return { enabled: false, items: [], hasMore: false };
+      }
+      // Payment never closes the clinical encounter. Include older visits and
+      // visits with no SOAP yet, not just the current user's recent history.
+      const rows = await ctx.db
+        .select({
+          id: appointments.id,
+          patientName: patients.name,
+          startTime: appointments.startTime,
+        })
+        .from(appointments)
+        .innerJoin(
+          patients,
+          and(
+            eq(patients.id, appointments.patientId),
+            eq(patients.practiceId, ctx.practiceId),
+            isNull(patients.deletedAt),
+          ),
+        )
+        .where(
+          and(
+            eq(appointments.practiceId, ctx.practiceId),
+            isNull(appointments.deletedAt),
+            eq(appointments.origin, "field"),
+            eq(appointments.status, "in_exam"),
+          ),
+        )
+        .orderBy(appointments.startTime, appointments.id)
+        .limit(21)
+        .offset(input.offset);
+      return {
+        enabled: true,
+        items: rows.slice(0, 20),
+        hasMore: rows.length > 20,
+      };
+    }),
   getStats: protectedProcedure.query(async ({ ctx }) => {
     const timezone = await practiceTimeZone(ctx);
     const today = dateInputUtcRangeForTimeZone(new Date(), timezone);

@@ -550,6 +550,30 @@ export default function EncounterWorkspacePage() {
         />
       ) : null}
 
+      {isAmbulatoryWorkspace && appointment.status === "in_exam" ? (
+        <section
+          className="rounded-lg border border-primary/20 bg-primary/5 p-4"
+          aria-label="Field billing and documentation"
+        >
+          <p className="font-medium">Bill now, finish notes later</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Save any notes you have entered, then prepare charges or take
+            payment. Your clinical record stays unfinished until you return to
+            sign it and complete closeout.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {canManageBilling(role) ? (
+              <Button variant="outline" size="sm" asChild>
+                <a href="#charge-capture">Charges and payment</a>
+              </Button>
+            ) : null}
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/">Unfinished field visits</Link>
+            </Button>
+          </div>
+        </section>
+      ) : null}
+
       <header className="flex flex-col gap-4 rounded-lg border border-border bg-card p-5 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
