@@ -17,6 +17,10 @@ export function patientFileKind(file: {
   mimeType: string | null;
 }): PatientFileKind {
   if (file.category === CONSENT_FILE_CATEGORY) return "consent";
+  // Scanned records remain documents, even when supplied as an image.
+  if (file.category === "documents" || file.category === "lab-results") {
+    return "document";
+  }
   if (file.mimeType?.startsWith("image/")) return "photo";
   return "document";
 }

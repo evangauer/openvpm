@@ -318,6 +318,8 @@ Hosted Stripe setup uses monthly and annual recurring per-location prices in `ST
 
 For hosted deployment details, see [docs/hosted-cloud-production.md](docs/hosted-cloud-production.md).
 
+For self-hosted clinic integrations, follow [Stripe payment setup](docs/help/self-hosted-payments.md) and [SMS setup](docs/help/self-hosted-sms.md). For a practice owner handling care and checkout alone, see [the solo veterinarian workflow](docs/help/solo-vet-workflow.md).
+
 ## Why Open Source Matters for Veterinary Medicine
 
 The veterinary industry is at a crossroads. AI is arriving. Data interoperability is becoming critical. And the dominant PIMS vendors are still charging hundreds per month for software that crashes, frustrates staff, and locks clinics into proprietary ecosystems.

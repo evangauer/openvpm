@@ -28,10 +28,16 @@ import {
 import { toast } from "sonner";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc";
+import { WeightCorrectionDialog } from "@/components/records/weight-correction-dialog";
+import {
+  dateTimeLocalInputUtcInstant,
+  formatDateTimeLocalInputForTimeZone,
+} from "@/lib/date-input";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { PatientHistorySearch } from "@/components/patients/patient-history-search";
+import { PatientDocumentUpload } from "@/components/records/patient-document-upload";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
 import { RecentClinicalItems } from "@/components/records/recent-clinical-items";
@@ -485,6 +491,16 @@ export default function PatientDetailPage() {
     [patient?.weights, recordsSettingsTimeZone],
   );
   const [weightKg, setWeightKg] = useState("");
+  const [weightMeasuredAt, setWeightMeasuredAt] = useState("");
+  const weightMeasuredInstant =
+    weightMeasuredAt && recordsSettingsTimeZone
+      ? dateTimeLocalInputUtcInstant(weightMeasuredAt, recordsSettingsTimeZone)
+      : null;
+  const weightTimeValid =
+    !weightMeasuredAt ||
+    Boolean(
+      weightMeasuredInstant && weightMeasuredInstant.getTime() <= Date.now(),
+    );
   const canonicalPatientWeight = canonicalMeasurementInput(
     weightKg,
     chartMeasurementSystem === "us_customary" ? poundsToKilograms : undefined,
@@ -493,6 +509,7 @@ export default function PatientDetailPage() {
   const addWeight = trpc.patients.addWeight.useMutation({
     onSuccess: () => {
       toast.success("Weight recorded");
+      setWeightMeasuredAt("");
       void refreshPatientDetail();
       setWeightKg("");
     },
@@ -501,6 +518,7 @@ export default function PatientDetailPage() {
   const canSubmitWeight =
     canManagePatientDetail &&
     isPatientWeightInputValid(canonicalPatientWeight) &&
+    weightTimeValid &&
     !addWeight.isPending;
 
   function handleRecordWeight(e: React.FormEvent) {
@@ -509,6 +527,7 @@ export default function PatientDetailPage() {
     addWeight.mutate({
       patientId: patient.id,
       weightKg: canonicalPatientWeight,
+      recordedAt: weightMeasuredInstant ?? undefined,
     });
   }
 
@@ -1487,6 +1506,10 @@ export default function PatientDetailPage() {
 
         {activeTab === "weight" && (
           <div className="space-y-6">
+            <p className="text-sm text-muted-foreground">
+              Includes weights recorded here and in vitals. Review a vitals
+              entry in the Vitals tab to correct its original clinical record.
+            </p>
             {canManagePatientDetail && (
               <form
                 onSubmit={handleRecordWeight}
@@ -1527,6 +1550,28 @@ export default function PatientDetailPage() {
                       className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                     />
                   </div>
+                  <label className="block text-xs font-medium text-muted-foreground">
+                    Measured at (
+                    {recordsSettingsTimeZone ?? "loading clinic timezone…"})
+                    <input
+                      type="datetime-local"
+                      value={weightMeasuredAt}
+                      disabled={!recordsSettingsTimeZone}
+                      max={formatDateTimeLocalInputForTimeZone(
+                        new Date(),
+                        recordsSettingsTimeZone,
+                      )}
+                      aria-invalid={!weightTimeValid}
+                      onChange={(event) =>
+                        setWeightMeasuredAt(event.target.value)
+                      }
+                      className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                    />
+                    <span className="mt-1 block font-normal">
+                      Leave blank to record now; set a date for historical
+                      records.
+                    </span>
+                  </label>
                   <Button type="submit" disabled={!canSubmitWeight}>
                     {addWeight.isPending ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1561,6 +1606,11 @@ export default function PatientDetailPage() {
                         <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                           Recorded By
                         </th>
+                        {canCorrectClinicalRecords ? (
+                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                            Correction
+                          </th>
+                        ) : null}
                       </tr>
                     </thead>
                     <tbody>
@@ -1583,8 +1633,31 @@ export default function PatientDetailPage() {
                             )}
                           </td>
                           <td className="px-4 py-3 text-muted-foreground">
-                            {weight.recordedBy ?? "\u2014"}
+                            {weight.recordedByName ?? "\u2014"}
                           </td>
+                          {canCorrectClinicalRecords ? (
+                            <td className="px-4 py-3">
+                              {weight.source === "vitals" ? (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setActiveTab("vitals")}
+                                >
+                                  Review vitals
+                                </Button>
+                              ) : (
+                                <WeightCorrectionDialog
+                                  patientId={patient.id}
+                                  weight={weight}
+                                  measurementSystem={chartMeasurementSystem}
+                                  timeZone={recordsSettingsTimeZone}
+                                  onSaved={() => {
+                                    void refreshPatientDetail();
+                                  }}
+                                />
+                              )}
+                            </td>
+                          ) : null}
                         </tr>
                       ))}
                     </tbody>
@@ -1674,6 +1747,7 @@ function VitalsTab({
   const record = trpc.vitals.record.useMutation({
     onSuccess: () => {
       toast.success("Vitals recorded");
+      void utils.patients.getById.invalidate();
       utils.vitals.listByPatient.invalidate({ patientId });
       setForm(initialVitalsForm());
     },
@@ -1682,6 +1756,7 @@ function VitalsTab({
   const correctVital = trpc.vitals.markEnteredInError.useMutation({
     onSuccess: async () => {
       toast.success("Vital signs retained and marked entered in error");
+      await utils.patients.getById.invalidate();
       await utils.vitals.listByPatient.invalidate({ patientId });
     },
     onError: (err) => toast.error(err.message),
@@ -3128,7 +3203,11 @@ function PatientFileRows({
                         ? ` · Signed by ${file.consentSignerName}`
                         : ""
                     }`
-                  : "Document"}
+                  : file.category === "lab-results"
+                    ? "Lab report"
+                    : file.category === "documents"
+                      ? "External record"
+                      : "Document"}
                 {" · "}
                 {formatClinicalDateTime(file.createdAt, timeZone, "Unknown")}
               </p>
@@ -3228,11 +3307,15 @@ function VisitDocuments({
   );
 }
 
-const documentFilters: { id: PatientFileKind | "all"; label: string }[] = [
+const documentFilters: {
+  id: PatientFileKind | "all" | "lab";
+  label: string;
+}[] = [
   { id: "all", label: "All" },
   { id: "photo", label: "Photos" },
   { id: "consent", label: "Consents" },
   { id: "document", label: "Documents" },
+  { id: "lab", label: "Lab reports" },
 ];
 
 function DocumentsTab({
@@ -3242,17 +3325,18 @@ function DocumentsTab({
   patientId: string;
   timeZone?: string | null;
 }) {
-  const [filter, setFilter] = useState<PatientFileKind | "all">("all");
+  const [filter, setFilter] = useState<PatientFileKind | "all" | "lab">("all");
   const { data, isLoading, error } = trpc.records.listPatientFiles.useQuery({
     patientId,
   });
   const filesMissing = !isLoading && !error && !data;
 
   const counts = useMemo(() => {
-    const next = { all: 0, photo: 0, consent: 0, document: 0 };
+    const next = { all: 0, photo: 0, consent: 0, document: 0, lab: 0 };
     for (const file of data ?? []) {
       next.all += 1;
       next[patientFileKind(file)] += 1;
+      if (file.category === "lab-results") next.lab += 1;
     }
     return next;
   }, [data]);
@@ -3274,22 +3358,30 @@ function DocumentsTab({
   }
   if (!data || data.length === 0) {
     return (
-      <EmptyState
-        icon={Paperclip}
-        title="No documents yet"
-        description="Photos you capture and consents that get signed show up here."
-      />
+      <div className="space-y-4">
+        <PatientDocumentUpload key={patientId} patientId={patientId} />
+        <EmptyState
+          icon={Paperclip}
+          title="No documents yet"
+          description="Upload outside records and lab reports here. Captured photos and signed consents also appear in this list."
+        />
+      </div>
     );
   }
 
   const visible = data.filter(
-    (file) => filter === "all" || patientFileKind(file) === filter,
+    (file) =>
+      filter === "all" ||
+      (filter === "lab"
+        ? file.category === "lab-results"
+        : patientFileKind(file) === filter),
   );
   const photos = visible.filter((file) => patientFileKind(file) === "photo");
   const documents = visible.filter((file) => patientFileKind(file) !== "photo");
 
   return (
     <div className="space-y-4">
+      <PatientDocumentUpload key={patientId} patientId={patientId} />
       <div className="flex flex-wrap gap-2">
         {documentFilters.map((option) => (
           <button

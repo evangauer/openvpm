@@ -14,10 +14,22 @@ two. The same walkthroughs live inside the app: open **Settings** and click
 
 ## Daily work
 
+- [Upload patient documents and lab reports](upload-patient-documents.md). Keep
+  outside records and scans in the patient chart.
+
 - [Your day sheet](your-day.md). Book visits, check pets in, and keep the
   whole team on the same page.
 - [Ask the AI about a pet](ask-the-ai.md). Stop digging through charts. Just
   ask in plain words.
+
+## Self-hosted setup and solo practice
+
+- [A solo veterinarian's workflow](solo-vet-workflow.md). Use the owner/admin
+  account and optional ambulatory workspace for consultation through checkout.
+- [Set up Stripe payments](self-hosted-payments.md). Configure credentials and
+  webhooks, then verify payment capture, balances, and refunds.
+- [Set up SMS](self-hosted-sms.md). Understand provider setup, location
+  activation, callbacks, consent, and current onboarding limits.
 
 ## For your clients
 

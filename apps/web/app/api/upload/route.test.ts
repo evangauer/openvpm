@@ -276,7 +276,7 @@ describe("managed dashboard upload route", () => {
     expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
   });
 
-  it("requires a UUID idempotency key and rejects generic clinical categories", async () => {
+  it("requires a UUID idempotency key and patient ownership for documents", async () => {
     expect((await POST(uploadRequest({ idempotencyKey: null }))).status).toBe(
       400,
     );
@@ -587,5 +587,81 @@ describe("managed dashboard upload route", () => {
     expect(ROUTE_SOURCE).toContain('activeAccount.role === "viewer"');
     expect(ROUTE_SOURCE).toContain("eq(patients.practiceId, practiceId)");
     expect(ROUTE_SOURCE).toContain("isNull(patients.deletedAt)");
+  });
+});
+
+
+describe("patient document uploads", () => {
+  const pdf = () => new File(["%PDF-1.7\nexternal report"], "Referral report.pdf", { type: "application/pdf" });
+  const request = (category = "documents", file = pdf()) => uploadRequest({ category, file, patientId: mocks.patientId });
+
+  it.each(["documents", "lab-results"])("accepts %s PDFs for a veterinarian without replacing the patient photo", async (category) => {
+    mocks.selectResults.push([mocks.activeAccount({ role: "veterinarian" })], [{ id: mocks.patientId }]);
+    const response = await POST(request(category));
+    expect(response.status).toBe(201);
+    expect(mocks.reserveManagedUpload).toHaveBeenCalledWith(mocks.tx, expect.objectContaining({
+      category, patientId: mocks.patientId, entityType: "patient", entityId: mocks.patientId,
+      practiceId: mocks.practiceId, uploadedBy: mocks.userId, mimeType: "application/pdf",
+      fileName: "Referral report.pdf", source: category === "lab-results" ? "lab_report" : "external_record",
+    }));
+    expect(mocks.putAndVerifyManagedUpload).toHaveBeenCalledOnce();
+    expect(mocks.finalizeManagedUploadManifest).toHaveBeenCalledOnce();
+    expect(mocks.queueManagedUploadReplication).toHaveBeenCalledOnce();
+    expect(mocks.updateSets).toHaveLength(1);
+    expect(mocks.updateSets[0]).not.toHaveProperty("photoUrl");
+  });
+
+  it("rejects viewers before reserving or writing documents", async () => {
+    mocks.selectResults.push([mocks.activeAccount({ role: "viewer" })]);
+    expect((await POST(request())).status).toBe(403);
+    expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
+    expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+  });
+
+  it.each(["documents", "lab-results"])("rejects missing, deleted, and other-practice patients for %s", async (category) => {
+    mocks.selectResults.push([mocks.activeAccount()], []);
+    expect((await POST(request(category))).status).toBe(404);
+    expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
+    expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+    expect(mocks.withTenant).toHaveBeenCalledWith(expect.anything(), mocks.practiceId, expect.any(Function));
+  });
+
+  it.each([
+    new File(["<html>not a PDF</html>"], "fake.pdf", { type: "application/pdf" }),
+    new File(["<svg></svg>"], "scan.svg", { type: "image/svg+xml" }),
+    new File([], "empty.pdf", { type: "application/pdf" }),
+  ])("rejects unsupported or mismatched content before storage", async (file) => {
+    expect((await POST(request("documents", file))).status).toBe(400);
+    expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
+    expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+  });
+
+  it("accepts scanned images as patient documents", async () => {
+    mocks.selectResults.push([mocks.activeAccount()], [{ id: mocks.patientId }]);
+    expect((await POST(request("documents", new File([PNG_BYTES], "scan.png", { type: "image/png" })))).status).toBe(201);
+    expect(mocks.reserveManagedUpload).toHaveBeenCalledWith(mocks.tx, expect.objectContaining({ category: "documents", source: "external_record" }));
+  });
+
+  it("replays a completed document upload without a second provider write", async () => {
+    mocks.selectResults.push([mocks.activeAccount()], [{ id: mocks.patientId }]);
+    mocks.reserveManagedUpload.mockResolvedValue(mocks.reservation({ storageStatus: "available", category: "documents", patientId: mocks.patientId, created: false }));
+    expect((await POST(request())).status).toBe(200);
+    expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+    expect(mocks.updateSets).toHaveLength(0);
+  });
+});
+
+
+describe("hosted patient document size limits", () => {
+  it.each([4 * 1024 * 1024, 4 * 1024 * 1024 + 1])("enforces the 4 MB boundary for a %i-byte PDF", async (size) => {
+    const bytes = new Uint8Array(size);
+    bytes.set(new TextEncoder().encode("%PDF-1.7\n"));
+    mocks.selectResults.push([mocks.activeAccount()], [{ id: mocks.patientId }]);
+    const response = await POST(uploadRequest({ category: "documents", patientId: mocks.patientId, file: new File([bytes], "large.pdf", { type: "application/pdf" }) }));
+    expect(response.status).toBe(size === 4 * 1024 * 1024 ? 201 : 400);
+    if (size > 4 * 1024 * 1024) {
+      expect((await response.json()).error).toContain("split");
+      expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+    }
   });
 });
