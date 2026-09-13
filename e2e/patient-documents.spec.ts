@@ -12,7 +12,7 @@ import path from "node:path";
 const enabled = process.env.PATIENT_DOCUMENTS_E2E === "1";
 const email = process.env.PATIENT_DOCUMENTS_E2E_EMAIL ?? "sarah.chen@neighborhoodvet.example.com";
 const password = process.env.PATIENT_DOCUMENTS_E2E_PASSWORD ?? "password123";
-const patientId = process.env.PATIENT_DOCUMENTS_E2E_PATIENT_ID ?? "10000000-0000-0000-0000-000000000002";
+const patientId = process.env.PATIENT_DOCUMENTS_E2E_PATIENT_ID ?? randomUUID();
 const localHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const databaseUrl = process.env.PATIENT_DOCUMENTS_E2E_DATABASE_URL;
 
@@ -77,6 +77,11 @@ test.beforeAll(async () => {
     expect(database.name).toBe(new URL(databaseUrl!).pathname.slice(1));
     const [staff] = await sql`select id, practice_id, password_hash from users where email = ${email} and deleted_at is null`;
     expect(staff, "Seeded clinician must exist").toBeTruthy();
+    if (!process.env.PATIENT_DOCUMENTS_E2E_PATIENT_ID) {
+      const [owner] = await sql`select id from clients where practice_id = ${staff.practice_id} and deleted_at is null limit 1`;
+      expect(owner, "Synthetic clinic must have a client").toBeTruthy();
+      await sql`insert into patients (id, practice_id, client_id, name, species) values (${patientId}, ${staff.practice_id}, ${owner.id}, 'Document validation patient', 'canine')`;
+    }
     const [patient] = await sql`select id from patients where id = ${patientId} and practice_id = ${staff.practice_id} and deleted_at is null`;
     expect(patient, "Synthetic patient must belong to the seeded clinician").toBeTruthy();
     viewerEmail = `document-viewer-${randomUUID()}@example.test`;
@@ -110,7 +115,7 @@ test("uploads a lab PDF from the patient chart and downloads the exact stored by
   await page.getByRole("tab", { name: "Documents", exact: true }).click();
   const file = pdf();
   await page.getByLabel("Document category").selectOption("lab-results");
-  await page.locator('input[type="file"]').setInputFiles(file);
+  await page.getByLabel("File", { exact: true }).setInputFiles(file);
   await page.getByRole("button", { name: "Upload document", exact: true }).click();
   await expect(page.getByText("Lab report attached", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /^Lab reports \(/ }).click();
