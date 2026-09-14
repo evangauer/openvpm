@@ -55,9 +55,9 @@ import {
   PRESCRIPTION_QUANTITY_MIN,
   PRESCRIPTION_REFILLS_MIN,
   isPrescriptionNonnegativeIntegerInputValid,
-  isPrescriptionOptionalPositiveIntegerInputValid,
+  isPrescriptionOptionalQuantityInputValid,
   isPrescriptionOptionalTextInputValid,
-  isPrescriptionPositiveIntegerInputValid,
+  isPrescriptionQuantityInputValid,
   isPrescriptionRequiredTextInputValid,
 } from "@/lib/records/prescription-policy";
 import {
@@ -997,7 +997,7 @@ function RecordsPageContent() {
   const prescriptionQuantity = optionalNumber(prescriptionForm.quantity);
   const hasValidPrescriptionQuantityForInventory =
     !prescriptionForm.productId ||
-    (isPrescriptionPositiveIntegerInputValid(prescriptionForm.quantity) &&
+    (isPrescriptionQuantityInputValid(prescriptionForm.quantity) &&
       linkedPrescriptionProduct !== null &&
       prescriptionQuantity !== undefined &&
       prescriptionQuantity <= linkedPrescriptionProduct.stockQuantity);
@@ -1205,7 +1205,7 @@ function RecordsPageContent() {
       prescriptionForm.frequency,
       PRESCRIPTION_FREQUENCY_MAX_LENGTH
     ) &&
-    isPrescriptionOptionalPositiveIntegerInputValid(
+    isPrescriptionOptionalQuantityInputValid(
       prescriptionForm.quantity
     ) &&
     isPrescriptionNonnegativeIntegerInputValid(
@@ -2217,7 +2217,7 @@ function RecordsPageContent() {
                           type="number"
                           min={PRESCRIPTION_QUANTITY_MIN}
                           max={PRESCRIPTION_COUNT_MAX}
-                          step={1}
+                          step="0.001"
                           value={prescriptionForm.quantity}
                           onChange={(e) =>
                             setPrescriptionForm((current) => ({

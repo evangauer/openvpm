@@ -1,5 +1,7 @@
 "use client";
 
+import { MarkupInput } from "@/components/inventory/markup-input";
+
 import { useState, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import {
@@ -240,10 +242,11 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
           min={INVENTORY_MONEY_AMOUNT_MIN}
           max={INVENTORY_MONEY_AMOUNT_MAX}
           step="0.01"
-          placeholder="Cost Price"
+          placeholder="Cost per unit"
           value={form.costPrice}
           onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
         />
+        <MarkupInput cost={form.costPrice} onApply={(unitPrice) => setForm({ ...form, unitPrice })} />
         <Input
           type="number"
           min={INVENTORY_STOCK_QUANTITY_MIN}
@@ -464,6 +467,7 @@ function EditProductRow({
           onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
           className="h-8 text-sm text-right"
         />
+        <MarkupInput cost={form.costPrice} onApply={(unitPrice) => setForm({ ...form, unitPrice })} />
       </td>
       <td className="px-4 py-2 text-right tabular-nums">
         {product.inventoryTracked ? product.stockQuantity : "—"}
@@ -515,6 +519,7 @@ function EditProductRow({
             size="sm"
             variant="ghost"
             className="h-7 w-7 p-0"
+            aria-label="Save product"
             onClick={handleSave}
             disabled={!canSave || updateMutation.isPending}
           >

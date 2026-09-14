@@ -1,5 +1,7 @@
 "use client";
 
+import { quantityLineTotalCents } from "@/lib/quantity";
+
 import { useEffect, useState, useMemo, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -229,7 +231,7 @@ function NewInvoiceForm() {
     () =>
       tryCalculateInvoiceTaxTotals(
       items.map((item) => ({
-        lineTotalCents: item.quantity * moneyToCents(item.unitPrice || "0"),
+        lineTotalCents: quantityLineTotalCents(moneyToCents(item.unitPrice || "0"), item.quantity),
         taxable: item.taxable,
       })),
       taxPercent,
@@ -503,11 +505,11 @@ function NewInvoiceForm() {
                   type="number"
                   min={BILLING_INVOICE_LINE_QUANTITY_MIN}
                   max={BILLING_INVOICE_LINE_QUANTITY_MAX}
-                  step={1}
+                  step="0.001"
                   placeholder="Qty"
                   value={itemQuantity}
                   onChange={(e) =>
-                    setItemQuantity(Math.max(1, parseInt(e.target.value) || 1))
+                    setItemQuantity(Number(e.target.value))
                   }
                 />
               </div>

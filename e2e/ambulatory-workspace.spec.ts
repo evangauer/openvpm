@@ -179,27 +179,47 @@ test("runs the synthetic patient-chart to field-closeout flow", async ({
   await page.getByRole("button", { name: "Save prescription" }).click();
   await expect(page.getByText("Prescription created")).toBeVisible();
 
+  await page
+    .getByRole("group", {
+      name: "Performed work Synthetic field vaccine",
+      exact: true,
+    })
+    .getByRole("button", { name: "No charge", exact: true })
+    .click();
   const vaccineReconciliation = page.getByLabel(
     "Reconciliation reason for Synthetic field vaccine",
   );
   await vaccineReconciliation.fill("Synthetic acceptance item — no charge");
   await page
-    .getByRole("button", { name: "No charge", exact: true })
-    .first()
+    .getByRole("button", { name: "Confirm no charge", exact: true })
     .click();
   await expect(vaccineReconciliation).toHaveCount(0);
 
+  await page
+    .getByRole("group", {
+      name: "Performed work Synthetic field medication",
+      exact: true,
+    })
+    .getByRole("button", { name: "No charge", exact: true })
+    .click();
   const prescriptionReconciliation = page.getByLabel(
     "Reconciliation reason for Synthetic field medication",
   );
   await prescriptionReconciliation.fill(
     "Synthetic acceptance item — no charge",
   );
-  const resolutionResponse = page.waitForResponse((response) => response.url().includes("encounters.resolveVisitWork"));
-  await prescriptionReconciliation.locator("..").getByRole("button", { name: "No charge", exact: true }).click();
+  const resolutionResponse = page.waitForResponse((response) =>
+    response.url().includes("encounters.resolveVisitWork"),
+  );
+  await page
+    .getByRole("button", { name: "Confirm no charge", exact: true })
+    .click();
   const resolved = await resolutionResponse;
   const resolutionPayload = await resolved.json();
-  for (const item of Array.isArray(resolutionPayload) ? resolutionPayload : [resolutionPayload]) expect(item).not.toHaveProperty("error");
+  for (const item of Array.isArray(resolutionPayload)
+    ? resolutionPayload
+    : [resolutionPayload])
+    expect(item).not.toHaveProperty("error");
   await expect(prescriptionReconciliation).toHaveCount(0);
   await expect(
     page

@@ -1,3 +1,4 @@
+import { isSupportedQuantity, quantityLineTotalCents } from "@/lib/quantity";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import {
@@ -302,9 +303,9 @@ const invoiceLineInput = z
     ),
     quantity: z
       .number()
-      .int()
       .min(BILLING_INVOICE_LINE_QUANTITY_MIN)
-      .max(BILLING_INVOICE_LINE_QUANTITY_MAX),
+      .max(BILLING_INVOICE_LINE_QUANTITY_MAX)
+      .refine(isSupportedQuantity, "Use at most three decimal places for quantity"),
     unitPrice: nonNegativeMoneySchema,
     itemType: z.enum(["service", "product"]),
     itemId: z.string().uuid().optional(),
@@ -312,7 +313,7 @@ const invoiceLineInput = z
     sourceDispenseChargeId: z.string().uuid().optional(),
   })
   .superRefine((item, ctx) => {
-    const totalCents = moneyToCents(item.unitPrice) * item.quantity;
+    const totalCents = quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity);
     if (totalCents > BILLING_MAX_MONEY_CENTS) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -355,7 +356,7 @@ const createInvoiceInput = z
   })
   .superRefine((input, ctx) => {
     const subtotalCents = input.items.reduce(
-      (sum, item) => sum + moneyToCents(item.unitPrice) * item.quantity,
+      (sum, item) => sum + quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity),
       0
     );
     if (subtotalCents > BILLING_MAX_MONEY_CENTS) {
@@ -381,7 +382,7 @@ const updateInvoiceItemsInput = z
   })
   .superRefine((input, ctx) => {
     const subtotalCents = input.items.reduce(
-      (sum, item) => sum + moneyToCents(item.unitPrice) * item.quantity,
+      (sum, item) => sum + quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity),
       0
     );
     if (subtotalCents > BILLING_MAX_MONEY_CENTS) {
@@ -1109,7 +1110,7 @@ function invoiceLineTaxTotals(
   try {
     return calculateInvoiceTaxTotals(
       items.map((item) => ({
-        lineTotalCents: moneyToCents(item.unitPrice) * item.quantity,
+        lineTotalCents: quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity),
         taxable:
           item.taxable ??
           invoiceLineTaxable(item, taxabilityByReference ?? new Map()),
@@ -1991,7 +1992,7 @@ export const billingRouter = createRouter({
           .limit(1);
         if (!practice) throw practiceNotFound();
         const subtotalCents =
-          moneyToCents(source.unitPriceSnapshot) * source.quantity;
+          quantityLineTotalCents(moneyToCents(source.unitPriceSnapshot), source.quantity);
         const [sourceProduct] = await tx
           .select({ id: products.id, taxable: products.taxable })
           .from(products)
@@ -2947,7 +2948,7 @@ export const billingRouter = createRouter({
               quantity: item.quantity,
               unitPrice: item.unitPrice,
               total: centsToMoney(
-                item.quantity * moneyToCents(item.unitPrice),
+                quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity),
               ),
               taxable: invoiceLineTaxable(item, taxabilityByReference),
               itemType: item.itemType as "service" | "product",
@@ -3002,6 +3003,8 @@ export const billingRouter = createRouter({
             patientId: invoices.patientId,
             clientId: invoices.clientId,
             updatedAt: invoices.updatedAt,
+            // Preserve PostgreSQL microseconds for the final compare-and-swap.
+            updatedAtVersion: sql<string>`${invoices.updatedAt}::text`,
           })
           .from(invoices)
           .where(
@@ -3103,7 +3106,7 @@ export const billingRouter = createRouter({
             subtotal: centsToMoney(totals.subtotalCents),
             tax: centsToMoney(totals.taxCents),
             total: centsToMoney(totals.totalCents),
-            updatedAt: new Date(),
+            updatedAt: new Date(Math.max(Date.now(), existing.updatedAt.getTime() + 1)),
           })
           .where(
             and(
@@ -3113,7 +3116,7 @@ export const billingRouter = createRouter({
               eq(invoices.status, "draft"),
               eq(invoices.isEstimate, existing.isEstimate),
               eq(invoices.paidAmount, existing.paidAmount ?? "0.00"),
-              eq(invoices.updatedAt, input.expectedUpdatedAt),
+              sql`${invoices.updatedAt} = ${existing.updatedAtVersion}::timestamptz`,
               noActivePaymentsForInvoice(),
               noActiveAdjustmentsForInvoice()
             )
@@ -3153,7 +3156,7 @@ export const billingRouter = createRouter({
             description: item.description,
             quantity: item.quantity,
             unitPrice: item.unitPrice,
-            total: centsToMoney(moneyToCents(item.unitPrice) * item.quantity),
+            total: centsToMoney(quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity)),
             taxable: invoiceLineTaxable(item, taxabilityByReference),
             itemType: item.itemType,
             itemId: item.itemId ?? null,

@@ -1,3 +1,4 @@
+import { isSupportedQuantity } from "@/lib/quantity";
 import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -430,9 +431,12 @@ const createPrescriptionInput = z
     ),
     quantity: z
       .number()
-      .int()
       .min(PRESCRIPTION_QUANTITY_MIN)
       .max(PRESCRIPTION_COUNT_MAX)
+      .refine(
+        isSupportedQuantity,
+        "Use at most three decimal places for quantity",
+      )
       .optional(),
     productId: z.string().uuid().optional(),
     refillsRemaining: z

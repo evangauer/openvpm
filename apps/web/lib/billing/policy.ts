@@ -1,8 +1,9 @@
+import { isSupportedQuantity, quantityLineTotalCents } from "@/lib/quantity";
 import { moneyToCents } from "./invoice-balance";
 
 export const BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH = 500;
 export const BILLING_INVOICE_MAX_ITEMS = 200;
-export const BILLING_INVOICE_LINE_QUANTITY_MIN = 1;
+export const BILLING_INVOICE_LINE_QUANTITY_MIN = 0.001;
 export const BILLING_INVOICE_LINE_QUANTITY_MAX = 10000;
 export const BILLING_MAX_MONEY_CENTS = 9_999_999_999;
 export const BILLING_UNIT_PRICE_MAX = 99999999.99;
@@ -17,7 +18,7 @@ export const BILLING_SERVICE_CATEGORY_MAX_LENGTH = 128;
 
 export function isBillingInvoiceLineQuantityValid(value: number): boolean {
   return (
-    Number.isInteger(value) &&
+    isSupportedQuantity(value) &&
     value >= BILLING_INVOICE_LINE_QUANTITY_MIN &&
     value <= BILLING_INVOICE_LINE_QUANTITY_MAX
   );
@@ -43,7 +44,7 @@ export function isBillingPositiveAmountInputValid(value: string): boolean {
 
 export function isBillingAmountWithinBalance(
   value: string,
-  balance: string | number | null | undefined
+  balance: string | number | null | undefined,
 ): boolean {
   return (
     isBillingPositiveAmountInputValid(value) &&
@@ -53,22 +54,28 @@ export function isBillingAmountWithinBalance(
 
 export function isBillingInvoiceLineTotalValid(
   unitPrice: string,
-  quantity: number
+  quantity: number,
 ): boolean {
   return (
     isBillingCurrencyAmountInputValid(unitPrice) &&
     isBillingInvoiceLineQuantityValid(quantity) &&
-    moneyToCents(unitPrice.trim()) * quantity <= BILLING_MAX_MONEY_CENTS
+    quantityLineTotalCents(moneyToCents(unitPrice.trim()), quantity) <=
+      BILLING_MAX_MONEY_CENTS
   );
 }
 
 export function isBillingInvoiceSubtotalValid(
-  items: Array<{ quantity: number; unitPrice: string }>
+  items: Array<{ quantity: number; unitPrice: string }>,
 ): boolean {
   return (
     items.reduce(
-      (sum, item) => sum + moneyToCents(item.unitPrice.trim()) * item.quantity,
-      0
+      (sum, item) =>
+        sum +
+        quantityLineTotalCents(
+          moneyToCents(item.unitPrice.trim()),
+          item.quantity,
+        ),
+      0,
     ) <= BILLING_MAX_MONEY_CENTS
   );
 }

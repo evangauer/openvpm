@@ -1510,6 +1510,118 @@ export const appointmentsRouter = createRouter({
       }),
     ),
 
+  delete: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        reason: z.string().trim().min(3).max(500),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const deleted = await ctx.db.transaction(async (tx) => {
+        await takeAppointmentSchedulingLock(
+          tx as unknown as Database,
+          ctx.practiceId,
+        );
+        const [current] = await tx
+          .select()
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.id, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointments.deletedAt),
+            ),
+          )
+          .for("update");
+        if (!current)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Appointment not found.",
+          });
+        if (
+          !["scheduled", "confirmed", "cancelled", "no_show"].includes(
+            current.status,
+          )
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Visits that have started must be corrected through the encounter workspace.",
+          });
+        }
+        // Keep the appointment visible whenever it owns clinical or financial evidence.
+        const [evidence] = await tx
+          .select({
+            hasRecords: sql<boolean>`
+          exists (select 1 from soap_notes where appointment_id = ${input.id}) or
+          exists (select 1 from vital_signs where appointment_id = ${input.id}) or
+          exists (select 1 from vaccination_records where appointment_id = ${input.id}) or
+          exists (select 1 from lab_results where appointment_id = ${input.id}) or
+          exists (select 1 from procedures where appointment_id = ${input.id}) or
+          exists (select 1 from prescriptions where appointment_id = ${input.id}) or
+          exists (select 1 from invoices where appointment_id = ${input.id}) or
+          exists (select 1 from visit_closeouts where appointment_id = ${input.id} and deleted_at is null) or
+          exists (select 1 from visit_work_items where appointment_id = ${input.id}) or
+          exists (select 1 from consent_requests where appointment_id = ${input.id}) or
+          exists (select 1 from files where appointment_id = ${input.id}) or
+          exists (select 1 from capture_sessions where appointment_id = ${input.id}) or
+          exists (select 1 from case_entries where appointment_id = ${input.id}) or
+          exists (select 1 from visit_treatment_plans where appointment_id = ${input.id})
+        `,
+          })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.id, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+            ),
+          );
+        if (!evidence || evidence.hasRecords) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This appointment has clinical or billing records. Use the encounter workspace to correct it; its records cannot be deleted from the schedule.",
+          });
+        }
+        const now = new Date();
+        const [result] = await tx
+          .update(appointments)
+          .set({ status: "cancelled", deletedAt: now, updatedAt: now })
+          .where(
+            and(
+              eq(appointments.id, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              isNull(appointments.deletedAt),
+            ),
+          )
+          .returning();
+        if (!result)
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Appointment changed. Refresh and try again.",
+          });
+        return result;
+      });
+      await dispatchAppointmentWebhookAfterCommit(
+        ctx,
+        ctx.practiceId,
+        "appointment.cancelled",
+        {
+          id: deleted.id,
+          appointmentId: deleted.id,
+          startTime: deleted.startTime,
+          endTime: deleted.endTime,
+          status: "cancelled",
+          source: "dashboard",
+          deleted: true,
+        },
+      );
+      return { id: deleted.id };
+    }),
+
   cancelRecurringSeries: protectedProcedure
     .use(requireRole("admin", "veterinarian", "front_desk"))
     .input(z.object({ seriesId: z.string().uuid() }))

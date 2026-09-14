@@ -2,7 +2,7 @@ export const PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH = 255;
 export const PRESCRIPTION_DOSAGE_MAX_LENGTH = 128;
 export const PRESCRIPTION_FREQUENCY_MAX_LENGTH = 128;
 export const PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH = 5000;
-export const PRESCRIPTION_QUANTITY_MIN = 1;
+export const PRESCRIPTION_QUANTITY_MIN = 0.001;
 export const PRESCRIPTION_REFILLS_MIN = 0;
 export const PRESCRIPTION_COUNT_MAX = 2_147_483_647;
 
@@ -15,7 +15,7 @@ function integerInputToNumber(value: string): number | null {
 
 export function isPrescriptionRequiredTextInputValid(
   value: string,
-  maxLength: number
+  maxLength: number,
 ): boolean {
   const trimmed = value.trim();
   return trimmed.length > 0 && trimmed.length <= maxLength;
@@ -23,15 +23,15 @@ export function isPrescriptionRequiredTextInputValid(
 
 export function isPrescriptionOptionalTextInputValid(
   value: string,
-  maxLength: number
+  maxLength: number,
 ): boolean {
   return value.trim().length <= maxLength;
 }
 
-export function isPrescriptionPositiveIntegerInputValid(
-  value: string
-): boolean {
-  const parsed = integerInputToNumber(value);
+export function isPrescriptionQuantityInputValid(value: string): boolean {
+  const parsed = /^\d+(?:\.\d{1,3})?$/.test(value.trim())
+    ? Number(value)
+    : null;
   return (
     parsed !== null &&
     parsed >= PRESCRIPTION_QUANTITY_MIN &&
@@ -39,16 +39,14 @@ export function isPrescriptionPositiveIntegerInputValid(
   );
 }
 
-export function isPrescriptionOptionalPositiveIntegerInputValid(
-  value: string
+export function isPrescriptionOptionalQuantityInputValid(
+  value: string,
 ): boolean {
-  return (
-    value.trim().length === 0 || isPrescriptionPositiveIntegerInputValid(value)
-  );
+  return value.trim().length === 0 || isPrescriptionQuantityInputValid(value);
 }
 
 export function isPrescriptionNonnegativeIntegerInputValid(
-  value: string
+  value: string,
 ): boolean {
   const parsed = integerInputToNumber(value);
   return (

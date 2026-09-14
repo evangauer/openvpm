@@ -339,7 +339,12 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("Performed work reconciliation");
     expect(workspaceSource).toContain("Link confirmed charge");
     expect(workspaceSource).toContain("No charge");
-    expect(workspaceSource).toContain("Void/corrected");
+    expect(
+      readFileSync(
+        "components/records/reconciliation-reason-actions.tsx",
+        "utf8",
+      ),
+    ).toContain("Void/corrected");
     expect(workspaceSource).toContain("never bills a suggestion automatically");
   });
 

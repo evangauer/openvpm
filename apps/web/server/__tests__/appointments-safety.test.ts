@@ -1862,3 +1862,68 @@ describe("appointments display join scoping", () => {
     );
   });
 });
+
+describe("mistaken appointment deletion", () => {
+  it("soft deletes an empty scheduled appointment", async () => {
+    const row = {
+      id: APPOINTMENT_ID,
+      status: "scheduled",
+      startTime: new Date(),
+      endTime: new Date(),
+    };
+    const { db, updateSet } = createDb({
+      selectResults: [[row], [{ hasRecords: false }]],
+      updatedRows: [{ ...row, status: "cancelled" }],
+    });
+    await expect(
+      callerWithDb(db).delete({
+        id: APPOINTMENT_ID,
+        reason: "Duplicate booking",
+      }),
+    ).resolves.toEqual({ id: APPOINTMENT_ID });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "cancelled",
+        deletedAt: expect.any(Date),
+      }),
+    );
+  });
+  it.each(["checked_in", "in_exam", "checked_out"])(
+    "preserves %s visits",
+    async (status) => {
+      const { db, updateSet } = createDb({
+        selectResults: [[{ id: APPOINTMENT_ID, status }]],
+      });
+      await expect(
+        callerWithDb(db).delete({ id: APPOINTMENT_ID, reason: "Mistake" }),
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      expect(updateSet).not.toHaveBeenCalled();
+    },
+  );
+  it("preserves appointment clinical and financial evidence", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [{ id: APPOINTMENT_ID, status: "cancelled" }],
+        [{ hasRecords: true }],
+      ],
+    });
+    await expect(
+      callerWithDb(db).delete({ id: APPOINTMENT_ID, reason: "Mistake" }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+  it("rejects unavailable or foreign appointments", async () => {
+    const { db, updateSet } = createDb({ selectResults: [[]] });
+    await expect(
+      callerWithDb(db).delete({ id: APPOINTMENT_ID, reason: "Mistake" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+  it("requires an attributable deletion reason", async () => {
+    const { db, select } = createDb();
+    await expect(
+      callerWithDb(db).delete({ id: APPOINTMENT_ID, reason: " " }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(select).not.toHaveBeenCalled();
+  });
+});

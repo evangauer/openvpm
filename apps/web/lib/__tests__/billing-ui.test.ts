@@ -25,7 +25,7 @@ describe("billing invoice form UX", () => {
 
   it("keeps invoice line item controls aligned to shared bounds", () => {
     expect(BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH).toBe(500);
-    expect(BILLING_INVOICE_LINE_QUANTITY_MIN).toBe(1);
+    expect(BILLING_INVOICE_LINE_QUANTITY_MIN).toBe(0.001);
     expect(BILLING_INVOICE_LINE_QUANTITY_MAX).toBe(10000);
     expect(BILLING_INVOICE_MAX_ITEMS).toBe(200);
     expect(BILLING_UNIT_PRICE_MAX).toBe(99999999.99);

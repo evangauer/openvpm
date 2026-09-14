@@ -41,9 +41,9 @@ import {
   PRESCRIPTION_QUANTITY_MIN,
   PRESCRIPTION_REFILLS_MIN,
   isPrescriptionNonnegativeIntegerInputValid,
-  isPrescriptionOptionalPositiveIntegerInputValid,
+  isPrescriptionOptionalQuantityInputValid,
   isPrescriptionOptionalTextInputValid,
-  isPrescriptionPositiveIntegerInputValid,
+  isPrescriptionQuantityInputValid,
   isPrescriptionRequiredTextInputValid,
 } from "../records/prescription-policy";
 import {
@@ -287,16 +287,16 @@ describe("records prescription form UX", () => {
     expect(PRESCRIPTION_DOSAGE_MAX_LENGTH).toBe(128);
     expect(PRESCRIPTION_FREQUENCY_MAX_LENGTH).toBe(128);
     expect(PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH).toBe(5000);
-    expect(PRESCRIPTION_QUANTITY_MIN).toBe(1);
+    expect(PRESCRIPTION_QUANTITY_MIN).toBe(0.001);
     expect(PRESCRIPTION_REFILLS_MIN).toBe(0);
     expect(PRESCRIPTION_COUNT_MAX).toBe(2147483647);
     expect(isPrescriptionRequiredTextInputValid(" Carprofen ", 255)).toBe(true);
     expect(isPrescriptionRequiredTextInputValid(" ", 255)).toBe(false);
     expect(isPrescriptionOptionalTextInputValid("", 5000)).toBe(true);
-    expect(isPrescriptionPositiveIntegerInputValid("30")).toBe(true);
-    expect(isPrescriptionPositiveIntegerInputValid("0")).toBe(false);
-    expect(isPrescriptionPositiveIntegerInputValid("1.5")).toBe(false);
-    expect(isPrescriptionOptionalPositiveIntegerInputValid("")).toBe(true);
+    expect(isPrescriptionQuantityInputValid("30")).toBe(true);
+    expect(isPrescriptionQuantityInputValid("0")).toBe(false);
+    expect(isPrescriptionQuantityInputValid("1.5")).toBe(true);
+    expect(isPrescriptionOptionalQuantityInputValid("")).toBe(true);
     expect(isPrescriptionNonnegativeIntegerInputValid("0")).toBe(true);
     expect(isPrescriptionNonnegativeIntegerInputValid("-1")).toBe(false);
     expect(source).toMatch(
@@ -339,7 +339,7 @@ describe("records prescription form UX", () => {
     );
     expect(source).toContain("The prescription quantity will be");
     expect(source).toContain("charged in that same unit.");
-    expect(source).toContain("isPrescriptionOptionalPositiveIntegerInputValid");
+    expect(source).toContain("isPrescriptionOptionalQuantityInputValid");
     expect(source).toContain("isPrescriptionNonnegativeIntegerInputValid");
     expect(source).toContain(
       "prescriptionForm.instructions.trim() || undefined"
