@@ -25,3 +25,13 @@ The suite uses desktop Chromium and iPhone WebKit. It tests browsing beyond 100,
 ## Release verification
 
 No new migration is required; migration 0105 already provides decimal stock storage. Verify the release SHA and run authenticated workflows in a designated synthetic practice on the deployed release. Record staging and production evidence separately. Do not describe login/schema/log-only checks as production workflow tests.
+
+## Verified September 22
+
+- TypeScript passed; optimized preview build passed.
+- Web tests: 4,441 passed initially, with two resource-load timeouts; the two affected files then passed all 52 tests in an isolated single-worker rerun. 22 existing skips remain.
+- Follow-up local browser checks: six workflow cases plus two failure/retry cases passed across desktop Chromium and iPhone WebKit.
+- Hosted preview `openvpm-of5krb418-evangauers-projects.vercel.app`: all six authenticated workflow cases passed against a newly provisioned synthetic staging clinic. API reads confirmed invoice quantity 1.5, subtotal 2.99, tax 0.24, total 3.23, and exact stock balances after 1.5 and 0.125 prescriptions.
+- Production verification is not implied by the staging result; record it separately after release.
+
+`playwright.jayne-hosted.config.ts` runs `e2e/jayne-hosted-followup.spec.ts` against an explicitly supplied synthetic fixture (JAYNE_HOSTED_E2E=1, JAYNE_HOSTED_FIXTURE, PLAYWRIGHT_BASE_URL). Credentials belong in a private temporary fixture, never in source control. The test verifies random synthetic patient identity before writes. Provision distinct tracked and untracked products per browser project, with 1 and 0 opening units respectively, plus 826 catalog entries. JAYNE_PREVIEW_ACCESS_URL can supply temporary deployment-protection access for a preview.

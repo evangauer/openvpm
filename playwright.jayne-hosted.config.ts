@@ -1,8 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: "./e2e",
-  outputDir: "outputs/jayne-followup/test-results",
-  testMatch: "jayne-followup.spec.ts",
+  outputDir: "outputs/jayne-hosted-followup/test-results",
+  testMatch: "jayne-hosted-followup.spec.ts",
   workers: 1,
   timeout: 120_000,
   use: {
@@ -19,6 +19,9 @@ export default defineConfig({
   ],
   reporter: [
     ["list"],
-    ["html", { outputFolder: "outputs/jayne-followup/report", open: "never" }],
+    [
+      "html",
+      { outputFolder: "outputs/jayne-hosted-followup/report", open: "never" },
+    ],
   ],
 });
