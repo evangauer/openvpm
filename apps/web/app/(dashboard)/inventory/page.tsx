@@ -47,7 +47,7 @@ import {
   isInventoryOptionalEmailInputValid,
   isInventoryOptionalExpirationDateInputValid,
   isInventoryOptionalTextInputValid,
-  isInventoryPositiveIntegerInputValid,
+  isInventoryStockQuantityInputValid,
   isInventoryRequiredTextInputValid,
 } from "@/lib/inventory/policy";
 
@@ -155,7 +155,7 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
     ) &&
     isInventoryCurrencyAmountInputValid(form.unitPrice) &&
     isInventoryOptionalCurrencyAmountInputValid(form.costPrice) &&
-    isInventoryNonnegativeIntegerInputValid(form.stockQuantity) &&
+    isInventoryStockQuantityInputValid(form.stockQuantity) &&
     isInventoryNonnegativeIntegerInputValid(form.reorderPoint) &&
     isInventoryOptionalTextInputValid(
       form.lotNumber,
@@ -251,11 +251,11 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
           type="number"
           min={INVENTORY_STOCK_QUANTITY_MIN}
           max={INVENTORY_STOCK_QUANTITY_MAX}
-          step={1}
+          step="0.001"
           placeholder="Stock units"
           value={form.stockQuantity}
           onChange={(e) =>
-            setForm({ ...form, stockQuantity: parseInt(e.target.value) || 0 })
+            setForm({ ...form, stockQuantity: Number(e.target.value) })
           }
         />
         <Input
@@ -562,7 +562,7 @@ function StartTrackingPopover({
     onError: (error) => toast.error(error.message),
   });
   const valid =
-    isInventoryNonnegativeIntegerInputValid(stockQuantity) &&
+    isInventoryStockQuantityInputValid(stockQuantity) &&
     isInventoryNonnegativeIntegerInputValid(reorderPoint);
 
   return (
@@ -578,10 +578,10 @@ function StartTrackingPopover({
           <Input
             type="number"
             min={0}
-            step={1}
+            step="0.001"
             value={stockQuantity}
             onChange={(event) =>
-              setStockQuantity(Number.parseInt(event.target.value, 10) || 0)
+              setStockQuantity(Number(event.target.value))
             }
             className="mt-1"
           />
@@ -654,7 +654,7 @@ function StockAdjustPopover({
     reason,
     INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH
   );
-  const hasValidAdjustmentQuantity = isInventoryPositiveIntegerInputValid(qty);
+  const hasValidAdjustmentQuantity = (isInventoryStockQuantityInputValid(qty) && qty > 0);
   const canAddStock =
     hasValidAdjustmentQuantity &&
     qty <= maxAddition &&
@@ -684,19 +684,10 @@ function StockAdjustPopover({
         type="number"
         min={INVENTORY_ADJUSTMENT_QUANTITY_MIN}
         max={INVENTORY_STOCK_QUANTITY_MAX}
-        step={1}
+        step="0.001"
+        aria-label="Stock adjustment quantity"
         value={qty}
-        onChange={(e) => {
-          const next = parseInt(e.target.value, 10);
-          setQty(
-            Number.isFinite(next)
-              ? Math.min(
-                  INVENTORY_STOCK_QUANTITY_MAX,
-                  Math.max(INVENTORY_ADJUSTMENT_QUANTITY_MIN, next)
-                )
-              : INVENTORY_ADJUSTMENT_QUANTITY_MIN
-          );
-        }}
+        onChange={(e) => setQty(Number(e.target.value))}
         className="h-8 text-sm mb-2"
         placeholder="Quantity"
       />

@@ -1,3 +1,4 @@
+import { isSupportedQuantity } from "@/lib/quantity";
 import { z } from "zod";
 import { eq, and, isNull, ilike, sql, type SQL } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
@@ -27,7 +28,6 @@ import { clinicalDateInput } from "@/lib/records/clinical-inputs";
 import { listOffsetInput } from "./pagination";
 import {
   POSTGRES_INTEGER_MAX,
-  integerColumnDeltaInput,
   nonnegativeIntegerColumnInput,
 } from "./storage-bounds";
 
@@ -88,6 +88,9 @@ const nullableOptionalTrimmedString = (label: string, max: number) =>
     ])
     .optional();
 
+const stockQuantityInput = z.number().min(0).max(POSTGRES_INTEGER_MAX)
+  .refine(isSupportedQuantity, "Use at most three decimal places.");
+
 const productCreateInput = z.object({
   name: requiredTrimmedString(
     "Product name",
@@ -101,7 +104,7 @@ const productCreateInput = z.object({
   unitPrice: moneyInput,
   taxable: z.boolean().default(true),
   costPrice: moneyInput.optional(),
-  stockQuantity: nonnegativeIntegerColumnInput.default(0),
+  stockQuantity: stockQuantityInput.default(0),
   reorderPoint: nonnegativeIntegerColumnInput.default(10),
   lotNumber: optionalTrimmedString(
     "Lot number",
@@ -186,6 +189,22 @@ async function practiceTimeZone(
 
 export const inventoryRouter = createRouter({
   // --- Products ---
+
+  getById: protectedProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const [product] = await ctx.db.select().from(products)
+        .where(and(
+          eq(products.id, input.id),
+          eq(products.practiceId, ctx.practiceId),
+          isNull(products.deletedAt),
+        )).limit(1);
+      if (!product) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Inventory item not found." });
+      }
+      return product;
+    }),
 
   list: protectedProcedure
     .input(
@@ -356,7 +375,7 @@ export const inventoryRouter = createRouter({
     .input(
       z.object({
         id: z.string().uuid(),
-        stockQuantity: nonnegativeIntegerColumnInput,
+        stockQuantity: stockQuantityInput,
         reorderPoint: nonnegativeIntegerColumnInput.default(10),
         lotNumber: optionalTrimmedString(
           "Lot number",
@@ -399,7 +418,11 @@ export const inventoryRouter = createRouter({
     .input(
       z.object({
         id: z.string().uuid(),
-        adjustment: integerColumnDeltaInput,
+        adjustment: z.number().min(-POSTGRES_INTEGER_MAX).max(POSTGRES_INTEGER_MAX)
+          .refine(
+            (value) => value !== 0 && isSupportedQuantity(value),
+            "Use a nonzero quantity with at most three decimal places.",
+          ),
         reason: requiredTrimmedString(
           "Reason",
           INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH

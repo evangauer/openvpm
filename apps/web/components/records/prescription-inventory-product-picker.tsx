@@ -232,8 +232,10 @@ export function PrescriptionInventoryProductPicker({
                 <span className="min-w-0">
                   <span className="block truncate">{product.name}</span>
                   <span className="block text-xs text-muted-foreground">
-                    {product.stockQuantity} units on hand · {product.unitPrice}{" "}
-                    each
+                    {product.inventoryTracked
+                      ? `${product.stockQuantity} units on hand`
+                      : "Stock tracking not set up"}{" "}
+                    · {product.unitPrice} each
                     {product.sku ? ` · SKU ${product.sku}` : ""}
                   </span>
                 </span>

@@ -3760,6 +3760,8 @@ function ChargeCapture({
   const utils = trpc.useUtils();
   const isOnline = useOnlineStatus();
   const [selectedCatalogId, setSelectedCatalogId] = useState("");
+  const [productSearch, setProductSearch] = useState("");
+  const [selectedProduct, setSelectedProduct] = useState<RouterOutputs["billing"]["searchProducts"]["items"][number] | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [items, setItems] = useState<ChargeItem[]>([]);
   const [loadedInvoiceId, setLoadedInvoiceId] = useState<string | null>(null);
@@ -3785,9 +3787,10 @@ function ChargeCapture({
       invoiceStateReady &&
       (!activeInvoice || (activeInvoiceIsDraft && invoiceDetailReady)),
   });
-  const productsQuery = trpc.billing.listProducts.useQuery(
-    { limit: 100 },
+  const productsQuery = trpc.billing.searchProducts.useInfiniteQuery(
+    { limit: 50, search: productSearch.trim() || undefined },
     {
+      getNextPageParam: (page) => page.nextCursor,
       enabled:
         canManage &&
         configReady &&
@@ -3889,7 +3892,10 @@ function ChargeCapture({
         sourcePrescriptionId: undefined as string | undefined,
         sourceDispenseChargeId: prescription.dispenseChargeId!,
       }));
-    const products = (productsQuery.data ?? [])
+    const fetchedProducts = productsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+    const availableProducts = selectedProduct && !fetchedProducts.some((product) => product.id === selectedProduct.id)
+      ? [...fetchedProducts, selectedProduct] : fetchedProducts;
+    const products = availableProducts
       .filter((product) => !linkedProductIds.has(product.id))
       .map((product) => ({
         id: `product:${product.id}`,
@@ -3908,7 +3914,7 @@ function ChargeCapture({
         sourceDispenseChargeId: undefined as string | undefined,
       }));
     return [...prescriptionCharges, ...services, ...products];
-  }, [linkedPrescriptions, productsQuery.data, servicesQuery.data]);
+  }, [linkedPrescriptions, productsQuery.data, servicesQuery.data, selectedProduct]);
 
   const selected = catalog.find((entry) => entry.id === selectedCatalogId);
   const readyVisitPrescriptionCharges = catalog.filter(
@@ -4048,6 +4054,7 @@ function ChargeCapture({
     if (!selected || !canAdd) return;
     addCatalogItem(selected, quantity);
     setSelectedCatalogId("");
+    setSelectedProduct(null);
     setQuantity(1);
   }
 
@@ -4148,23 +4155,16 @@ function ChargeCapture({
             Add both a client and patient to the appointment before capturing
             charges.
           </div>
-        ) : servicesQuery.error || productsQuery.error ? (
+        ) : servicesQuery.error ? (
           <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
             Unable to load the charge catalog. Refresh before creating an
             invoice.
           </div>
-        ) : servicesQuery.isLoading || productsQuery.isLoading ? (
+        ) : servicesQuery.isLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             Loading services and products...
           </div>
-        ) : catalog.length === 0 && items.length === 0 ? (
-          <EmptyState
-            icon={Package}
-            title="Charge catalog is empty"
-            description="Add services or inventory products before building a visit invoice."
-            className="p-8"
-          />
         ) : (
           <div className="flex flex-col gap-4">
             {!isOnline ? (
@@ -4263,10 +4263,20 @@ function ChargeCapture({
               </div>
             ) : null}
             <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_90px_auto] lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_80px_auto]">
+              {catalog.length === 0 && !productSearch && !productsQuery.isFetching && !productsQuery.error ? <p className="text-sm text-muted-foreground">Charge catalog is empty. Add services or inventory products to get started.</p> : null}
               <ServicePicker
                 services={catalog}
                 value={selectedCatalogId}
-                onSelect={setSelectedCatalogId}
+                onSelect={(id) => {
+                  setSelectedCatalogId(id);
+                  setSelectedProduct(productsQuery.data?.pages.flatMap((page) => page.items).find((product) => `product:${product.id}` === id) ?? null);
+                }}
+                onSearchChange={setProductSearch}
+                loading={productsQuery.isFetching}
+                searchError={productsQuery.error?.message}
+                onRetry={() => void productsQuery.refetch()}
+                hasMore={productsQuery.hasNextPage}
+                onLoadMore={() => void productsQuery.fetchNextPage()}
                 disabled={isSaving}
                 formatPrice={fmt}
               />

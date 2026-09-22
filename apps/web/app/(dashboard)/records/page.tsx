@@ -991,14 +991,21 @@ function RecordsPageContent() {
     prescriptionSafety.data
       ? prescriptionSafety.data
       : null;
+  const linkedProductQuery = trpc.inventory.getById.useQuery(
+    { id: prescriptionForm.productId || "00000000-0000-0000-0000-000000000000" },
+    { enabled: Boolean(prescriptionForm.productId), staleTime: 0 },
+  );
   const linkedPrescriptionProduct = prescriptionForm.productId
-    ? selectedPrescriptionProduct
+    ? selectedPrescriptionProduct && { ...selectedPrescriptionProduct, ...linkedProductQuery.data }
     : null;
   const prescriptionQuantity = optionalNumber(prescriptionForm.quantity);
   const hasValidPrescriptionQuantityForInventory =
     !prescriptionForm.productId ||
     (isPrescriptionQuantityInputValid(prescriptionForm.quantity) &&
       linkedPrescriptionProduct !== null &&
+      linkedPrescriptionProduct.inventoryTracked &&
+      !linkedProductQuery.isError &&
+      !linkedProductQuery.isFetching &&
       prescriptionQuantity !== undefined &&
       prescriptionQuantity <= linkedPrescriptionProduct.stockQuantity);
   const visibleTabs = tabs.filter(
@@ -2218,6 +2225,9 @@ function RecordsPageContent() {
                           min={PRESCRIPTION_QUANTITY_MIN}
                           max={PRESCRIPTION_COUNT_MAX}
                           step="0.001"
+                          aria-label="Prescription quantity"
+                          aria-describedby={linkedPrescriptionProduct ? "prescription-stock-feedback" : undefined}
+                          aria-invalid={Boolean(prescriptionForm.productId) && !hasValidPrescriptionQuantityForInventory}
                           value={prescriptionForm.quantity}
                           onChange={(e) =>
                             setPrescriptionForm((current) => ({
@@ -2227,6 +2237,22 @@ function RecordsPageContent() {
                           }
                           placeholder="e.g. 30"
                         />
+                        {linkedPrescriptionProduct ? (
+                          <div id="prescription-stock-feedback" className="mt-2 text-xs" role="status">
+                            <p>{linkedPrescriptionProduct.inventoryTracked
+                              ? `${linkedPrescriptionProduct.stockQuantity} inventory units available. Quantity is the total amount dispensed, in the same units as stock and price.`
+                              : "Stock tracking has not been set up for this item. Enter a reviewed opening quantity before dispensing."}</p>
+                            {!hasValidPrescriptionQuantityForInventory && !linkedProductQuery.isFetching && linkedPrescriptionProduct.inventoryTracked ? (
+                              <p className="mt-1 text-destructive">{linkedProductQuery.isError
+                                ? "Unable to verify stock. Refresh stock before saving."
+                                : "Cannot save this quantity against the recorded stock. Review the stock balance and dispensing units before continuing."}</p>
+                            ) : null}
+                            <a className="mt-1 inline-block underline" href="/inventory" target="_blank" rel="noopener noreferrer">Review inventory in a new tab</a>
+                            <button type="button" className="ml-3 underline" disabled={linkedProductQuery.isFetching} onClick={() => void linkedProductQuery.refetch()}>
+                              {linkedProductQuery.isFetching ? "Checking stock…" : "Refresh stock"}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-muted-foreground mb-1">

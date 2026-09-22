@@ -102,7 +102,7 @@ describe("inventory product form UX", () => {
   });
 
   it("keeps stock adjustment controls aligned to shared policy", () => {
-    expect(INVENTORY_ADJUSTMENT_QUANTITY_MIN).toBe(1);
+    expect(INVENTORY_ADJUSTMENT_QUANTITY_MIN).toBe(0.001);
     expect(INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH).toBe(500);
     expect(source).toContain("productStockQuantity");
     expect(source).toContain("const maxAddition = Math.max");

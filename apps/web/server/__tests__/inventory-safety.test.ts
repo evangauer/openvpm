@@ -725,7 +725,7 @@ describe("inventory mutation safety", () => {
     await expect(
       callerWithDb(db).adjustStock({
         id: PRODUCT_ID,
-        adjustment: 1.5,
+        adjustment: 1.0001,
         reason: "Correction",
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -815,4 +815,37 @@ describe("inventory mutation safety", () => {
       })
     );
   });
+  it.each([0.001, 0.125, 1.5, -0.125])(
+    "accepts precise stock adjustment %s",
+    async (adjustment) => {
+      const { db } = createDb({
+        selectResults: [
+          [{ id: PRODUCT_ID, inventoryTracked: true, stockQuantity: 2 }],
+        ],
+        updatedRows: [{ id: PRODUCT_ID, stockQuantity: 2 + adjustment }],
+      });
+      await expect(
+        callerWithDb(db).adjustStock({
+          id: PRODUCT_ID,
+          adjustment,
+          reason: "Reviewed count",
+        }),
+      ).resolves.toMatchObject({ stockQuantity: 2 + adjustment });
+    },
+  );
+
+  it.each([0, 0.0001, NaN, Infinity])(
+    "rejects invalid adjustment %s before database work",
+    async (adjustment) => {
+      const { db, select } = createDb();
+      await expect(
+        callerWithDb(db).adjustStock({
+          id: PRODUCT_ID,
+          adjustment,
+          reason: "Reviewed count",
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      expect(select).not.toHaveBeenCalled();
+    },
+  );
 });
