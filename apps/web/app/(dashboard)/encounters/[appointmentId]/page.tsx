@@ -3791,6 +3791,7 @@ function ChargeCapture({
     { limit: 50, search: productSearch.trim() || undefined },
     {
       getNextPageParam: (page) => page.nextCursor,
+      retry: false,
       enabled:
         canManage &&
         configReady &&
