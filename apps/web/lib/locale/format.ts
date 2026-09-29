@@ -10,6 +10,7 @@ const COUNTRY_LOCALE: Record<string, string> = {
   IE: "en-IE",
   CA: "en-CA",
   AU: "en-AU",
+  JP: "ja-JP",
 };
 
 export function localeForCountry(country?: string | null): string {
@@ -62,6 +63,9 @@ export function regionDefaults(country?: string | null): RegionDefaults {
       return { currency: "cad", taxRatePercent: "5.00", timezone: "America/Toronto" };
     case "AU":
       return { currency: "aud", taxRatePercent: "10.00", timezone: "Australia/Sydney" };
+    case "JP":
+      // Consumption tax standard rate. Veterinary care is not a tax-exempt medical service in Japan.
+      return { currency: "jpy", taxRatePercent: "10.00", timezone: "Asia/Tokyo" };
     default:
       return { currency: "usd", taxRatePercent: "8.00", timezone: "America/New_York" };
   }
