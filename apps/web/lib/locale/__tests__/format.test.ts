@@ -21,6 +21,12 @@ describe("formatCurrency", () => {
   it("formats EUR", () => {
     expect(formatCurrency(40, "eur", "IE")).toContain("€");
   });
+  it("formats JPY in ja-JP without minor units", () => {
+    const s = formatCurrency(4500, "jpy", "JP");
+    expect(s).toMatch(/[¥￥]/);
+    expect(s).toContain("4,500");
+    expect(s).not.toContain(".00");
+  });
   it("accepts string amounts from the DB and coerces them", () => {
     const s = formatCurrency("65.00", "gbp", "GB");
     expect(s).toContain("£");
@@ -39,6 +45,9 @@ describe("formatDate", () => {
     const gb = formatDate("2026-06-07", "GB");
     expect(us).toBe("06/07/2026");
     expect(gb).toBe("07/06/2026");
+  });
+  it("uses year/month/day order for Japan", () => {
+    expect(formatDate("2026-06-07", "JP")).toBe("2026/06/07");
   });
 });
 
@@ -59,6 +68,14 @@ describe("regionDefaults", () => {
       taxRatePercent: "20.00",
       timezone: "Europe/London",
     });
+  });
+  it("returns JPY/10%/Asia/Tokyo for Japan", () => {
+    expect(regionDefaults("JP")).toEqual({
+      currency: "jpy",
+      taxRatePercent: "10.00",
+      timezone: "Asia/Tokyo",
+    });
+    expect(localeForCountry("JP")).toBe("ja-JP");
   });
 });
 
