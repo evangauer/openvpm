@@ -27,7 +27,7 @@ export default async function PostLoginPage() {
   );
   if (!practice) redirect("/login");
 
-  if (!practice.recoveryHold && billingEnforced() && !hasHostedFullAccess(
+  if (session.user.role === "admin" && !practice.recoveryHold && billingEnforced() && !hasHostedFullAccess(
     practice.tier, practice.billingStatus, practice.trialEndsAt,
   )) redirect("/settings?tab=billing");
 
