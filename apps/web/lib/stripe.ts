@@ -662,8 +662,8 @@ export async function createBillingPortalSession(data: {
   const session = await stripe.billingPortal.sessions.create({
     customer: data.customerId,
     return_url: data.returnUrl,
-    ...(process.env[subscriptionBillingEnv("STRIPE_BILLING_PORTAL_CONFIGURATION", data.billingAccount ?? "legacy")]?.trim()
-      ? { configuration: process.env[subscriptionBillingEnv("STRIPE_BILLING_PORTAL_CONFIGURATION", data.billingAccount ?? "legacy")]!.trim() }
+    ...(data.billingAccount === "openvpm" && process.env.STRIPE_OPENVPM_BILLING_PORTAL_CONFIGURATION?.trim()
+      ? { configuration: process.env.STRIPE_OPENVPM_BILLING_PORTAL_CONFIGURATION!.trim() }
       : {}),
   });
   return { url: stripeCheckoutRedirectUrl(session.url) };
