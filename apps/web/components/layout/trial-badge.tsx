@@ -93,6 +93,18 @@ export function TrialBadge() {
     );
   }
 
+  if (data.billingStatus === "none" && !data.trialEndsAt) {
+    return (
+      <Link
+        href="/settings?tab=billing"
+        className="inline-flex items-center gap-1.5 rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800 transition-colors hover:bg-teal-100"
+      >
+        <CreditCard className="h-3.5 w-3.5" />
+        Start trial · Add a card
+      </Link>
+    );
+  }
+
   const trialing = data.billingStatus === "trialing" && data.trialEndsAt;
   if (trialing) {
     const days = trialCalendarDaysLeft(data.trialEndsAt, data.timezone) ?? 0;

@@ -44,8 +44,7 @@ function ConfirmToken({ token }: { token: string }) {
       {status === "ok" && (
         <>
           <p className="mt-3 text-sm text-foreground">
-            Email confirmed. Your trial was already active, so you can continue
-            where you left off.
+            Email confirmed. You can return to your workspace.
           </p>
           <Link
             href="/"
@@ -84,9 +83,8 @@ function VerificationRecovery() {
         Confirm your email
       </h2>
       <p className="mt-2 text-sm text-muted-foreground">
-        Your trial is already active. Open OpenVPM and use the verification
-        banner to send a new link securely. Any unexpired verification link will
-        work.
+        Sign in to OpenVPM and use the verification banner to send a new link
+        securely. Any unexpired verification link will work.
       </p>
       <Link
         href="/"

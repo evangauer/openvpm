@@ -232,7 +232,7 @@ describe("sendEmail", () => {
     ).resolves.toMatchObject({ success: true, id: "email-invoice-1" });
   });
 
-  it("keeps verification provider evidence and says the trial is already active", async () => {
+  it("keeps verification provider evidence without claiming a trial is active", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     mocks.resendSend.mockResolvedValue({ data: { id: "email-verify-1" } });
     const { sendVerificationEmail } = await loadEmail();
@@ -250,7 +250,7 @@ describe("sendEmail", () => {
       to: "admin@example.com",
       subject: "Verify your OpenVPM email",
     });
-    expect(payload.html).toContain("Your trial is already active.");
+    expect(payload.html).not.toContain("Your trial is already active.");
     expect(payload.html).toContain("Confirm email");
     expect(payload.html).not.toMatch(
       /activate your account|start your free trial/i,
