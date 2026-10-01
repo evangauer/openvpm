@@ -11,6 +11,7 @@ export interface WelcomeEmailProps {
   brand: Brand;
   practiceName: string;
   trialDays: number;
+  billingRequired?: boolean;
   unsubscribeUrl?: string;
 }
 
@@ -24,28 +25,35 @@ export function WelcomeEmail({
   brand,
   practiceName,
   trialDays,
+  billingRequired = false,
   unsubscribeUrl,
 }: WelcomeEmailProps) {
   return (
     <EmailLayout
       brand={brand}
-      preview={`Welcome to OpenVPM — your ${trialDays}-day trial is ready`}
+      preview={billingRequired
+        ? `Welcome to OpenVPM — complete billing to start your ${trialDays}-day trial`
+        : `Welcome to OpenVPM — your ${trialDays}-day trial is ready`}
       unsubscribeUrl={unsubscribeUrl}
       recipientReason="You're receiving this because you created an OpenVPM account."
     >
       <Heading>Welcome to OpenVPM 🎉</Heading>
       <Paragraph>
-        Hi {practiceName}, your workspace is ready. We set it up with a sample
-        practice — real clients, pets, and appointments — so the app feels alive
-        from the very first minute.
+        Hi {practiceName}, your account has been created. Your workspace includes
+        sample clients, pets, and appointments to help you explore OpenVPM.
       </Paragraph>
       <Paragraph muted>
-        Your {trialDays}-day trial is fully featured with no credit card
-        required, and your data is always yours to export.
+        {billingRequired
+          ? `Complete secure Stripe checkout to start your ${trialDays}-day free trial. A card is required, with no subscription charge today. Billing starts automatically after the trial; review the price and charge date at checkout, and cancel in Settings → Plan & Billing before the trial ends to avoid a subscription charge. If you already completed checkout, sign in to your workspace.`
+          : `Your ${trialDays}-day trial is ready. Your data is always yours to export.`}
       </Paragraph>
 
       <Section style={{ margin: "28px 0 8px" }}>
-        <Button href={brand.appUrl}>Open your dashboard</Button>
+        <Button href={billingRequired
+          ? `${brand.appUrl.replace(/\/$/, "")}/login?next=%2Fsettings%3Ftab%3Dbilling`
+          : brand.appUrl}>
+          {billingRequired ? "Review billing and start your trial" : "Open your dashboard"}
+        </Button>
       </Section>
 
       <InfoCard tone="brand">

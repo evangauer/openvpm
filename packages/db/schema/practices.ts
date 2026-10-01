@@ -36,6 +36,8 @@ export const practices = pgTable(
       .default("free"),
     stripeCustomerId: varchar("stripe_customer_id", { length: 64 }),
     stripeSubscriptionId: varchar("stripe_subscription_id", { length: 64 }),
+    // NULL preserves existing Get Talky subscriptions; new OpenVPM trials pin their account.
+    stripeBillingAccount: varchar("stripe_billing_account", { length: 16 }),
     // Stripe-style billing lifecycle: none | trialing | active | past_due | canceled.
     billingStatus: varchar("billing_status", { length: 24 })
       .notNull()

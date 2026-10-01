@@ -40,9 +40,10 @@ function LoginPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const visitorId = useFunnelVisitorId();
+  const checkoutState = searchParams.get("checkout");
   const nextPath = safeAuthNextPath(
     searchParams.get("next"),
-    "/post-login",
+    checkoutState === "cancelled" ? "/settings?tab=billing" : "/post-login",
   );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -145,6 +146,14 @@ function LoginPageInner() {
               : "Sign in to your practice"}
           </p>
         </div>
+
+        {!DEMO_MODE && (checkoutState === "success" || checkoutState === "cancelled") && (
+          <div role="status" className="mb-6 rounded-md border border-primary/20 bg-primary/5 p-4 text-sm leading-6">
+            {checkoutState === "success"
+              ? "Checkout completed. Sign in to open your clinic workspace. Your billing status updates after Stripe confirms checkout."
+              : "Your account is saved, but your trial has not started. Sign in to resume secure checkout in Plan & Billing. No subscription charge was made."}
+          </div>
+        )}
 
         {DEMO_MODE && (
           <div className="mb-6 rounded-md border border-primary/20 bg-primary/5 p-4">

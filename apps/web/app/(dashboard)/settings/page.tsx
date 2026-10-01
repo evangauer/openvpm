@@ -64,6 +64,7 @@ import {
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
+import { TRIAL_DAYS } from "@/lib/billing/plans";
 import { trialCalendarDaysLeft } from "@/lib/billing/trial-days";
 import { CloudBillingCadencePicker } from "@/components/billing/cloud-billing-cadence-picker";
 import {
@@ -1520,6 +1521,7 @@ function BillingTab() {
     .filter((option) => option.purchasable)
     .map((option) => option.cadence);
   const firstActivation = !data.hasSubscription;
+  const pendingTrial = firstActivation && !data.trialEndsAt && data.billingStatus === "none";
   const checkoutStatus = searchParams.get("checkout");
   // Only surface the sync note when something actually needs attention.
   const showSyncNote =
@@ -1558,18 +1560,24 @@ function BillingTab() {
                 <Badge
                   variant={data.billingStatus === "active" ? "success" : "info"}
                 >
-                  {data.billingStatus === "trialing"
+                  {pendingTrial
+                    ? "Trial not started"
+                    : data.billingStatus === "trialing"
                     ? `${daysLeft} trial day${daysLeft === 1 ? "" : "s"} left`
                     : data.billingStatus.replace("_", " ")}
                 </Badge>
               </div>
               <h3 className="mt-2 font-heading text-2xl font-semibold tracking-tight">
-                {firstActivation
+                {pendingTrial
+                  ? "Start your free trial"
+                  : firstActivation
                   ? "Activate your account"
                   : "Your Cloud subscription"}
               </h3>
               <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                {firstActivation
+                {pendingTrial
+                  ? `Add your card securely in Stripe Checkout to start your ${TRIAL_DAYS}-day trial. No charge today.`
+                  : firstActivation
                   ? "Choose a billing schedule, then add your payment details in secure Stripe Checkout. Your workspace and trial stay exactly as they are."
                   : `${currentPlan?.name ?? "Cloud"} keeps your clinic workspace active with unlimited staff.`}
               </p>
@@ -1617,7 +1625,9 @@ function BillingTab() {
                       : `$${data.estimatedMonthlyBase} billed monthly`}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {data.billingStatus === "trialing"
+                    {pendingTrial
+                      ? `Free for ${TRIAL_DAYS} days, then automatic billing at the selected price plus applicable taxes and usage overages. Cancel before the trial ends to avoid a subscription charge.`
+                      : data.billingStatus === "trialing"
                       ? `No charge today. ${daysLeft} trial day${daysLeft === 1 ? "" : "s"} remaining.`
                       : "Stripe securely collects and stores your payment method."}
                   </p>

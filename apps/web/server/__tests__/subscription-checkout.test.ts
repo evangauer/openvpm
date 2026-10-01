@@ -443,3 +443,41 @@ describe("subscription checkout", () => {
     });
   });
 });
+
+
+describe("per-clinic subscription account", () => {
+  it("uses OpenVPM prices and portal for new clinics while existing clinics stay on legacy", async () => {
+    vi.stubEnv("STRIPE_OPENVPM_ACCOUNT_ID", "acct_openvpm");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_legacy");
+    vi.stubEnv("STRIPE_OPENVPM_PRICE_CLOUD_LOCATION", "price_openvpm");
+    const db = createDb([
+      [practice({ stripeBillingAccount: "openvpm" })],
+      [practice()],
+      [practice({ stripeBillingAccount: "openvpm", stripeCustomerId: "cus_openvpm" })],
+      [practice({ stripeCustomerId: "cus_legacy" })],
+    ]);
+    const caller = callerWithDb(db);
+    await caller.createCheckout({ tier: "cloud" });
+    await caller.createCheckout({ tier: "cloud" });
+    await caller.openBillingPortal();
+    await caller.openBillingPortal();
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      billingAccount: "openvpm", lineItems: [{ priceId: "price_openvpm", quantity: 2 }], trialPeriodDays: TRIAL_DAYS,
+    }));
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      lineItems: [{ priceId: "price_legacy", quantity: 2 }],
+    }));
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenNthCalledWith(2, expect.not.objectContaining({ billingAccount: "openvpm" }));
+    expect(mocks.createBillingPortalSession).toHaveBeenNthCalledWith(1, expect.objectContaining({ billingAccount: "openvpm", customerId: "cus_openvpm" }));
+    expect(mocks.createBillingPortalSession).toHaveBeenNthCalledWith(2, expect.not.objectContaining({ billingAccount: "openvpm" }));
+  });
+
+  it("fails closed for unrecognized account ownership and missing dedicated prices", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_legacy");
+    const db = createDb([[practice({ stripeBillingAccount: "other" })], [practice({ stripeBillingAccount: "openvpm" })]]);
+    const caller = callerWithDb(db);
+    await expect(caller.createCheckout({ tier: "cloud" })).rejects.toThrow("Unrecognized subscription billing account");
+    await expect(caller.createCheckout({ tier: "cloud" })).rejects.toThrow("isn't available");
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
+  });
+});

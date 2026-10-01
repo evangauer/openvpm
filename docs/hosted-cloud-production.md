@@ -19,14 +19,13 @@ This boundary is intentional. Do not add hosted-only requirements to the self-ho
 - `Try the Live Demo` -> `${NEXT_PUBLIC_DEMO_URL}/login`
 - `Self-host OpenVPM` -> `/install` and GitHub
 
-Cloud signup creates a practice, a primary location, the owner admin user, default configuration, and hosted first-run demo data. By default, signup grants a 14-day trial immediately with no card and the clinic lands in the product (adding a card converts to paid); email verification is a soft prompt, not a login gate. Set `HOSTED_NO_CARD_TRIAL=false` to reinstate the legacy card-collected checkout wall at signup.
+Cloud signup creates a practice, a primary location, the owner admin user, default configuration, and hosted first-run demo data. By default, signup sends the owner to secure Stripe Checkout to collect payment details. The 14-day free trial starts only after Stripe confirms checkout through the signed subscription webhook. There is no subscription charge today; Stripe charges $79 USD/month per active location after the trial unless cancelled in Plan & Billing (plus applicable taxes and usage overages). Email verification remains a soft prompt. `HOSTED_NO_CARD_TRIAL=true` explicitly opts into the legacy immediate no-card trial. Existing trials keep their expiry; shared-demo access remains free.
 
-For a direct customer handoff, use
-`https://app.openvpm.com/register?next=%2Fsettings%3Ftab%3Dbilling`. After
-registration and automatic sign-in, the admin lands in **Settings → Plan &
-Billing**, chooses monthly or annual billing, and continues to Stripe. The top
-trial badge and dashboard activation checklist route to this same billing
-surface.
+After checkout, the owner signs in to their workspace. If checkout is cancelled,
+the account is retained without a running trial. Sign in from the cancellation
+page to resume from **Settings → Plan & Billing**, including monthly or annual
+billing. The top trial badge and dashboard activation checklist route to this
+same billing surface. Returning legacy trials preserve their original expiry.
 
 First run greets the new admin (and every invited staff member, once) with the value-first welcome: Polaroid guide cards that walk a workflow on the seeded demo data before any setup is asked. The Make-it-yours wizard is offered right after the first completed guide and from the welcome's "Set up my clinic instead" link. Rollback lever: `NEXT_PUBLIC_FIRST_RUN_MODE=wizard` restores the auto-opening wizard exactly. `NEXT_PUBLIC_WELCOME_VARIANT=imagery` switches the cards to the layered-art look (reviewers can flip live with `?welcomeVariant=`).
 
@@ -69,6 +68,7 @@ Set these on the hosted app deployment:
 
 ```env
 HOSTED_BILLING_ENABLED=true
+HOSTED_NO_CARD_TRIAL=false
 # Default-off. Set both only after reviewing the verified-admin recipient
 # cohort; the timestamp is the prospective closeout eligibility boundary.
 FIRST_CLINIC_WIN_ENABLED=false
@@ -660,3 +660,54 @@ Do not commit:
 - Customer data, exports, logs, or production database snapshots
 
 `.gitignore` already excludes the local/private files used by development and launch work.
+
+
+## Separate OpenVPM subscription account
+
+New subscriptions can use the OpenVPM Stripe account without moving existing
+customers or clinic-owned client payments. Apply migration
+`0106_subscription_billing_account` before deploying this revision to any app
+or demo database. Existing `stripe_billing_account=NULL` rows continue to use
+the original Get Talky key, prices, billing portal, meters, and webhook.
+Run `node apps/web/scripts/verify-openvpm-subscription-account.mjs` with the
+new account's configuration to check identity, prices, meter tiers, cancellation,
+and the registered webhook without creating a customer or subscription.
+New hosted registrations persist `openvpm` when `STRIPE_OPENVPM_ACCOUNT_ID` is
+set. Unknown account ownership fails closed. Checkout verifies that the new key
+belongs to that configured account before creating a session.
+
+Configure the complete `STRIPE_OPENVPM_*` group from `.env.example`. Monthly
+and annual prices, meters, portal cancellation, tax registrations, and payment
+method settings are account-specific; never copy IDs from Get Talky. Leave
+OpenVPM automatic tax disabled until its own registration and product tax code
+have been verified. Configure trial reminders in Stripe (7 days before charging)
+with the charge date, amount, and cancellation link; the app also has its
+existing 7/3/1-day lifecycle reminders.
+
+Create the OpenVPM event destination at
+`https://app.openvpm.com/api/webhooks/stripe-openvpm-subscription` for:
+
+- `checkout.session.completed`
+- `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`
+- `invoice.payment_succeeded` and `invoice.payment_failed`
+
+Keep the Get Talky subscription destination and all original env values intact.
+Each handler verifies its own secret and scopes every clinic lookup/update to
+that account. Replayed events retain the existing event-ledger idempotency.
+Checkout resumes, portal cancellation, quantity sync, and usage meters resolve
+the account from the clinic row. The invoice-payment/Connect surface continues
+to use the original key.
+
+Before promotion, verify the new-account flow in a sandbox: cancellation keeps
+the account without a running trial; retry offers the full 14 days; signed
+completion grants access and records payment-method evidence; portal cancels
+that subscription; a mismatched-account webhook changes no other clinic.
+Verify an existing Get Talky clinic can still open its original billing portal.
+Publish the matching marketing-site trial terms with this release. Reverting
+`STRIPE_OPENVPM_ACCOUNT_ID` stops new account assignments but must not remove
+OpenVPM credentials or its webhook while any clinics are assigned to it.
+
+Once any clinic uses OpenVPM billing, rollback must retain this account-routing
+code and database column. A code rollback to a revision that knows only Get
+Talky would route those clinics to the wrong portal and usage meter. Disable
+new account assignment instead of deleting the account boundary.

@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { ArrowLeft, ArrowRight, Loader2, ShieldCheck } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -18,7 +18,7 @@ import { BrandBadge } from "@/components/brand/paw-mark";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { firstRunMode } from "@/lib/welcome/first-run";
+import { firstRunMode, suppressWelcomeForBilling } from "@/lib/welcome/first-run";
 import { FUNNEL_EVENTS } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import {
@@ -71,6 +71,7 @@ export function OnboardingJourneyProvider({
 }: {
   children: React.ReactNode;
 }) {
+  const pathname = usePathname();
   const { data: session, status } = useSession();
   const isAdmin = status === "authenticated" && session?.user?.role === "admin";
 
@@ -129,6 +130,9 @@ export function OnboardingJourneyProvider({
     // offer, activation checklist). The personalized builder is the default;
     // NEXT_PUBLIC_FIRST_RUN_MODE=welcome remains the rollback path.
     if (firstRunMode() === "welcome") return;
+    if (typeof window !== "undefined" && suppressWelcomeForBilling(
+      pathname, new URLSearchParams(window.location.search),
+    )) return;
     // Wait until the setup state is loaded so the resume point is stable.
     if (!onboardingStatus.data || !onboardingState.data) {
       return;
@@ -148,6 +152,7 @@ export function OnboardingJourneyProvider({
     onboardingStatus.data,
     onboardingState.data,
     resumeIndex,
+    pathname,
   ]);
 
   const isOpen = isAdmin && index !== null;

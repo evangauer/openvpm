@@ -69,19 +69,12 @@ vi.mock("@/lib/onboarding/defaults", () => ({
   seedDemoData: mocks.seedDemoData,
 }));
 
-vi.mock("@/lib/billing/plans", () => ({
+vi.mock("@/lib/billing/plans", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/billing/plans")>(),
   billingEnforced: mocks.billingEnforced,
   noCardTrialEnabled: mocks.noCardTrialEnabled,
   trialEndsAtFrom: (from = new Date()) =>
     new Date(from.getTime() + 14 * 24 * 60 * 60 * 1000),
-  cloudCheckoutPriceIds: () => ({
-    locationPriceId: process.env.STRIPE_PRICE_CLOUD_LOCATION || undefined,
-  }),
-  cloudMeteredPriceIds: () => ({
-    aiOveragePriceId: process.env.STRIPE_PRICE_AI_OVERAGE || undefined,
-    smsOveragePriceId: process.env.STRIPE_PRICE_SMS_OVERAGE || undefined,
-  }),
-  TRIAL_DAYS: 14,
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -735,6 +728,7 @@ describe("auth router input validation", () => {
       to: "owner@example.com",
       practiceName: "Neighborhood Veterinary",
       trialDays: 14,
+      billingRequired: false,
     });
   });
 
@@ -1242,5 +1236,23 @@ describe("auth router token validation", () => {
     for (const call of updateWhere.mock.calls) {
       expect(sqlIncludesValue(call[0], users.deletedAt)).toBe(true);
     }
+  });
+});
+
+
+describe("dedicated OpenVPM signup billing", () => {
+  it("pins new trials to OpenVPM without granting access before checkout", async () => {
+    vi.stubEnv("STRIPE_OPENVPM_ACCOUNT_ID", "acct_openvpm");
+    vi.stubEnv("STRIPE_OPENVPM_PRICE_CLOUD_LOCATION", "price_openvpm");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_legacy");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues } = createRegistrationDb();
+    await callerWithDb(db).register({ email: "owner@example.com", password: "password123", practiceName: "Neighborhood Veterinary", country: "US" });
+    const inserted = insertValues.mock.calls[0]?.[0];
+    expect(inserted).toMatchObject({ stripeBillingAccount: "openvpm" });
+    expect(inserted).not.toHaveProperty("trialEndsAt");
+    expect(inserted).not.toHaveProperty("billingStatus");
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(expect.objectContaining({ billingAccount: "openvpm", lineItems: [{ priceId: "price_openvpm", quantity: 1 }], trialPeriodDays: 14 }));
+    expect(mocks.sendWelcomeEmail).toHaveBeenCalledWith(expect.objectContaining({ billingRequired: true }));
   });
 });

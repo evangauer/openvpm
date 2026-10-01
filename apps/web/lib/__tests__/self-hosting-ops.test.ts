@@ -223,7 +223,7 @@ describe("self-hosting operations docs", () => {
       "utf8",
     );
     const subscriptionWebhookRoute = readFileSync(
-      "app/api/webhooks/stripe-subscription/route.ts",
+      "lib/billing/subscription-webhook.ts",
       "utf8",
     );
     const clientInvoiceSection = hostedRunbook.slice(
