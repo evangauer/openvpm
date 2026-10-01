@@ -108,8 +108,8 @@ export default async function ClinicFitPage({
             <p className="mx-auto mt-5 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
               OpenVPM is strongest today for companion-animal and house-call
               clinics that can work in a connected browser and start alongside
-              their current PIMS. You can try it without a card and decide with
-              real workflow evidence.
+              their current PIMS. Explore the free shared demo, or start a 14-day Cloud trial with
+              your card on file.
             </p>
             <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
               <Button size="lg" asChild>
@@ -123,8 +123,8 @@ export default async function ClinicFitPage({
               </Button>
             </div>
             <p className="mt-3 text-xs text-slate-500">
-              Immediate access. No credit card required. Keep your current PIMS
-              in place while you validate a real visit.
+              The shared demo is free. Cloud trials require a card, with no charge
+              today. Keep your current PIMS in place while you validate a real visit.
             </p>
           </div>
         </section>

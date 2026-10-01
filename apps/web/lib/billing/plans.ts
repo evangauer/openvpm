@@ -14,6 +14,7 @@
  */
 
 import { envFlagEnabled } from "@/lib/env-bool";
+import { subscriptionBillingEnv, type SubscriptionBillingAccount } from "./stripe-accounts";
 import {
   CLOUD_ANNUAL_PRICE_USD,
   CLOUD_MONTHLY_PRICE_USD,
@@ -190,32 +191,34 @@ export function tierForStripePrice(
     STRIPE_PRICE_CLOUD_LEGACY_ENV,
   ];
   for (const env of cloudPriceEnvs) {
-    if (stripePriceIdFromEnv(env) === normalizedPriceId) return "cloud";
+    if (["legacy", "openvpm"].some((account) =>
+      stripePriceIdFromEnv(subscriptionBillingEnv(env, account as SubscriptionBillingAccount)) === normalizedPriceId
+    )) return "cloud";
   }
   return null;
 }
 
-export function cloudCheckoutPriceIds(cadence: BillingCadence = "month"): {
+export function cloudCheckoutPriceIds(cadence: BillingCadence = "month", account: SubscriptionBillingAccount = "legacy"): {
   locationPriceId?: string;
   seatPriceId?: string;
 } {
   return {
     locationPriceId: stripePriceIdFromEnv(
-      cadence === "year"
+      subscriptionBillingEnv(cadence === "year"
         ? STRIPE_PRICE_CLOUD_LOCATION_ANNUAL_ENV
-        : STRIPE_PRICE_CLOUD_LOCATION_ENV,
+        : STRIPE_PRICE_CLOUD_LOCATION_ENV, account),
     ),
-    seatPriceId: stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_USER_ENV),
+    seatPriceId: account === "legacy" ? stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_USER_ENV) : undefined,
   };
 }
 
 /** Configured licensed Cloud prices that quantity sync may encounter. */
-export function cloudLocationPriceIds(): Array<{
+export function cloudLocationPriceIds(account: SubscriptionBillingAccount = "legacy"): Array<{
   cadence: BillingCadence;
   priceId: string;
 }> {
   return (["month", "year"] as const).flatMap((cadence) => {
-    const priceId = cloudCheckoutPriceIds(cadence).locationPriceId;
+    const priceId = cloudCheckoutPriceIds(cadence, account).locationPriceId;
     return priceId ? [{ cadence, priceId }] : [];
   });
 }
@@ -227,7 +230,7 @@ export function billingCadenceForStripePrice(
   const normalizedPriceId = nonBlank(priceId);
   if (!normalizedPriceId) return null;
   return (
-    cloudLocationPriceIds().find((entry) => entry.priceId === normalizedPriceId)
+    [...cloudLocationPriceIds(), ...cloudLocationPriceIds("openvpm")].find((entry) => entry.priceId === normalizedPriceId)
       ?.cadence ?? null
   );
 }
@@ -238,13 +241,13 @@ export function billingCadenceForStripePrice(
  * usage and bills overage beyond the included allowance. Absent = no overage
  * billing wired (the app still records usage and alerts ops on spikes).
  */
-export function cloudMeteredPriceIds(): {
+export function cloudMeteredPriceIds(account: SubscriptionBillingAccount = "legacy"): {
   aiOveragePriceId?: string;
   smsOveragePriceId?: string;
 } {
   return {
-    aiOveragePriceId: stripePriceIdFromEnv(STRIPE_PRICE_AI_OVERAGE_ENV),
-    smsOveragePriceId: stripePriceIdFromEnv(STRIPE_PRICE_SMS_OVERAGE_ENV),
+    aiOveragePriceId: stripePriceIdFromEnv(subscriptionBillingEnv(STRIPE_PRICE_AI_OVERAGE_ENV, account)),
+    smsOveragePriceId: stripePriceIdFromEnv(subscriptionBillingEnv(STRIPE_PRICE_SMS_OVERAGE_ENV, account)),
   };
 }
 
@@ -301,15 +304,13 @@ export function planHasFeature(
 export const TRIAL_DAYS = 14;
 
 /**
- * Whether hosted signups start a card-free trial. This is the DEFAULT: a new
- * practice is granted a `trialing` window at signup with NO Stripe
- * subscription — the user lands straight in the product and only enters card
- * details to convert. Set HOSTED_NO_CARD_TRIAL=false to reinstate the legacy
- * card-collected Stripe Checkout wall at signup (kept as a reversible lever
- * while we gather conversion data).
+ * Hosted trials require payment details before access by default. Stripe starts
+ * the trial when Checkout completes; merely registering does not start it.
+ * HOSTED_NO_CARD_TRIAL=true explicitly opts into the legacy immediate trial.
+ * Existing trials retain their original expiry and self-host remains ungated.
  */
 export function noCardTrialEnabled(): boolean {
-  return process.env.HOSTED_NO_CARD_TRIAL?.trim().toLowerCase() !== "false";
+  return process.env.HOSTED_NO_CARD_TRIAL?.trim().toLowerCase() === "true";
 }
 
 /** The trial-end timestamp for a trial starting now (or at `from`). */

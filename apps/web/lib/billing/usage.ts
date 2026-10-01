@@ -118,6 +118,7 @@ async function maybeMeterToStripe(opts: {
       const [practice] = await tx
         .select({
           stripeCustomerId: practices.stripeCustomerId,
+          stripeBillingAccount: practices.stripeBillingAccount,
           recoveryHold: practices.recoveryHold,
         })
         .from(practices)
@@ -136,6 +137,7 @@ async function maybeMeterToStripe(opts: {
       const metered = await recordMeterEvent({
         kind: opts.kind,
         stripeCustomerId: practice.stripeCustomerId,
+        ...(practice.stripeBillingAccount ? { billingAccount: practice.stripeBillingAccount } : {}),
         value: opts.quantity,
         identifier,
       });

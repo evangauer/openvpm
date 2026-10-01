@@ -1,0 +1,1 @@
+ALTER TABLE "practices" ADD COLUMN "stripe_billing_account" varchar(16);

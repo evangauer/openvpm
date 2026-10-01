@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 describe("demo conversion bridge UI", () => {
   const login = readFileSync("app/(auth)/login/page.tsx", "utf8");
   const demoAccessRoute = readFileSync("app/api/demo-access/route.ts", "utf8");
-  const register = readFileSync("app/(auth)/register/page.tsx", "utf8");
+  const register = readFileSync("app/(auth)/register/register-form.tsx", "utf8");
   const firstDayRecommendations = readFileSync(
     "components/onboarding/first-day-recommendations.tsx",
     "utf8",

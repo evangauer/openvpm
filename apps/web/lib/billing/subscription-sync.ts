@@ -2,7 +2,8 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { locations, practices, users } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { alertOps } from "@/lib/alerts";
-import { stripe } from "@/lib/stripe";
+import { stripe as legacyStripe, subscriptionStripe } from "@/lib/stripe";
+import { subscriptionBillingAccount } from "./stripe-accounts";
 import {
   STRIPE_PRICE_CLOUD_LEGACY_ENV,
   billingCadenceForStripePrice,
@@ -118,6 +119,7 @@ export async function syncPracticeSubscriptionQuantities(opts: {
   const [practice] = await db
     .select({
       stripeSubscriptionId: practices.stripeSubscriptionId,
+      stripeBillingAccount: practices.stripeBillingAccount,
       recoveryHold: practices.recoveryHold,
     })
     .from(practices)
@@ -154,8 +156,10 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     return state;
   }
 
-  const locationPrices = cloudLocationPriceIds();
-  const { seatPriceId } = cloudCheckoutPriceIds();
+  const billingAccount = subscriptionBillingAccount(practice.stripeBillingAccount);
+  const stripe = billingAccount === "legacy" ? legacyStripe : subscriptionStripe(billingAccount);
+  const locationPrices = cloudLocationPriceIds(billingAccount);
+  const { seatPriceId } = cloudCheckoutPriceIds("month", billingAccount);
   if (locationPrices.length === 0) {
     const state = buildState(
       "error",
@@ -223,7 +227,7 @@ export async function syncPracticeSubscriptionQuantities(opts: {
     // clinic); the metered overage items (AI + SMS) are attached here after
     // the subscription exists. Idempotent: only add what is missing, so this
     // also self-heals subscriptions created before overage prices existed.
-    const { aiOveragePriceId, smsOveragePriceId } = cloudMeteredPriceIds();
+    const { aiOveragePriceId, smsOveragePriceId } = cloudMeteredPriceIds(billingAccount);
     for (const meteredPriceId of
       billingCadence === "year" ? [] : [aiOveragePriceId, smsOveragePriceId]) {
       if (

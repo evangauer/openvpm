@@ -42,7 +42,7 @@ describe("clinic jurisdiction evidence", () => {
   });
 
   it("keeps registration low-friction while blocking silent jurisdiction defaults", () => {
-    const source = readFileSync("app/(auth)/register/page.tsx", "utf8");
+    const source = readFileSync("app/(auth)/register/register-form.tsx", "utf8");
     const settingsSource = readFileSync(
       "app/(dashboard)/settings/page.tsx",
       "utf8",

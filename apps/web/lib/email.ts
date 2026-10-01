@@ -652,6 +652,7 @@ export async function sendWelcomeEmail(data: {
   to: string;
   practiceName: string;
   trialDays?: number;
+  billingRequired?: boolean;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
   const recipientHash = emailPreferenceRecipientHash(data.to);
@@ -675,6 +676,7 @@ export async function sendWelcomeEmail(data: {
     brand,
     practiceName: data.practiceName,
     trialDays: data.trialDays ?? 14,
+    billingRequired: data.billingRequired,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
   return sendEmail({

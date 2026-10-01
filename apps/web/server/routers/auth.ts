@@ -26,6 +26,7 @@ import {
 import { sendTrackedVerificationEmail } from "@/lib/auth-email-delivery";
 import { sendOptionalPlatformEmail } from "@/lib/email-lifecycle";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
+import { newSubscriptionBillingAccount } from "@/lib/billing/stripe-accounts";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { createSubscriptionCheckoutSession } from "@/lib/stripe";
 import {
@@ -257,6 +258,7 @@ export const authRouter = createRouter({
       // adds a card to convert. Access gating keys off the practice's trial
       // columns (see hasHostedFullAccess), independent of any Stripe object.
       const noCardTrial = hostedBilling && noCardTrialEnabled();
+      const billingAccount = newSubscriptionBillingAccount();
       const trialEndsAt = noCardTrial ? trialEndsAtFrom() : undefined;
       let hostedCheckoutLineItems:
         | Array<{
@@ -267,7 +269,7 @@ export const authRouter = createRouter({
         | undefined;
 
       if (hostedBilling && !noCardTrial) {
-        const { locationPriceId } = cloudCheckoutPriceIds();
+        const { locationPriceId } = cloudCheckoutPriceIds("month", billingAccount);
         if (!locationPriceId) {
           throw new TRPCError({
             code: "SERVICE_UNAVAILABLE",
@@ -328,6 +330,7 @@ export const authRouter = createRouter({
             .values({
               name: input.practiceName.trim(),
               email,
+              ...(hostedBilling && billingAccount === "openvpm" ? { stripeBillingAccount: billingAccount } : {}),
               country: input.country,
               currency: defaults.currency,
               taxRatePercent: defaults.taxRatePercent,
@@ -423,6 +426,7 @@ export const authRouter = createRouter({
                 practiceId: createdPractice.id,
                 customerEmail: email,
                 trialPeriodDays: TRIAL_DAYS,
+                ...(billingAccount === "openvpm" ? { billingAccount } : {}),
                 billingCadence: "month",
                 source: "signup",
                 successUrl: `${base}/login?checkout=success`,
@@ -559,6 +563,7 @@ export const authRouter = createRouter({
                   to: user.email,
                   practiceName: input.practiceName.trim(),
                   trialDays: TRIAL_DAYS,
+                  billingRequired: !noCardTrial,
                 }),
             });
           } catch {

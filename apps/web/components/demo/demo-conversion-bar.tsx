@@ -36,7 +36,7 @@ export function DemoConversionBar() {
       <p className="text-sm text-foreground">
         <span className="font-medium">Like this workflow?</span>{" "}
         <span className="text-muted-foreground">
-          Start a free Cloud trial with your own clinic data.
+          Start a 14-day Cloud trial with your own clinic data. Card required; no charge today.
         </span>
       </p>
       <div className="flex flex-wrap items-center gap-3">
