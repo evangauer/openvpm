@@ -76,7 +76,7 @@ That's the bar we're building to.
 
 ## Help & Guides
 
-The searchable [OpenVPM Guides](https://docs.openvpm.com) cover front desk, clinical, checkout, client care, and practice administration workflows. Their MDX source and publishing workflow are documented in [docs/help](docs/help/README.md). Before evaluating OpenVPM for live clinic use, read the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md) for the current supported, configuration-dependent, and not-yet-supported boundaries. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
+The searchable [OpenVPM Guides](https://docs.openvpm.com) cover front desk, clinical, checkout, client care, and practice administration workflows. The Markdown staff-guide sources are in [docs/help](docs/help/README.md); `apps/docs` is currently a placeholder package. Before evaluating OpenVPM for live clinic use, read the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md) for the current supported, configuration-dependent, and not-yet-supported boundaries. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
 
 ## Features
 
@@ -154,13 +154,12 @@ openvpm/
 │   │   ├── components/         # UI component library
 │   │   ├── lib/                # Utilities and integrations
 │   │   └── server/             # tRPC routers and server services
-│   └── docs/                   # Searchable Next.js staff-guide site
+│   └── docs/                   # Placeholder docs package (no scripts yet)
 ├── docs/                        # Help, API, deployment, and safety guides
 ├── packages/
 │   ├── db/                     # Modular schema, migrations, RLS, seed data
 │   ├── api/                    # Shared Zod validators
 │   ├── config/                 # TypeScript, Tailwind config
-│   ├── docs-content/           # Shared guide content and metadata
 │   └── email/                  # Email templates
 ├── docker/                     # Docker Compose (PostgreSQL + MinIO)
 └── e2e/                        # Playwright E2E tests
@@ -222,6 +221,10 @@ pnpm db:seed
 # Start the development server
 pnpm dev
 ```
+
+Until the fix for [#327](https://github.com/evangauer/openvpm/issues/327) lands
+in `main`, also copy the root `.env` to `apps/web/.env.local` before `pnpm dev`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the temporary workaround and cleanup.
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with the demo credentials:
 
@@ -338,6 +341,9 @@ We believe the best software for veterinary medicine should be built _with_ the 
 We welcome contributions from developers, veterinary professionals, and anyone who believes in open-source healthcare software.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and how to submit pull requests.
+For Spanish (Latin America, `es-419`) and Italian (`it`) translation contributions,
+start with [docs/TRANSLATING.md](docs/TRANSLATING.md). The UI is English-only
+until the message-catalog work lands.
 
 ### Areas Where We Need Help
 

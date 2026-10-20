@@ -12,7 +12,7 @@ Brief description of what this PR does and why.
 
 ## Target and Risk
 
-- [ ] Feature/fix PR into `development`
+- [ ] Feature/fix/docs PR into `main`
 - [ ] Release promotion from `development` into `staging`
 - [ ] Production promotion from `staging` into `main`
 - [ ] Changes auth, billing, migrations, tenant isolation, deployment, or secrets
