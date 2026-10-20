@@ -83,6 +83,6 @@
     "tailwindcss-animate": "^1.0.7",
     "tsx": "^4.23.12",
     "typescript": "^5.5.0",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.11"
   }
 }
