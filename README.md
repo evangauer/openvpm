@@ -189,6 +189,7 @@ cd openvpm
 
 # Copy environment config
 cp .env.example .env
+# In the root .env, set NEXTAUTH_SECRET using: openssl rand -base64 32
 
 # Start PostgreSQL and MinIO
 docker compose -f docker/docker-compose.yml up -d
@@ -212,6 +213,13 @@ pnpm db:seed
 # Start the development server
 pnpm dev
 ```
+
+Keep `.env` at the repository root beside `.env.example`. `pnpm dev` loads it
+for the web server in `apps/web`; you do not need a second env file there.
+Existing shell exports and app env values take precedence. If `DATABASE_URL`
+is missing, the dev server stops with setup instructions. Restart `pnpm dev`
+after changing the root env file. Production continues to use its deployment
+environment.
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with the demo credentials:
 

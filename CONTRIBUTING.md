@@ -10,6 +10,7 @@ Thank you for your interest in contributing to OpenVPM!
    git clone https://github.com/evangauer/openvpm.git
    cd openvpm
    cp .env.example .env
+   # In the root .env, set NEXTAUTH_SECRET using: openssl rand -base64 32
    pnpm install
    ```
 3. **Start services**:
@@ -19,6 +20,13 @@ Thank you for your interest in contributing to OpenVPM!
    pnpm db:seed
    pnpm dev
    ```
+
+Keep `.env` at the repository root beside `.env.example`. `pnpm dev` loads it
+for the web server in `apps/web`; you do not need a second env file there.
+Existing shell exports and app env values take precedence. If `DATABASE_URL`
+is missing, the dev server stops with setup instructions. Restart `pnpm dev`
+after changing the root env file. Production continues to use its deployment
+environment.
 
 ## Project Structure
 
