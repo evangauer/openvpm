@@ -16,6 +16,7 @@ import {
   appointmentWaitlist,
   appointments,
   clients,
+  invoiceAdjustments,
   invoices,
   patients,
   portalSessions,
@@ -57,6 +58,7 @@ import {
 } from "@/lib/messaging/consent-events";
 import { recordActivationAfterClientCreated } from "@/lib/funnel-events-server";
 import { clientSearchContainsPattern } from "@/lib/clients/search";
+import { summarizeClientAccountBalance } from "@/lib/billing/client-account-balance";
 
 const clientNameInput = z.string().trim().min(1).max(CLIENT_NAME_MAX_LENGTH);
 const clientEmailInput = z
@@ -368,6 +370,73 @@ export const clientsRouter = createRouter({
         portalAccessState,
         patients: clientPatients,
         smsConsentHistory,
+      };
+    }),
+
+  // Matches billing's authenticated staff read policy, including read-only
+  // viewers. protectedProcedure establishes the tenant RLS transaction.
+  getAccountBalance: protectedProcedure
+    .input(z.object({ clientId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const [client] = await ctx.db
+        .select({
+          id: clients.id,
+          currency: practices.currency,
+          country: practices.country,
+        })
+        .from(clients)
+        .innerJoin(
+          practices,
+          and(
+            eq(practices.id, clients.practiceId),
+            eq(practices.id, ctx.practiceId),
+            isNull(practices.deletedAt),
+          ),
+        )
+        .where(
+          and(
+            eq(clients.id, input.clientId),
+            eq(clients.practiceId, ctx.practiceId),
+            isNull(clients.deletedAt),
+          ),
+        )
+        .limit(1);
+
+      if (!client) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
+      }
+
+      // Only open issued invoices are needed. Do not fetch invoice lines,
+      // payment references, or patient records, and do not truncate the sum
+      // to the first page of billing results.
+      const openInvoices = await ctx.db
+        .select({
+          status: invoices.status,
+          isEstimate: invoices.isEstimate,
+          total: invoices.total,
+          paidAmount: invoices.paidAmount,
+          adjustedAmount: sql<string>`coalesce((
+            select sum(${invoiceAdjustments.amount})
+            from ${invoiceAdjustments}
+            where ${invoiceAdjustments.invoiceId} = ${invoices.id}
+              and ${invoiceAdjustments.deletedAt} is null
+          ), 0)`,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.practiceId, ctx.practiceId),
+            eq(invoices.clientId, input.clientId),
+            isNull(invoices.deletedAt),
+            eq(invoices.isEstimate, false),
+            inArray(invoices.status, ["sent", "overdue"]),
+          ),
+        );
+
+      return {
+        ...summarizeClientAccountBalance(openInvoices),
+        currency: client.currency,
+        country: client.country,
       };
     }),
 

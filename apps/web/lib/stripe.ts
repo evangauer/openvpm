@@ -34,20 +34,29 @@ function stripeIdempotencyKey(
 }
 
 const configuredStripeSecretKey = stripeSecretKey();
-const stripe = configuredStripeSecretKey
+// Demo deployments may inherit provider credentials. Never construct a paid
+// client there, and re-check the flag at each operation rather than exporting
+// a cached client that callers could use after the runtime boundary changes.
+const legacyStripeClient = !envFlagEnabled("NEXT_PUBLIC_DEMO_MODE") && configuredStripeSecretKey
   ? new Stripe(configuredStripeSecretKey, { apiVersion: STRIPE_API_VERSION })
   : null;
 
 const openvpmKey = process.env.STRIPE_OPENVPM_SECRET_KEY?.trim();
-const openvpmStripe = openvpmKey
+const openvpmStripe = !envFlagEnabled("NEXT_PUBLIC_DEMO_MODE") && openvpmKey
   ? new Stripe(openvpmKey, { apiVersion: STRIPE_API_VERSION })
   : null;
 
+export function getStripeClient(): Stripe | null {
+  return envFlagEnabled("NEXT_PUBLIC_DEMO_MODE") ? null : legacyStripeClient;
+}
+
 export function subscriptionStripe(account: SubscriptionBillingAccount = "legacy"): Stripe | null {
-  return subscriptionBillingAccount(account) === "openvpm" ? openvpmStripe : stripe;
+  if (envFlagEnabled("NEXT_PUBLIC_DEMO_MODE")) return null;
+  return subscriptionBillingAccount(account) === "openvpm" ? openvpmStripe : getStripeClient();
 }
 
 let openvpmAccountVerification: Promise<void> | undefined;
+class StripeUnavailableError extends Error {}
 async function verifyOpenvpmBillingAccount(client: Stripe): Promise<void> {
   openvpmAccountVerification ??= (async () => {
     const expected = process.env.STRIPE_OPENVPM_ACCOUNT_ID?.trim();
@@ -56,10 +65,12 @@ async function verifyOpenvpmBillingAccount(client: Stripe): Promise<void> {
       throw new Error("OpenVPM billing requires its webhook and customer portal configuration.");
     }
     const actual = await client.accounts.retrieve(null);
+    const currentClient = subscriptionStripe("openvpm");
+    if (!currentClient) throw new StripeUnavailableError();
     if (!expected || actual.id !== expected) {
       throw new Error("OpenVPM billing key does not match its configured Stripe account.");
     }
-    const portal = await client.billingPortal.configurations.retrieve(portalId);
+    const portal = await currentClient.billingPortal.configurations.retrieve(portalId);
     if (!portal.active || !portal.features.subscription_cancel.enabled || !portal.features.payment_method_update.enabled) {
       throw new Error("OpenVPM customer portal must allow cancellation and payment-method updates.");
     }
@@ -79,6 +90,7 @@ export async function createCheckoutSession(data: {
   connectedAccountId?: string | null;
   applicationFeeAmount?: number;
 }): Promise<{ url: string | null } | null> {
+  const stripe = getStripeClient();
   if (!stripe) {
     console.warn("[Stripe] No API key configured; checkout session unavailable");
     return null;
@@ -114,6 +126,7 @@ export async function captureStripeCheckoutAuthorization(data: {
   checkoutSessionId: string;
   connectedAccountId?: string;
 }): Promise<{ amountCapturedCents: number }> {
+  const stripe = getStripeClient();
   if (!stripe) {
     throw new Error("Stripe is not configured; cannot capture card payment.");
   }
@@ -169,6 +182,9 @@ export async function captureStripeCheckoutAuthorization(data: {
       ? { application_fee_amount: proportionalApplicationFee }
       : {}),
   };
+  if (!getStripeClient()) {
+    throw new Error("Stripe is not configured; cannot capture card payment.");
+  }
   const captured = await stripe.paymentIntents.capture(
     data.paymentIntentId,
     captureParams,
@@ -202,6 +218,7 @@ export async function refundInvalidStripeCheckoutPayment(data: {
   if (!parsed) {
     throw new Error("Invalid Stripe Checkout payment identity.");
   }
+  const stripe = getStripeClient();
   if (!stripe) {
     throw new Error("Stripe is not configured; cannot resolve card payment.");
   }
@@ -223,6 +240,9 @@ export async function refundInvalidStripeCheckoutPayment(data: {
       `Stripe Checkout session has no payment intent: ${parsed.sessionId}`
     );
   }
+  if (!getStripeClient()) {
+    throw new Error("Stripe is not configured; cannot resolve card payment.");
+  }
   const paymentIntent =
     typeof session.payment_intent === "object" && session.payment_intent
       ? session.payment_intent
@@ -235,6 +255,9 @@ export async function refundInvalidStripeCheckoutPayment(data: {
         : await stripe.paymentIntents.retrieve(paymentIntentId);
 
   if (paymentIntent.status === "requires_capture") {
+    if (!getStripeClient()) {
+      throw new Error("Stripe is not configured; cannot resolve card payment.");
+    }
     await stripe.paymentIntents.cancel(
       paymentIntentId,
       { cancellation_reason: "abandoned" },
@@ -266,6 +289,9 @@ export async function refundInvalidStripeCheckoutPayment(data: {
   const refundableCents = paymentIntent.amount_received;
   if (refundableCents <= 0) {
     return { outcome: "no_funds" };
+  }
+  if (!getStripeClient()) {
+    throw new Error("Stripe is not configured; cannot resolve card payment.");
   }
   const refund = await stripe.refunds.create(
     {
@@ -324,6 +350,7 @@ export async function refundStripeCheckoutPayment(data: {
 }): Promise<{ refundId: string } | null> {
   const parsed = parseStripeCheckoutExternalId(data.externalId);
   if (!parsed) return null;
+  const stripe = getStripeClient();
   if (!stripe) {
     throw new Error("Stripe is not configured; cannot refund a card payment.");
   }
@@ -355,6 +382,9 @@ export async function refundStripeCheckoutPayment(data: {
     // clinic is never out of pocket for a refund.
     ...(parsed.connectedAccountId ? { refund_application_fee: true } : {}),
   };
+  if (!getStripeClient()) {
+    throw new Error("Stripe is not configured; cannot refund a card payment.");
+  }
   const refund = await stripe.refunds.create(params, {
     idempotencyKey: stripeIdempotencyKey(
       "refund",
@@ -422,6 +452,7 @@ export async function constructWebhookEvent(
   body: string,
   signature: string,
 ): Promise<Stripe.Event | null> {
+  const stripe = getStripeClient();
   if (!stripe) return null;
   const endpointSecret = stripeWebhookSecret();
   if (!endpointSecret) return null;
@@ -440,6 +471,7 @@ export async function createConnectAccount(data: {
   country?: string | null;
   businessName?: string | null;
 }): Promise<Stripe.Account | null> {
+  const stripe = getStripeClient();
   if (!stripe) return null;
 
   return stripe.accounts.create(
@@ -483,6 +515,7 @@ export async function createConnectAccount(data: {
 export async function retrieveConnectAccount(
   accountId: string
 ): Promise<Stripe.Account | null> {
+  const stripe = getStripeClient();
   if (!stripe) return null;
   return stripe.accounts.retrieve(accountId);
 }
@@ -492,6 +525,7 @@ export async function createConnectAccountLink(data: {
   refreshUrl: string;
   returnUrl: string;
 }): Promise<{ url: string | null } | null> {
+  const stripe = getStripeClient();
   if (!stripe) return null;
   const accountLink = await stripe.accountLinks.create({
     account: data.accountId,
@@ -505,6 +539,7 @@ export async function createConnectAccountLink(data: {
 export async function createConnectLoginLink(
   accountId: string
 ): Promise<{ url: string | null } | null> {
+  const stripe = getStripeClient();
   if (!stripe) return null;
   const loginLink = await stripe.accounts.createLoginLink(accountId);
   return { url: stripeCheckoutRedirectUrl(loginLink.url) };
@@ -514,6 +549,7 @@ export async function constructConnectWebhookEvent(
   body: string,
   signature: string,
 ): Promise<Stripe.Event | null> {
+  const stripe = getStripeClient();
   if (!stripe) return null;
   const endpointSecret = stripeConnectWebhookSecret();
   if (!endpointSecret) return null;
@@ -544,14 +580,23 @@ export async function createSubscriptionCheckoutSession(data: {
   source?: "signup" | "settings";
   billingAccount?: SubscriptionBillingAccount;
 }): Promise<{ url: string | null } | null> {
-  const stripe = subscriptionStripe(data.billingAccount);
+  let stripe = subscriptionStripe(data.billingAccount);
   if (!stripe) {
     console.warn(
       "[Stripe] No API key configured; subscription checkout unavailable"
     );
     return null;
   }
-  if (data.billingAccount === "openvpm") await verifyOpenvpmBillingAccount(stripe);
+  if (data.billingAccount === "openvpm") {
+    try {
+      await verifyOpenvpmBillingAccount(stripe);
+    } catch (error) {
+      if (error instanceof StripeUnavailableError) return null;
+      throw error;
+    }
+  }
+  stripe = subscriptionStripe(data.billingAccount);
+  if (!stripe) return null;
   const params = buildSubscriptionCheckoutSessionParams(data);
   const session = await stripe.checkout.sessions.create(params, {
     idempotencyKey: stripeIdempotencyKey(
@@ -656,9 +701,18 @@ export async function createBillingPortalSession(data: {
   returnUrl: string;
   billingAccount?: SubscriptionBillingAccount;
 }): Promise<{ url: string | null } | null> {
-  const stripe = subscriptionStripe(data.billingAccount);
+  let stripe = subscriptionStripe(data.billingAccount);
   if (!stripe) return null;
-  if (data.billingAccount === "openvpm") await verifyOpenvpmBillingAccount(stripe);
+  if (data.billingAccount === "openvpm") {
+    try {
+      await verifyOpenvpmBillingAccount(stripe);
+    } catch (error) {
+      if (error instanceof StripeUnavailableError) return null;
+      throw error;
+    }
+  }
+  stripe = subscriptionStripe(data.billingAccount);
+  if (!stripe) return null;
   const session = await stripe.billingPortal.sessions.create({
     customer: data.customerId,
     return_url: data.returnUrl,
@@ -687,8 +741,6 @@ export async function constructSubscriptionWebhookEvent(
     endpointSecret,
   );
 }
-
-export { stripe };
 
 function stripeCheckoutRedirectUrl(value: unknown): string | null {
   return isSafeCheckoutRedirectUrl(value) ? value : null;

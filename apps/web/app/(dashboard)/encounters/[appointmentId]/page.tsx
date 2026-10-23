@@ -52,6 +52,7 @@ import {
   isBillingInvoiceSubtotalValid,
 } from "@/lib/billing/policy";
 import { centsToMoney, moneyToCents } from "@/lib/billing/invoice-balance";
+import { ClientAccountBalance } from "@/components/clients/client-account-balance";
 import { tryCalculateInvoiceTaxTotals } from "@/lib/billing/invoice-tax";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes-guard";
@@ -600,6 +601,11 @@ export default function EncounterWorkspacePage() {
                 : (appointment.typeName ?? "Appointment")}{" "}
               · {clientName || "No client"}
             </p>
+            {appointment.clientId ? (
+              <div className="mt-2">
+                <ClientAccountBalance clientId={appointment.clientId} />
+              </div>
+            ) : null}
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted-foreground">
               <span className="inline-flex items-center gap-1.5">
                 <CalendarClock className="h-4 w-4" />

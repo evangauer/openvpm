@@ -1,4 +1,4 @@
-import { stripe as legacyStripe, subscriptionStripe } from "@/lib/stripe";
+import { subscriptionStripe } from "@/lib/stripe";
 import { subscriptionBillingAccount } from "./stripe-accounts";
 import type { UsageKind } from "./usage";
 
@@ -35,7 +35,7 @@ export async function recordMeterEvent(opts: {
 }): Promise<boolean> {
   try {
     const account = subscriptionBillingAccount(opts.billingAccount);
-    const stripe = account === "legacy" ? legacyStripe : subscriptionStripe(account);
+    const stripe = subscriptionStripe(account);
     if (!stripe) return false;
     await stripe.billing.meterEvents.create({
       event_name: meterEventName(opts.kind),

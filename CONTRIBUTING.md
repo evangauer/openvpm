@@ -23,11 +23,11 @@ Thank you for your interest in contributing to OpenVPM!
 ## Project Structure
 
 - `apps/web/` — Next.js product + dashboard and REST/tRPC APIs
-- `apps/docs/` — Searchable Next.js staff-guide site
+- `apps/docs/` — Reserved documentation package; no standalone site is implemented yet
 - `packages/db/` — Drizzle ORM schema and migrations
 - `packages/api/` — Shared Zod validators and types
 - `packages/config/` — Shared TypeScript and Tailwind config
-- `packages/docs-content/` — Shared guide content and metadata
+- `docs/help/` — Public staff guides and sample workflow walkthroughs
 
 ## Development Workflow
 

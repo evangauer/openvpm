@@ -49,7 +49,7 @@ describe("separate subscription Stripe clients", () => {
     expect(legacy.checkout.sessions.create).not.toHaveBeenCalled();
     await api.createSubscriptionCheckoutSession({ ...checkout, customerId: "cus_existing" });
     expect(legacy.checkout.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ customer: "cus_existing" }), expect.anything());
-    expect(api.stripe).toBe(legacy);
+    expect(api.getStripeClient()).toBe(legacy);
   });
 
   it("fails closed without a dedicated key instead of sending new clinics to the legacy account", async () => {

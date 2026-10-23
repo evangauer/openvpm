@@ -1,11 +1,13 @@
 # OpenVPM Help
 
 Short guides for running your clinic on OpenVPM. Each one takes a minute or
-two. The same walkthroughs live inside the app: open **Settings** and click
-**Guides** to see them with your own data.
+two. In-app guided tours are also available: open **Settings** and click
+**Guides** to explore the available walkthroughs with your own data.
 
 ## Getting started
 
+- [Three sample workflows to try](sample-workflows.md). Follow an outside record,
+  a visit invoice, or an optional connected field visit using fictional data.
 - [Getting started](getting-started.md). A quick look at the whole app: your
   day, every pet's story, one-click billing, and the AI helper.
 - [Switching from another system](../migrating-to-openvpm.md). Bring your

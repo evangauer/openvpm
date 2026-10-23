@@ -67,6 +67,7 @@ export default async function ClinicFitPage({
   const inboundAttribution = toUrlSearchParams(await searchParams);
   const clinicFitSignupUrl = buildClinicFitSignupUrl(inboundAttribution);
   const clinicFitDemoUrl = buildClinicFitDemoUrl(inboundAttribution);
+  const workflowGuideUrl = `/clinic-fit/workflows${new URL(clinicFitDemoUrl).search}`;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-950">
@@ -126,6 +127,13 @@ export default async function ClinicFitPage({
               The shared demo is free. Cloud trials require a card, with no charge
               today. Keep your current PIMS in place while you validate a real visit.
             </p>
+            <Link
+              href={workflowGuideUrl}
+              className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-emerald-800 underline underline-offset-4"
+            >
+              Walk through three sample workflows
+              <ArrowRight aria-hidden="true" className="h-4 w-4" />
+            </Link>
           </div>
         </section>
 

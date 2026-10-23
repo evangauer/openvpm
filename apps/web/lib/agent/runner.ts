@@ -18,6 +18,7 @@ import {
 import { recordUsage } from "@/lib/billing/usage";
 import { readHostedAiAccess } from "@/lib/billing/ai-access";
 import { rateLimit } from "@/lib/rate-limit";
+import { envFlagEnabled } from "@/lib/env-bool";
 import {
   lockPracticeForExternalSideEffects,
   RECOVERY_HOLD_BLOCK_MESSAGE,
@@ -182,6 +183,7 @@ function hasProviderConfiguration(modelId: string): boolean {
 
 /** Whether the configured provider has a complete authentication boundary. */
 export function isAgentConfigured(): boolean {
+  if (envFlagEnabled("NEXT_PUBLIC_DEMO_MODE")) return false;
   return hasProviderConfiguration(activeModelId());
 }
 
@@ -191,6 +193,7 @@ export function isAgentConfigured(): boolean {
  * Throws AgentNotConfiguredError when no provider authentication is set.
  */
 export function configuredModel(): LanguageModel {
+  if (envFlagEnabled("NEXT_PUBLIC_DEMO_MODE")) throw new AgentNotConfiguredError();
   const modelId = activeModelId();
   if (!hasProviderConfiguration(modelId)) throw new AgentNotConfiguredError();
   return resolveModel(modelId);
@@ -198,6 +201,9 @@ export function configuredModel(): LanguageModel {
 
 /** Build an AI SDK model instance for the given model id. */
 function resolveModel(modelId: string) {
+  // A run awaits tenant checks and rate limits before reaching the provider.
+  // Re-check here so enabling demo during those awaits still fails closed.
+  if (envFlagEnabled("NEXT_PUBLIC_DEMO_MODE")) throw new AgentNotConfiguredError();
   if (isGoogleModel(modelId)) {
     const googleAuthOptions = hasVertexOidcConfiguration()
       ? vertexOidcAuthOptions()
@@ -360,6 +366,7 @@ export async function runAgent(opts: {
   /** Prior conversation turns, oldest first, for multi-turn chat context. */
   history?: Array<{ role: "user" | "assistant"; content: string }>;
 }): Promise<AgentRunResult> {
+  if (envFlagEnabled("NEXT_PUBLIC_DEMO_MODE")) throw new AgentNotConfiguredError();
   const modelId = activeModelId(opts.model);
   if (!hasProviderConfiguration(modelId)) throw new AgentNotConfiguredError();
   if (

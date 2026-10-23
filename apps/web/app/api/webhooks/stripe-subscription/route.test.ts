@@ -65,12 +65,11 @@ vi.mock("@/lib/tenant-db", () => ({
 
 vi.mock("@/lib/stripe", () => ({
   constructSubscriptionWebhookEvent: mocks.constructSubscriptionWebhookEvent,
-  subscriptionStripe: vi.fn(() => ({ subscriptions: { retrieve: mocks.retrieveOpenvpmSubscription } })),
-  stripe: {
+  subscriptionStripe: vi.fn((account: string) => ({
     subscriptions: {
-      retrieve: mocks.retrieveSubscription,
+      retrieve: account === "openvpm" ? mocks.retrieveOpenvpmSubscription : mocks.retrieveSubscription,
     },
-  },
+  })),
 }));
 
 vi.mock("@/lib/billing/stripe-events", () => ({

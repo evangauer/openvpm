@@ -2,7 +2,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { locations, practices, users } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { alertOps } from "@/lib/alerts";
-import { stripe as legacyStripe, subscriptionStripe } from "@/lib/stripe";
+import { subscriptionStripe } from "@/lib/stripe";
 import { subscriptionBillingAccount } from "./stripe-accounts";
 import {
   STRIPE_PRICE_CLOUD_LEGACY_ENV,
@@ -157,7 +157,7 @@ export async function syncPracticeSubscriptionQuantities(opts: {
   }
 
   const billingAccount = subscriptionBillingAccount(practice.stripeBillingAccount);
-  const stripe = billingAccount === "legacy" ? legacyStripe : subscriptionStripe(billingAccount);
+  let stripe = subscriptionStripe(billingAccount);
   const locationPrices = cloudLocationPriceIds(billingAccount);
   const { seatPriceId } = cloudCheckoutPriceIds("month", billingAccount);
   if (locationPrices.length === 0) {
@@ -178,6 +178,8 @@ export async function syncPracticeSubscriptionQuantities(opts: {
 
   try {
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    stripe = subscriptionStripe(billingAccount);
+    if (!stripe) throw new Error("Stripe API key is not configured.");
     const items = subscription.items.data;
     const locationItem = items.find((item) =>
       locationPrices.some((entry) => entry.priceId === item.price?.id),

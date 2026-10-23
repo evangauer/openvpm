@@ -1,0 +1,2 @@
+# Preserve generated PDF byte offsets; do not normalize or merge it as text.
+apps/web/public/clinic-fit/workflows/synthetic-external-record.pdf binary

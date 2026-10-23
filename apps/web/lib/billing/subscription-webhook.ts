@@ -3,7 +3,7 @@ import { and, eq, isNull, or } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "@openpims/db/client";
 import { practices } from "@openpims/db";
-import { constructSubscriptionWebhookEvent, stripe as legacyStripe, subscriptionStripe } from "@/lib/stripe";
+import { constructSubscriptionWebhookEvent, subscriptionStripe } from "@/lib/stripe";
 import type { SubscriptionBillingAccount } from "./stripe-accounts";
 import {
   tierForStripePrice,
@@ -47,7 +47,6 @@ function payloadTooLargeResponse() {
  * surfaces isolated so neither can spoof the other.
  */
 export function createSubscriptionWebhookHandler(account: SubscriptionBillingAccount) {
-  const stripe = account === "legacy" ? legacyStripe : subscriptionStripe(account);
   const accountWhere = account === "openvpm"
     ? eq(practices.stripeBillingAccount, "openvpm")
     : or(isNull(practices.stripeBillingAccount), eq(practices.stripeBillingAccount, "legacy"));
@@ -158,6 +157,7 @@ export function createSubscriptionWebhookHandler(account: SubscriptionBillingAcc
               });
             }
             if (activePracticeId && subscriptionId) {
+              const stripe = subscriptionStripe(account);
               if (!stripe) {
                 throw new Error(
                   "Stripe is unavailable while reconciling Checkout.",
@@ -175,6 +175,7 @@ export function createSubscriptionWebhookHandler(account: SubscriptionBillingAcc
 
           case "customer.subscription.created":
           case "customer.subscription.updated": {
+            const stripe = subscriptionStripe(account);
             if (!stripe) {
               throw new Error(
                 "Stripe is unavailable while reconciling a subscription event.",
@@ -220,6 +221,7 @@ export function createSubscriptionWebhookHandler(account: SubscriptionBillingAcc
               const subscriptionId = subscriptionIdForInvoice(inv);
               let subscriptionPracticeId: string | null = null;
               if (subscriptionId) {
+                const stripe = subscriptionStripe(account);
                 if (!stripe) {
                   throw new Error(
                     "Stripe is unavailable while reconciling a paid invoice.",
@@ -278,6 +280,7 @@ export function createSubscriptionWebhookHandler(account: SubscriptionBillingAcc
             const inv = event.data.object as Stripe.Invoice;
             const subscriptionId = subscriptionIdForInvoice(inv);
             if (subscriptionId) {
+              const stripe = subscriptionStripe(account);
               if (!stripe) {
                 throw new Error(
                   "Stripe is unavailable while reconciling a failed invoice.",
