@@ -32,10 +32,10 @@
   "pnpm": {
     "overrides": {
       "drizzle-kit@0.31.10>@esbuild-kit/esm-loader": "-",
-      "axios": "1.19.0",
+      "axios": "1.20.0",
       "brace-expansion": "2.1.4",
       "browserslist": "4.28.7",
-      "dompurify": "3.4.13",
+      "dompurify": "3.4.17",
       "fast-xml-builder": "1.1.7",
       "fast-xml-parser": "5.10.1",
       "fflate": "0.8.3",
@@ -50,12 +50,18 @@
       "postcss-selector-parser": "6.1.3",
       "prismjs": "1.30.0",
       "qs": "6.16.0",
-      "sharp": "0.35.3",
-      "uuid": "11.1.1"
+      "sharp": "0.35.5",
+      "uuid": "11.1.1",
+      "@ai-sdk/provider-utils@4": "4.0.46",
+      "follow-redirects": "1.16.1",
+      "source-map-js": "1.2.2",
+      "tinypool": "2.1.2",
+      "undici@6": "6.28.1",
+      "vite@7": "7.3.7"
     }
   },
   "packageManager": "pnpm@9.15.0",
   "engines": {
-    "node": ">=20"
+    "node": "^24.22.1"
   }
 }
