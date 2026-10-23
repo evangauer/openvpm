@@ -186,7 +186,7 @@ Dashboard tRPC routers cover the product's clinic workflows, including patients,
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 24.22.1 or a newer Node.js 24 patch (`nvm use`)
 - pnpm 9+
 - Docker (for PostgreSQL and MinIO)
 
