@@ -49,16 +49,16 @@ const reminderNotesInput = z
 const expectedUpdatedAtInput = z.string().datetime();
 const careReminderDismisser = alias(users, "care_reminder_dismisser");
 const outreachInput = z.object({
-  reminderId: z.string().uuid(),
+  reminderId: z.string().guid(),
   channel: z.enum(["email", "sms"]),
-  requestId: z.string().uuid(),
+  requestId: z.string().guid(),
 });
 const dismissalInput = z
   .object({
     items: z
       .array(
         z.object({
-          id: z.string().uuid(),
+          id: z.string().guid(),
           expectedUpdatedAt: expectedUpdatedAtInput,
         }),
       )
@@ -146,7 +146,7 @@ export const careRemindersRouter = createRouter({
             .enum(["open", "completed", "dismissed", "all"])
             .default("open"),
           due: z.enum(["all", "overdue", "upcoming"]).default("all"),
-          patientId: z.string().uuid().optional(),
+          patientId: z.string().guid().optional(),
           limit: z.number().int().min(1).max(1000).default(500),
         })
         .optional(),
@@ -250,7 +250,7 @@ export const careRemindersRouter = createRouter({
   create: manageProcedure
     .input(
       z.object({
-        patientId: z.string().uuid(),
+        patientId: z.string().guid(),
         title: reminderTitleInput,
         notes: reminderNotesInput,
         dueDate: clinicalDateInput("Due date"),
@@ -599,7 +599,7 @@ export const careRemindersRouter = createRouter({
   setCompleted: manageProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         completed: z.boolean(),
         expectedUpdatedAt: expectedUpdatedAtInput,
       }),

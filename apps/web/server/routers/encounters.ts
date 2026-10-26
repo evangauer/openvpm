@@ -82,7 +82,7 @@ const optionalText = (label: string, max: number) =>
     .transform((value) => trimmedOrNull(value));
 
 const clinicalDraftInput = z.object({
-  appointmentId: z.string().uuid(),
+  appointmentId: z.string().guid(),
   expectedRevision: z.number().int().min(0),
   diagnosisSummary: optionalText("Diagnosis summary", CLOSEOUT_DIAGNOSIS_MAX_LENGTH),
   dischargeInstructions: optionalText(
@@ -100,14 +100,14 @@ const clinicalDraftInput = z.object({
     "Follow-up notes",
     CLOSEOUT_FOLLOW_UP_NOTES_MAX_LENGTH
   ),
-  followUpAppointmentId: z.string().uuid().nullable(),
+  followUpAppointmentId: z.string().guid().nullable(),
   followUpDueDate: clinicalDateInput("Follow-up due date")
     .nullable()
     .optional()
     .transform((value) => value ?? null),
   followUpAssignedTo: z
     .string()
-    .uuid()
+    .guid()
     .nullable()
     .optional()
     .transform((value) => value ?? null),
@@ -186,7 +186,7 @@ const finalizeClinicalInput = clinicalDraftInput.superRefine((input, ctx) => {
 
 const completeVisitInput = z
   .object({
-    appointmentId: z.string().uuid(),
+    appointmentId: z.string().guid(),
     expectedRevision: z.number().int().min(1),
     chargeDisposition: z.enum(["paid", "accounts_receivable", "no_charge"]),
     noChargeReason: optionalText("No-charge reason", CLOSEOUT_REASON_MAX_LENGTH),
@@ -231,7 +231,7 @@ const completeVisitInput = z
   });
 
 const reopenClinicalInput = z.object({
-  appointmentId: z.string().uuid(),
+  appointmentId: z.string().guid(),
   expectedRevision: z.number().int().min(1),
   reason: z
     .string()
@@ -242,12 +242,12 @@ const reopenClinicalInput = z.object({
 
 const resolveNeededFollowUpInput = z
   .object({
-    appointmentId: z.string().uuid(),
+    appointmentId: z.string().guid(),
     expectedRevision: z.number().int().min(1),
     resolution: z.enum(["scheduled", "completed", "not_needed"]),
     resolutionAppointmentId: z
       .string()
-      .uuid()
+      .guid()
       .nullable()
       .optional()
       .transform((value) => value ?? null),
@@ -281,12 +281,12 @@ const resolveNeededFollowUpInput = z
   });
 
 const resolveVisitWorkInput = z.object({
-  appointmentId: z.string().uuid(),
-  workItemId: z.string().uuid(),
+  appointmentId: z.string().guid(),
+  workItemId: z.string().guid(),
   resolution: z.discriminatedUnion("status", [
     z.object({
       status: z.literal("charged"),
-      invoiceItemId: z.string().uuid(),
+      invoiceItemId: z.string().guid(),
     }),
     z.object({
       status: z.literal("no_charge"),
@@ -308,8 +308,8 @@ const resolveVisitWorkInput = z.object({
 });
 
 const reopenVisitWorkInput = z.object({
-  appointmentId: z.string().uuid(),
-  workItemId: z.string().uuid(),
+  appointmentId: z.string().guid(),
+  workItemId: z.string().guid(),
   reason: z
     .string()
     .trim()
@@ -667,7 +667,7 @@ export const encountersRouter = createRouter({
   ),
 
   getCloseout: protectedProcedure
-    .input(z.object({ appointmentId: z.string().uuid() }))
+    .input(z.object({ appointmentId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const [appointment] = await ctx.db
         .select({
@@ -925,7 +925,7 @@ export const encountersRouter = createRouter({
     }),
 
   getVisitReconciliation: protectedProcedure
-    .input(z.object({ appointmentId: z.string().uuid() }))
+    .input(z.object({ appointmentId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const [appointment] = await ctx.db
         .select({ id: appointments.id, status: appointments.status })

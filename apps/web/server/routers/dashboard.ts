@@ -85,7 +85,7 @@ export const dashboardRouter = createRouter({
     .input(
       z
         .object({ offset: z.number().int().min(0).max(100000).default(0) })
-        .default({}),
+        .prefault({}),
     )
     .query(async ({ ctx, input }) => {
       if (!ambulatoryWorkspaceRolloutEnabled())

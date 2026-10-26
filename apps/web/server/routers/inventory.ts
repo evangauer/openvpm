@@ -115,7 +115,7 @@ const productCreateInput = z.object({
 
 const productUpdateInput = z
   .object({
-    id: z.string().uuid(),
+    id: z.string().guid(),
     name: requiredTrimmedString(
       "Product name",
       INVENTORY_PRODUCT_NAME_MAX_LENGTH
@@ -191,7 +191,7 @@ export const inventoryRouter = createRouter({
   // --- Products ---
 
   getById: protectedProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
       const [product] = await ctx.db.select().from(products)
@@ -374,7 +374,7 @@ export const inventoryRouter = createRouter({
   startTracking: inventoryManagerProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         stockQuantity: stockQuantityInput,
         reorderPoint: nonnegativeIntegerColumnInput.default(10),
         lotNumber: optionalTrimmedString(
@@ -417,7 +417,7 @@ export const inventoryRouter = createRouter({
   adjustStock: inventoryManagerProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         adjustment: z.number().min(-POSTGRES_INTEGER_MAX).max(POSTGRES_INTEGER_MAX)
           .refine(
             (value) => value !== 0 && isSupportedQuantity(value),
@@ -561,7 +561,7 @@ export const inventoryRouter = createRouter({
   updateSupplier: inventoryManagerProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         name: requiredTrimmedString(
           "Supplier name",
           INVENTORY_SUPPLIER_NAME_MAX_LENGTH

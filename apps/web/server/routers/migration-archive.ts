@@ -699,7 +699,7 @@ export const migrationArchiveRouter = createRouter({
   }),
 
   detail: protectedProcedure
-    .input(z.object({ section: sectionInput, id: z.string().uuid() }))
+    .input(z.object({ section: sectionInput, id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const practiceId = ctx.practiceId;
       if (input.section === "medications") {

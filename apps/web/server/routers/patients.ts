@@ -147,15 +147,15 @@ const patientWeightInput = z
   .trim()
   .refine(isPatientWeightInputValid, PATIENT_WEIGHT_ERROR_MESSAGE);
 const patientAllergyInput = z.object({
-  patientId: z.string().uuid(),
+  patientId: z.string().guid(),
   allergen: clinicalTextInput("Allergen", 255),
   reaction: optionalPatientString("Reaction", 2000),
   severity: z.enum(["mild", "moderate", "severe"]).default("moderate"),
 });
 const patientMergePairInput = z
   .object({
-    keepId: z.string().uuid(),
-    mergeId: z.string().uuid(),
+    keepId: z.string().guid(),
+    mergeId: z.string().guid(),
   })
   .refine((input) => input.keepId !== input.mergeId, {
     message: "Cannot merge a patient into itself.",
@@ -174,7 +174,7 @@ const patientMergeInput = patientMergePairInput.and(
         PATIENT_MERGE_REASON_MAX_LENGTH,
         `Merge reason must be at most ${PATIENT_MERGE_REASON_MAX_LENGTH} characters.`,
       ),
-    operationId: z.string().uuid(),
+    operationId: z.string().guid(),
   }),
 );
 type PatientsContext = {
@@ -957,7 +957,7 @@ export const patientsRouter = createRouter({
     }),
 
   getById: protectedProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const resolved = await resolveCanonicalPatientDetail(
         ctx.db as Database,
@@ -1113,7 +1113,7 @@ export const patientsRouter = createRouter({
   create: patientManagerProcedure
     .input(
       z.object({
-        clientId: z.string().uuid(),
+        clientId: z.string().guid(),
         ...patientMutableInput,
       }),
     )
@@ -1145,7 +1145,7 @@ export const patientsRouter = createRouter({
     .input(
       z
         .object({
-          id: z.string().uuid(),
+          id: z.string().guid(),
           name: patientMutableInput.name.optional(),
           species: patientMutableInput.species.optional(),
           breed: patientMutableInput.breed,
@@ -1182,7 +1182,7 @@ export const patientsRouter = createRouter({
 
   delete: protectedProcedure
     .use(requireRole("admin"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
         const [existingPatient] = await tx
@@ -1296,7 +1296,7 @@ export const patientsRouter = createRouter({
   addWeight: patientManagerProcedure
     .input(
       z.object({
-        patientId: z.string().uuid(),
+        patientId: z.string().guid(),
         weightKg: patientWeightInput,
         recordedAt: z
           .date()
@@ -1348,8 +1348,8 @@ export const patientsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        weightId: z.string().uuid(),
+        patientId: z.string().guid(),
+        weightId: z.string().guid(),
         weightKg: patientWeightInput,
         recordedAt: z
           .date()
@@ -1455,8 +1455,8 @@ export const patientsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        recordId: z.string().uuid(),
+        patientId: z.string().guid(),
+        recordId: z.string().guid(),
         reason: z
           .string()
           .trim()

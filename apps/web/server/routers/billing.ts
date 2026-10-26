@@ -308,9 +308,9 @@ const invoiceLineInput = z
       .refine(isSupportedQuantity, "Use at most three decimal places for quantity"),
     unitPrice: nonNegativeMoneySchema,
     itemType: z.enum(["service", "product"]),
-    itemId: z.string().uuid().optional(),
-    sourcePrescriptionId: z.string().uuid().optional(),
-    sourceDispenseChargeId: z.string().uuid().optional(),
+    itemId: z.string().guid().optional(),
+    sourcePrescriptionId: z.string().guid().optional(),
+    sourceDispenseChargeId: z.string().guid().optional(),
   })
   .superRefine((item, ctx) => {
     const totalCents = quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity);
@@ -342,9 +342,9 @@ const invoiceLineInput = z
 
 const createInvoiceInput = z
   .object({
-    clientId: z.string().uuid(),
-    patientId: z.string().uuid().optional(),
-    appointmentId: z.string().uuid().optional(),
+    clientId: z.string().guid(),
+    patientId: z.string().guid().optional(),
+    appointmentId: z.string().guid().optional(),
     items: z
       .array(invoiceLineInput)
       .max(
@@ -370,7 +370,7 @@ const createInvoiceInput = z
 
 const updateInvoiceItemsInput = z
   .object({
-    id: z.string().uuid(),
+    id: z.string().guid(),
     expectedUpdatedAt: z.date(),
     items: z
       .array(invoiceLineInput)
@@ -1916,7 +1916,7 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         acknowledgeLegacyReview: z.boolean().default(false),
       }),
     )
@@ -2157,7 +2157,7 @@ export const billingRouter = createRouter({
     .use(requireRole("admin"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         reason: z.string().trim().min(5).max(500),
       }),
     )
@@ -2268,7 +2268,7 @@ export const billingRouter = createRouter({
 
   reopenDispenseCharge: protectedProcedure
     .use(requireRole("admin"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       return ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
@@ -2398,8 +2398,8 @@ export const billingRouter = createRouter({
       z.object({
         status: invoiceStatusSchema.optional(),
         isEstimate: z.boolean().optional(),
-        patientId: z.string().uuid().optional(),
-        appointmentId: z.string().uuid().optional(),
+        patientId: z.string().guid().optional(),
+        appointmentId: z.string().guid().optional(),
         limit: z.number().int().min(1).max(100).default(25),
         offset: listOffsetInput,
       })
@@ -2485,7 +2485,7 @@ export const billingRouter = createRouter({
     }),
 
   getInvoice: protectedProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const [invoice] = await ctx.db
         .select({
@@ -2566,7 +2566,7 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         status: z.enum(["draft", "sent", "paid", "overdue"]),
       })
     )
@@ -2704,7 +2704,7 @@ export const billingRouter = createRouter({
   updateService: billingAdminProcedure
     .input(
       serviceInput.extend({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         expected: serviceInput,
       })
     )
@@ -2747,7 +2747,7 @@ export const billingRouter = createRouter({
   archiveService: billingAdminProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         expected: serviceInput,
       })
     )
@@ -2774,7 +2774,7 @@ export const billingRouter = createRouter({
   restoreService: billingAdminProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         expected: serviceInput,
       })
     )
@@ -2809,7 +2809,7 @@ export const billingRouter = createRouter({
     }),
 
   patientsByClient: protectedProcedure
-    .input(z.object({ clientId: z.string().uuid() }))
+    .input(z.object({ clientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       return ctx.db
         .select({
@@ -3240,8 +3240,8 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        invoiceId: z.string().uuid(),
-        operationId: z.string().uuid(),
+        invoiceId: z.string().guid(),
+        operationId: z.string().guid(),
         amount: paymentAmountSchema,
         method: z.enum(["cash", "credit_card", "debit_card", "check", "online", "other"]),
         notes: billingNotesInput,
@@ -3414,7 +3414,7 @@ export const billingRouter = createRouter({
     }),
 
   listPayments: protectedProcedure
-    .input(z.object({ invoiceId: z.string().uuid() }))
+    .input(z.object({ invoiceId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       await getInvoiceForPractice(ctx, input.invoiceId);
       return ctx.db
@@ -3458,7 +3458,7 @@ export const billingRouter = createRouter({
     .use(requireRole("admin"))
     .input(
       z.object({
-        paymentId: z.string().uuid(),
+        paymentId: z.string().guid(),
         amount: paymentAmountSchema.optional(),
         reason: clinicalTextInput(
           "Refund reason",
@@ -3794,7 +3794,7 @@ export const billingRouter = createRouter({
 
   createCardPaymentCheckout: protectedProcedure
     .use(requireRole("admin", "front_desk"))
-    .input(z.object({ invoiceId: z.string().uuid() }))
+    .input(z.object({ invoiceId: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await assertBillingProviderActionsAllowed(ctx);
       const [invoice] = await ctx.db
@@ -3958,7 +3958,7 @@ export const billingRouter = createRouter({
   // --- Credits, write-offs, and voids ---
 
   listAdjustments: protectedProcedure
-    .input(z.object({ invoiceId: z.string().uuid() }))
+    .input(z.object({ invoiceId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       await getInvoiceForPractice(ctx, input.invoiceId);
       return ctx.db
@@ -3992,8 +3992,8 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        invoiceId: z.string().uuid(),
-        operationId: z.string().uuid(),
+        invoiceId: z.string().guid(),
+        operationId: z.string().guid(),
         type: z.enum(["credit", "write_off"]),
         amount: paymentAmountSchema,
         reason: z
@@ -4174,7 +4174,7 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         reason: z
           .string()
           .trim()
@@ -4301,7 +4301,7 @@ export const billingRouter = createRouter({
 
   convertEstimateToInvoice: protectedProcedure
     .use(requireRole("admin", "front_desk"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const existing = await getInvoiceForPractice(ctx, input.id);
       assertCanConvertEstimate(existing);

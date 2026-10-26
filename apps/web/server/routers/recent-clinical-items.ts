@@ -73,8 +73,8 @@ export const recentClinicalItemsRouter = createRouter({
     .input(
       z
         .object({
-          patientId: z.string().uuid(),
-          appointmentId: z.string().uuid().optional(),
+          patientId: z.string().guid(),
+          appointmentId: z.string().guid().optional(),
         })
         .strict(),
     )

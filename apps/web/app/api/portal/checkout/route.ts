@@ -47,7 +47,7 @@ import { assertVisitInvoiceReadyForFinancialAction } from "@/server/visit-billin
 
 const portalCheckoutInput = z.union([
   z.object({
-    invoiceId: z.string().uuid(),
+    invoiceId: z.string().guid(),
   }),
   z.object({
     paymentToken: z

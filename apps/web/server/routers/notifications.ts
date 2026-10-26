@@ -286,7 +286,7 @@ async function activeReminderSmsSender(
 export const notificationsRouter = createRouter({
   sendAppointmentReminder: protectedProcedure
     .use(requireRole("admin", "veterinarian", "front_desk"))
-    .input(z.object({ appointmentId: z.string().uuid() }))
+    .input(z.object({ appointmentId: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
       await assertNotificationsEnabled(ctx);
@@ -591,7 +591,7 @@ export const notificationsRouter = createRouter({
 
   sendInvoiceEmail: protectedProcedure
     .use(requireRole("admin", "front_desk"))
-    .input(z.object({ invoiceId: z.string().uuid() }))
+    .input(z.object({ invoiceId: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
       await assertNotificationsEnabled(ctx);
@@ -816,7 +816,7 @@ export const notificationsRouter = createRouter({
     .input(
       z.object({
         appointmentIds: z
-          .array(z.string().uuid())
+          .array(z.string().guid())
           .max(
             REMINDER_BATCH_MAX_TARGETS,
             `Bulk reminders can target at most ${REMINDER_BATCH_MAX_TARGETS} appointments.`,
@@ -1233,7 +1233,7 @@ export const notificationsRouter = createRouter({
     .input(
       z.object({
         patientIds: z
-          .array(z.string().uuid())
+          .array(z.string().guid())
           .max(
             REMINDER_BATCH_MAX_TARGETS,
             `Vaccination reminders can target at most ${REMINDER_BATCH_MAX_TARGETS} patients.`,

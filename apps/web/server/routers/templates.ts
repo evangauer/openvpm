@@ -67,7 +67,7 @@ const PRODUCT_LINK_REQUIRED_MESSAGE =
 
 const templateItemBaseInput = z.object({
   itemType: z.enum(["service", "product"]),
-  itemId: z.string().uuid().optional(),
+  itemId: z.string().guid().optional(),
   description: clinicalTextInput(
     "Template item description",
     TREATMENT_TEMPLATE_ITEM_DESCRIPTION_MAX_LENGTH,
@@ -114,7 +114,7 @@ const templateItemInput = templateItemBaseInput.superRefine(
 );
 
 const addTemplateItemInput = templateItemBaseInput
-  .extend({ templateId: z.string().uuid() })
+  .extend({ templateId: z.string().guid() })
   .superRefine(refineTemplateItemTotal);
 
 const templateMutableInput = {
@@ -481,7 +481,7 @@ export const templatesRouter = createRouter({
     }),
 
   getById: protectedProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
       const [template] = await ctx.db
@@ -599,7 +599,7 @@ export const templatesRouter = createRouter({
     .use(requireRole("admin"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         name: templateMutableInput.name.optional(),
         description: templateMutableInput.description,
         category: templateMutableInput.category,
@@ -634,7 +634,7 @@ export const templatesRouter = createRouter({
 
   delete: protectedProcedure
     .use(requireRole("admin"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
       const [template] = await ctx.db
@@ -713,7 +713,7 @@ export const templatesRouter = createRouter({
 
   removeItem: protectedProcedure
     .use(requireRole("admin"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
       // Verify item belongs to a template owned by this practice
@@ -771,8 +771,8 @@ export const templatesRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "front_desk"))
     .input(
       z.object({
-        templateId: z.string().uuid(),
-        invoiceId: z.string().uuid(),
+        templateId: z.string().guid(),
+        invoiceId: z.string().guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {

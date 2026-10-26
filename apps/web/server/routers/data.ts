@@ -336,7 +336,7 @@ const importCsvInput = z.object({
   // tab loaded before this deploy does not silently switch a commit to preview.
   dryRun: z.boolean().optional().default(false),
   source: importSourceInput,
-  previewToken: z.string().uuid().optional(),
+  previewToken: z.string().guid().optional(),
   migrationProtocol: z.literal("reviewed-v1").optional(),
   // Accepted only so a pre-deploy onboarding tab receives an explicit refresh
   // instruction instead of a misleading pet preview.
@@ -2797,7 +2797,7 @@ export const dataRouter = createRouter({
     .input(
       z.object({
         backup: z
-          .record(z.unknown())
+          .record(z.string(), z.unknown())
           .refine(
             isPracticeBackupJsonSizeValid,
             PRACTICE_BACKUP_JSON_SIZE_MESSAGE,
