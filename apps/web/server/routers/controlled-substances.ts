@@ -442,8 +442,8 @@ export const controlledSubstancesRouter = createRouter({
         action: z.enum(["received", "administered", "wasted", "returned"]),
         quantity: controlledQuantityInput,
         unit: clinicalTextInput("Unit", CONTROLLED_SUBSTANCE_UNIT_MAX_LENGTH),
-        patientId: z.string().uuid().nullable().optional(),
-        witnessedBy: z.string().uuid().nullable().optional(),
+        patientId: z.string().guid().nullable().optional(),
+        witnessedBy: z.string().guid().nullable().optional(),
         lotNumber: optionalClinicalTextInput(
           "Lot number",
           CONTROLLED_SUBSTANCE_LOT_NUMBER_MAX_LENGTH

@@ -297,7 +297,7 @@ export const clientsRouter = createRouter({
     }),
 
   getById: protectedProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const [client] = await ctx.db
         .select()
@@ -487,7 +487,7 @@ export const clientsRouter = createRouter({
   update: clientManagerProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         firstName: clientNameInput.optional(),
         lastName: clientNameInput.optional(),
         email: clientEmailInput,
@@ -795,7 +795,7 @@ export const clientsRouter = createRouter({
   revokeSms: clientManagerProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         expectedPhone: normalizedClientPhoneInput,
       }),
     )
@@ -894,7 +894,7 @@ export const clientsRouter = createRouter({
     }),
 
   rotatePortalAccessToken: clientManagerProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const [client] = await ctx.db
         .update(clients)
@@ -921,7 +921,7 @@ export const clientsRouter = createRouter({
 
   delete: protectedProcedure
     .use(requireRole("admin"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
         const [existingClient] = await tx

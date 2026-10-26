@@ -187,7 +187,7 @@ const patientHistoryDateInput = z.string().refine(isValidClinicalDateInput, {
 
 const patientHistoryInput = z
   .object({
-    patientId: z.string().uuid(),
+    patientId: z.string().guid(),
     query: z
       .string()
       .trim()
@@ -206,7 +206,7 @@ const patientHistoryInput = z
       .object({
         occurredAt: z.string().datetime({ offset: true }),
         recordType: z.enum(PATIENT_HISTORY_RECORD_TYPES),
-        id: z.string().uuid(),
+        id: z.string().guid(),
       })
       .optional(),
     limit: z
@@ -325,8 +325,8 @@ function effectivePrescriptionStatusExpression(practiceId: string) {
 }
 
 const createVaccinationInput = z.object({
-  patientId: z.string().uuid(),
-  appointmentId: z.string().uuid().optional(),
+  patientId: z.string().guid(),
+  appointmentId: z.string().guid().optional(),
   vaccineName: clinicalTextInput("Vaccine name", VACCINATION_NAME_MAX_LENGTH),
   productName: optionalClinicalTextInput(
     "Product name",
@@ -354,13 +354,13 @@ const createVaccinationInput = z.object({
     "Rabies tag number",
     VACCINATION_RABIES_TAG_MAX_LENGTH,
   ),
-  supervisingVeterinarianId: z.string().uuid().optional(),
+  supervisingVeterinarianId: z.string().guid().optional(),
   nextDueDate: clinicalDateInput("Next due date").optional(),
 });
 
 const vaccinationCertificateDetailsInput = z.object({
-  patientId: z.string().uuid(),
-  recordId: z.string().uuid(),
+  patientId: z.string().guid(),
+  recordId: z.string().guid(),
   expectedUpdatedAt: z.string().datetime(),
   reason: z.string().trim().min(10).max(500),
   productName: optionalClinicalTextInput(
@@ -389,7 +389,7 @@ const vaccinationCertificateDetailsInput = z.object({
     "Rabies tag number",
     VACCINATION_RABIES_TAG_MAX_LENGTH,
   ),
-  supervisingVeterinarianId: z.string().uuid().optional(),
+  supervisingVeterinarianId: z.string().guid().optional(),
 });
 
 const vaccinationSupervisorUsers = alias(users, "vaccination_supervisor_users");
@@ -399,7 +399,7 @@ const vaccinationAdministratorUsers = alias(
 );
 
 const createProblemInput = z.object({
-  patientId: z.string().uuid(),
+  patientId: z.string().guid(),
   description: clinicalTextInput(
     "Problem description",
     PROBLEM_DESCRIPTION_MAX_LENGTH,
@@ -410,9 +410,9 @@ const createProblemInput = z.object({
 
 const createPrescriptionInput = z
   .object({
-    patientId: z.string().uuid(),
-    appointmentId: z.string().uuid().optional(),
-    operationId: z.string().uuid(),
+    patientId: z.string().guid(),
+    appointmentId: z.string().guid().optional(),
+    operationId: z.string().guid(),
     medicationName: clinicalTextInput(
       "Medication name",
       PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH,
@@ -428,7 +428,7 @@ const createPrescriptionInput = z
       .min(PRESCRIPTION_QUANTITY_MIN)
       .max(PRESCRIPTION_COUNT_MAX)
       .optional(),
-    productId: z.string().uuid().optional(),
+    productId: z.string().guid().optional(),
     refillsRemaining: z
       .number()
       .int()
@@ -458,8 +458,8 @@ const createPrescriptionInput = z
 
 const createLabResultInput = z
   .object({
-    patientId: z.string().uuid(),
-    appointmentId: z.string().uuid().optional(),
+    patientId: z.string().guid(),
+    appointmentId: z.string().guid().optional(),
     testName: clinicalTextInput("Test name", LAB_TEST_NAME_MAX_LENGTH),
     resultValue: optionalClinicalTextInput(
       "Result value",
@@ -470,8 +470,8 @@ const createLabResultInput = z
     referenceRangeHigh: labReferenceInput("Reference range high").optional(),
     status: z.enum(["pending", "completed"]).default("pending"),
     resultFlag: z.enum(labResultFlagValues).default("unknown"),
-    operationId: z.string().uuid(),
-    replacesLabResultId: z.string().uuid().optional(),
+    operationId: z.string().guid(),
+    replacesLabResultId: z.string().guid().optional(),
   })
   .superRefine((input, ctx) => {
     if (
@@ -1392,7 +1392,7 @@ export const recordsRouter = createRouter({
 
   // SOAP Notes
   listSoapNotes: protectedProcedure
-    .input(z.object({ patientId: z.string().uuid() }))
+    .input(z.object({ patientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const replacementFromSource = alias(
         soapNoteReplacements,
@@ -1500,8 +1500,8 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        recordId: z.string().uuid(),
+        patientId: z.string().guid(),
+        recordId: z.string().guid(),
         reason: z
           .string()
           .trim()
@@ -1620,9 +1620,9 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        sourceNoteId: z.string().uuid(),
-        operationId: z.string().uuid(),
+        patientId: z.string().guid(),
+        sourceNoteId: z.string().guid(),
+        operationId: z.string().guid(),
         reason: z
           .string()
           .trim()
@@ -1671,8 +1671,8 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        appointmentId: z.string().uuid(),
+        patientId: z.string().guid(),
+        appointmentId: z.string().guid(),
         ...soapSectionsInput,
       }),
     )
@@ -1711,8 +1711,8 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        appointmentId: z.string().uuid(),
+        patientId: z.string().guid(),
+        appointmentId: z.string().guid(),
       }),
     )
     .query(async ({ ctx, input }) =>
@@ -1726,9 +1726,9 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        appointmentId: z.string().uuid(),
-        noteId: z.string().uuid().optional(),
+        patientId: z.string().guid(),
+        appointmentId: z.string().guid(),
+        noteId: z.string().guid().optional(),
         expectedRevision: z.number().int().min(0),
         ...soapSectionsInput,
       }),
@@ -1752,9 +1752,9 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        appointmentId: z.string().uuid(),
-        noteId: z.string().uuid(),
+        patientId: z.string().guid(),
+        appointmentId: z.string().guid(),
+        noteId: z.string().guid(),
         expectedRevision: z.number().int().min(1),
       }),
     )
@@ -1794,9 +1794,9 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        appointmentId: z.string().uuid(),
-        noteId: z.string().uuid(),
+        patientId: z.string().guid(),
+        appointmentId: z.string().guid(),
+        noteId: z.string().guid(),
         expectedRevision: z.number().int().min(1),
       }),
     )
@@ -1817,9 +1817,9 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        noteId: z.string().uuid(),
-        operationId: z.string().uuid(),
+        patientId: z.string().guid(),
+        noteId: z.string().guid(),
+        operationId: z.string().guid(),
         content: z.string().trim().min(1).max(SOAP_SECTION_MAX_LENGTH),
       }),
     )
@@ -1858,7 +1858,7 @@ export const recordsRouter = createRouter({
   ),
 
   listVaccinations: protectedProcedure
-    .input(z.object({ patientId: z.string().uuid() }))
+    .input(z.object({ patientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       return ctx.db
         .select({
@@ -2052,9 +2052,9 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
+        patientId: z.string().guid(),
         kind: z.enum(["vaccination_history", "rabies"]),
-        vaccinationRecordId: z.string().uuid().optional(),
+        vaccinationRecordId: z.string().guid().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -2366,8 +2366,8 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        recordId: z.string().uuid(),
+        patientId: z.string().guid(),
+        recordId: z.string().guid(),
         reason: z
           .string()
           .trim()
@@ -2509,7 +2509,7 @@ export const recordsRouter = createRouter({
 
   // Problem List
   listProblems: protectedProcedure
-    .input(z.object({ patientId: z.string().uuid() }))
+    .input(z.object({ patientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       return ctx.db
         .select()
@@ -2550,7 +2550,7 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         status: z.enum(PROBLEM_STATUSES),
       }),
     )
@@ -2590,7 +2590,7 @@ export const recordsRouter = createRouter({
 
   // Prescriptions
   listPrescriptions: protectedProcedure
-    .input(z.object({ patientId: z.string().uuid() }))
+    .input(z.object({ patientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       return ctx.db
         .select({
@@ -2643,7 +2643,7 @@ export const recordsRouter = createRouter({
     }),
 
   listPrescriptionEvents: protectedProcedure
-    .input(z.object({ prescriptionId: z.string().uuid() }))
+    .input(z.object({ prescriptionId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       return ctx.db
         .select({
@@ -2687,7 +2687,7 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
+        patientId: z.string().guid(),
         medicationName: clinicalTextInput(
           "Medication name",
           PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH,
@@ -2918,9 +2918,9 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        id: z.string().uuid(),
-        operationId: z.string().uuid(),
-        appointmentId: z.string().uuid().optional(),
+        id: z.string().guid(),
+        operationId: z.string().guid(),
+        appointmentId: z.string().guid().optional(),
         note: z
           .string()
           .trim()
@@ -3114,8 +3114,8 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        id: z.string().uuid(),
-        operationId: z.string().uuid(),
+        id: z.string().guid(),
+        operationId: z.string().guid(),
         reason: prescriptionLifecycleReasonInput,
       }),
     )
@@ -3138,8 +3138,8 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        id: z.string().uuid(),
-        operationId: z.string().uuid(),
+        id: z.string().guid(),
+        operationId: z.string().guid(),
         reason: prescriptionLifecycleReasonInput,
       }),
     )
@@ -3161,7 +3161,7 @@ export const recordsRouter = createRouter({
   // Lab Results
   listLabResults: protectedProcedure
     .use(requireRole("admin", "veterinarian", "technician", "viewer"))
-    .input(z.object({ patientId: z.string().uuid() }))
+    .input(z.object({ patientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const orderedBy = alias(users, "lab_ordered_by");
       const reviewedBy = alias(users, "lab_reviewed_by");
@@ -3283,7 +3283,7 @@ export const recordsRouter = createRouter({
 
   listLabResultHistory: protectedProcedure
     .use(requireRole("admin", "veterinarian", "technician", "viewer"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const [result] = await ctx.db
         .select({ id: labResults.id })
@@ -3335,7 +3335,7 @@ export const recordsRouter = createRouter({
   listLabReviewInbox: protectedProcedure
     .input(
       z.object({
-        resultId: z.string().uuid().optional(),
+        resultId: z.string().guid().optional(),
         filter: z
           .enum([
             "action_required",
@@ -3537,9 +3537,9 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        recordId: z.string().uuid(),
-        operationId: z.string().uuid(),
+        patientId: z.string().guid(),
+        recordId: z.string().guid(),
+        operationId: z.string().guid(),
         reason: z
           .string()
           .trim()
@@ -3967,9 +3967,9 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         status: z.literal("reviewed"),
-        operationId: z.string().uuid(),
+        operationId: z.string().guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -4071,7 +4071,7 @@ export const recordsRouter = createRouter({
     .input(
       z
         .object({
-          id: z.string().uuid(),
+          id: z.string().guid(),
           resultValue: clinicalTextInput(
             "Result value",
             LAB_RESULT_VALUE_MAX_LENGTH,
@@ -4084,7 +4084,7 @@ export const recordsRouter = createRouter({
             "Reference range high",
           ).optional(),
           resultFlag: z.enum(labResultFlagValues).default("unknown"),
-          operationId: z.string().uuid(),
+          operationId: z.string().guid(),
         })
         .superRefine((input, refineCtx) => {
           if (
@@ -4202,11 +4202,11 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician"))
     .input(
       z.object({
-        id: z.string().uuid(),
-        assigneeId: z.string().uuid(),
+        id: z.string().guid(),
+        assigneeId: z.string().guid(),
         dueAt: z.string().datetime().optional(),
         note: z.string().trim().max(1000).optional(),
-        operationId: z.string().uuid(),
+        operationId: z.string().guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -4335,9 +4335,9 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         outcome: z.string().trim().min(3).max(1000),
-        operationId: z.string().uuid(),
+        operationId: z.string().guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -4442,7 +4442,7 @@ export const recordsRouter = createRouter({
 
   // Procedures
   listProcedures: protectedProcedure
-    .input(z.object({ patientId: z.string().uuid() }))
+    .input(z.object({ patientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       return ctx.db
         .select({
@@ -4478,8 +4478,8 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        appointmentId: z.string().uuid().optional(),
+        patientId: z.string().guid(),
+        appointmentId: z.string().guid().optional(),
         name: clinicalTextInput("Procedure name", PROCEDURE_NAME_MAX_LENGTH),
         description: optionalClinicalTextInput(
           "Procedure description",
@@ -4544,8 +4544,8 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        appointmentId: z.string().uuid().optional(),
+        patientId: z.string().guid(),
+        appointmentId: z.string().guid().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -4586,7 +4586,7 @@ export const recordsRouter = createRouter({
    * patient files) leak into the capture grid as broken images.
    */
   listCaptureFiles: protectedProcedure
-    .input(z.object({ patientId: z.string().uuid() }))
+    .input(z.object({ patientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       await assertPatientBelongsToPractice(ctx, input.patientId);
       return ctx.db
@@ -4623,8 +4623,8 @@ export const recordsRouter = createRouter({
   listPatientFiles: protectedProcedure
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        appointmentId: z.string().uuid().optional(),
+        patientId: z.string().guid(),
+        appointmentId: z.string().guid().optional(),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -4740,9 +4740,9 @@ export const recordsRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        appointmentId: z.string().uuid().optional(),
-        formId: z.string().uuid(),
+        patientId: z.string().guid(),
+        appointmentId: z.string().guid().optional(),
+        formId: z.string().guid(),
         title: z
           .string()
           .trim()
@@ -4829,7 +4829,7 @@ export const recordsRouter = createRouter({
 
   /** Available signed consents for a patient, newest first. */
   listConsents: protectedProcedure
-    .input(z.object({ patientId: z.string().uuid() }))
+    .input(z.object({ patientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       await assertPatientBelongsToPractice(ctx, input.patientId);
       return ctx.db

@@ -35,7 +35,7 @@ const ApiSoapSectionInputSchema = z
   .optional();
 
 export const ApiClientSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
   first_name: z.string(),
   last_name: z.string(),
   email: z.string().nullable(),
@@ -51,8 +51,8 @@ export const ApiClientSchema = z.object({
 });
 
 export const ApiPatientSchema = z.object({
-  id: z.string().uuid(),
-  client_id: z.string().uuid(),
+  id: z.string().guid(),
+  client_id: z.string().guid(),
   name: z.string(),
   species: ApiSpeciesSchema,
   breed: z.string().nullable(),
@@ -67,7 +67,7 @@ export const ApiPatientSchema = z.object({
 });
 
 export const ApiAppointmentSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
   start_time: z.string(),
   end_time: z.string(),
   status: z.enum([
@@ -79,22 +79,22 @@ export const ApiAppointmentSchema = z.object({
     "no_show",
     "cancelled",
   ]),
-  client_id: z.string().uuid().nullable(),
-  patient_id: z.string().uuid().nullable(),
-  doctor_id: z.string().uuid().nullable(),
-  type_id: z.string().uuid().nullable(),
-  room_id: z.string().uuid().nullable(),
-  location_id: z.string().uuid().nullable(),
+  client_id: z.string().guid().nullable(),
+  patient_id: z.string().guid().nullable(),
+  doctor_id: z.string().guid().nullable(),
+  type_id: z.string().guid().nullable(),
+  room_id: z.string().guid().nullable(),
+  location_id: z.string().guid().nullable(),
   notes: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
 });
 
 export const ApiSoapNoteSchema = z.object({
-  id: z.string().uuid(),
-  patient_id: z.string().uuid(),
-  appointment_id: z.string().uuid().nullable(),
-  author_id: z.string().uuid(),
+  id: z.string().guid(),
+  patient_id: z.string().guid(),
+  appointment_id: z.string().guid().nullable(),
+  author_id: z.string().guid(),
   subjective: z.string().nullable(),
   objective: z.string().nullable(),
   assessment: z.string().nullable(),
@@ -113,12 +113,12 @@ export const AppointmentCreateSchema = z
     end_time: z
       .string()
       .datetime({ offset: true, message: TIMEZONE_QUALIFIED_TIMESTAMP_MESSAGE }),
-    client_id: z.string().uuid().optional(),
-    patient_id: z.string().uuid().optional(),
-    doctor_id: z.string().uuid().optional(),
-    type_id: z.string().uuid().optional(),
-    room_id: z.string().uuid().optional(),
-    location_id: z.string().uuid().optional(),
+    client_id: z.string().guid().optional(),
+    patient_id: z.string().guid().optional(),
+    doctor_id: z.string().guid().optional(),
+    type_id: z.string().guid().optional(),
+    room_id: z.string().guid().optional(),
+    location_id: z.string().guid().optional(),
     notes: z.string().max(APPOINTMENT_NOTES_MAX_LENGTH).optional(),
   })
   .refine((b) => new Date(b.end_time) > new Date(b.start_time), {
@@ -128,9 +128,9 @@ export const AppointmentCreateSchema = z
 
 /** Inbound body for POST /api/v1/soap-notes. */
 export const SoapNoteCreateSchema = z.object({
-  patient_id: z.string().uuid(),
-  appointment_id: z.string().uuid(),
-  author_id: z.string().uuid().optional(),
+  patient_id: z.string().guid(),
+  appointment_id: z.string().guid(),
+  author_id: z.string().guid().optional(),
   subjective: ApiSoapSectionInputSchema,
   objective: ApiSoapSectionInputSchema,
   assessment: ApiSoapSectionInputSchema,

@@ -137,7 +137,7 @@ export const webhooksRouter = createRouter({
     }),
 
   toggle: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       // Get current state
       const [existing] = await ctx.db
@@ -183,7 +183,7 @@ export const webhooksRouter = createRouter({
     }),
 
   delete: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const [deleted] = await ctx.db
         .update(webhooks)

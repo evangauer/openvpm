@@ -184,7 +184,7 @@ export const whiteboardRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         status: z.enum(appointmentStatusValues),
       })
     )
