@@ -75,6 +75,7 @@ integration("Direct patient notes PostgreSQL contract", () => {
             practiceId: a!.id,
             clientId: ownerA!.id,
             name: "Synthetic Cat",
+            id: "11111111-2222-3333-4444-555555555555",
             species: "feline",
           },
           {

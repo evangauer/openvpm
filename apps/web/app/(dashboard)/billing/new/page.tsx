@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState, useMemo, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { z } from "zod";
+import { isUuid } from "@/lib/compat/shared/validation";
 import { useSession } from "next-auth/react";
 import { Plus, Trash2, ArrowLeft, Loader2, FileText } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -139,7 +139,7 @@ export default function NewInvoicePage() {
 function PatientInvoiceContext() {
   const searchParams = useSearchParams();
   const patientId = searchParams.get("patientId");
-  const validPatientId = z.string().uuid().safeParse(patientId).success;
+  const validPatientId = isUuid(patientId ?? "");
   const patient = trpc.patients.getById.useQuery(
     { id: patientId ?? "" },
     { enabled: Boolean(patientId) && validPatientId },

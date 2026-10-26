@@ -10,10 +10,13 @@ import {
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
+import { isUuid } from "@/lib/compat/shared/validation";
 import {
   PATIENT_NOTE_MAX_LENGTH,
   PATIENT_NOTE_TYPES,
 } from "@/lib/records/patient-note-policy";
+
+const uuidInput = z.string().refine(isUuid, "Invalid UUID");
 
 async function lockPatient(
   db: Database,
@@ -44,9 +47,9 @@ export const patientNotesRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician", "viewer"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
+        patientId: uuidInput,
         cursor: z
-          .object({ createdAt: z.date(), id: z.string().uuid() })
+          .object({ createdAt: z.date(), id: uuidInput })
           .optional(),
       }),
     )
@@ -101,8 +104,8 @@ export const patientNotesRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        operationId: z.string().uuid(),
+        patientId: uuidInput,
+        operationId: uuidInput,
         noteType: z.enum(PATIENT_NOTE_TYPES),
         content: z
           .string()
