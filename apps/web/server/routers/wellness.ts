@@ -183,7 +183,7 @@ export const wellnessRouter = createRouter({
     .use(requireRole("admin"))
     .input(
       z.object({
-        planId: z.string().uuid(),
+        planId: z.string().guid(),
         active: z.boolean(),
       })
     )
@@ -236,9 +236,9 @@ export const wellnessRouter = createRouter({
     .use(manageRole)
     .input(
       z.object({
-        planId: z.string().uuid(),
-        clientId: z.string().uuid(),
-        patientId: z.string().uuid().optional(),
+        planId: z.string().guid(),
+        clientId: z.string().guid(),
+        patientId: z.string().guid().optional(),
         startDate: wellnessDateInput.optional(),
       })
     )
@@ -378,8 +378,8 @@ export const wellnessRouter = createRouter({
     .input(
       z
         .object({
-          clientId: z.string().uuid().optional(),
-          patientId: z.string().uuid().optional(),
+          clientId: z.string().guid().optional(),
+          patientId: z.string().guid().optional(),
           status: z.enum(["active", "cancelled"]).optional(),
         })
         .optional()
@@ -470,7 +470,7 @@ export const wellnessRouter = createRouter({
         .object({
           asOf: wellnessDateInput.optional(),
           enrollmentIds: z
-            .array(z.string().uuid())
+            .array(z.string().guid())
             .max(
               WELLNESS_INVOICE_BATCH_MAX_TARGETS,
               `Wellness invoice runs can target at most ${WELLNESS_INVOICE_BATCH_MAX_TARGETS} enrollments.`
@@ -497,7 +497,7 @@ export const wellnessRouter = createRouter({
    */
   markBilled: protectedProcedure
     .use(manageRole)
-    .input(z.object({ enrollmentId: z.string().uuid() }))
+    .input(z.object({ enrollmentId: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx.db, ctx.practiceId);
       const [row] = await ctx.db
@@ -563,7 +563,7 @@ export const wellnessRouter = createRouter({
 
   cancel: protectedProcedure
     .use(manageRole)
-    .input(z.object({ enrollmentId: z.string().uuid() }))
+    .input(z.object({ enrollmentId: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx.db, ctx.practiceId);
       const [updated] = await ctx.db

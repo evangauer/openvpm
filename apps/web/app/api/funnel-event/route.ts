@@ -59,8 +59,8 @@ const UUID_PATH_SEGMENT_RE =
 
 const eventSchema = z
   .object({
-    eventId: z.string().uuid(),
-    anonymousId: z.string().uuid(),
+    eventId: z.string().guid(),
+    anonymousId: z.string().guid(),
     name: z.enum([
       "visit",
       "demo_land",
@@ -91,7 +91,9 @@ const eventSchema = z
       .regex(/^[a-zA-Z0-9._:/-]+$/)
       .optional(),
     path: z.string().trim().min(1).max(500).startsWith("/").optional(),
-    props: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+    props: z
+      .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+      .optional(),
   })
   .strict();
 

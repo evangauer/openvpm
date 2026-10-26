@@ -112,7 +112,7 @@ const productCreateInput = z.object({
 
 const productUpdateInput = z
   .object({
-    id: z.string().uuid(),
+    id: z.string().guid(),
     name: requiredTrimmedString(
       "Product name",
       INVENTORY_PRODUCT_NAME_MAX_LENGTH
@@ -355,7 +355,7 @@ export const inventoryRouter = createRouter({
   startTracking: inventoryManagerProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         stockQuantity: nonnegativeIntegerColumnInput,
         reorderPoint: nonnegativeIntegerColumnInput.default(10),
         lotNumber: optionalTrimmedString(
@@ -398,7 +398,7 @@ export const inventoryRouter = createRouter({
   adjustStock: inventoryManagerProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         adjustment: integerColumnDeltaInput,
         reason: requiredTrimmedString(
           "Reason",
@@ -538,7 +538,7 @@ export const inventoryRouter = createRouter({
   updateSupplier: inventoryManagerProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         name: requiredTrimmedString(
           "Supplier name",
           INVENTORY_SUPPLIER_NAME_MAX_LENGTH

@@ -128,7 +128,7 @@ export const apiKeysRouter = createRouter({
     }),
 
   revoke: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const [revoked] = await ctx.db
         .update(apiKeys)

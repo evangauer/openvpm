@@ -345,8 +345,8 @@ export const bookingRouter = createRouter({
       z.object({
         slug: bookingSlugInput,
         date: bookingDateInput,
-        typeId: z.string().uuid(),
-        locationId: z.string().uuid().optional()
+        typeId: z.string().guid(),
+        locationId: z.string().guid().optional()
       })
     )
     .query(async ({ ctx, input }) => {
@@ -443,8 +443,8 @@ export const bookingRouter = createRouter({
     .input(
       z.object({
         slug: bookingSlugInput,
-        typeId: z.string().uuid(),
-        locationId: z.string().uuid().optional(),
+        typeId: z.string().guid(),
+        locationId: z.string().guid().optional(),
         date: bookingDateInput,
         time: bookingTimeInput,
         contact: contactInput,

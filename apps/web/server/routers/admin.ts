@@ -180,9 +180,9 @@ const WITHHELD_PHONE_LIKE_OPERATIONAL_ID = "[withheld: phone-like identifier]";
 
 const smsProviderEventResolutionBaseInput = z
   .object({
-    eventId: z.string().uuid(),
-    conflictId: z.string().uuid().nullable().optional(),
-    operationId: z.string().uuid(),
+    eventId: z.string().guid(),
+    conflictId: z.string().guid().nullable().optional(),
+    operationId: z.string().guid(),
   })
   .strict();
 
@@ -195,7 +195,7 @@ const smsProviderEventResolutionInput = z.discriminatedUnion("resolution", [
   }),
   smsProviderEventResolutionBaseInput.extend({
     resolution: z.literal("carrier_state_reconciled"),
-    messagingRegistrationEventId: z.string().uuid(),
+    messagingRegistrationEventId: z.string().guid(),
   }),
   smsProviderEventResolutionBaseInput.extend({
     resolution: z.literal("provider_attested_no_projection"),
@@ -238,8 +238,8 @@ const clinicPilotReadinessInput = z
 
 const clinicPilotSaveInput = z
   .object({
-    practiceId: z.string().uuid(),
-    operationId: z.string().uuid(),
+    practiceId: z.string().guid(),
+    operationId: z.string().guid(),
     expectedVersion: z.number().int().positive().nullable(),
     cohortKey: z.string().regex(/^pilot-[0-9]{4}-[0-9]{2}$/),
     workflow: z.enum(CLINIC_PILOT_WORKFLOWS),
@@ -255,7 +255,7 @@ const clinicPilotSaveInput = z
     firstVisitValidated: z.boolean(),
     clinicUseValidated: z.boolean(),
     clinicAcceptanceConfirmed: z.boolean(),
-    clinicAcceptanceByUserId: z.string().uuid().nullable(),
+    clinicAcceptanceByUserId: z.string().guid().nullable(),
     lastContactAt: z.string().datetime({ offset: true }).nullable(),
     lastContactOutcome: z.enum(CLINIC_PILOT_CONTACT_OUTCOMES).nullable(),
     targetStartOn: z
@@ -970,7 +970,7 @@ export const adminRouter = createRouter({
     .input(
       z
         .object({ limit: z.number().int().min(1).max(100).default(50) })
-        .default({}),
+        .prefault({}),
     )
     .query(({ input }) => {
       noStore();
@@ -1358,7 +1358,7 @@ export const adminRouter = createRouter({
   extendTrial: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
+        practiceId: z.string().guid(),
         days: z.number().int().min(1).max(90),
       }),
     )
@@ -1413,7 +1413,7 @@ export const adminRouter = createRouter({
   setAnalyticsExcluded: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
+        practiceId: z.string().guid(),
         excluded: z.boolean(),
       }),
     )
@@ -1457,7 +1457,7 @@ export const adminRouter = createRouter({
   smsProviderEventQueue: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid().optional(),
+        practiceId: z.string().guid().optional(),
         limit: z.number().int().min(1).max(100).default(50),
       }),
     )
@@ -1504,7 +1504,7 @@ export const adminRouter = createRouter({
     .input(
       z
         .object({
-          practiceId: z.string().uuid().optional(),
+          practiceId: z.string().guid().optional(),
           limit: z.number().int().min(1).max(100).default(50),
         })
         .strict(),
@@ -1531,7 +1531,7 @@ export const adminRouter = createRouter({
     .input(
       z
         .object({
-          practiceId: z.string().uuid(),
+          practiceId: z.string().guid(),
           limit: z.number().int().min(1).max(200).default(100),
         })
         .strict(),
@@ -1677,8 +1677,8 @@ export const adminRouter = createRouter({
   inspectMessagingProfile: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
-        locationId: z.string().uuid(),
+        practiceId: z.string().guid(),
+        locationId: z.string().guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1726,8 +1726,8 @@ export const adminRouter = createRouter({
   setMessagingProfileEnabled: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
-        locationId: z.string().uuid(),
+        practiceId: z.string().guid(),
+        locationId: z.string().guid(),
         enabled: z.boolean(),
         confirmProviderMutation: z.literal(true),
       }),
@@ -1927,7 +1927,7 @@ export const adminRouter = createRouter({
   submitMessagingBrand: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
+        practiceId: z.string().guid(),
         confirmProviderCharges: z.literal(true),
         retryAfterProviderReview: z.boolean().default(false),
       }),
@@ -2009,7 +2009,7 @@ export const adminRouter = createRouter({
   submitMessagingCampaign: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
+        practiceId: z.string().guid(),
         confirmProviderCharges: z.literal(true),
         retryAfterProviderReview: z.boolean().default(false),
       }),
@@ -2231,7 +2231,7 @@ export const adminRouter = createRouter({
   assignMessagingNumbers: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
+        practiceId: z.string().guid(),
         confirmProviderMutation: z.literal(true),
       }),
     )
@@ -2402,7 +2402,7 @@ export const adminRouter = createRouter({
   smsDeliveryEventQueue: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid().optional(),
+        practiceId: z.string().guid().optional(),
         staleMinutes: z.number().int().min(15).max(10_080).default(60),
         limit: z.number().int().min(1).max(100).default(50),
       }),
@@ -2415,9 +2415,9 @@ export const adminRouter = createRouter({
   reconcileSmsDeliveryEvent: platformAdminProcedure
     .input(
       z.object({
-        deliveryEventId: z.string().uuid(),
-        reconciliationId: z.string().uuid(),
-        reviewedHistoryId: z.string().uuid().optional(),
+        deliveryEventId: z.string().guid(),
+        reconciliationId: z.string().guid(),
+        reviewedHistoryId: z.string().guid().optional(),
         classification: z.enum(["sent", "failed", "delivered"]).optional(),
         reasonCode: z.enum([
           "exact_attribution_retry",
@@ -2453,7 +2453,7 @@ export const adminRouter = createRouter({
   smsDeliveryEventDetail: platformAdminProcedure
     .input(
       z.object({
-        deliveryEventId: z.string().uuid(),
+        deliveryEventId: z.string().guid(),
         historyLimit: z.number().int().min(1).max(200).default(100),
       }),
     )
@@ -2552,7 +2552,7 @@ export const adminRouter = createRouter({
   smsSendAttemptQueue: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid().optional(),
+        practiceId: z.string().guid().optional(),
         staleMinutes: z
           .number()
           .int()
@@ -2570,8 +2570,8 @@ export const adminRouter = createRouter({
   smsSendAttempt: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
-        attemptId: z.string().uuid(),
+        practiceId: z.string().guid(),
+        attemptId: z.string().guid(),
       }),
     )
     .query(({ input }) => {
@@ -2637,9 +2637,9 @@ export const adminRouter = createRouter({
   reconcileSmsSendAttempt: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
-        attemptId: z.string().uuid(),
-        reconciliationId: z.string().uuid(),
+        practiceId: z.string().guid(),
+        attemptId: z.string().guid(),
+        reconciliationId: z.string().guid(),
         outcome: z.enum(["accepted", "definite_failure"]),
         providerMessageId: z.string().trim().min(1).max(255).optional(),
         detail: z.string().trim().min(1).max(2000),
@@ -2663,9 +2663,9 @@ export const adminRouter = createRouter({
   resendSmsSendAttempt: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
-        attemptId: z.string().uuid(),
-        resendId: z.string().uuid(),
+        practiceId: z.string().guid(),
+        attemptId: z.string().guid(),
+        resendId: z.string().guid(),
       }),
     )
     .mutation(({ ctx, input }) =>
@@ -2688,7 +2688,7 @@ export const adminRouter = createRouter({
   attachMessagingProviderIds: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
+        practiceId: z.string().guid(),
         providerBrandId: z.string().trim().min(3).max(128),
         providerCampaignId: z.string().trim().min(3).max(128).optional(),
         confirmProviderPortalReviewed: z.literal(true),
@@ -2798,7 +2798,7 @@ export const adminRouter = createRouter({
   clearStaleMessagingSubmissionLock: platformAdminProcedure
     .input(
       z.object({
-        practiceId: z.string().uuid(),
+        practiceId: z.string().guid(),
         providerObject: z.enum(["brand", "campaign"]),
         confirmProviderPortalReviewed: z.literal(true),
         confirmNoProviderObjectExists: z.literal("NO_PROVIDER_OBJECT"),
@@ -2913,12 +2913,12 @@ export const adminRouter = createRouter({
     .input(
       z
         .object({
-          practiceId: z.string().uuid(),
+          practiceId: z.string().guid(),
           remediation: z
             .object({
-              providerEventId: z.string().uuid(),
-              conflictId: z.string().uuid().nullable().optional(),
-              operationId: z.string().uuid(),
+              providerEventId: z.string().guid(),
+              conflictId: z.string().guid().nullable().optional(),
+              operationId: z.string().guid(),
             })
             .strict()
             .optional(),

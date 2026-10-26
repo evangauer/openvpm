@@ -32,7 +32,7 @@ const demoAccessInput = z
     email: z.string().trim().email().max(AUTH_EMAIL_MAX_LENGTH),
     // Optional by design: telemetry must never block immediate demo access.
     // The demo UI always supplies this first-party anonymous journey UUID.
-    anonymousId: z.string().uuid().optional(),
+    anonymousId: z.string().guid().optional(),
   })
   .strict();
 

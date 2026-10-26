@@ -160,7 +160,7 @@ const signupAcquisitionSchema = z
     source: acquisitionValueSchema.optional(),
     medium: acquisitionValueSchema.optional(),
     campaign: acquisitionValueSchema.optional(),
-    funnelId: z.string().uuid().optional(),
+    funnelId: z.string().guid().optional(),
   })
   .strict();
 

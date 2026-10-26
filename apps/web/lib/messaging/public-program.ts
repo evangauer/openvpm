@@ -5,7 +5,7 @@ import { messagingRegistrations, practices } from "@openpims/db";
 import { appBaseUrl } from "@/lib/app-url";
 import { withSystem } from "@/lib/tenant-db";
 
-const practiceIdSchema = z.string().uuid();
+const practiceIdSchema = z.string().guid();
 
 export type PublicMessagingProgram = {
   practiceId: string;
