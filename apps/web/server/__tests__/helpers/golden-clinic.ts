@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import * as schema from "../../../../../packages/db/schema/index";
 import { withTenant, withTenantReadOnlySnapshot } from "@/lib/tenant-db";
 import { exportPracticeData } from "@/lib/backup/export";
-import type { TRPCContext } from "../../trpc";
+import { createRouter, type TRPCContext } from "../../trpc";
 import type { DisposableClinic } from "./disposable-clinic";
 
 /** Real protected routers and PostgreSQL; only outbound webhooks are stubbed by the suites. */
@@ -41,23 +41,19 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
       isPrimary: true,
     })
     .returning();
-  await fixture.ownerDb
-    .insert(schema.webhooks)
-    .values({
-      practiceId: practice!.id,
-      url: "https://example.invalid/synthetic-webhook",
-      events: ["patient.created"],
-      secret: "synthetic-webhook-placeholder",
-      active: true,
-    });
-  await fixture.ownerDb
-    .insert(schema.apiKeys)
-    .values({
-      practiceId: practice!.id,
-      name: "Synthetic API key",
-      keyPrefix: "synthetic",
-      keyHash: "synthetic-key-placeholder",
-    });
+  await fixture.ownerDb.insert(schema.webhooks).values({
+    practiceId: practice!.id,
+    url: "https://example.invalid/synthetic-webhook",
+    events: ["patient.created"],
+    secret: "synthetic-webhook-placeholder",
+    active: true,
+  });
+  await fixture.ownerDb.insert(schema.apiKeys).values({
+    practiceId: practice!.id,
+    name: "Synthetic API key",
+    keyPrefix: "synthetic",
+    keyHash: "synthetic-key-placeholder",
+  });
 
   const [
     { clientsRouter },
@@ -67,6 +63,7 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
     { recordsRouter },
     { billingRouter },
     { encountersRouter },
+    { patientNotesRouter },
   ] = await Promise.all([
     import("../../routers/clients"),
     import("../../routers/patients"),
@@ -75,6 +72,7 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
     import("../../routers/records"),
     import("../../routers/billing"),
     import("../../routers/encounters"),
+    import("../../routers/patient-notes"),
   ]);
   const context = (user = doctor!): TRPCContext => ({
     db: fixture.db,
@@ -89,13 +87,27 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
       },
     },
   });
-  const clients = clientsRouter.createCaller(context());
-  const patients = patientsRouter.createCaller(context());
-  const appointments = appointmentsRouter.createCaller(context());
-  const records = recordsRouter.createCaller(context());
-  const vitals = vitalsRouter.createCaller(context());
-  const billing = billingRouter.createCaller(context());
-  const encounters = encountersRouter.createCaller(context());
+  const router = createRouter({
+    clients: clientsRouter,
+    patients: patientsRouter,
+    appointments: appointmentsRouter,
+    vitals: vitalsRouter,
+    records: recordsRouter,
+    billing: billingRouter,
+    encounters: encountersRouter,
+    patientNotes: patientNotesRouter,
+  });
+  const {
+    clients,
+    patients,
+    appointments,
+    vitals,
+    records,
+    billing,
+    encounters,
+    patientNotes,
+  } = router.createCaller(context());
+  const foreignCaller = router.createCaller(context(foreignDoctor!));
 
   const client = await clients.create({
     firstName: "Synthetic",
@@ -108,13 +120,26 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
   });
   const chart = await patients.getById({ id: patient.id });
   expect(chart).toMatchObject({ id: patient.id, clientId: client.id });
+  const noteInput = {
+    patientId: patient.id,
+    operationId: randomUUID(),
+    noteType: "phone_call" as const,
+    content:
+      "Synthetic pasted chart update\nLiteral <script>text</script> & 50%.",
+  };
+  const chartNote = await patientNotes.create(noteInput);
+  expect(chartNote).toMatchObject({
+    content: noteInput.content,
+    authorId: doctor!.id,
+    isChartNote: true,
+  });
+  expect((await patientNotes.create(noteInput)).id).toBe(chartNote.id);
+  expect(await fixture.ownerDb.select().from(schema.appointments)).toEqual([]);
   await expect(
-    patientsRouter
-      .createCaller(context(foreignDoctor!))
-      .getById({ id: patient.id }),
+    foreignCaller.patients.getById({ id: patient.id }),
   ).rejects.toMatchObject({ code: "NOT_FOUND" });
   await expect(
-    billingRouter.createCaller(context(foreignDoctor!)).createInvoice({
+    foreignCaller.billing.createInvoice({
       clientId: client.id,
       patientId: patient.id,
       items: [],
@@ -326,6 +351,13 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
   expect(backup.invoices).toHaveLength(2);
   expect(backup.payments).toHaveLength(1);
   expect(backup.visitCloseouts).toHaveLength(1);
+  expect(backup.clinicalNotes).toHaveLength(2);
+  // The old internal record stays out of the chart even after a new note exists.
+  expect(
+    (await patientNotes.list({ patientId: patient.id })).items.map(
+      (note) => note.id,
+    ),
+  ).toEqual([chartNote.id]);
   expect(JSON.stringify(backup)).not.toContain(foreignPractice!.id);
   expect(JSON.stringify(backup)).not.toContain("synthetic-not-a-login");
   expect(JSON.stringify(backup)).not.toContain("synthetic-webhook-placeholder");
@@ -337,6 +369,12 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
       .where(eq(schema.auditLog.practiceId, practice!.id)),
   );
   expect(audits.length).toBeGreaterThan(10);
+  const noteAudits = audits.filter((entry) => entry.entityId === chartNote.id);
+  expect(noteAudits).toHaveLength(1);
+  expect(noteAudits[0]?.changes).toEqual({
+    patientId: patient.id,
+    noteType: "phone_call",
+  });
   // A reused connection with no tenant context must see no clinic rows.
   expect(await fixture.db.select().from(schema.patients)).toEqual([]);
   return {
@@ -348,6 +386,7 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
     appointment,
     invoice,
     internalNote: internalNote!,
+    chartNote,
     soap: signed.note,
     completed,
     context,
