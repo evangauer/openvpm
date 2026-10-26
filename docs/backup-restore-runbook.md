@@ -254,6 +254,30 @@ account-closure policy; indefinite post-closure retention is not authorized.
 
 ## Repeatable drill
 
+The required **Disposable restore drill** CI check creates two randomly named
+local PostgreSQL databases, applies all committed migrations and RLS, and runs
+a synthetic clinic visit through the protected application routers. It exports
+that clinic through the production exporter, serializes the JSON, and restores
+it into the second database using the restricted application role. Assertions
+cover clinical text and attribution, invoice/payment/closeout relationships,
+credential removal, tenant isolation, and the persistent recovery hold. An
+injected database failure must roll back all inserted records while leaving
+the hold committed. Invalid references must fail before setting the hold.
+
+Run it locally with a local database-owner `DATABASE_URL` and
+`OPENPIMS_APP_DB_PASSWORD` configured:
+
+```sh
+DISPOSABLE_RESTORE_DB_INTEGRATION=1 pnpm --filter @openpims/web exec vitest run server/__tests__/disposable-restore.integration.test.ts
+```
+
+The companion **Golden clinic workflow** check runs the same synthetic visit
+without restoration. It covers direct patient billing, check-in, vitals, SOAP
+signing, performed-service reconciliation, cash-payment idempotency, paid
+checkout, and export. These are database/API regression checks; browser upload,
+attachment binaries, provider delivery, and real-clinic pilot acceptance remain
+separate evidence. Neither job uses hosted credentials or existing clinic data.
+
 `e2e/restore-drill.spec.ts` automates the whole runbook against a scratch
 database and is skipped unless `RESTORE_DRILL_BACKUP` is set:
 
