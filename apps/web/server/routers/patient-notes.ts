@@ -72,6 +72,7 @@ export const patientNotesRouter = createRouter({
           and(
             eq(clinicalNotes.practiceId, ctx.practiceId),
             eq(clinicalNotes.patientId, input.patientId),
+            eq(clinicalNotes.isChartNote, true),
             isNull(clinicalNotes.deletedAt),
             input.cursor
               ? or(
@@ -124,6 +125,7 @@ export const patientNotesRouter = createRouter({
             authorId: ctx.user.id,
             noteType: input.noteType,
             content: input.content,
+            isChartNote: true,
           })
           .onConflictDoNothing({ target: clinicalNotes.id })
           .returning();
@@ -137,6 +139,7 @@ export const patientNotesRouter = createRouter({
                 eq(clinicalNotes.practiceId, ctx.practiceId),
                 eq(clinicalNotes.patientId, input.patientId),
                 eq(clinicalNotes.authorId, ctx.user.id),
+                eq(clinicalNotes.isChartNote, true),
                 isNull(clinicalNotes.deletedAt),
               ),
             )

@@ -122,6 +122,7 @@ integration("Direct patient notes PostgreSQL contract", () => {
       expect(saved.content).toBe(payload.content);
       expect(saved.authorId).toBe(author!.id);
       expect(saved.patientId).toBe(patient!.id);
+      expect(saved.isChartNote).toBe(true);
       expect((await caller().create(payload)).id).toBe(saved.id);
       expect(
         (await caller().list({ patientId: patient!.id })).items,
@@ -177,12 +178,24 @@ integration("Direct patient notes PostgreSQL contract", () => {
       });
       // Identical timestamps exercise the UUID tie-breaker in pagination.
       await connection`reset role`;
+      const [legacyNote] = await db
+        .insert(schema.clinicalNotes)
+        .values({
+          practiceId: a!.id,
+          patientId: patient!.id,
+          authorId: author!.id,
+          noteType: payload.noteType,
+          content: payload.content,
+        })
+        .returning();
+      expect(legacyNote!.isChartNote).toBe(false);
       await db.insert(schema.clinicalNotes).values(
         Array.from({ length: 28 }, (_, index) => ({
           practiceId: a!.id,
           patientId: patient!.id,
           authorId: author!.id,
           content: `Older note ${index}`,
+          isChartNote: true,
           createdAt: new Date("2026-01-01T12:00:00Z"),
         })),
       );
@@ -201,6 +214,9 @@ integration("Direct patient notes PostgreSQL contract", () => {
         .set({ deletedAt: new Date() })
         .where(eq(schema.users.id, author!.id));
       await connection`set role openpims_app`;
+      await expect(
+        caller().create({ ...payload, operationId: legacyNote!.id }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
       const first = await caller().list({ patientId: patient!.id });
       const second = await caller().list({
         patientId: patient!.id,
@@ -212,6 +228,11 @@ integration("Direct patient notes PostgreSQL contract", () => {
         new Set([...first.items, ...second.items].map((note) => note.id)).size,
       ).toBe(30);
       expect(second.nextCursor).toBeUndefined();
+      expect(
+        [...first.items, ...second.items].some(
+          (note) => note.id === legacyNote!.id,
+        ),
+      ).toBe(false);
       expect(
         first.items.every((note) => note.authorName === "Synthetic Doctor"),
       ).toBe(true);

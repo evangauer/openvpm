@@ -1,6 +1,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import {
   clinicalRecordCorrections,
+  clinicalNotes,
   labResultReplacements,
   labResults,
   patientAllergies,
@@ -99,7 +100,7 @@ function labeledClinicalText(label: string, value: SQL): SQL {
 
 /**
  * Explicit allowlisted projection of client-exportable clinical chart data.
- * Deliberately absent: clinical_notes, communications, appointment notes,
+ * Deliberately absent: legacy internal clinical notes, communications, appointment notes,
  * worklists, documents, invoices, and every operational/private surface.
  */
 export function buildPatientHistoryQuery(args: {
@@ -195,6 +196,38 @@ export function buildPatientHistoryQuery(args: {
         and soap.status = 'finalized'
         and soap.deleted_at is null
         and ${includes("soap_note")}
+
+      union all
+
+      select
+        note.id,
+        'chart_note'::text,
+        note.created_at,
+        to_char(timezone(practice.time_zone, note.created_at), 'YYYY-MM-DD'),
+        note.created_at::text,
+        case note.note_type
+          when 'phone_call' then 'Phone call'
+          when 'follow_up' then 'Follow-up'
+          else 'General note'
+        end::text,
+        'recorded'::text,
+        false,
+        false,
+        ${noRecordId},
+        ${noRecordId},
+        'Authored by'::text,
+        author.name::text,
+        ${noText},
+        note.content::text
+      from ${clinicalNotes} note
+      join practice_context practice on practice.practice_id = note.practice_id
+      left join ${users} author
+        on author.id = note.author_id and author.practice_id = note.practice_id
+      where note.practice_id = ${practiceId}
+        and note.patient_id = ${input.patientId}
+        and note.is_chart_note = true
+        and note.deleted_at is null
+        and ${includes("chart_note")}
 
       union all
 

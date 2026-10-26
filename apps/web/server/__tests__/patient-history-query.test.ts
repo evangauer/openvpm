@@ -40,7 +40,8 @@ describe("patient history SQL projection", () => {
     expect(compiled.sql).toContain(
       "order by matched.occurred_at desc, matched.record_type desc, matched.id desc",
     );
-    expect(compiled.sql).not.toContain("clinical_notes");
+    expect(compiled.sql).toContain('from "clinical_notes" note');
+    expect(compiled.sql).toContain("note.is_chart_note = true");
     expect(compiled.sql).not.toContain("communications");
     expect(compiled.sql).not.toContain("appointment_notes");
     expect(compiled.sql).not.toContain("follow_up_note");

@@ -29,6 +29,7 @@ export function PatientNotes({
     content: string;
     noteType: string;
   } | null>(null);
+  const utils = trpc.useUtils();
   const notes = trpc.patientNotes.list.useInfiniteQuery(
     { patientId },
     { getNextPageParam: (page) => page.nextCursor },
@@ -62,7 +63,10 @@ export function PatientNotes({
       setContent("");
       operation.current = null;
       toast.success("Chart note saved");
-      await notes.refetch();
+      await Promise.all([
+        notes.refetch(),
+        utils.records.searchPatientHistory.invalidate({ patientId }),
+      ]);
     } catch {
       /* Mutation error is shown next to the preserved draft. */
     }

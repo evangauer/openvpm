@@ -32,6 +32,10 @@ import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { PatientHistorySearch } from "@/components/patients/patient-history-search";
 import { PatientNotes } from "@/components/patients/patient-notes";
+import {
+  PATIENT_NOTE_LABELS,
+  PATIENT_NOTE_TYPES,
+} from "@/lib/records/patient-note-policy";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
 import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
@@ -533,11 +537,15 @@ export default function PatientDetailPage() {
         vaccinationsResult,
         soapNotesResult,
         prescriptionsResult,
+        chartNotesResult,
       ] = await Promise.all([
         problemsQuery.refetch(),
         vaccinationsQuery.refetch(),
         soapNotesQuery.refetch(),
         prescriptionsQuery.refetch(),
+        canSearchPatientHistory
+          ? utils.patientNotes.list.fetch({ patientId: canonicalPatientId })
+          : Promise.resolve(null),
       ]);
 
       const summaryError =
@@ -633,6 +641,23 @@ export default function PatientDetailPage() {
               ),
             })),
           })),
+        chartNotes: chartNotesResult
+          ? {
+              items: chartNotesResult.items.map((note) => ({
+                date: formatClinicalDateTime(note.createdAt, recordsTimeZone),
+                type: PATIENT_NOTE_TYPES.includes(
+                  note.noteType as (typeof PATIENT_NOTE_TYPES)[number],
+                )
+                  ? PATIENT_NOTE_LABELS[
+                      note.noteType as keyof typeof PATIENT_NOTE_LABELS
+                    ]
+                  : "Chart note",
+                authorName: note.authorName ?? "Unknown clinician",
+                content: note.content,
+              })),
+              hasMore: Boolean(chartNotesResult.nextCursor),
+            }
+          : null,
         recordCorrections: [
           ...(patientData.allergyHistory ?? [])
             .filter(
@@ -848,9 +873,12 @@ export default function PatientDetailPage() {
                 <a href="#patient-note-content">Add chart note</a>
               </Button>
             ) : null}
-            {session?.user?.role === "admin" || session?.user?.role === "front_desk" ? (
+            {session?.user?.role === "admin" ||
+            session?.user?.role === "front_desk" ? (
               <Button size="sm" variant="outline" asChild>
-                <Link href={`/billing/new?patientId=${patient.id}`}>New invoice</Link>
+                <Link href={`/billing/new?patientId=${patient.id}`}>
+                  New invoice
+                </Link>
               </Button>
             ) : null}
             {canManagePatientDetail && (
