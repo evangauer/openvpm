@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import * as schema from "../../../../../packages/db/schema/index";
 import { withTenant, withTenantReadOnlySnapshot } from "@/lib/tenant-db";
 import { exportPracticeData } from "@/lib/backup/export";
-import type { TRPCContext } from "../../trpc";
+import { createRouter, type TRPCContext } from "../../trpc";
 import type { DisposableClinic } from "./disposable-clinic";
 
 /** Real protected routers and PostgreSQL; only outbound webhooks are stubbed by the suites. */
@@ -41,23 +41,19 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
       isPrimary: true,
     })
     .returning();
-  await fixture.ownerDb
-    .insert(schema.webhooks)
-    .values({
-      practiceId: practice!.id,
-      url: "https://example.invalid/synthetic-webhook",
-      events: ["patient.created"],
-      secret: "synthetic-webhook-placeholder",
-      active: true,
-    });
-  await fixture.ownerDb
-    .insert(schema.apiKeys)
-    .values({
-      practiceId: practice!.id,
-      name: "Synthetic API key",
-      keyPrefix: "synthetic",
-      keyHash: "synthetic-key-placeholder",
-    });
+  await fixture.ownerDb.insert(schema.webhooks).values({
+    practiceId: practice!.id,
+    url: "https://example.invalid/synthetic-webhook",
+    events: ["patient.created"],
+    secret: "synthetic-webhook-placeholder",
+    active: true,
+  });
+  await fixture.ownerDb.insert(schema.apiKeys).values({
+    practiceId: practice!.id,
+    name: "Synthetic API key",
+    keyPrefix: "synthetic",
+    keyHash: "synthetic-key-placeholder",
+  });
 
   const [
     { clientsRouter },
@@ -89,13 +85,25 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
       },
     },
   });
-  const clients = clientsRouter.createCaller(context());
-  const patients = patientsRouter.createCaller(context());
-  const appointments = appointmentsRouter.createCaller(context());
-  const records = recordsRouter.createCaller(context());
-  const vitals = vitalsRouter.createCaller(context());
-  const billing = billingRouter.createCaller(context());
-  const encounters = encountersRouter.createCaller(context());
+  const router = createRouter({
+    clients: clientsRouter,
+    patients: patientsRouter,
+    appointments: appointmentsRouter,
+    vitals: vitalsRouter,
+    records: recordsRouter,
+    billing: billingRouter,
+    encounters: encountersRouter,
+  });
+  const {
+    clients,
+    patients,
+    appointments,
+    vitals,
+    records,
+    billing,
+    encounters,
+  } = router.createCaller(context());
+  const foreignCaller = router.createCaller(context(foreignDoctor!));
 
   const client = await clients.create({
     firstName: "Synthetic",
@@ -109,12 +117,10 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
   const chart = await patients.getById({ id: patient.id });
   expect(chart).toMatchObject({ id: patient.id, clientId: client.id });
   await expect(
-    patientsRouter
-      .createCaller(context(foreignDoctor!))
-      .getById({ id: patient.id }),
+    foreignCaller.patients.getById({ id: patient.id }),
   ).rejects.toMatchObject({ code: "NOT_FOUND" });
   await expect(
-    billingRouter.createCaller(context(foreignDoctor!)).createInvoice({
+    foreignCaller.billing.createInvoice({
       clientId: client.id,
       patientId: patient.id,
       items: [],
