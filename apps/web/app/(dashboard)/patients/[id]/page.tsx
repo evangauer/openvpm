@@ -31,6 +31,7 @@ import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { PatientHistorySearch } from "@/components/patients/patient-history-search";
+import { PatientNotes } from "@/components/patients/patient-notes";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
 import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
@@ -842,6 +843,16 @@ export default function PatientDetailPage() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {canCorrectClinicalRecords ? (
+              <Button size="sm" asChild>
+                <a href="#patient-note-content">Add chart note</a>
+              </Button>
+            ) : null}
+            {session?.user?.role === "admin" || session?.user?.role === "front_desk" ? (
+              <Button size="sm" variant="outline" asChild>
+                <Link href={`/billing/new?patientId=${patient.id}`}>New invoice</Link>
+              </Button>
+            ) : null}
             {canManagePatientDetail && (
               <>
                 <CapturePhotos patientId={patient.id} />
@@ -1268,6 +1279,14 @@ export default function PatientDetailPage() {
 
         {activeTab === "invoices" && <InvoicesTab patientId={patient.id} />}
       </div>
+      {canSearchPatientHistory ? (
+        <PatientNotes
+          key={patient.id}
+          patientId={patient.id}
+          timeZone={recordsTimeZone}
+          canWrite={canCorrectClinicalRecords}
+        />
+      ) : null}
     </div>
   );
 }

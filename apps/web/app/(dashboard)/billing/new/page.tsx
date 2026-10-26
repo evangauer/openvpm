@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, useMemo, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState, useMemo, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { z } from "zod";
 import { useSession } from "next-auth/react";
 import { Plus, Trash2, ArrowLeft, Loader2, FileText } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -122,10 +123,76 @@ export default function NewInvoicePage() {
     );
   }
 
-  return <NewInvoiceForm />;
+  return (
+    <Suspense
+      fallback={
+        <InlineQueryMessage kind="loading">
+          Loading invoice...
+        </InlineQueryMessage>
+      }
+    >
+      <PatientInvoiceContext />
+    </Suspense>
+  );
 }
 
-function NewInvoiceForm() {
+function PatientInvoiceContext() {
+  const searchParams = useSearchParams();
+  const patientId = searchParams.get("patientId");
+  const validPatientId = z.string().uuid().safeParse(patientId).success;
+  const patient = trpc.patients.getById.useQuery(
+    { id: patientId ?? "" },
+    { enabled: Boolean(patientId) && validPatientId },
+  );
+  if (patientId === null) return <NewInvoiceForm />;
+  if (!validPatientId)
+    return (
+      <InlineQueryMessage kind="error">
+        The patient link is invalid. Open the patient chart and try again.
+      </InlineQueryMessage>
+    );
+  if (patient.isLoading)
+    return (
+      <InlineQueryMessage kind="loading">
+        Loading patient and owner...
+      </InlineQueryMessage>
+    );
+  if (
+    patient.error ||
+    !patient.data?.clientId ||
+    !patient.data.clientFirstName ||
+    !patient.data.clientLastName
+  ) {
+    return (
+      <InlineQueryMessage kind="error">
+        Unable to load this patient's owner. Open the patient chart and check
+        the owner before creating an invoice.{" "}
+        <Button variant="outline" onClick={() => void patient.refetch()}>
+          Retry
+        </Button>
+      </InlineQueryMessage>
+    );
+  }
+  return (
+    <NewInvoiceForm
+      key={patient.data.id}
+      initialPatientId={patient.data.id}
+      initialClient={{
+        id: patient.data.clientId,
+        firstName: patient.data.clientFirstName,
+        lastName: patient.data.clientLastName,
+      }}
+    />
+  );
+}
+
+function NewInvoiceForm({
+  initialPatientId = "",
+  initialClient = null,
+}: {
+  initialPatientId?: string;
+  initialClient?: { id: string; firstName: string; lastName: string } | null;
+}) {
   const router = useRouter();
 
   // Client search
@@ -134,10 +201,11 @@ function NewInvoiceForm() {
     id: string;
     firstName: string;
     lastName: string;
-  } | null>(null);
+  } | null>(initialClient);
 
   // Patient
-  const [selectedPatientId, setSelectedPatientId] = useState<string>("");
+  const [selectedPatientId, setSelectedPatientId] =
+    useState<string>(initialPatientId);
 
   // Line items
   const [items, setItems] = useState<LineItem[]>([]);
