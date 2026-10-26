@@ -2206,7 +2206,7 @@ function MedicalRecordsTab({
         ) : !notes || notes.length === 0 ? (
           <EmptyState
             icon={FileText}
-            title="No medical records yet"
+            title="No SOAP notes yet"
             description="SOAP notes written in Records will show up here."
           />
         ) : (
