@@ -750,6 +750,13 @@
       "when": 1790866541800,
       "tag": "0106_subscription_billing_account",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1793115304390,
+      "tag": "0107_explicit_chart_notes",
+      "breakpoints": true
     }
   ]
 }

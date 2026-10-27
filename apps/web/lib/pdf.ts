@@ -447,6 +447,15 @@ export interface MedicalSummaryData {
     replacementForLabel?: string;
     addenda?: Array<{ content: string; authorName: string; createdAt: string }>;
   }>;
+  chartNotes?: {
+    items: Array<{
+      date: string;
+      type: string;
+      authorName: string;
+      content: string;
+    }>;
+    hasMore: boolean;
+  } | null;
   recordCorrections?: Array<{
     recordLabel: string;
     reason: string;
@@ -771,6 +780,58 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
     }
   }
 
+  if (data.chartNotes !== undefined) {
+    sectionHeading("Recent Chart Notes");
+    doc.setFont(FONT, "normal");
+    doc.setFontSize(9);
+    setColor(doc, COLOR_GRAY);
+    if (data.chartNotes === null) {
+      writeWrappedText(
+        "Chart notes are not included for this access level.",
+        PAGE_MARGIN,
+        CONTENT_WIDTH,
+      );
+    } else {
+      if (data.chartNotes.hasMore) {
+        writeWrappedText(
+          "Showing the latest 25 chart notes. Earlier notes remain available in the patient chart.",
+          PAGE_MARGIN,
+          CONTENT_WIDTH,
+        );
+        y += 3;
+      } else if (data.chartNotes.items.length === 0) {
+        writeWrappedText(
+          "No chart notes recorded.",
+          PAGE_MARGIN,
+          CONTENT_WIDTH,
+        );
+      }
+      for (const note of data.chartNotes.items) {
+        y = ensureSpace(doc, y, 20);
+        doc.setFont(FONT, "bold");
+        setColor(doc, COLOR_DARK);
+        writeWrappedText(
+          `${note.type} - ${note.date}`,
+          PAGE_MARGIN,
+          CONTENT_WIDTH,
+          5,
+        );
+        doc.setFont(FONT, "normal");
+        setColor(doc, COLOR_GRAY);
+        writeWrappedText(
+          `Authored by ${note.authorName}`,
+          PAGE_MARGIN,
+          CONTENT_WIDTH,
+        );
+        y += 2;
+        setColor(doc, COLOR_DARK);
+        // Chart notes are plain text: literal angle brackets are not HTML.
+        writeWrappedText(note.content, PAGE_MARGIN + 4, CONTENT_WIDTH - 8);
+        y += 6;
+      }
+    }
+  }
+
   // Invalidated clinical content stays excluded, while its durable correction
   // evidence remains visible to a downstream clinician reviewing the summary.
   if ((data.recordCorrections?.length ?? 0) > 0) {
@@ -866,7 +927,7 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
       PAGE_WIDTH - PAGE_MARGIN,
       pageHeight - 10,
       {
-      align: "right",
+        align: "right",
       },
     );
   }

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -216,7 +218,13 @@ export default function PatientsPage() {
                         {speciesEmoji[patient.species ?? "other"] ??
                           "\uD83D\uDC3E"}
                       </span>
-                      {patient.name}
+                      <Link
+                        href={`/patients/${patient.id}`}
+                        onClick={(event) => event.stopPropagation()}
+                        className="text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+                      >
+                        {patient.name}
+                      </Link>
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {patient.breed || "\u2014"}

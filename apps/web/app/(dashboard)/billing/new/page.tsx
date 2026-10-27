@@ -2,8 +2,9 @@
 
 import { quantityLineTotalCents } from "@/lib/quantity";
 
-import { useEffect, useState, useMemo, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState, useMemo, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { isUuid } from "@/lib/compat/shared/validation";
 import { useSession } from "next-auth/react";
 import { Plus, Trash2, ArrowLeft, Loader2, FileText } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -124,10 +125,76 @@ export default function NewInvoicePage() {
     );
   }
 
-  return <NewInvoiceForm />;
+  return (
+    <Suspense
+      fallback={
+        <InlineQueryMessage kind="loading">
+          Loading invoice...
+        </InlineQueryMessage>
+      }
+    >
+      <PatientInvoiceContext />
+    </Suspense>
+  );
 }
 
-function NewInvoiceForm() {
+function PatientInvoiceContext() {
+  const searchParams = useSearchParams();
+  const patientId = searchParams.get("patientId");
+  const validPatientId = isUuid(patientId ?? "");
+  const patient = trpc.patients.getById.useQuery(
+    { id: patientId ?? "" },
+    { enabled: Boolean(patientId) && validPatientId },
+  );
+  if (patientId === null) return <NewInvoiceForm />;
+  if (!validPatientId)
+    return (
+      <InlineQueryMessage kind="error">
+        The patient link is invalid. Open the patient chart and try again.
+      </InlineQueryMessage>
+    );
+  if (patient.isLoading)
+    return (
+      <InlineQueryMessage kind="loading">
+        Loading patient and owner...
+      </InlineQueryMessage>
+    );
+  if (
+    patient.error ||
+    !patient.data?.clientId ||
+    !patient.data.clientFirstName ||
+    !patient.data.clientLastName
+  ) {
+    return (
+      <InlineQueryMessage kind="error">
+        Unable to load this patient's owner. Open the patient chart and check
+        the owner before creating an invoice.{" "}
+        <Button variant="outline" onClick={() => void patient.refetch()}>
+          Retry
+        </Button>
+      </InlineQueryMessage>
+    );
+  }
+  return (
+    <NewInvoiceForm
+      key={patient.data.id}
+      initialPatientId={patient.data.id}
+      initialClient={{
+        id: patient.data.clientId,
+        firstName: patient.data.clientFirstName,
+        lastName: patient.data.clientLastName,
+      }}
+    />
+  );
+}
+
+function NewInvoiceForm({
+  initialPatientId = "",
+  initialClient = null,
+}: {
+  initialPatientId?: string;
+  initialClient?: { id: string; firstName: string; lastName: string } | null;
+}) {
   const router = useRouter();
 
   // Client search
@@ -136,10 +203,11 @@ function NewInvoiceForm() {
     id: string;
     firstName: string;
     lastName: string;
-  } | null>(null);
+  } | null>(initialClient);
 
   // Patient
-  const [selectedPatientId, setSelectedPatientId] = useState<string>("");
+  const [selectedPatientId, setSelectedPatientId] =
+    useState<string>(initialPatientId);
 
   // Line items
   const [items, setItems] = useState<LineItem[]>([]);
@@ -433,10 +501,14 @@ function NewInvoiceForm() {
         {/* Patient Select */}
         {selectedClient && (
           <div>
-            <label className="block text-sm font-medium mb-1">
+            <label
+              htmlFor="invoice-patient"
+              className="block text-sm font-medium mb-1"
+            >
               Patient (optional)
             </label>
             <select
+              id="invoice-patient"
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={selectedPatientId}
               onChange={(e) => setSelectedPatientId(e.target.value)}
@@ -479,8 +551,8 @@ function NewInvoiceForm() {
                 Loading billing services...
               </InlineQueryMessage>
             ) : null}
-            <div className="grid grid-cols-12 gap-2">
-              <div className="col-span-4">
+            <div className="grid grid-cols-2 items-end gap-3 lg:grid-cols-12 lg:gap-2">
+              <div className="col-span-2 min-w-0 lg:col-span-4">
                 <ServicePicker
                   services={serviceOptions}
                   value={selectedServiceId}
@@ -492,16 +564,31 @@ function NewInvoiceForm() {
                   }
                 />
               </div>
-              <div className="col-span-3">
+              <div className="col-span-2 min-w-0 lg:col-span-3">
+                <label
+                  htmlFor="invoice-item-description"
+                  className="mb-1 block text-xs font-medium text-muted-foreground"
+                >
+                  Description
+                </label>
                 <Input
+                  id="invoice-item-description"
                   placeholder="Description"
                   value={itemDescription}
                   maxLength={BILLING_INVOICE_LINE_DESCRIPTION_MAX_LENGTH}
                   onChange={(e) => setItemDescription(e.target.value)}
                 />
               </div>
-              <div className="col-span-1">
+              <div className="min-w-0">
+                <label
+                  htmlFor="invoice-item-quantity"
+                  className="mb-1 block text-xs font-medium text-muted-foreground"
+                >
+                  Qty
+                </label>
                 <Input
+                  id="invoice-item-quantity"
+                  aria-label="Quantity"
                   type="number"
                   min={BILLING_INVOICE_LINE_QUANTITY_MIN}
                   max={BILLING_INVOICE_LINE_QUANTITY_MAX}
@@ -513,8 +600,15 @@ function NewInvoiceForm() {
                   }
                 />
               </div>
-              <div className="col-span-2">
+              <div className="min-w-0 lg:col-span-2">
+                <label
+                  htmlFor="invoice-item-unit-price"
+                  className="mb-1 block text-xs font-medium text-muted-foreground"
+                >
+                  Unit price
+                </label>
                 <Input
+                  id="invoice-item-unit-price"
                   type="number"
                   step="0.01"
                   min={0}
@@ -547,13 +641,13 @@ function NewInvoiceForm() {
                       <th className="py-2 text-left font-medium text-muted-foreground">
                         Description
                       </th>
-                      <th className="py-2 text-right font-medium text-muted-foreground">
+                      <th className="px-2 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">
                         Qty
                       </th>
-                      <th className="py-2 text-right font-medium text-muted-foreground">
+                      <th className="px-2 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">
                         Unit Price
                       </th>
-                      <th className="py-2 text-right font-medium text-muted-foreground">
+                      <th className="px-2 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">
                         Total
                       </th>
                       <th className="py-2 w-10" />
@@ -571,18 +665,19 @@ function NewInvoiceForm() {
                             {item.taxable ? "Taxable" : "Not taxable"}
                           </span>
                         </td>
-                        <td className="py-2 text-right tabular-nums">
+                        <td className="px-2 py-2 text-right tabular-nums whitespace-nowrap">
                           {item.quantity}
                         </td>
-                        <td className="py-2 text-right tabular-nums">
+                        <td className="px-2 py-2 text-right tabular-nums whitespace-nowrap">
                           {fmt(item.unitPrice)}
                         </td>
-                        <td className="py-2 text-right tabular-nums">
+                        <td className="px-2 py-2 text-right tabular-nums whitespace-nowrap">
                           {fmt(item.quantity * parseFloat(item.unitPrice))}
                         </td>
                         <td className="py-2 text-right">
                           <button
                             type="button"
+                            aria-label={`Remove ${item.description}`}
                             className="text-muted-foreground hover:text-destructive transition-colors"
                             onClick={() => handleRemoveItem(item.id)}
                           >

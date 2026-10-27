@@ -1652,6 +1652,56 @@ describe("practice backup secret handling", () => {
 });
 
 describe("restorePracticeData", () => {
+  it("preserves explicit chart-note visibility without promoting legacy internal notes", async () => {
+    const backup = {
+      ...emptyBackup(),
+      practiceId: "source-practice",
+      users: [
+        {
+          id: "note-author",
+          practiceId: "source-practice",
+          name: "Synthetic Doctor",
+        },
+      ],
+      clients: [{ id: "note-client", practiceId: "source-practice" }],
+      patients: [
+        {
+          id: "note-patient",
+          practiceId: "source-practice",
+          clientId: "note-client",
+        },
+      ],
+      clinicalNotes: [
+        {
+          id: "chart-note",
+          practiceId: "source-practice",
+          patientId: "note-patient",
+          authorId: "note-author",
+          content: "Pasted\n<script>literal text</script>",
+          isChartNote: true,
+        },
+        {
+          id: "legacy-note",
+          practiceId: "source-practice",
+          patientId: "note-patient",
+          authorId: "note-author",
+          content: "Internal note",
+        },
+      ],
+    };
+    const { db, inserted } = restoreDb();
+    await restorePracticeData(db as never, "target-practice", backup);
+    const rows = inserted.flatMap(({ rows }) => rows);
+    expect(rows.find((row) => row.id === "chart-note")).toMatchObject({
+      practiceId: "target-practice",
+      isChartNote: true,
+      content: "Pasted\n<script>literal text</script>",
+    });
+    expect(rows.find((row) => row.id === "legacy-note")).not.toHaveProperty(
+      "isChartNote",
+    );
+  });
+
   it("rejects an oversized restore before opening a transaction", async () => {
     const rootDb = {
       transaction: vi.fn(),

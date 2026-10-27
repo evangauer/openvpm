@@ -434,7 +434,14 @@ export default function DashboardPage() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">
-                    {appt.patientName ?? "Unknown Patient"}
+                    {appt.patientId ? (
+                      <Link
+                        href={`/patients/${appt.patientId}`}
+                        className="text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+                      >
+                        {appt.patientName ?? "Open patient"}
+                      </Link>
+                    ) : "Unknown Patient"}
                     {appt.clientLastName && (
                       <span className="ml-1 font-normal text-muted-foreground">
                         ({appt.clientFirstName} {appt.clientLastName})

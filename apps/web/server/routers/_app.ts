@@ -5,6 +5,7 @@ import { patientsRouter } from "./patients";
 import { appointmentsRouter } from "./appointments";
 import { recentClinicalItemsRouter } from "./recent-clinical-items";
 import { recordsRouter } from "./records";
+import { patientNotesRouter } from "./patient-notes";
 import { billingRouter } from "./billing";
 import { dashboardRouter } from "./dashboard";
 import { whiteboardRouter } from "./whiteboard";
@@ -43,6 +44,7 @@ export const appRouter = createRouter({
   appointments: appointmentsRouter,
   recentClinicalItems: recentClinicalItemsRouter,
   records: recordsRouter,
+  patientNotes: patientNotesRouter,
   billing: billingRouter,
   dashboard: dashboardRouter,
   whiteboard: whiteboardRouter,
