@@ -9,8 +9,8 @@
     "./tsconfig.nextjs.json": "./tsconfig.nextjs.json"
   },
   "devDependencies": {
-    "tailwindcss": "^3.4.0",
+    "tailwindcss": "^4.3.3",
     "tailwindcss-animate": "^1.0.7",
-    "typescript": "^5.5.0"
+    "typescript": "^7.0.2"
   }
 }
