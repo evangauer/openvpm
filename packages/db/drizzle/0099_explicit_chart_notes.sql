@@ -1,0 +1,2 @@
+ALTER TABLE "clinical_notes" ADD COLUMN "is_chart_note" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+CREATE INDEX "clinical_notes_chart_history_idx" ON "clinical_notes" USING btree ("practice_id","patient_id","created_at" DESC NULLS LAST,"id" DESC NULLS LAST) WHERE "clinical_notes"."is_chart_note" = true and "clinical_notes"."deleted_at" is null;

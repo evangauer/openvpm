@@ -582,6 +582,8 @@ export const clinicalNotes = pgTable(
       .references(() => users.id),
     noteType: noteTypeEnum("note_type").notNull().default("general"),
     content: text("content").notNull(),
+    // Legacy internal notes remain private unless explicitly authored as chart entries.
+    isChartNote: boolean("is_chart_note").notNull().default(false),
   },
   (table) => ({
     patientIdx: index("clinical_notes_patient_idx").on(
@@ -592,6 +594,14 @@ export const clinicalNotes = pgTable(
       table.practiceId,
       table.deletedAt,
     ),
+    chartHistoryIdx: index("clinical_notes_chart_history_idx")
+      .on(
+        table.practiceId,
+        table.patientId,
+        table.createdAt.desc(),
+        table.id.desc(),
+      )
+      .where(sql`${table.isChartNote} = true and ${table.deletedAt} is null`),
   }),
 );
 

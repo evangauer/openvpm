@@ -30,6 +30,10 @@ integration("Disposable restore drill", () => {
       const scenario = await runGoldenClinic(source);
       // Exercise the JSON download/upload boundary, including timestamp coercion.
       const backup = JSON.parse(JSON.stringify(scenario.backup));
+      // Older backups have no visibility marker; those notes must stay private.
+      for (const note of backup.clinicalNotes) {
+        if (note.id === scenario.internalNote.id) delete note.isChartNote;
+      }
       process.env.DATABASE_URL = originalUrl;
       target = await disposableClinic();
       const practiceId = randomUUID();
@@ -124,12 +128,35 @@ integration("Disposable restore drill", () => {
         authorId: scenario.doctor.id,
         practiceId,
       });
-      expect(restored.clinicalNotes[0]).toMatchObject({
-        id: scenario.internalNote.id,
-        content: scenario.internalNote.content,
-        authorId: scenario.doctor.id,
-        practiceId,
-      });
+      expect(restored.clinicalNotes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: scenario.internalNote.id,
+            content: scenario.internalNote.content,
+            authorId: scenario.doctor.id,
+            practiceId,
+            isChartNote: false,
+          }),
+          expect.objectContaining({
+            id: scenario.chartNote.id,
+            content: scenario.chartNote.content,
+            authorId: scenario.doctor.id,
+            practiceId,
+            isChartNote: true,
+          }),
+        ]),
+      );
+      const { patientNotesRouter } = await import("../routers/patient-notes");
+      const restoredContext = scenario.context();
+      restoredContext.db = target.db;
+      restoredContext.session!.user.practiceId = practiceId;
+      restoredContext.session!.user.recoveryHold = true;
+      const visible = await patientNotesRouter
+        .createCaller(restoredContext)
+        .list({ patientId: scenario.patient.id });
+      expect(visible.items.map((note) => note.id)).toEqual([
+        scenario.chartNote.id,
+      ]);
       expect(restored.payments[0]).toMatchObject({
         invoiceId: scenario.invoice.id,
         amount: "19.44",

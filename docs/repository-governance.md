@@ -42,8 +42,8 @@ identifier are recorded against `main`.
    controls, migration impact, and rollback limits. UI changes include visual
    evidence; security- or data-sensitive changes identify their threat and
    tenant-isolation considerations.
-4. Obtain the required independent and code-owner reviews, resolve all review
-   threads, and pass all required checks.
+4. Obtain the reviews required by the applicable review mode below, resolve all
+   review threads, and pass all required checks.
 5. Merge using the repository's configured merge strategy. Delete the topic
    branch only after the merge is verified and no other pull request depends on
    it.
@@ -78,8 +78,10 @@ progress merely to make the branches appear synchronized.
 
 Every pull request into a canonical branch requires:
 
-- at least one approval from a reviewer other than the author;
-- approval from an applicable code owner for owned paths;
+- at least one approval from a reviewer other than the author, except for
+  Development and Staging in the sole-maintainer mode below;
+- approval from an applicable code owner for owned paths, subject to the same
+  sole-maintainer exception;
 - all review conversations resolved and no outstanding change requests;
 - a current base branch with conflicts resolved before final approval;
 - successful `build`, `Migration history integrity`, and `RLS tenant
@@ -92,7 +94,10 @@ release owner. Changes involving authentication, authorization, tenant
 boundaries, migrations, clinical records, billing, secrets, webhooks, provider
 integrations, recovery, CI, or deployment configuration require approval from
 the relevant security, data, or operations owner in addition to the normal
-reviewer. Authors cannot approve their own pull requests or deployments.
+reviewer. In sole-maintainer mode, the maintainer records the relevant risk and
+verification assessment for Development and Staging instead of an independent
+specialist approval. Authors cannot approve their own pull requests or
+deployments where independent approval is required.
 
 Required checks must include the repository's existing public-release scan,
 production-dependency audit, type check, automated tests, build, append-only
@@ -100,6 +105,35 @@ migration-history check, schema/migration consistency checks, and real-Postgres
 RLS isolation tests. A flaky or unavailable check blocks a release until it is
 fixed or an incident-scoped exception is documented and approved by both the
 release and relevant code owner.
+
+### Sole-maintainer mode for Development and Staging
+
+When the repository has only one maintainer with merge access, required reviews
+from another person would prevent all integration. In this mode, classic branch
+protection on `development` and `staging` uses zero required approving reviews,
+with required code-owner review and last-push approval disabled. The maintainer
+must authorize this mode; it is not an automatic fallback when a reviewer is
+unavailable. A maintainer's authorized merge records the integration decision;
+it must not be represented as an independent approval.
+
+Pull requests remain mandatory. All seven integration checks remain required:
+`build`, `RLS tenant isolation`, `Migration history integrity`, `Analyze
+(actions)`, `Analyze (javascript-typescript)`, `Golden clinic workflow`, and
+`Disposable restore drill`. The branch must be current, review conversations
+resolved, and required checks successful. Administrator enforcement, linear
+history, and protections against direct pushes, force pushes, and branch
+deletion remain enabled. This mode grants no bypass of checks or merge rules.
+
+Preserve a before-and-after protection record and describe the verification,
+risk, and maintainer decision in the change record. Keep CODEOWNERS coverage so
+responsibility for sensitive paths remains explicit. Restore independent,
+code-owner, and last-push approvals when another eligible maintainer is available.
+
+This exception applies only to branch review requirements for Development and
+Staging. It does not authorize a production deployment, waive production
+approval or staging acceptance, lift preview quarantine, grant credentials, or
+change migration and immutable-artifact requirements. The production controls
+and release process below continue to apply.
 
 ## CODEOWNERS policy
 

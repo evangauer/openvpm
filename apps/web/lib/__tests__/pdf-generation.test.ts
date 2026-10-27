@@ -92,6 +92,52 @@ describe("medical summary header", () => {
   });
 });
 
+describe("plain-text chart notes in medical summaries", () => {
+  const summary = {
+    practiceName: "Synthetic Clinic",
+    patientName: "Synthetic Cat",
+    species: "Feline",
+    clientName: "Synthetic Owner",
+    allergies: [],
+    problems: [],
+    vaccinations: [],
+    recentNotes: [],
+    prescriptions: [],
+  };
+
+  it("retains full pasted text and authorship across pages and labels a limited summary", () => {
+    const doc = generateMedicalSummaryPdf({
+      ...summary,
+      chartNotes: {
+        items: [
+          {
+            date: "October 26, 2026 at 10:30 AM",
+            type: "Phone call",
+            authorName: "Synthetic Doctor",
+            content:
+              "<script>literal pasted text</script>\n" +
+              "Long pasted observation. ".repeat(750) +
+              "\nCHART_NOTE_END_MARKER",
+          },
+        ],
+        hasMore: true,
+      },
+    });
+    expect(doc.getNumberOfPages()).toBeGreaterThan(2);
+    const output = doc.output();
+    expect(output).toContain("<script>literal pasted text</script>");
+    expect(output).toContain("Authored by Synthetic Doctor");
+    expect(output).toContain("CHART_NOTE_END_MARKER");
+    expect(output).toContain("Showing the latest 25 chart notes.");
+  });
+
+  it("explicitly identifies summaries that cannot include chart notes", () => {
+    expect(
+      generateMedicalSummaryPdf({ ...summary, chartNotes: null }).output(),
+    ).toContain("Chart notes are not included for this access level.");
+  });
+});
+
 describe("pdf generation date labels", () => {
   const source = readFileSync("lib/pdf.ts", "utf8");
 

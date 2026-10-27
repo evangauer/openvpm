@@ -173,7 +173,7 @@ describe("billing invoice form UX", () => {
     expect(source).toContain('import { useSession } from "next-auth/react"');
     expect(source).toContain("function canManageBillingRole");
     expect(source).toContain('role === "admin" || role === "front_desk"');
-    expect(source).toContain("function NewInvoiceForm()");
+    expect(source).toContain("function NewInvoiceForm(");
     expect(source).toContain(
       "if (!canManageBillingRole(session?.user?.role))"
     );
