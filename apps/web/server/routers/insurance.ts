@@ -67,8 +67,8 @@ const policyMutableInput = {
 
 const policyInput = z
   .object({
-    clientId: z.string().uuid(),
-    patientId: z.string().uuid(),
+    clientId: z.string().guid(),
+    patientId: z.string().guid(),
     ...policyMutableInput,
   })
   .superRefine((input, ctx) => {
@@ -86,7 +86,7 @@ const policyInput = z
   });
 
 const policyUpdateInput = z.object({
-  id: z.string().uuid(),
+  id: z.string().guid(),
   providerName: policyMutableInput.providerName.optional(),
   policyNumber: policyMutableInput.policyNumber,
   groupNumber: policyMutableInput.groupNumber,
@@ -102,7 +102,7 @@ const policyUpdateInput = z.object({
 
 const claimsListInput = z.object({
   status: z.enum(claimStatuses).optional(),
-  policyId: z.string().uuid().optional(),
+  policyId: z.string().guid().optional(),
   limit: z.number().int().min(1).max(100).default(25),
   offset: listOffsetInput,
 });
@@ -358,7 +358,7 @@ export const insuranceRouter = createRouter({
   listPolicies: protectedProcedure
     .input(
       z.object({
-        patientId: z.string().uuid().optional(),
+        patientId: z.string().guid().optional(),
       })
     )
     .query(async ({ ctx, input }) => {
@@ -571,8 +571,8 @@ export const insuranceRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        policyId: z.string().uuid(),
-        invoiceId: z.string().uuid().optional(),
+        policyId: z.string().guid(),
+        invoiceId: z.string().guid().optional(),
         claimNumber: optionalClinicalTextInput("Claim number", 128),
         claimAmount: positiveMoneyInput,
         notes: optionalClinicalTextInput("Notes", 2000),
@@ -601,7 +601,7 @@ export const insuranceRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         status: z.enum(claimStatuses),
         approvedAmount: moneyInput.optional(),
         deniedReason: optionalClinicalTextInput("Denied reason", 2000),

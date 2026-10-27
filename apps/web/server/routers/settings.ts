@@ -1239,7 +1239,7 @@ export const settingsRouter = createRouter({
   updateLocation: adminProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         name: locationNameInput.optional(),
         address: addressInput,
         phone: phoneInput,
@@ -1271,7 +1271,7 @@ export const settingsRouter = createRouter({
     }),
 
   setPrimaryLocation: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const updated = await ctx.db.transaction(async (tx) => {
         await tx.execute(
@@ -1324,7 +1324,7 @@ export const settingsRouter = createRouter({
     }),
 
   deleteLocation: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
         await takeAppointmentSchedulingLock(
@@ -2418,8 +2418,8 @@ export const settingsRouter = createRouter({
   replaceProviderSchedule: adminProcedure
     .input(
       z.object({
-        userId: z.string().uuid(),
-        locationId: z.string().uuid().optional(),
+        userId: z.string().guid(),
+        locationId: z.string().guid().optional(),
         windows: providerScheduleWindowsInput,
         expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
         // Retained briefly so a client loaded before this release fails safe
@@ -2831,7 +2831,7 @@ export const settingsRouter = createRouter({
   updateUser: adminProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         name: staffNameInput.optional(),
         role: z
           .enum(["admin", "veterinarian", "technician", "front_desk", "viewer"])
@@ -2973,7 +2973,7 @@ export const settingsRouter = createRouter({
     }),
 
   deactivateUser: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       if (input.id === ctx.user.id) {
         throw new TRPCError({
@@ -3102,7 +3102,7 @@ export const settingsRouter = createRouter({
     }),
 
   restoreUser: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const [updated] = await ctx.db
         .update(users)
@@ -3166,7 +3166,7 @@ export const settingsRouter = createRouter({
   updateAppointmentType: adminProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         name: appointmentTypeNameInput.optional(),
         durationMinutes: z
           .number()
@@ -3208,7 +3208,7 @@ export const settingsRouter = createRouter({
     }),
 
   deleteAppointmentType: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
         const [type] = await tx
@@ -3343,7 +3343,7 @@ export const settingsRouter = createRouter({
       z.object({
         name: roomNameInput,
         type: z.enum(["exam", "surgery", "treatment", "boarding"]),
-        locationId: z.string().uuid(),
+        locationId: z.string().guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -3376,7 +3376,7 @@ export const settingsRouter = createRouter({
     }),
 
   deleteRoom: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
         await takeAppointmentSchedulingLock(

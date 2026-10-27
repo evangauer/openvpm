@@ -37,7 +37,7 @@ import { assertVisitInvoiceReadyForFinancialAction } from "@/server/visit-billin
 
 const portalCheckoutInput = z.object({
   token: z.string().trim().min(1).max(PORTAL_ACCESS_TOKEN_MAX_LENGTH),
-  invoiceId: z.string().uuid(),
+  invoiceId: z.string().guid(),
 });
 const PORTAL_CHECKOUT_RATE_LIMIT_MESSAGE =
   "Too many payment attempts. Please try again later or call the clinic.";

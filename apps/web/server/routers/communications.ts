@@ -186,7 +186,7 @@ async function practiceTimeZone(
 
 const createCommunicationInput = z
   .object({
-    clientId: z.string().uuid(),
+    clientId: z.string().guid(),
     channel: z.enum(["phone", "sms", "email", "portal"]),
     direction: z.enum(["inbound", "outbound"]),
     subject: z.string().trim().max(COMMUNICATION_SUBJECT_MAX_LENGTH).optional(),
@@ -201,7 +201,7 @@ const createCommunicationInput = z
     status: z
       .enum(["pending", "sent", "delivered", "read", "failed"])
       .optional(),
-    requestId: z.string().uuid().optional(),
+    requestId: z.string().guid().optional(),
   })
   .superRefine((input, ctx) => {
     if (
@@ -235,7 +235,7 @@ export const communicationsRouter = createRouter({
   list: protectedProcedure
     .input(
       z.object({
-        clientId: z.string().uuid().optional(),
+        clientId: z.string().guid().optional(),
         status: z
           .enum(["pending", "sent", "delivered", "read", "failed"])
           .optional(),
@@ -465,7 +465,7 @@ export const communicationsRouter = createRouter({
     }),
 
   getByClient: protectedProcedure
-    .input(z.object({ clientId: z.string().uuid() }))
+    .input(z.object({ clientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       return ctx.db
         .select({
@@ -512,7 +512,7 @@ export const communicationsRouter = createRouter({
     }),
 
   markClientRead: inboxStaffProcedure
-    .input(z.object({ clientId: z.string().uuid() }))
+    .input(z.object({ clientId: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const [client] = await ctx.db
         .select({ id: clients.id })
@@ -553,9 +553,9 @@ export const communicationsRouter = createRouter({
   assignClient: inboxStaffProcedure
     .input(
       z.object({
-        clientId: z.string().uuid(),
+        clientId: z.string().guid(),
         action: z.enum(["assign_to_me", "unassign"]),
-        expectedAssignedTo: z.string().uuid().nullable(),
+        expectedAssignedTo: z.string().guid().nullable(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -636,8 +636,8 @@ export const communicationsRouter = createRouter({
   linkCommunicationToClient: inboxStaffProcedure
     .input(
       z.object({
-        communicationId: z.string().uuid(),
-        clientId: z.string().uuid(),
+        communicationId: z.string().guid(),
+        clientId: z.string().guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1188,7 +1188,7 @@ export const communicationsRouter = createRouter({
   updateStatus: inboxStaffProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         status: z.enum(["pending", "sent", "delivered", "read", "failed"]),
       }),
     )

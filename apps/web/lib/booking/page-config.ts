@@ -118,7 +118,7 @@ const configSchema = z.object({
   hours: weeklyHoursSchema.catch(() => DEFAULT_WEEKLY_HOURS),
   /** Explicitly selected active appointment types; empty fails public booking closed. */
   bookableTypeIds: z
-    .array(z.string().uuid())
+    .array(z.string().guid())
     .nullable()
     .catch([])
     .transform((ids) => ids ?? []),

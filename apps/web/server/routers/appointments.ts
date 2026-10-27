@@ -93,8 +93,8 @@ const listAppointmentsInput = z
   .object({
     startDate: appointmentRangeInput,
     endDate: appointmentRangeInput,
-    doctorId: z.string().uuid().optional(),
-    locationId: z.string().uuid().optional(),
+    doctorId: z.string().guid().optional(),
+    locationId: z.string().guid().optional(),
   })
   .superRefine((input, ctx) => {
     if (appointmentRangeEnd(input.endDate) < appointmentRangeStart(input.startDate)) {
@@ -110,12 +110,12 @@ const createAppointmentInput = z
   .object({
     startTime: appointmentDateTimeInput,
     endTime: appointmentDateTimeInput,
-    typeId: z.string().uuid().optional(),
-    patientId: z.string().uuid().optional(),
-    clientId: z.string().uuid().optional(),
-    doctorId: z.string().uuid().optional(),
-    roomId: z.string().uuid().optional(),
-    locationId: z.string().uuid().optional(),
+    typeId: z.string().guid().optional(),
+    patientId: z.string().guid().optional(),
+    clientId: z.string().guid().optional(),
+    doctorId: z.string().guid().optional(),
+    roomId: z.string().guid().optional(),
+    locationId: z.string().guid().optional(),
     notes: appointmentNotesInput,
   })
   .superRefine((input, ctx) => {
@@ -130,12 +130,12 @@ const createAppointmentInput = z
 
 const rescheduleAppointmentInput = z
   .object({
-    id: z.string().uuid(),
+    id: z.string().guid(),
     startTime: appointmentDateTimeInput,
     endTime: appointmentDateTimeInput,
-    doctorId: z.string().uuid().nullable().optional(),
-    roomId: z.string().uuid().nullable().optional(),
-    locationId: z.string().uuid().optional(),
+    doctorId: z.string().guid().nullable().optional(),
+    roomId: z.string().guid().nullable().optional(),
+    locationId: z.string().guid().optional(),
   })
   .superRefine((input, ctx) => {
     if (!isAppointmentDateTimeRangeValid(input.startTime, input.endTime)) {
@@ -157,9 +157,9 @@ const availableSlotsInput = z
       .max(APPOINTMENT_DURATION_MAX_MINUTES)
       .default(30),
     stepMinutes: z.number().int().min(5).max(240).optional(),
-    doctorId: z.string().uuid().optional(),
-    roomId: z.string().uuid().optional(),
-    locationId: z.string().uuid().optional(),
+    doctorId: z.string().guid().optional(),
+    roomId: z.string().guid().optional(),
+    locationId: z.string().guid().optional(),
     dayStartHour: z.number().int().min(0).max(23).default(8),
     dayEndHour: z.number().int().min(1).max(24).default(18),
   })
@@ -175,12 +175,12 @@ const availableSlotsInput = z
 
 const createRecurringInput = z
   .object({
-    patientId: z.string().uuid(),
-    clientId: z.string().uuid().optional(),
-    doctorId: z.string().uuid().optional(),
-    typeId: z.string().uuid().optional(),
-    roomId: z.string().uuid().optional(),
-    locationId: z.string().uuid().optional(),
+    patientId: z.string().guid(),
+    clientId: z.string().guid().optional(),
+    doctorId: z.string().guid().optional(),
+    typeId: z.string().guid().optional(),
+    roomId: z.string().guid().optional(),
+    locationId: z.string().guid().optional(),
     startTime: appointmentDateTimeInput,
     endTime: appointmentDateTimeInput,
     frequency: z.enum(["weekly", "monthly", "annual"]),
@@ -618,7 +618,7 @@ export const appointmentsRouter = createRouter({
   listByPatient: protectedProcedure
     .input(
       z.object({
-        patientId: z.string().uuid(),
+        patientId: z.string().guid(),
         limit: z.number().int().min(1).max(100).default(50),
       })
     )
@@ -663,7 +663,7 @@ export const appointmentsRouter = createRouter({
     }),
 
   getById: protectedProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const [appt] = await ctx.db
         .select({
@@ -832,7 +832,7 @@ export const appointmentsRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         status: appointmentStatusInput,
         confirmationContactMethod: confirmationContactMethodInput.optional(),
       })
@@ -1166,8 +1166,8 @@ export const appointmentsRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
-        patientId: z.string().uuid(),
+        id: z.string().guid(),
+        patientId: z.string().guid(),
       })
     )
     .mutation(async ({ ctx, input }) =>
@@ -1296,7 +1296,7 @@ export const appointmentsRouter = createRouter({
 
   cancelRecurringSeries: protectedProcedure
     .use(requireRole("admin", "veterinarian", "front_desk"))
-    .input(z.object({ seriesId: z.string().uuid() }))
+    .input(z.object({ seriesId: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const now = new Date();
 
@@ -1629,7 +1629,7 @@ export const appointmentsRouter = createRouter({
   }),
 
   listRooms: protectedProcedure
-    .input(z.object({ locationId: z.string().uuid().optional() }).optional())
+    .input(z.object({ locationId: z.string().guid().optional() }).optional())
     .query(async ({ ctx, input }) => {
       const conditions = [
         eq(rooms.practiceId, ctx.practiceId),
