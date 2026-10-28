@@ -1309,10 +1309,15 @@ export default function PatientDetailPage() {
       </div>
       {canSearchPatientHistory ? (
         <PatientNotes
-          key={patient.id}
+          key={`${patient.id}:${session?.user.id}:${session?.user.practiceId}:${canCorrectClinicalRecords}`}
           patientId={patient.id}
           timeZone={recordsTimeZone}
           canWrite={canCorrectClinicalRecords}
+          draftScope={session?.user ? {
+            patientId: patient.id,
+            userId: session.user.id,
+            practiceId: session.user.practiceId,
+          } : null}
         />
       ) : null}
     </div>

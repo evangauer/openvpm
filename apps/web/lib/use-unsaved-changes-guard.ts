@@ -238,6 +238,9 @@ function attachListeners() {
 
 function detachListenersIfIdle() {
   if (!listenersAttached || activeGuards.size > 0) return;
+  // Effect cleanup and the next clean effect can both run before popstate.
+  // Only remove the sentinel once; a second Back can leave the saved chart.
+  if (pendingPopAction === "cleanup") return;
   if (sentinelActive) {
     pendingPopAction = "cleanup";
     window.history.back();
