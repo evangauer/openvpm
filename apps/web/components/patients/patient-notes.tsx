@@ -6,6 +6,10 @@ import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes-guard";
 import { formatClinicalDateTime } from "@/lib/records/clinical-dates";
+import { useOnlineStatus } from "@/lib/use-online-status";
+import { useOfflineNoteDraft } from "@/lib/records/use-offline-note-draft";
+import type { NoteDraftScope } from "@/lib/records/offline-note-draft";
+import { OfflineNoteDraftControls } from "./offline-note-draft-controls";
 import {
   PATIENT_NOTE_LABELS,
   PATIENT_NOTE_MAX_LENGTH,
@@ -16,52 +20,62 @@ export function PatientNotes({
   patientId,
   timeZone,
   canWrite,
+  draftScope = null,
 }: {
   patientId: string;
   timeZone: string | null;
   canWrite: boolean;
+  draftScope?: NoteDraftScope | null;
 }) {
-  const [content, setContent] = useState("");
-  const [noteType, setNoteType] =
-    useState<(typeof PATIENT_NOTE_TYPES)[number]>("general");
-  const operation = useRef<{
-    id: string;
-    content: string;
-    noteType: string;
-  } | null>(null);
+  const recovery = useOfflineNoteDraft(canWrite ? draftScope : null);
+  const { content, noteType, operationId } = recovery.draft;
+  const isOnline = useOnlineStatus();
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
   const utils = trpc.useUtils();
   const notes = trpc.patientNotes.list.useInfiniteQuery(
     { patientId },
     { getNextPageParam: (page) => page.nextCursor },
   );
-  const create = trpc.patientNotes.create.useMutation();
+  // Do not leave a paused mutation holding the editor or replay it silently.
+  // Browser connectivity is only a hint; server failures still preserve the draft.
+  const create = trpc.patientNotes.create.useMutation({
+    networkMode: "always",
+    retry: false,
+  });
   useUnsavedChangesGuard(
-    Boolean(content) || create.isPending,
-    "This chart note is not saved. Leave and lose the note?",
+    Boolean(content) || saving,
+    "This note has not been saved to the chart. Leave this page?",
   );
   const tooLong = content.trim().length > PATIENT_NOTE_MAX_LENGTH;
+  const editorLocked =
+    saving ||
+    Boolean(operationId) ||
+    recovery.busy ||
+    recovery.mode === "locked" ||
+    recovery.mode === "loading";
 
   async function save() {
     const text = content.trim();
-    if (!text || tooLong || create.isPending) return;
-    // Keep the same key across retries, including an acknowledgement lost in
-    // transit. A changed draft receives a new key rather than overwriting it.
     if (
-      !operation.current ||
-      operation.current.content !== text ||
-      operation.current.noteType !== noteType
-    ) {
-      operation.current = { id: crypto.randomUUID(), content: text, noteType };
-    }
+      !text ||
+      tooLong ||
+      savingRef.current ||
+      !isOnline ||
+      !canWrite ||
+      recovery.mode === "locked" ||
+      recovery.mode === "loading"
+    )
+      return;
+    savingRef.current = true;
+    setSaving(true);
     try {
+      const pending = await recovery.beginSave();
       await create.mutateAsync({
         patientId,
-        operationId: operation.current.id,
-        content: text,
-        noteType,
+        ...pending,
       });
-      setContent("");
-      operation.current = null;
+      await recovery.acknowledgeSave();
       toast.success("Chart note saved");
       await Promise.all([
         notes.refetch(),
@@ -69,6 +83,9 @@ export function PatientNotes({
       ]);
     } catch {
       /* Mutation error is shown next to the preserved draft. */
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   }
 
@@ -94,14 +111,26 @@ export function PatientNotes({
           }}
           className="space-y-3"
         >
+          <OfflineNoteDraftControls
+            recovery={recovery}
+            disabled={saving || Boolean(operationId)}
+          />
+          {!isOnline ? (
+            <p role="status" className="text-sm text-muted-foreground">
+              You are offline. Keep writing here, then save to the chart when
+              your connection returns.
+            </p>
+          ) : null}
           <label className="block text-sm font-medium">
             Note type
             <select
               value={noteType}
               onChange={(event) =>
-                setNoteType(event.target.value as typeof noteType)
+                recovery.update({
+                  noteType: event.target.value as typeof noteType,
+                })
               }
-              disabled={create.isPending}
+              disabled={editorLocked}
               className="mt-1 block h-10 rounded-md border border-input bg-background px-3"
             >
               {PATIENT_NOTE_TYPES.map((type) => (
@@ -120,8 +149,10 @@ export function PatientNotes({
           <textarea
             id="patient-note-content"
             value={content}
-            onChange={(event) => setContent(event.target.value)}
-            disabled={create.isPending}
+            onChange={(event) =>
+              recovery.update({ content: event.target.value })
+            }
+            readOnly={editorLocked}
             rows={6}
             placeholder="Type or paste the note here..."
             className="block w-full rounded-md border border-input bg-background p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -144,11 +175,29 @@ export function PatientNotes({
               saving.
             </p>
           ) : null}
+          {operationId && !saving ? (
+            <p role="status" className="text-sm text-muted-foreground">
+              Save not yet confirmed. Retry this same note before making
+              changes; a previous attempt may already have reached the chart.
+            </p>
+          ) : null}
           <Button
             type="submit"
-            disabled={!content.trim() || tooLong || create.isPending}
+            disabled={
+              !content.trim() ||
+              tooLong ||
+              saving ||
+              !isOnline ||
+              recovery.busy ||
+              recovery.mode === "locked" ||
+              recovery.mode === "loading"
+            }
           >
-            {create.isPending ? "Saving note..." : "Save chart note"}
+            {saving
+              ? "Saving note..."
+              : operationId
+                ? "Retry chart note save"
+                : "Save chart note"}
           </Button>
         </form>
       ) : null}
