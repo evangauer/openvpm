@@ -21,6 +21,11 @@ const nextConfig = {
       { source: "/sign/:path*", headers: capabilityHeaders },
       { source: "/api/capture/:path*", headers: capabilityHeaders },
       { source: "/api/sign/:path*", headers: capabilityHeaders },
+      { source: "/offline/:path*", headers: [
+        { key: "Cache-Control", value: "no-cache" },
+        { key: "Referrer-Policy", value: "no-referrer" },
+        { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
+      ] },
     ];
   },
 };

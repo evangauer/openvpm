@@ -47,6 +47,13 @@ afterEach(() => {
 });
 
 describe("middleware security headers", () => {
+  it("allows only the public offline shell without making patient routes public", async () => {
+    mocks.getToken.mockResolvedValue(null);
+    expect((await middleware(request("/offline/index.html"))).headers.get("location")).toBeNull();
+    expect((await middleware(request("/offline/private-chart"))).headers.get("location")).toContain("/login");
+    expect((await middleware(request("/patients/synthetic"))).headers.get("location")).toContain("/login");
+    expect(mocks.getToken).toHaveBeenCalledTimes(2);
+  });
   it("adds security headers to public auth pages without session lookup", async () => {
     const response = await middleware(request("/login"));
 

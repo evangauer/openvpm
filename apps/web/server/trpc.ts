@@ -387,7 +387,10 @@ export const protectedProcedure = t.procedure.use(
           },
         });
 
-        if (path === "patientNotes.create" && !result.ok) {
+        if (
+          ["patientNotes.create", "offline.saveSoapDraft"].includes(path) &&
+          !result.ok
+        ) {
           // tRPC returns errors as values; force rollback of the note and audit.
           throw result.error;
         }
@@ -432,11 +435,15 @@ export const protectedProcedure = t.procedure.use(
       }
       throw error;
     });
-    // Chart notes write their required, content-free audit in the same
-    // transaction. Do not duplicate their pasted text in the generic audit.
+    // Chart notes and recovered SOAP drafts write a required, content-free
+    // audit in the same transaction. Keep clinical text out of generic audits.
     // Audit other successful mutations after the tenant transaction committed.
     // Runs in its own system-context tx and never blocks or fails the request.
-    if (type === "mutation" && result.ok && path !== "patientNotes.create") {
+    if (
+      type === "mutation" &&
+      result.ok &&
+      !["patientNotes.create", "offline.saveSoapDraft"].includes(path)
+    ) {
       const rawInput = await getRawInput().catch(() => undefined);
       void withSystem(db, (sysTx) =>
         recordAuditLog(sysTx, {

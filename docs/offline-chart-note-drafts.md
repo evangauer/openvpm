@@ -53,9 +53,11 @@ clears this site's browser data.
 
 ## Scope
 
-This is offline drafting in an already-open chart with encrypted recovery.
+This feature is offline drafting in an already-open chart with encrypted recovery.
 Opening the app or a different chart still requires connectivity. It does not
 cache patient records, attachments, routes, billing, or the authenticated app
-shell. SOAP encounter editors are unchanged. Clinical author/date attribution
+shell. Clinical author/date attribution
 continues to describe server save time. Full disconnected navigation and a
-multi-record sync queue require separate work before they can be advertised.
+multi-record sync queue are outside this feature. The separate, default-off
+[offline workspace](offline-workspace.md) supports reopening selected chart
+snapshots and recovering SOAP drafts after a server interruption.
