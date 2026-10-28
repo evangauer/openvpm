@@ -868,6 +868,15 @@ export default function PatientDetailPage() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {process.env.NEXT_PUBLIC_OFFLINE_WORKSPACE_ENABLED === "true" &&
+            (session?.user?.role === "admin" ||
+              session?.user?.role === "veterinarian") ? (
+              <Button size="sm" variant="outline" asChild>
+                <a href={`/offline/index.html#patientId=${patient.id}`}>
+                  Make available offline
+                </a>
+              </Button>
+            ) : null}
             {canCorrectClinicalRecords ? (
               <Button size="sm" asChild>
                 <a href="#patient-note-content">Add chart note</a>
