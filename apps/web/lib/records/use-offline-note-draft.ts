@@ -88,6 +88,7 @@ export function useOfflineNoteDraft(scope: NoteDraftScope | null) {
     current.current = { ...current.current, ...change };
     setDraft(current.current);
     if (!vault.current) return;
+    version.current++;
     setLocalStatus("saving");
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {

@@ -890,6 +890,13 @@ export default function NewSoapNotePage() {
         </div>
         <div className="flex flex-col items-end gap-1">
           <div className="flex flex-wrap items-center gap-2">
+            {process.env.NEXT_PUBLIC_OFFLINE_WORKSPACE_ENABLED === "true" && appointmentId ? (
+              <Button variant="outline" size="sm" asChild>
+                <a href={`/offline/index.html#patientId=${params.patientId}&appointmentId=${appointmentId}`}>
+                  Make available offline
+                </a>
+              </Button>
+            ) : null}
             <CapturePhotos patientId={params.patientId} />
             <Button
               variant="outline"

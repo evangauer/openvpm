@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "node scripts/build-offline.mjs && next dev",
+    "build": "node scripts/build-offline.mjs && next build",
     "start": "next start",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
@@ -78,6 +78,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "autoprefixer": "^10.4.0",
+    "esbuild": "0.28.2",
     "fake-indexeddb": "6.2.6",
     "postcss": "^8.5.26",
     "postgres": "^3.4.0",
