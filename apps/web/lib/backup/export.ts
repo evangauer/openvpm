@@ -3842,8 +3842,20 @@ async function restorePracticeDataRows(
       : invoiceItemRestoreRows,
     { requireAllRows: true },
   );
-  await restoreChildRows("payments", payments);
-  await restoreChildRows("invoiceAdjustments", invoiceAdjustments);
+  restored.payments = await restoreRows(
+    db,
+    payments,
+    "payments",
+    rowsFor(data, "payments"),
+    { requireAllRows: true },
+  );
+  restored.invoiceAdjustments = await restoreRows(
+    db,
+    invoiceAdjustments,
+    "invoiceAdjustments",
+    rowsFor(data, "invoiceAdjustments"),
+    { requireAllRows: true },
+  );
   await restorePracticeRows("insuranceClaims", insuranceClaims);
   await restorePracticeRows("problemList", problemList);
   restored.soapNotes = await restoreRows(
