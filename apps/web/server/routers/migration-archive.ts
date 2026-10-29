@@ -22,6 +22,7 @@ import {
   services,
 } from "@openpims/db";
 import { createRouter, protectedProcedure } from "../trpc";
+import { patientArchiveFilter } from "../patient-archive-filter";
 
 const sectionInput = z.enum([
   "contacts",
@@ -34,6 +35,7 @@ const sectionInput = z.enum([
 
 const listInput = z.object({
   section: sectionInput,
+  patientId: z.string().guid().optional(),
   query: z.string().trim().max(100).default(""),
   limit: z.number().int().min(1).max(100).default(50),
   offset: z.number().int().min(0).max(100_000).default(0),
@@ -230,6 +232,15 @@ export const migrationArchiveRouter = createRouter({
   list: protectedProcedure.input(listInput).query(async ({ ctx, input }) => {
     const practiceId = ctx.practiceId;
     const pattern = searchPattern(input.query);
+    if (
+      input.patientId &&
+      !["medications", "labs", "documents"].includes(input.section)
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Patient filtering is unavailable for this section",
+      });
+    }
 
     if (input.section === "contacts") {
       const filter = and(
@@ -391,6 +402,13 @@ export const migrationArchiveRouter = createRouter({
     if (input.section === "medications") {
       const filter = and(
         eq(externalPrescriptions.practiceId, practiceId),
+        input.patientId
+          ? patientArchiveFilter(
+              externalPrescriptions,
+              practiceId,
+              input.patientId,
+            )
+          : undefined,
         eq(patients.practiceId, practiceId),
         isNull(externalPrescriptions.deletedAt),
         isNull(patients.deletedAt),
@@ -414,6 +432,7 @@ export const migrationArchiveRouter = createRouter({
           createdAt: externalPrescriptions.createdAt,
           status: externalPrescriptions.status,
           reviewStatus: externalPrescriptions.reviewStatus,
+          externalSource: externalPrescriptions.externalSource,
           fillCount: sql<number>`(
             select count(*)::int from ${externalPrescriptionFills}
             where ${externalPrescriptionFills.practiceId} = ${practiceId}
@@ -449,6 +468,7 @@ export const migrationArchiveRouter = createRouter({
           title: row.medicationName,
           subtitle: `${row.patientName} · ${row.fillCount} fill${row.fillCount === 1 ? "" : "s"}`,
           date: (row.prescribedAt ?? row.createdAt).toISOString(),
+          sourceDate: row.prescribedAt?.toISOString() ?? null,
           status: row.status,
           patientId: row.patientId,
           clientId: row.clientId,
@@ -456,7 +476,11 @@ export const migrationArchiveRouter = createRouter({
           balance: null,
           fileUrl: null,
           needsReview: row.reviewStatus === "unreviewed",
-          meta: row.directions ? [row.directions] : [],
+          meta: [
+            `Source: ${row.externalSource}`,
+            `Review: ${row.reviewStatus}`,
+            ...(row.directions ? [row.directions] : []),
+          ],
         })),
       };
     }
@@ -464,6 +488,13 @@ export const migrationArchiveRouter = createRouter({
     if (input.section === "labs") {
       const filter = and(
         eq(externalLabReports.practiceId, practiceId),
+        input.patientId
+          ? patientArchiveFilter(
+              externalLabReports,
+              practiceId,
+              input.patientId,
+            )
+          : undefined,
         isNull(externalLabReports.deletedAt),
         input.query
           ? or(
@@ -489,6 +520,7 @@ export const migrationArchiveRouter = createRouter({
           attributionStatus: externalLabReports.attributionStatus,
           reviewStatus: externalLabReports.reviewStatus,
           accessionNumber: externalLabReports.accessionNumber,
+          externalSource: externalLabReports.externalSource,
         })
         .from(externalLabReports)
         .leftJoin(
@@ -511,19 +543,28 @@ export const migrationArchiveRouter = createRouter({
       const [{ total }] = await ctx.db
         .select({ total: count() })
         .from(externalLabReports)
-        .leftJoin(patients, eq(externalLabReports.patientId, patients.id))
+        .leftJoin(
+          patients,
+          and(
+            eq(externalLabReports.patientId, patients.id),
+            eq(patients.practiceId, practiceId),
+            isNull(patients.deletedAt),
+          ),
+        )
         .where(filter);
       return {
         total,
         items: rows.map((row) => ({
           id: row.id,
-          title: row.orderName ?? row.labName ?? "Imported lab report",
+          title:
+            row.orderName?.trim() || row.labName?.trim() || "Imported lab report",
           subtitle: row.patientName ?? "Patient match needs review",
           date: (
             row.resultedAt ??
             row.orderedAt ??
             row.createdAt
           ).toISOString(),
+          sourceDate: (row.resultedAt ?? row.orderedAt)?.toISOString() ?? null,
           status: row.status,
           patientId: row.patientId,
           clientId: row.clientId,
@@ -533,7 +574,14 @@ export const migrationArchiveRouter = createRouter({
           needsReview:
             row.attributionStatus === "needs_review" ||
             row.reviewStatus === "unreviewed",
-          meta: row.accessionNumber ? [`Accession ${row.accessionNumber}`] : [],
+          meta: [
+            `Source: ${row.externalSource}`,
+            `Review: ${row.reviewStatus}`,
+            `Attribution: ${row.attributionStatus}`,
+            ...(row.accessionNumber
+              ? [`Accession ${row.accessionNumber}`]
+              : []),
+          ],
         })),
       };
     }
@@ -626,7 +674,11 @@ export const migrationArchiveRouter = createRouter({
 
     const filter = and(
       eq(historicalDocuments.practiceId, practiceId),
+      input.patientId
+        ? patientArchiveFilter(historicalDocuments, practiceId, input.patientId)
+        : undefined,
       isNull(historicalDocuments.deletedAt),
+      isNull(files.deletedAt),
       input.query
         ? or(
             ilike(historicalDocuments.title, pattern),
@@ -640,6 +692,7 @@ export const migrationArchiveRouter = createRouter({
         title: historicalDocuments.title,
         kind: historicalDocuments.kind,
         linkStatus: historicalDocuments.linkStatus,
+        externalSource: historicalDocuments.externalSource,
         documentDate: historicalDocuments.documentDate,
         createdAt: historicalDocuments.createdAt,
         patientId: patients.id,
@@ -674,8 +727,21 @@ export const migrationArchiveRouter = createRouter({
     const [{ total }] = await ctx.db
       .select({ total: count() })
       .from(historicalDocuments)
-      .innerJoin(files, eq(historicalDocuments.fileId, files.id))
-      .leftJoin(patients, eq(historicalDocuments.patientId, patients.id))
+      .innerJoin(
+        files,
+        and(
+          eq(historicalDocuments.fileId, files.id),
+          eq(files.practiceId, practiceId),
+        ),
+      )
+      .leftJoin(
+        patients,
+        and(
+          eq(historicalDocuments.patientId, patients.id),
+          eq(patients.practiceId, practiceId),
+          isNull(patients.deletedAt),
+        ),
+      )
       .where(filter);
     return {
       total,
@@ -686,6 +752,7 @@ export const migrationArchiveRouter = createRouter({
         date: row.documentDate
           ? `${row.documentDate}T12:00:00.000Z`
           : row.createdAt.toISOString(),
+        sourceDate: row.documentDate,
         status: row.kind.replaceAll("_", " "),
         patientId: row.patientId,
         clientId: row.clientId,
@@ -693,15 +760,24 @@ export const migrationArchiveRouter = createRouter({
         balance: null,
         fileUrl: row.fileUrl,
         needsReview: row.linkStatus === "needs_review",
-        meta: [],
+        meta: [`Source: ${row.externalSource}`, `Link: ${row.linkStatus}`],
       })),
     };
   }),
 
   detail: protectedProcedure
-    .input(z.object({ section: sectionInput, id: z.string().guid() }))
+    .input(
+      z.object({
+        section: sectionInput,
+        id: z.string().guid(),
+        patientId: z.string().guid().optional(),
+      }),
+    )
     .query(async ({ ctx, input }) => {
       const practiceId = ctx.practiceId;
+      if (input.patientId && !["medications", "labs"].includes(input.section)) {
+        throw new TRPCError({ code: "BAD_REQUEST" });
+      }
       if (input.section === "medications") {
         const [record] = await ctx.db
           .select({
@@ -727,6 +803,9 @@ export const migrationArchiveRouter = createRouter({
           .where(
             and(
               eq(externalPrescriptions.id, input.id),
+              input.patientId
+                ? patientArchiveFilter(externalPrescriptions, practiceId, input.patientId)
+                : undefined,
               eq(externalPrescriptions.practiceId, practiceId),
               isNull(externalPrescriptions.deletedAt),
             ),
@@ -778,6 +857,9 @@ export const migrationArchiveRouter = createRouter({
           .where(
             and(
               eq(externalLabReports.id, input.id),
+              input.patientId
+                ? patientArchiveFilter(externalLabReports, practiceId, input.patientId)
+                : undefined,
               eq(externalLabReports.practiceId, practiceId),
               isNull(externalLabReports.deletedAt),
             ),

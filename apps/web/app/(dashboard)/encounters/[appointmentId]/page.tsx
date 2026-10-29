@@ -2323,8 +2323,14 @@ function VisitCloseout({
           </div>
         ) : null}
 
-        {signedClinical && closeout?.followUpDisposition === "needed" ? (
+        {signedClinical &&
+        closeout &&
+        (closeout.followUpDisposition === "needed" ||
+          data.followUpRecovery ||
+          // Keep a recovered booked follow-up's saved outcome visible.
+          closeout.followUpResolvedAt) ? (
           <FollowUpResolutionPanel
+            recovery={data.followUpRecovery}
             dueDate={closeout.followUpDueDate}
             assigneeName={closeout.followUpAssigneeName}
             resolution={closeout.followUpResolution}
@@ -2974,6 +2980,7 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
 }
 
 function FollowUpResolutionPanel({
+  recovery,
   dueDate,
   assigneeName,
   resolution,
@@ -2993,6 +3000,11 @@ function FollowUpResolutionPanel({
   isPending,
   onResolve,
 }: {
+  recovery: {
+    reason: "cancelled" | "no_show";
+    appointmentId: string;
+    appointmentAt: Date | string;
+  } | null;
   dueDate: string | null;
   assigneeName: string | null;
   resolution: "scheduled" | "completed" | "not_needed" | null;
@@ -3021,17 +3033,39 @@ function FollowUpResolutionPanel({
       : notes.trim()),
   );
 
+  const owner = assigneeName ?? "clinic team";
   return (
-    <div className="space-y-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-4">
+    <div
+      className="space-y-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-4"
+      data-testid="follow-up-resolution-panel"
+    >
       <div>
-        <h3 className="font-medium">Follow-up obligation</h3>
-        <p className="text-sm text-muted-foreground">
-          Due {dueDate ? formatClinicDate(dueDate) : "date unavailable"} ·
-          Assigned to {assigneeName ?? "clinic team"}. This queue state is
-          audited separately from the signed discharge.
-        </p>
+        <h3 className="font-medium">
+          {recovery ? "Follow-up needs rebooking" : "Follow-up obligation"}
+        </h3>
+        {recovery ? (
+          <p className="text-sm text-muted-foreground">
+            {recovery.reason === "no_show" ? "Missed" : "Cancelled"}{" "}
+            appointment {formatAppointmentTime(recovery.appointmentAt, timeZone)}
+            {dueDate ? ` · Originally due ${formatClinicDate(dueDate)}` : ""} ·
+            Assigned to {owner}. The signed discharge is unchanged; this
+            recovery is audited separately.
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {dueDate ? `Due ${formatClinicDate(dueDate)} · ` : ""}
+            Assigned to {owner}. This queue state is audited separately from
+            the signed discharge.
+          </p>
+        )}
       </div>
-      {resolvedAt && resolution ? (
+      {recovery && resolvedAt && resolution === "scheduled" ? (
+        <p className="text-sm text-muted-foreground">
+          Previously rebooked by {resolverName ?? "clinic staff"} on{" "}
+          {formatAppointmentTime(resolvedAt, timeZone)}.
+        </p>
+      ) : null}
+      {!recovery && resolvedAt && resolution ? (
         <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm">
           <p className="font-medium">
             Resolved as {resolution.replace("_", " ")}
