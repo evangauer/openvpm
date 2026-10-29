@@ -2975,15 +2975,42 @@ describe("restorePracticeData", () => {
     },
   );
 
-  it.each(["estimate", "deleted_line", "deleted_invoice"] as const)(
+  it.each(["estimate", "deleted_line"] as const)(
     "does not count retained %s history as an active dispense charge",
     (kind) => {
       const backup = dispenseInvoiceHistoryBackup("waived");
       Object.assign(backup.invoices[0]!, { status: "draft" });
       if (kind === "estimate") Object.assign(backup.invoices[0]!, { isEstimate: true });
       if (kind === "deleted_line") Object.assign(backup.invoiceItems[0]!, { deletedAt: "2026-10-29T00:00:00Z" });
-      if (kind === "deleted_invoice") Object.assign(backup.invoices[0]!, { deletedAt: "2026-10-29T00:00:00Z" });
       expect(validatePracticeExportRestore(backup)).toEqual({ valid: true, errors: [] });
+    },
+  );
+
+  it.each(["draft", "void", "estimate"] as const)(
+    "rejects a non-deleted dispense line on a soft-deleted %s invoice before accessing the database",
+    async (kind) => {
+      const backup = dispenseInvoiceHistoryBackup("waived");
+      Object.assign(backup.invoices[0]!, {
+        status: kind === "void" ? "void" : "draft",
+        isEstimate: kind === "estimate",
+        deletedAt: "2026-10-29T00:00:00Z",
+      });
+      const serialized = JSON.parse(JSON.stringify(backup));
+      const message =
+        "invoiceItems[void-line] non-deleted dispense line cannot reference a soft-deleted invoice.";
+      expect(validatePracticeExportRestore(serialized)).toEqual({
+        valid: false,
+        errors: [message],
+      });
+
+      const { db } = restoreDb();
+      await expect(
+        restorePracticeData(db as never, "target-practice", serialized),
+      ).rejects.toThrow(`Backup contains invalid restore data: ${message}`);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.execute).not.toHaveBeenCalled();
     },
   );
 
