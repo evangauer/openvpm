@@ -292,6 +292,10 @@ export const visitCloseouts = pgTable(
           )
         )`,
     ),
+    // Operational follow-up state, kept separate from the signed clinical
+    // fields. A signed "scheduled" follow-up can gain a resolution only when
+    // its booked appointment was cancelled or missed and the clinic team
+    // recovers it.
     followUpResolutionCheck: check(
       "visit_closeouts_follow_up_resolution_check",
       sql`${table.followUpResolvedAt} is null
@@ -302,7 +306,7 @@ export const visitCloseouts = pgTable(
         and ${table.followUpResolvedBy} is null
         and ${table.followUpResolverName} is null
         or (
-          ${table.followUpDisposition} = 'needed'
+          ${table.followUpDisposition} in ('needed', 'scheduled')
           and ${table.followUpResolvedAt} is not null
           and ${table.followUpResolution} is not null
           and ${table.followUpResolvedBy} is not null

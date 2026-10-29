@@ -49,6 +49,7 @@ import {
 } from "@/lib/locale/clinic-regions";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
 import { ClinicIntentBuilder } from "@/components/onboarding/clinic-intent-builder";
+import { CloudOfferContext } from "@/components/onboarding/cloud-offer-context";
 import { FirstDayRecommendations } from "@/components/onboarding/first-day-recommendations";
 import {
   CLINIC_MODELS,
@@ -365,10 +366,11 @@ function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPric
   if (stage === "profile") {
     return (
       <main className={onboardingStageMainClass}>
-        <div className={onboardingStageFrameClass}>
+        <div className={cn(onboardingStageFrameClass, hostedBilling && "lg:h-auto lg:max-h-none")}>
           <header className={onboardingStageHeaderClass}>
             <Link
               href="/"
+              prefetch={false}
               className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
             >
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
@@ -396,6 +398,12 @@ function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPric
                 Tell us what your team needs first. We’ll shape a useful first
                 day before asking you to create the workspace.
               </p>
+              <CloudOfferContext
+                hostedBilling={hostedBilling}
+                cardRequired={cardRequired}
+                trialDays={trialDays}
+                monthlyPriceUsd={monthlyPriceUsd}
+              />
             </div>
 
             <ClinicIntentBuilder
@@ -426,10 +434,11 @@ function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPric
   if (stage === "workflow") {
     return (
       <main className={onboardingStageMainClass}>
-        <div className={onboardingStageFrameClass}>
+        <div className={cn(onboardingStageFrameClass, hostedBilling && "lg:h-auto lg:max-h-none")}>
           <header className={onboardingStageHeaderClass}>
             <Link
               href="/"
+              prefetch={false}
               className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
             >
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
@@ -466,6 +475,12 @@ function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPric
                     Pick one useful workflow and we’ll shape your first day
                     around it.
                   </p>
+                  <CloudOfferContext
+                    hostedBilling={hostedBilling}
+                    cardRequired={cardRequired}
+                    trialDays={trialDays}
+                    monthlyPriceUsd={monthlyPriceUsd}
+                  />
                 </div>
               }
               afterChoices={
@@ -552,6 +567,7 @@ function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPric
           <header className={onboardingStageHeaderClass}>
             <Link
               href="/"
+              prefetch={false}
               className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
             >
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
@@ -620,6 +636,7 @@ function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPric
           <div className="flex items-center justify-between gap-4">
             <Link
               href="/"
+              prefetch={false}
               className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-primary"
             >
               <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">

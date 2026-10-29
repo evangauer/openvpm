@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import type { inferRouterOutputs } from "@trpc/server";
 import {
   AlertTriangle,
   Archive,
@@ -26,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
-import type { AppRouter } from "@/server/routers/_app";
+import { ArchiveDetail } from "@/components/migration/archive-detail";
 import { MigrationReviewChecklist } from "@/components/migration/migration-review-checklist";
 
 const PAGE_SIZE = 50;
@@ -41,8 +40,6 @@ const sections = [
 ] as const;
 
 type ArchiveSection = (typeof sections)[number]["id"];
-type ArchiveDetailData =
-  inferRouterOutputs<AppRouter>["migrationArchive"]["detail"];
 
 function formatDate(value: string): string {
   return new Date(value).toLocaleDateString("en-US", {
@@ -515,174 +512,6 @@ export default function MigrationArchivePage() {
           </CardContent>
         </Card>
       </section>
-    </div>
-  );
-}
-
-function ArchiveDetail({
-  data,
-  isLoading,
-  errorMessage,
-  formatCurrency,
-}: {
-  data: ArchiveDetailData | undefined;
-  isLoading: boolean;
-  errorMessage?: string;
-  formatCurrency: (value: string | number | null | undefined) => string;
-}) {
-  if (isLoading) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-        Loading detail…
-      </div>
-    );
-  }
-  if (errorMessage || !data) {
-    return (
-      <p className="text-sm text-destructive">
-        {errorMessage ?? "Detail is unavailable."}
-      </p>
-    );
-  }
-  if (data.kind === "medications") {
-    return (
-      <div className="space-y-4 text-sm">
-        <div>
-          <p className="font-medium">{data.record.medicationName}</p>
-          <p className="text-muted-foreground">{data.record.patientName}</p>
-        </div>
-        {data.record.directions ? (
-          <p className="rounded-md bg-muted p-3 leading-6">
-            {data.record.directions}
-          </p>
-        ) : null}
-        <dl className="grid grid-cols-2 gap-3">
-          <div>
-            <dt className="text-xs text-muted-foreground">Quantity</dt>
-            <dd>{data.record.quantity ?? "—"}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">Refills written</dt>
-            <dd>{data.record.refillCount ?? "—"}</dd>
-          </div>
-        </dl>
-        <div>
-          <p className="font-medium">Fill history</p>
-          {data.entries.length ? (
-            <ul className="mt-2 divide-y divide-border rounded-md border border-border">
-              {data.entries.map((entry) => (
-                <li key={entry.id} className="p-3">
-                  <p>
-                    {entry.occurredAt
-                      ? formatDate(entry.occurredAt.toISOString())
-                      : "Date unavailable"}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {entry.quantity
-                      ? `Quantity ${entry.quantity}`
-                      : "Quantity unavailable"}
-                    {entry.status ? ` · ${entry.status}` : ""}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-1 text-muted-foreground">
-              No fills in the source export.
-            </p>
-          )}
-        </div>
-      </div>
-    );
-  }
-  if (data.kind === "labs") {
-    return (
-      <div className="space-y-4 text-sm">
-        <div>
-          <p className="font-medium">
-            {data.record.title ?? "Imported lab report"}
-          </p>
-          <p className="text-muted-foreground">
-            {data.record.patientName ?? "Patient match needs review"}
-          </p>
-        </div>
-        {data.record.summary ? (
-          <p className="leading-6">{data.record.summary}</p>
-        ) : null}
-        {data.entries.length ? (
-          <ul className="divide-y divide-border rounded-md border border-border">
-            {data.entries.map((entry) => (
-              <li key={entry.id} className="flex justify-between gap-3 p-3">
-                <span>{entry.name}</span>
-                <span className="text-right font-medium">
-                  {[entry.value, entry.unit].filter(Boolean).join(" ") || "—"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="rounded-md border border-dashed border-border p-3 text-muted-foreground">
-            The source supplied this as an unstructured report. Its verified
-            document is preserved separately.
-          </p>
-        )}
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-4 text-sm">
-      <div>
-        <p className="font-medium">
-          {data.record.documentNumber ?? titleCase(data.record.documentType)}
-        </p>
-        <p className="text-muted-foreground">{data.record.clientName}</p>
-      </div>
-      <dl className="grid grid-cols-2 gap-3">
-        <div>
-          <dt className="text-xs text-muted-foreground">Total</dt>
-          <dd className="font-medium">{formatCurrency(data.record.total)}</dd>
-        </div>
-        <div>
-          <dt className="text-xs text-muted-foreground">Historical balance</dt>
-          <dd className="font-medium">{formatCurrency(data.record.balance)}</dd>
-        </div>
-      </dl>
-      <div>
-        <p className="font-medium">Line items</p>
-        <ul className="mt-2 divide-y divide-border rounded-md border border-border">
-          {data.entries.map((entry) => (
-            <li key={entry.id} className="flex justify-between gap-3 p-3">
-              <div className="min-w-0">
-                <p className="break-words">{entry.description}</p>
-                <p className="text-xs text-muted-foreground">
-                  {entry.quantity} × {formatCurrency(entry.unitPrice)}
-                </p>
-              </div>
-              <span className="shrink-0 font-medium">
-                {formatCurrency(entry.total)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-      {data.allocations.length ? (
-        <div>
-          <p className="font-medium">Payment allocations</p>
-          <ul className="mt-2 space-y-2 text-muted-foreground">
-            {data.allocations.map((allocation) => (
-              <li key={allocation.id}>
-                {formatCurrency(allocation.amount)} ·{" "}
-                {formatDate(
-                  (
-                    allocation.allocatedAt ?? allocation.paymentReceivedAt
-                  ).toISOString(),
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -89,6 +89,28 @@ function formatDueDate(dateInput: string) {
   );
 }
 
+function formatAppointmentDate(
+  date: Date | string,
+  timeZone?: string | null,
+) {
+  const options: Intl.DateTimeFormatOptions = {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: timeZone ?? undefined,
+  };
+  try {
+    return new Date(date).toLocaleString("en-US", options);
+  } catch {
+    return new Date(date).toLocaleString("en-US", {
+      ...options,
+      timeZone: undefined,
+    });
+  }
+}
+
 function addDateInputDays(dateInput: string, days: number): string {
   const [year, month, day] = dateInput.split("-").map(Number) as [
     number,
@@ -343,11 +365,26 @@ export default function DashboardPage() {
             ))
           ) : pendingFollowUps.data?.length ? (
             pendingFollowUps.data.map((followUp) => {
-              const dueDate = followUp.dueDate!;
-              const overdue = dueDate < todayStr;
+              const dueDate = followUp.dueDate;
+              const recovery =
+                followUp.recoveryReason && followUp.missedAppointmentAt
+                  ? {
+                      label:
+                        followUp.recoveryReason === "no_show"
+                          ? "Missed appointment"
+                          : "Cancelled appointment",
+                      at: followUp.missedAppointmentAt,
+                    }
+                  : null;
+              const overdue = recovery
+                ? true
+                : dueDate
+                  ? dueDate < todayStr
+                  : false;
               return (
                 <div
                   key={followUp.closeoutId}
+                  data-testid="pending-follow-up"
                   className="flex flex-col gap-3 rounded-md border border-border px-4 py-3 sm:flex-row sm:items-center"
                 >
                   <div className="flex min-w-0 flex-1 items-start gap-3">
@@ -359,13 +396,25 @@ export default function DashboardPage() {
                     />
                     <div className="min-w-0">
                       <p className="font-medium">
-                        {followUp.patientName} · due {formatDueDate(dueDate)}
+                        {followUp.patientName}
+                        {recovery
+                          ? ` · ${recovery.label} ${formatAppointmentDate(
+                              recovery.at,
+                              dashboardTimeZone,
+                            )}`
+                          : dueDate
+                            ? ` · due ${formatDueDate(dueDate)}`
+                            : ""}
                       </p>
                       <p className="text-sm text-muted-foreground">
                         Owner: {followUp.clientFirstName}{" "}
                         {followUp.clientLastName}
+                        {" · "}
                         {followUp.assigneeName
-                          ? ` · Assigned to ${followUp.assigneeName}`
+                          ? `Assigned to ${followUp.assigneeName}`
+                          : "Clinic team"}
+                        {recovery && dueDate
+                          ? ` · originally due ${formatDueDate(dueDate)}`
                           : ""}
                       </p>
                       {followUp.followUpNotes ? (
@@ -379,7 +428,7 @@ export default function DashboardPage() {
                     href={`/encounters/${followUp.appointmentId}#visit-closeout`}
                     className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-primary hover:underline"
                   >
-                    Resolve follow-up
+                    {recovery ? "Rebook follow-up" : "Resolve follow-up"}
                     <ArrowRight className="h-4 w-4" />
                   </Link>
                 </div>
