@@ -300,6 +300,43 @@ function withCanonicalCounts<T extends Record<string, unknown>>(backup: T) {
   };
 }
 
+function dispenseInvoiceHistoryBackup(status: "pending" | "waived" | "invoiced") {
+  const resolved = status !== "pending";
+  return {
+    ...emptyBackup(),
+    users: [{ id: "user-1" }],
+    clients: [{ id: "client-1" }],
+    patients: [{ id: "patient-1", clientId: "client-1" }],
+    products: [{ id: "product-1" }],
+    prescriptions: [{
+      id: "prescription-1", patientId: "patient-1", productId: "product-1",
+      prescribedBy: "user-1", quantity: 1,
+    }],
+    prescriptionEvents: [{
+      id: "event-1", prescriptionId: "prescription-1", patientId: "patient-1",
+      productId: "product-1", quantity: 1, eventType: "created", actorId: "user-1",
+    }],
+    invoices: [
+      { id: "void-invoice", clientId: "client-1", patientId: "patient-1", status: "void", isEstimate: false },
+      ...(status === "invoiced" ? [{ id: "active-invoice", clientId: "client-1", patientId: "patient-1", status: "draft", isEstimate: false }] : []),
+    ],
+    invoiceItems: [
+      { id: "void-line", invoiceId: "void-invoice", sourceDispenseChargeId: "dispense-1" },
+      ...(status === "invoiced" ? [{ id: "active-line", invoiceId: "active-invoice", sourceDispenseChargeId: "dispense-1" }] : []),
+    ],
+    dispenseChargeQueue: [{
+      id: "dispense-1", prescriptionEventId: "event-1", prescriptionId: "prescription-1",
+      patientId: "patient-1", clientId: "client-1", productId: "product-1", status,
+      invoiceId: status === "invoiced" ? "active-invoice" : null,
+      invoiceItemId: status === "invoiced" ? "active-line" : null,
+      resolvedBy: resolved ? "user-1" : null,
+      resolvedByName: resolved ? "Synthetic staff" : null,
+      resolvedAt: resolved ? "2026-10-29T00:00:00.000Z" : null,
+      resolutionReason: status === "waived" ? "Synthetic waiver reason" : null,
+    }],
+  };
+}
+
 function signedConsentBackup() {
   const practiceId = "00000000-0000-4000-8000-000000000101";
   const userId = "00000000-0000-4000-8000-000000000102";
@@ -442,6 +479,70 @@ describe("sealed signed-consent backup v9", () => {
         expect.stringContaining("exact modern PNG signature evidence"),
         expect.stringContaining("exact portable consent PDF manifest"),
       ]),
+    );
+  });
+
+  it("keeps legacy signed evidence without a frozen PDF manifest fail-closed", () => {
+    const backup = signedConsentBackup();
+    const evidence = backup.signedConsentEvidence[0]!;
+    Object.assign(evidence, {
+      evidenceProfile: "legacy-pre-attestation-v1",
+      signaturePngBase64: null,
+      signatureSha256: null,
+      signatureMethod: null,
+      signerAttestationVersion: null,
+      documentRenderVersion: null,
+      signedFileKey: null,
+      signedFileChecksumSha256: null,
+      signedFileSizeBytes: null,
+    });
+    const before = JSON.stringify(backup);
+    const result = validatePracticeExportRestore(backup);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContainEqual(
+      expect.stringContaining("legacy_frozen_pdf_manifest_missing"),
+    );
+    expect(JSON.stringify(backup)).toBe(before);
+    expect(backup.signedConsentEvidence).toHaveLength(1);
+  });
+
+  it.each([
+    ["practiceId", "other-practice", "practiceId"],
+    ["deletedAt", "2026-09-04T00:00:00.000Z", "deletedAt"],
+    ["idempotencyKey", "other-request", "idempotencyKey"],
+    ["mimeType", "text/plain", "mimeType"],
+    ["category", "documents", "category"],
+    ["source", "upload", "source"],
+    ["entityType", "client", "entityType"],
+    ["entityId", "other-patient", "entityId"],
+    ["patientId", "other-patient", "patientId"],
+    ["appointmentId", "other-appointment", "appointmentId"],
+    ["fileKey", "other/key.pdf", "fileKey"],
+    ["checksumSha256", "b".repeat(64), "checksumSha256"],
+    ["fileSizeBytes", 14, "fileSizeBytes"],
+    ["objectEtag", "synthetic-provider-identity", "objectEtag_forbidden"],
+    ["objectVersionId", "synthetic-provider-version", "objectVersionId_forbidden"],
+  ])("identifies a %s consent PDF binding mismatch without exposing its value", (field, value, diagnostic) => {
+    const backup = signedConsentBackup();
+    Object.assign(backup.files[0]!, { [field]: value });
+    const result = validatePracticeExportRestore(backup);
+    const bindingError = result.errors.find((error) =>
+      error.includes("exact portable consent PDF manifest"),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(bindingError).toContain(`mismatches: ${diagnostic}`);
+    expect(bindingError).not.toContain(String(value));
+  });
+
+  it("distinguishes an absent referenced consent PDF manifest", () => {
+    const backup = signedConsentBackup();
+    backup.files = [];
+    const result = validatePracticeExportRestore(withCanonicalCounts(backup));
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContainEqual(
+      expect.stringContaining("mismatches: file_missing"),
     );
   });
 
@@ -2855,6 +2956,47 @@ describe("restorePracticeData", () => {
       "dispenseChargeQueue[dispense-1] pending state must be completely unresolved.",
     );
   });
+
+  it.each(["pending", "waived", "invoiced"] as const)(
+    "preserves voided invoice history for a %s dispense charge",
+    (status) => {
+      const backup = dispenseInvoiceHistoryBackup(status);
+      expect(validatePracticeExportRestore(JSON.parse(JSON.stringify(backup))))
+        .toEqual({ valid: true, errors: [] });
+    },
+  );
+
+  it.each(["pending", "waived"] as const)(
+    "still rejects an active invoice line for a %s dispense charge",
+    (status) => {
+      const backup = dispenseInvoiceHistoryBackup(status);
+      backup.invoices[0]!.status = "draft";
+      expect(validatePracticeExportRestore(backup).valid).toBe(false);
+    },
+  );
+
+  it.each(["estimate", "deleted_line", "deleted_invoice"] as const)(
+    "does not count retained %s history as an active dispense charge",
+    (kind) => {
+      const backup = dispenseInvoiceHistoryBackup("waived");
+      Object.assign(backup.invoices[0]!, { status: "draft" });
+      if (kind === "estimate") Object.assign(backup.invoices[0]!, { isEstimate: true });
+      if (kind === "deleted_line") Object.assign(backup.invoiceItems[0]!, { deletedAt: "2026-10-29T00:00:00Z" });
+      if (kind === "deleted_invoice") Object.assign(backup.invoices[0]!, { deletedAt: "2026-10-29T00:00:00Z" });
+      expect(validatePracticeExportRestore(backup)).toEqual({ valid: true, errors: [] });
+    },
+  );
+
+  it.each(["", "four", " ".repeat(5), "x".repeat(1001)])(
+    "still rejects an invalid waiver reason (%s)",
+    (reason) => {
+      const backup = dispenseInvoiceHistoryBackup("waived");
+      backup.dispenseChargeQueue[0]!.resolutionReason = reason;
+      expect(validatePracticeExportRestore(backup).errors).toContain(
+        "dispenseChargeQueue[dispense-1] waived state requires one bounded reason and no invoice.",
+      );
+    },
+  );
 
   it("rejects a present prescription ledger that omits a created event", () => {
     const backup = {

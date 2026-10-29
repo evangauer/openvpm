@@ -1193,28 +1193,57 @@ export function validatePracticeExportRestore(data: unknown): {
       !Number.isInteger(row.signedFileSizeBytes) ||
       Number(row.signedFileSizeBytes) <= 0
     ) {
-      pushError(`${label} must contain an exact namespaced PDF byte manifest.`);
+      const legacyMissing =
+        row.evidenceProfile === LEGACY_SIGNED_CONSENT_EVIDENCE_PROFILE &&
+        row.signedFileKey === null &&
+        row.signedFileChecksumSha256 === null &&
+        row.signedFileSizeBytes === null;
+      pushError(
+        `${label} must contain an exact namespaced PDF byte manifest.${
+          legacyMissing ? " reason: legacy_frozen_pdf_manifest_missing." : ""
+        }`,
+      );
     }
     const file = typeof row.fileId === "string" ? filesById.get(row.fileId) : undefined;
-    if (
-      !file ||
-      file.practiceId !== row.practiceId ||
-      file.deletedAt != null ||
-      file.idempotencyKey !== row.id ||
-      file.mimeType !== "application/pdf" ||
-      file.category !== "consents" ||
-      file.source !== "consent_signature" ||
-      file.entityType !== "patient" ||
-      file.entityId !== row.patientId ||
-      file.patientId !== row.patientId ||
-      (file.appointmentId ?? null) !== (row.appointmentId ?? null) ||
-      file.fileKey !== row.signedFileKey ||
-      file.checksumSha256 !== row.signedFileChecksumSha256 ||
-      file.fileSizeBytes !== row.signedFileSizeBytes ||
-      Object.prototype.hasOwnProperty.call(file, "objectEtag") ||
-      Object.prototype.hasOwnProperty.call(file, "objectVersionId")
-    ) {
-      pushError(`${label}.fileId must reference its exact portable consent PDF manifest.`);
+    // Report only fixed field names, never the stored values or document bytes.
+    // These are the same exact-binding checks for modern and legacy evidence.
+    const mismatches = file
+      ? [
+          ["practiceId", file.practiceId !== row.practiceId],
+          ["deletedAt", file.deletedAt != null],
+          ["idempotencyKey", file.idempotencyKey !== row.id],
+          ["mimeType", file.mimeType !== "application/pdf"],
+          ["category", file.category !== "consents"],
+          ["source", file.source !== "consent_signature"],
+          ["entityType", file.entityType !== "patient"],
+          ["entityId", file.entityId !== row.patientId],
+          ["patientId", file.patientId !== row.patientId],
+          [
+            "appointmentId",
+            (file.appointmentId ?? null) !== (row.appointmentId ?? null),
+          ],
+          ["fileKey", file.fileKey !== row.signedFileKey],
+          [
+            "checksumSha256",
+            file.checksumSha256 !== row.signedFileChecksumSha256,
+          ],
+          ["fileSizeBytes", file.fileSizeBytes !== row.signedFileSizeBytes],
+          [
+            "objectEtag_forbidden",
+            Object.prototype.hasOwnProperty.call(file, "objectEtag"),
+          ],
+          [
+            "objectVersionId_forbidden",
+            Object.prototype.hasOwnProperty.call(file, "objectVersionId"),
+          ],
+        ]
+          .filter(([, mismatch]) => mismatch)
+          .map(([field]) => field)
+      : ["file_missing"];
+    if (mismatches.length > 0) {
+      pushError(
+        `${label}.fileId must reference its exact portable consent PDF manifest. mismatches: ${mismatches.join(", ")}.`,
+      );
     }
   });
 
@@ -1799,9 +1828,21 @@ export function validatePracticeExportRestore(data: unknown): {
   }
 
   if (Array.isArray(record.dispenseChargeQueue)) {
+    const invoicesById = rowsById("invoices");
     const invoiceItemsByDispense = new Map<string, Row[]>();
     rowsFor(data, "invoiceItems").forEach((item) => {
       if (typeof item.sourceDispenseChargeId !== "string") return;
+      const invoice = invoicesById.get(String(item.invoiceId));
+      // Match protect_dispense_charge_queue's active-line predicate. Retained
+      // void/estimate history is still exported and reference-validated.
+      if (
+        item.deletedAt != null ||
+        invoice?.deletedAt != null ||
+        invoice?.status === "void" ||
+        invoice?.isEstimate === true
+      ) {
+        return;
+      }
       const rows =
         invoiceItemsByDispense.get(item.sourceDispenseChargeId) ?? [];
       rows.push(item);
@@ -3503,6 +3544,27 @@ async function restorePracticeDataRows(
     "dispenseChargeQueue",
   );
   const dispenseChargeRestoreRows = rowsFor(data, "dispenseChargeQueue");
+  const invoiceItemRestoreRows = coerceRowDates(
+    invoiceItems,
+    rowsFor(data, "invoiceItems"),
+  );
+  const invoiceRestoreRows = coerceRowDates(invoices, rowsFor(data, "invoices"));
+  const sourcedInvoiceIds = new Set(
+    invoiceItemRestoreRows
+      .filter(
+        (row) =>
+          typeof row.sourceDispenseChargeId === "string" && row.deletedAt == null,
+      )
+      .map((row) => row.invoiceId),
+  );
+  const stagedInvoiceRows = hasDispenseChargeQueue
+    ? invoiceRestoreRows.filter(
+        (row) =>
+          sourcedInvoiceIds.has(row.id) &&
+          (row.status === "void" || row.isEstimate === true),
+      )
+    : [];
+  const stagedInvoiceIds = new Set(stagedInvoiceRows.map((row) => row.id));
   const smsConsentRestore = prepareLegacySmsConsentRestore(data);
   const soapNoteRestoreRows = rowsFor(data, "soapNotes").map((row) => {
     const authorName =
@@ -3728,8 +3790,24 @@ async function restorePracticeDataRows(
   await restoreChildRows("treatmentTemplateItems", treatmentTemplateItems);
   await restorePracticeRows("suppliers", suppliers);
   await restorePracticeRows("purchaseOrders", purchaseOrders);
-  await restorePracticeRows("invoices", invoices);
-  const invoiceItemRestoreRows = rowsFor(data, "invoiceItems");
+  // Reconstruct historical dispense links through a valid intermediate state,
+  // as the original invoice lifecycle did. Restore terminal invoice state
+  // before resolving queue rows, inside this same atomic restore transaction.
+  restored.invoices = await restoreRows(
+    db,
+    invoices,
+    "invoices",
+    invoiceRestoreRows.map((row) =>
+      stagedInvoiceIds.has(row.id)
+        ? {
+            ...row,
+            status: row.status === "void" ? "draft" : row.status,
+            isEstimate: false,
+          }
+        : row,
+    ),
+    { practiceId },
+  );
   restored.invoiceItems = await restoreRows(
     db,
     invoiceItems,
@@ -3915,9 +3993,24 @@ async function restorePracticeDataRows(
       ) {
         await db
           .update(invoiceItems)
-          .set({ sourceDispenseChargeId: row.sourceDispenseChargeId })
+          .set({
+            sourceDispenseChargeId: row.sourceDispenseChargeId,
+            updatedAt: row.updatedAt instanceof Date ? row.updatedAt : undefined,
+          })
           .where(eq(invoiceItems.id, row.id));
       }
+    }
+    for (const row of stagedInvoiceRows) {
+      await db
+        .update(invoices)
+        .set({
+          status: row.status as typeof invoices.$inferInsert.status,
+          isEstimate: row.isEstimate === true,
+          updatedAt: row.updatedAt instanceof Date ? row.updatedAt : undefined,
+        })
+        .where(
+          and(eq(invoices.id, String(row.id)), eq(invoices.practiceId, practiceId)),
+        );
     }
     for (const row of coerceRowDates(
       dispenseChargeQueue,
