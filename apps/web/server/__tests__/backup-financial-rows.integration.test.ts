@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
@@ -23,6 +23,14 @@ suite("backup financial row completeness", () => {
   let db: ReturnType<typeof drizzle<typeof schema>>;
   type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
   type Backup = Awaited<ReturnType<typeof exportPracticeData>>;
+  const legacyTables = {
+    legacyFinancialDocuments: schema.legacyFinancialDocuments,
+    legacyFinancialLineItems: schema.legacyFinancialLineItems,
+    legacyFinancialPayments: schema.legacyFinancialPayments,
+    legacyFinancialAllocations: schema.legacyFinancialAllocations,
+  };
+  type LegacySection = keyof typeof legacyTables;
+  const legacySections = Object.keys(legacyTables) as LegacySection[];
   const rollbackFixture = new Error("rollback synthetic financial source");
   const rollbackDrill = new Error("rollback synthetic financial restore");
   const byId = (rows: unknown[]) => [...rows].sort((a, b) =>
@@ -46,6 +54,67 @@ suite("backup financial row completeness", () => {
   });
 
   afterAll(async () => { await pg?.end(); });
+
+  async function seedLegacyRows(
+    tx: Tx,
+    practiceId: string,
+    clientId: string,
+    collision?: { section: LegacySection; id: string },
+  ) {
+    const identity = (section: LegacySection, index: number) => ({
+      id: collision?.section === section && index === 1 ? collision.id : randomUUID(),
+      practiceId, externalSource: "synthetic",
+      externalId: `synthetic-${randomUUID()}`,
+      importFingerprint: randomBytes(32).toString("hex"),
+      createdAt: new Date(`2026-10-27T1${index}:00:00.000Z`),
+      updatedAt: new Date(`2026-10-28T1${index}:00:00.000Z`),
+    });
+    const documents = await tx.insert(schema.legacyFinancialDocuments).values(
+      [0, 1].map((index) => ({
+        ...identity("legacyFinancialDocuments", index), clientId,
+        documentType: "invoice" as const, documentNumber: `SYNTHETIC-${index}`,
+        issuedAt: new Date(`2026-10-27T1${index}:00:00.000Z`), dueDate: "2026-11-01",
+        status: index === 0 ? "partial" as const : "open" as const,
+        subtotal: index === 0 ? "10.00" : "20.00", tax: "0.00", discount: "0.00",
+        total: index === 0 ? "10.00" : "20.00", paidAmount: index === 0 ? "2.00" : "0.00",
+        balance: index === 0 ? "8.00" : "20.00", currency: "USD",
+        sourceStatus: "Synthetic source status", note: `Synthetic imported invoice ${index}`,
+      })),
+    ).returning();
+    const lineItems = await tx.insert(schema.legacyFinancialLineItems).values(
+      documents.map((document, index) => ({
+        ...identity("legacyFinancialLineItems", index), documentId: document.id,
+        sortOrder: index, description: `Synthetic imported line ${index}`, quantity: "1.000",
+        unitPrice: document.total, subtotal: document.subtotal, tax: document.tax,
+        discount: document.discount, total: document.total,
+      })),
+    ).returning();
+    const payments = await tx.insert(schema.legacyFinancialPayments).values(
+      [0, 1].map((index) => ({
+        ...identity("legacyFinancialPayments", index),
+        clientId: index === 0 ? clientId : null,
+        attributionStatus: index === 0 ? "matched" as const : "needs_review" as const,
+        entryType: "payment" as const, amount: index === 0 ? "2.00" : "7.00",
+        receivedAt: new Date(`2026-10-27T1${index}:30:00.000Z`), method: "Synthetic method",
+        sourceStatus: "Synthetic source status", reference: `Synthetic reference ${index}`,
+        note: index === 0 ? "Synthetic allocated payment" : "Synthetic unallocated payment",
+      })),
+    ).returning();
+    const allocations = await tx.insert(schema.legacyFinancialAllocations).values(
+      [0, 1].map((index) => ({
+        ...identity("legacyFinancialAllocations", index), documentId: documents[0]!.id,
+        paymentId: payments[0]!.id, amount: "1.00",
+        allocatedAt: new Date(`2026-10-27T1${index}:45:00.000Z`),
+        description: `Synthetic allocation ${index}`,
+      })),
+    ).returning();
+    return {
+      legacyFinancialDocuments: documents,
+      legacyFinancialLineItems: lineItems,
+      legacyFinancialPayments: payments,
+      legacyFinancialAllocations: allocations,
+    };
+  }
 
   async function withFinancialBackup(
     check: (tx: Tx, practiceId: string, backup: Backup) => Promise<void>,
@@ -98,9 +167,16 @@ suite("backup financial row completeness", () => {
                 createdAt: timestamp, updatedAt: timestamp,
               });
             }
+            await seedLegacyRows(source, practiceId, client!.id);
             backup = JSON.parse(JSON.stringify(await exportPracticeData(
               source as never, practiceId, new Date().toISOString(),
             )));
+            // Keep the unallocated row second for every payment collision,
+            // independent of PostgreSQL's unspecified export row order.
+            backup!.legacyFinancialPayments.sort((a, b) =>
+              Number((a as { attributionStatus: string }).attributionStatus === "needs_review") -
+              Number((b as { attributionStatus: string }).attributionStatus === "needs_review"),
+            );
             throw rollbackFixture;
           });
         } catch (error) {
@@ -109,6 +185,7 @@ suite("backup financial row completeness", () => {
         expect(backup).toBeDefined();
         expect(backup!.payments).toHaveLength(2);
         expect(backup!.invoiceAdjustments).toHaveLength(2);
+        for (const section of legacySections) expect(backup![section]).toHaveLength(2);
         expect(validatePracticeExportRestore(backup)).toEqual({ valid: true, errors: [] });
         await tx.insert(schema.practices).values({
           id: practiceId, name: "Synthetic financial target", timezone: "UTC",
@@ -125,23 +202,30 @@ suite("backup financial row completeness", () => {
       .where(eq(schema.practices.id, practiceId))).toEqual([]);
   }
 
-  it.each([false, true])("round-trips all payment and adjustment fields with reverse order %s", async (reverse) => {
+  it.each([false, true])("round-trips native and imported financial rows with reverse order %s", async (reverse) => {
     await withFinancialBackup(async (tx, practiceId, backup) => {
       if (reverse) {
         backup.payments.reverse();
         backup.invoiceAdjustments.reverse();
+        for (const section of legacySections) backup[section].reverse();
       }
       const result = await restorePracticeData(tx as never, practiceId, backup, {
         recoveryHoldDb: tx as never,
       });
       expect(result.restored.payments).toBe(2);
       expect(result.restored.invoiceAdjustments).toBe(2);
+      for (const section of legacySections) expect(result.restored[section]).toBe(2);
       const restored = JSON.parse(JSON.stringify(await exportPracticeData(
         tx as never, practiceId, new Date().toISOString(),
       ))) as Backup;
-      for (const section of ["invoices", "invoiceItems", "payments", "invoiceAdjustments"] as const) {
+      for (const section of ["invoices", "invoiceItems", "payments", "invoiceAdjustments", ...legacySections] as const) {
         expect(byId(restored[section])).toEqual(byId(backup[section]));
       }
+      const unallocated = (restored.legacyFinancialPayments as Record<string, unknown>[])
+        .find((row) => row.attributionStatus === "needs_review")!;
+      expect(unallocated).toMatchObject({ clientId: null, amount: "7.00" });
+      expect((restored.legacyFinancialAllocations as Record<string, unknown>[])
+        .some((row) => row.paymentId === unallocated.id)).toBe(false);
     });
   });
 
@@ -211,6 +295,59 @@ suite("backup financial row completeness", () => {
         expect(await tx.select().from(schema.invoiceAdjustments)
           .where(eq(schema.invoiceAdjustments.invoiceId, foreignInvoice.id))).toEqual([foreignAdjustment]);
       }
+    });
+  });
+
+  const legacyCollisions = legacySections.flatMap((section) => [
+    { section, field: "id", scope: "foreign practice" },
+    { section, field: "id", scope: "backup" },
+    { section, field: "externalId", scope: "backup" },
+    { section, field: "importFingerprint", scope: "backup" },
+  ]);
+  it.each(legacyCollisions)("rolls back a $section $field collision in $scope", async ({ section, field, scope }) => {
+    await withFinancialBackup(async (tx, practiceId, backup) => {
+      const rows = backup[section] as Record<string, unknown>[];
+      if (section === "legacyFinancialPayments") {
+        expect(rows[1]).toMatchObject({ attributionStatus: "needs_review", clientId: null });
+        expect((backup.legacyFinancialAllocations as Record<string, unknown>[])
+          .some((row) => row.paymentId === rows[1]!.id)).toBe(false);
+      }
+      let foreignRows: Awaited<ReturnType<typeof seedLegacyRows>> | undefined;
+      if (scope === "backup") {
+        rows[1]![field] = rows[0]![field];
+      } else {
+        const [foreign] = await tx.insert(schema.practices).values({
+          name: "Unrelated synthetic imported ledger",
+        }).returning();
+        const [client] = await tx.insert(schema.clients).values({
+          practiceId: foreign!.id, firstName: "Unrelated", lastName: "Synthetic owner",
+        }).returning();
+        foreignRows = await seedLegacyRows(tx, foreign!.id, client!.id, {
+          section, id: String(rows[1]!.id),
+        });
+      }
+      expect(validatePracticeExportRestore(backup)).toEqual({ valid: true, errors: [] });
+      await expect(restorePracticeData(tx as never, practiceId, backup, {
+        recoveryHoldDb: tx as never,
+      })).rejects.toThrow(`${section} restore did not insert every expected row.`);
+      for (const key of legacySections) {
+        const table = legacyTables[key];
+        expect(await tx.select().from(table).where(eq(table.practiceId, practiceId))).toEqual([]);
+        if (foreignRows) {
+          const foreignPracticeId = foreignRows[key][0]!.practiceId;
+          expect(byId(await tx.select().from(table).where(eq(table.practiceId, foreignPracticeId))))
+            .toEqual(byId(foreignRows[key]));
+        }
+      }
+      expect(await tx.select().from(schema.clients)
+        .where(eq(schema.clients.practiceId, practiceId))).toEqual([]);
+      expect(await tx.select().from(schema.invoices)
+        .where(eq(schema.invoices.practiceId, practiceId))).toEqual([]);
+      const invoiceId = String((backup.invoices[0] as { id: string }).id);
+      expect(await tx.select().from(schema.payments)
+        .where(eq(schema.payments.invoiceId, invoiceId))).toEqual([]);
+      expect(await tx.select().from(schema.invoiceAdjustments)
+        .where(eq(schema.invoiceAdjustments.invoiceId, invoiceId))).toEqual([]);
     });
   });
 });
