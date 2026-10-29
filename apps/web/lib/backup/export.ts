@@ -1830,14 +1830,21 @@ export function validatePracticeExportRestore(data: unknown): {
   if (Array.isArray(record.dispenseChargeQueue)) {
     const invoicesById = rowsById("invoices");
     const invoiceItemsByDispense = new Map<string, Row[]>();
-    rowsFor(data, "invoiceItems").forEach((item) => {
+    rowsFor(data, "invoiceItems").forEach((item, index) => {
       if (typeof item.sourceDispenseChargeId !== "string") return;
       const invoice = invoicesById.get(String(item.invoiceId));
+      // The invoice-line trigger cannot reattach a live source link while its
+      // parent is soft-deleted, even when the queue excludes that history.
+      if (item.deletedAt == null && invoice?.deletedAt != null) {
+        pushError(
+          `invoiceItems[${rowLabel(item, index)}] non-deleted dispense line cannot reference a soft-deleted invoice.`,
+        );
+        return;
+      }
       // Match protect_dispense_charge_queue's active-line predicate. Retained
       // void/estimate history is still exported and reference-validated.
       if (
         item.deletedAt != null ||
-        invoice?.deletedAt != null ||
         invoice?.status === "void" ||
         invoice?.isEstimate === true
       ) {
