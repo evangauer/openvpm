@@ -3988,19 +3988,21 @@ async function restorePracticeDataRows(
     "externalPrescriptionFills",
     externalPrescriptionFills,
   );
-  await restorePracticeRows(
-    "legacyFinancialDocuments",
-    legacyFinancialDocuments,
-  );
-  await restorePracticeRows(
-    "legacyFinancialLineItems",
-    legacyFinancialLineItems,
-  );
-  await restorePracticeRows("legacyFinancialPayments", legacyFinancialPayments);
-  await restorePracticeRows(
-    "legacyFinancialAllocations",
-    legacyFinancialAllocations,
-  );
+  // Imported financial records must not disappear on a uniqueness conflict.
+  for (const [section, table] of [
+    ["legacyFinancialDocuments", legacyFinancialDocuments],
+    ["legacyFinancialLineItems", legacyFinancialLineItems],
+    ["legacyFinancialPayments", legacyFinancialPayments],
+    ["legacyFinancialAllocations", legacyFinancialAllocations],
+  ] as const) {
+    restored[section] = await restoreRows(
+      db,
+      table,
+      section,
+      rowsFor(data, section),
+      { practiceId, requireAllRows: true },
+    );
+  }
   // Restore every queue row as pending first. Invoiced rows form an intentional
   // cycle with invoice_items, and the database protection trigger should see
   // the exact active source line before accepting their final status.
