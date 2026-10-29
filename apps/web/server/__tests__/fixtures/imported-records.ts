@@ -1,12 +1,13 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Sql } from "postgres";
 import bcrypt from "bcryptjs";
+import { isApprovedRehearsalDatabase } from "../../../../../test-support/rehearsal-database";
 
 export const IMPORTED_ROLES = ["admin", "veterinarian", "technician", "front_desk", "viewer"] as const;
 export const SYNTHETIC_DOCUMENT = Buffer.from("%PDF-1.4\n% Synthetic imported record fixture only\n%%EOF\n");
 export async function seedImportedRecords(pg: Sql) {
   const [target] = await pg`select current_database() as name,host(inet_server_addr()) as host`;
-  if (!/^openvpm_(imported|followup)_test_[A-Za-z0-9_]+$/.test(target?.name ?? "") || target?.host !== "127.0.0.1") throw new Error("Unexpected disposable database");
+  if ((!/^openvpm_(imported|followup)_test_[A-Za-z0-9_]+$/.test(target?.name ?? "") && !isApprovedRehearsalDatabase(target?.name ?? "")) || target?.host !== "127.0.0.1") throw new Error("Unexpected disposable database");
   const run = randomUUID().slice(0, 8), a = randomUUID(), b = randomUUID();
   const patient = randomUUID(), sameName = randomUUID(), foreign = randomUUID(), empty = randomUUID(), deletedPatient = randomUUID();
   const password = randomBytes(18).toString("base64url");

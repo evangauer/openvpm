@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import * as schema from "../../../../packages/db/schema/index";
 import { appRouter } from "../routers/_app";
+import { isApprovedRehearsalDatabase } from "../../../../test-support/rehearsal-database";
 
 // Opt-in PostgreSQL contract for follow-up recovery after a cancelled or
 // missed follow-up appointment. It runs only against an already created,
@@ -44,9 +45,9 @@ function expectedDatabaseName(raw: string): string {
     throw new Error("Follow-up recovery tests require a loopback database host");
   }
   const name = decodeURIComponent(url.pathname.slice(1));
-  if (!DATABASE_NAME_PATTERN.test(name)) {
+  if (!DATABASE_NAME_PATTERN.test(name) && !isApprovedRehearsalDatabase(name)) {
     throw new Error(
-      "Follow-up recovery tests require an openvpm_followup_test_ database",
+      "Follow-up recovery tests require a synthetic test database or an explicitly approved release rehearsal",
     );
   }
   return name;

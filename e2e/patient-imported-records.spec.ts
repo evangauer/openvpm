@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { isApprovedRehearsalDatabase } from '../test-support/rehearsal-database';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { seedImportedRecords, SYNTHETIC_DOCUMENT } from '../apps/web/server/__tests__/fixtures/imported-records';
@@ -11,7 +12,7 @@ let pg:any, f:Awaited<ReturnType<typeof seedImportedRecords>>;
 test.beforeAll(async()=>{
  if(!enabled)return;
  const url=process.env.IMPORTED_TEST_DATABASE_URL!;
- if(url!==process.env.DATABASE_URL||new URL(url).hostname!=='127.0.0.1'||!/^\/openvpm_(imported|followup)_test_[A-Za-z0-9_]+$/.test(new URL(url).pathname))throw Error('Unexpected test database');
+ if(url!==process.env.DATABASE_URL||new URL(url).hostname!=='127.0.0.1'||(!/^\/openvpm_(imported|followup)_test_[A-Za-z0-9_]+$/.test(new URL(url).pathname)&&!isApprovedRehearsalDatabase(decodeURIComponent(new URL(url).pathname.slice(1)))))throw Error('Unexpected test database');
  const req=createRequire(path.resolve('packages/db/package.json'));pg=req('postgres')(url,{max:1});f=await seedImportedRecords(pg);
 });
 test.afterAll(async()=>{await pg?.end()});

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { isApprovedRehearsalDatabase } from "../test-support/rehearsal-database";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -33,8 +34,8 @@ if (enabled) {
     throw new Error("Follow-up recovery E2E requires loopback database and web hosts");
   }
   databaseName = decodeURIComponent(db.pathname.slice(1));
-  if (!/^openvpm_followup_test_[A-Za-z0-9_]+$/.test(databaseName)) {
-    throw new Error("Follow-up recovery E2E requires an openvpm_followup_test_ database");
+  if (!/^openvpm_followup_test_[A-Za-z0-9_]+$/.test(databaseName) && !isApprovedRehearsalDatabase(databaseName)) {
+    throw new Error("Follow-up recovery E2E requires a synthetic test database or an explicitly approved release rehearsal");
   }
 }
 

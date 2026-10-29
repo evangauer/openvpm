@@ -4,6 +4,7 @@ import postgres from "postgres";
 import * as schema from "@openpims/db";
 import { appRouter } from "../routers/_app";
 import { IMPORTED_ROLES, seedImportedRecords } from "./fixtures/imported-records";
+import { isApprovedRehearsalDatabase } from "../../../../test-support/rehearsal-database";
 
 // Opt-in, synthetic, loopback owner-role SQL contract. Does not configure RLS.
 const url = process.env.IMPORTED_TEST_DATABASE_URL;
@@ -15,7 +16,7 @@ suite("patient imported records PostgreSQL contract", () => {
   const caller = (role: typeof IMPORTED_ROLES[number] = 'admin', other = false) => appRouter.createCaller({ db, session: { user: { id:other?f.otherUser:f.users[role], practiceId:other?f.otherPractice:f.practice, name:'Synthetic Archive Staff',email:'synthetic@example.invalid',role } } } as never);
   beforeAll(async () => {
     const parsed=new URL(url!);
-    if(parsed.hostname!=='127.0.0.1'||!/^\/openvpm_(imported|followup)_test_[A-Za-z0-9_]+$/.test(parsed.pathname))throw Error('Unexpected disposable DB URL');
+    if(parsed.hostname!=='127.0.0.1'||(!/^\/openvpm_(imported|followup)_test_[A-Za-z0-9_]+$/.test(parsed.pathname)&&!isApprovedRehearsalDatabase(decodeURIComponent(parsed.pathname.slice(1)))))throw Error('Unexpected disposable DB URL');
     pg=postgres(url!,{max:2});db=drizzle(pg,{schema});f=await seedImportedRecords(pg);
   },60_000);
   afterAll(async()=>{await pg?.end()});
