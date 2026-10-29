@@ -2853,7 +2853,7 @@ async function restoreRows(
   table: any,
   section: PracticeExportSection,
   rows: Row[],
-  opts: { practiceId?: string } = {},
+  opts: { practiceId?: string; requireAllRows?: boolean } = {},
 ): Promise<number> {
   if (rows.length === 0) return 0;
   const sanitizedRows = coerceRowDates(
@@ -2868,6 +2868,9 @@ async function restoreRows(
     .values(values)
     .onConflictDoNothing()
     .returning({ id: table.id });
+  if (opts.requireAllRows && restored.length !== rows.length) {
+    throw new Error(`${section} restore did not insert every expected row.`);
+  }
   return restored.length;
 }
 
@@ -3549,22 +3552,41 @@ async function restorePracticeDataRows(
     rowsFor(data, "invoiceItems"),
   );
   const invoiceRestoreRows = coerceRowDates(invoices, rowsFor(data, "invoices"));
-  const sourcedInvoiceIds = new Set(
-    invoiceItemRestoreRows
-      .filter(
-        (row) =>
-          typeof row.sourceDispenseChargeId === "string" && row.deletedAt == null,
-      )
-      .map((row) => row.invoiceId),
-  );
-  const stagedInvoiceRows = hasDispenseChargeQueue
+  const sourcedItemsByInvoice = new Map<string, Row[]>();
+  for (const row of invoiceItemRestoreRows) {
+    if (
+      typeof row.invoiceId !== "string" ||
+      typeof row.sourceDispenseChargeId !== "string"
+    ) continue;
+    const items = sourcedItemsByInvoice.get(row.invoiceId) ?? [];
+    items.push(row);
+    sourcedItemsByInvoice.set(row.invoiceId, items);
+  }
+  const historicalInvoiceRows = hasDispenseChargeQueue
     ? invoiceRestoreRows.filter(
         (row) =>
-          sourcedInvoiceIds.has(row.id) &&
+          sourcedItemsByInvoice
+            .get(String(row.id))
+            ?.some((item) => item.deletedAt == null) &&
           (row.status === "void" || row.isEstimate === true),
       )
     : [];
-  const stagedInvoiceIds = new Set(stagedInvoiceRows.map((row) => row.id));
+  const historicalAppointmentIds = new Set(
+    historicalInvoiceRows
+      .map((row) => row.appointmentId)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  // A visit can retain several void invoices but only one active invoice.
+  // Keep that current invoice out of the unique index while its history is
+  // reconstructed one invoice at a time, including an empty current invoice.
+  const deferredInvoiceRows = invoiceRestoreRows.filter(
+    (row) =>
+      historicalAppointmentIds.has(String(row.appointmentId)) &&
+      row.deletedAt == null &&
+      row.status !== "void" &&
+      row.isEstimate !== true,
+  );
+  const deferredInvoiceIds = new Set(deferredInvoiceRows.map((row) => row.id));
   const smsConsentRestore = prepareLegacySmsConsentRestore(data);
   const soapNoteRestoreRows = rowsFor(data, "soapNotes").map((row) => {
     const authorName =
@@ -3790,23 +3812,16 @@ async function restorePracticeDataRows(
   await restoreChildRows("treatmentTemplateItems", treatmentTemplateItems);
   await restorePracticeRows("suppliers", suppliers);
   await restorePracticeRows("purchaseOrders", purchaseOrders);
-  // Reconstruct historical dispense links through a valid intermediate state,
-  // as the original invoice lifecycle did. Restore terminal invoice state
-  // before resolving queue rows, inside this same atomic restore transaction.
+  // Historical invoices retain their original state initially. Defer current
+  // visit invoices until all historical links for that visit are reconstructed.
   restored.invoices = await restoreRows(
     db,
     invoices,
     "invoices",
     invoiceRestoreRows.map((row) =>
-      stagedInvoiceIds.has(row.id)
-        ? {
-            ...row,
-            status: row.status === "void" ? "draft" : row.status,
-            isEstimate: false,
-          }
-        : row,
+      deferredInvoiceIds.has(row.id) ? { ...row, isEstimate: true } : row,
     ),
-    { practiceId },
+    { practiceId, requireAllRows: true },
   );
   restored.invoiceItems = await restoreRows(
     db,
@@ -3818,6 +3833,7 @@ async function restorePracticeDataRows(
           sourceDispenseChargeId: null,
         }))
       : invoiceItemRestoreRows,
+    { requireAllRows: true },
   );
   await restoreChildRows("payments", payments);
   await restoreChildRows("invoiceAdjustments", invoiceAdjustments);
@@ -3983,34 +3999,69 @@ async function restorePracticeDataRows(
       resolvedAt: null,
       resolutionReason: null,
     })),
-    { practiceId },
+    { practiceId, requireAllRows: true },
   );
   if (hasDispenseChargeQueue) {
-    for (const row of invoiceItemRestoreRows) {
+    const restoreInvoiceState = async (row: Row, rebuildingHistory = false) => {
+      const status =
+        rebuildingHistory && row.status === "void" ? "draft" : row.status;
+      const updated = await db
+        .update(invoices)
+        .set({
+          status: status as typeof invoices.$inferInsert.status,
+          isEstimate: rebuildingHistory ? false : row.isEstimate === true,
+          updatedAt: row.updatedAt instanceof Date ? row.updatedAt : undefined,
+        })
+        .where(
+          and(eq(invoices.id, String(row.id)), eq(invoices.practiceId, practiceId)),
+        )
+        .returning({ id: invoices.id });
+      if (updated.length !== 1) {
+        throw new Error(
+          "Invoice restore could not reconstruct an expected invoice state.",
+        );
+      }
+    };
+    const restoreItemSource = async (row: Row) => {
       if (
         typeof row.id === "string" &&
         typeof row.sourceDispenseChargeId === "string"
       ) {
-        await db
+        const updated = await db
           .update(invoiceItems)
           .set({
             sourceDispenseChargeId: row.sourceDispenseChargeId,
             updatedAt: row.updatedAt instanceof Date ? row.updatedAt : undefined,
           })
-          .where(eq(invoiceItems.id, row.id));
+          .where(
+            and(
+              eq(invoiceItems.id, row.id),
+              eq(invoiceItems.invoiceId, String(row.invoiceId)),
+            ),
+          )
+          .returning({ id: invoiceItems.id });
+        if (updated.length !== 1) {
+          throw new Error(
+            "Invoice restore could not reconstruct an expected dispense link.",
+          );
+        }
       }
+    };
+    const historicalInvoiceIds = new Set(
+      historicalInvoiceRows.map((row) => row.id),
+    );
+    for (const row of historicalInvoiceRows) {
+      await restoreInvoiceState(row, true);
+      for (const item of sourcedItemsByInvoice.get(String(row.id)) ?? []) {
+        await restoreItemSource(item);
+      }
+      await restoreInvoiceState(row);
     }
-    for (const row of stagedInvoiceRows) {
-      await db
-        .update(invoices)
-        .set({
-          status: row.status as typeof invoices.$inferInsert.status,
-          isEstimate: row.isEstimate === true,
-          updatedAt: row.updatedAt instanceof Date ? row.updatedAt : undefined,
-        })
-        .where(
-          and(eq(invoices.id, String(row.id)), eq(invoices.practiceId, practiceId)),
-        );
+    // No historical invoice remains transiently active when current invoices
+    // re-enter the unique index. PostgreSQL rejects invalid duplicate actives.
+    for (const row of deferredInvoiceRows) await restoreInvoiceState(row);
+    for (const row of invoiceItemRestoreRows) {
+      if (!historicalInvoiceIds.has(row.invoiceId)) await restoreItemSource(row);
     }
     for (const row of coerceRowDates(
       dispenseChargeQueue,
@@ -4022,7 +4073,7 @@ async function restorePracticeDataRows(
       ) {
         continue;
       }
-      await db
+      const updated = await db
         .update(dispenseChargeQueue)
         .set({
           status: row.status,
@@ -4045,7 +4096,11 @@ async function restorePracticeDataRows(
             eq(dispenseChargeQueue.id, row.id),
             eq(dispenseChargeQueue.practiceId, practiceId),
           ),
-        );
+        )
+        .returning({ id: dispenseChargeQueue.id });
+      if (updated.length !== 1) {
+        throw new Error("Dispense restore could not resolve an expected queue row.");
+      }
     }
   }
   await restorePracticeRows("visitCloseouts", visitCloseouts);
