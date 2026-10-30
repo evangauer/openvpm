@@ -12,6 +12,7 @@ import {
   gte,
   sql,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import type { Database } from "@openpims/db/client";
@@ -53,6 +54,7 @@ import {
   moneyToCents,
 } from "@/lib/billing/invoice-balance";
 import { canTransitionAppointmentStatus } from "@/lib/scheduling/appointment-status";
+import { takeAppointmentSchedulingLock } from "@/lib/scheduling/location";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
 import { effectivePrescriptionStatus } from "@/lib/records/prescription-lifecycle";
@@ -438,6 +440,135 @@ async function getCloseoutRow(ctx: EncounterContext, appointmentId: string) {
   return closeout ?? null;
 }
 
+type CloseoutRow = typeof visitCloseouts.$inferSelect;
+type FollowUpRecoveryReason = "cancelled" | "no_show";
+
+/**
+ * The appointment that currently covers a signed follow-up. The latest
+ * operational replacement wins over the clinician's original booking, and a
+ * terminal outcome (completed / not needed) has no link, so it stays closed.
+ */
+function currentFollowUpLinkId(
+  closeout: Pick<
+    CloseoutRow,
+    | "followUpDisposition"
+    | "followUpAppointmentId"
+    | "followUpResolution"
+    | "followUpResolutionAppointmentId"
+  >,
+): string | null {
+  if (closeout.followUpResolution === "scheduled") {
+    return closeout.followUpResolutionAppointmentId;
+  }
+  if (
+    closeout.followUpResolution === null &&
+    closeout.followUpDisposition === "scheduled"
+  ) {
+    return closeout.followUpAppointmentId;
+  }
+  return null;
+}
+
+/** SQL twin of currentFollowUpLinkId for queue queries. */
+const currentFollowUpLinkSql = sql`case
+  when ${visitCloseouts.followUpResolution} = 'scheduled'
+    then ${visitCloseouts.followUpResolutionAppointmentId}
+  when ${visitCloseouts.followUpResolution} is null
+    and ${visitCloseouts.followUpDisposition} = 'scheduled'
+    then ${visitCloseouts.followUpAppointmentId}
+end`;
+
+const RECOVERABLE_APPOINTMENT_STATUSES: FollowUpRecoveryReason[] = [
+  "cancelled",
+  "no_show",
+];
+
+function followUpRecoveryReason(
+  status: string | null | undefined,
+): FollowUpRecoveryReason | null {
+  return status === "cancelled" || status === "no_show" ? status : null;
+}
+
+/** Lock and read the tenant's appointment that currently covers a follow-up. */
+async function lockFollowUpRecovery(
+  ctx: EncounterContext,
+  closeout: CloseoutRow,
+) {
+  const linkId = currentFollowUpLinkId(closeout);
+  if (!linkId) return null;
+  const [linked] = await ctx.db
+    .select({
+      id: appointments.id,
+      status: appointments.status,
+      startTime: appointments.startTime,
+    })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.id, linkId),
+        eq(appointments.practiceId, ctx.practiceId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  const reason = followUpRecoveryReason(linked?.status);
+  return linked && reason
+    ? { reason, appointmentId: linked.id, appointmentAt: linked.startTime }
+    : null;
+}
+
+function followUpResolutionSnapshot(
+  row: Pick<
+    CloseoutRow,
+    | "followUpResolution"
+    | "followUpResolutionAppointmentId"
+    | "followUpResolutionScheduledAt"
+    | "followUpResolutionNotes"
+    | "followUpResolvedAt"
+    | "followUpResolvedBy"
+    | "followUpResolverName"
+    | "revision"
+  >,
+) {
+  return {
+    followUpResolution: row.followUpResolution,
+    followUpResolutionAppointmentId: row.followUpResolutionAppointmentId,
+    followUpResolutionScheduledAt:
+      row.followUpResolutionScheduledAt?.toISOString() ?? null,
+    followUpResolutionNotes: row.followUpResolutionNotes,
+    followUpResolvedAt: row.followUpResolvedAt?.toISOString() ?? null,
+    followUpResolvedBy: row.followUpResolvedBy,
+    followUpResolverName: row.followUpResolverName,
+    revision: row.revision,
+  };
+}
+
+function toPendingFollowUp<
+  T extends {
+    linkedAppointmentId: string | null;
+    linkedAppointmentStatus: string | null;
+    linkedAppointmentStartTime: Date | null;
+  },
+>(row: T) {
+  const {
+    linkedAppointmentId,
+    linkedAppointmentStatus,
+    linkedAppointmentStartTime,
+    ...item
+  } = row;
+  const recoveryReason = linkedAppointmentId
+    ? followUpRecoveryReason(linkedAppointmentStatus)
+    : null;
+  return {
+    ...item,
+    // Set when a booked follow-up was cancelled or missed. These items belong
+    // to the clinic team unless the signed handoff already named an owner.
+    recoveryReason,
+    missedAppointmentId: recoveryReason ? linkedAppointmentId : null,
+    missedAppointmentAt: recoveryReason ? linkedAppointmentStartTime : null,
+  };
+}
+
 function assertOpenForClinical(status: string) {
   if (status !== "in_exam") {
     throw new TRPCError({
@@ -601,13 +732,15 @@ async function lockInitialDispenseCharge(
 }
 
 export const encountersRouter = createRouter({
-  listPendingFollowUps: protectedProcedure.query(async ({ ctx }) =>
-    ctx.db
+  listPendingFollowUps: protectedProcedure.query(async ({ ctx }) => {
+    const followUpLink = alias(appointments, "follow_up_link");
+    const rows = await ctx.db
       .select({
         closeoutId: visitCloseouts.id,
         appointmentId: visitCloseouts.appointmentId,
         closeoutStatus: visitCloseouts.status,
         revision: visitCloseouts.revision,
+        followUpDisposition: visitCloseouts.followUpDisposition,
         dueDate: visitCloseouts.followUpDueDate,
         assignedTo: visitCloseouts.followUpAssignedTo,
         assigneeName: visitCloseouts.followUpAssigneeName,
@@ -626,6 +759,9 @@ export const encountersRouter = createRouter({
         clientFirstName: clients.firstName,
         clientLastName: clients.lastName,
         visitStartedAt: appointments.startTime,
+        linkedAppointmentId: followUpLink.id,
+        linkedAppointmentStatus: followUpLink.status,
+        linkedAppointmentStartTime: followUpLink.startTime,
       })
       .from(visitCloseouts)
       .innerJoin(
@@ -653,18 +789,38 @@ export const encountersRouter = createRouter({
           isNull(clients.deletedAt)
         )
       )
+      .leftJoin(
+        followUpLink,
+        and(
+          eq(followUpLink.id, currentFollowUpLinkSql),
+          eq(followUpLink.practiceId, ctx.practiceId)
+        )
+      )
       .where(
         and(
           eq(visitCloseouts.practiceId, ctx.practiceId),
-          eq(visitCloseouts.followUpDisposition, "needed"),
           inArray(visitCloseouts.status, ["clinical_finalized", "completed"]),
-          isNull(visitCloseouts.followUpResolvedAt),
+          or(
+            and(
+              eq(visitCloseouts.followUpDisposition, "needed"),
+              isNull(visitCloseouts.followUpResolvedAt)
+            ),
+            // A cancelled or missed booking no longer covers the follow-up,
+            // whether the clinician booked it or staff booked it later.
+            inArray(followUpLink.status, RECOVERABLE_APPOINTMENT_STATUSES)
+          ),
           activePracticePredicate(ctx.practiceId),
           isNull(visitCloseouts.deletedAt)
         )
       )
-      .orderBy(asc(visitCloseouts.followUpDueDate), asc(visitCloseouts.createdAt))
-  ),
+      .orderBy(
+        asc(
+          sql`coalesce(${visitCloseouts.followUpDueDate}, (${followUpLink.startTime})::date)`
+        ),
+        asc(visitCloseouts.createdAt)
+      );
+    return rows.map(toPendingFollowUp);
+  }),
 
   getCloseout: protectedProcedure
     .input(z.object({ appointmentId: z.string().guid() }))
@@ -871,6 +1027,42 @@ export const encountersRouter = createRouter({
           isVeterinarianProvider(ctx, ctx.user.id, ctx.user.role),
         ]);
 
+      let followUpRecovery: {
+        reason: FollowUpRecoveryReason;
+        appointmentId: string;
+        appointmentAt: Date;
+      } | null = null;
+      const followUpLinkId =
+        closeout &&
+        (closeout.status === "clinical_finalized" ||
+          closeout.status === "completed")
+          ? currentFollowUpLinkId(closeout)
+          : null;
+      if (followUpLinkId) {
+        const [linked] = await ctx.db
+          .select({
+            id: appointments.id,
+            status: appointments.status,
+            startTime: appointments.startTime,
+          })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.id, followUpLinkId),
+              eq(appointments.practiceId, ctx.practiceId)
+            )
+          )
+          .limit(1);
+        const reason = followUpRecoveryReason(linked?.status);
+        if (linked && reason) {
+          followUpRecovery = {
+            reason,
+            appointmentId: linked.id,
+            appointmentAt: linked.startTime,
+          };
+        }
+      }
+
       const rawInvoices =
         appointment.patientId && appointment.clientId
           ? await appointmentInvoiceRows(
@@ -919,6 +1111,7 @@ export const encountersRouter = createRouter({
         ),
         followUpAppointments,
         followUpAssignees,
+        followUpRecovery,
         invoices: invoiceSummaries,
         canFinalizeDoctorRequiredVisit,
       };
@@ -1702,6 +1895,15 @@ export const encountersRouter = createRouter({
     .input(finalizeClinicalInput)
     .mutation(async ({ ctx, input }) =>
       ctx.db.transaction(async (tx) => {
+        if (input.followUpDisposition === "scheduled") {
+          // This path locks a linked booking after the visit row. Take the
+          // practice scheduling lock first, matching follow-up recovery and
+          // status changes, so cross-linked visits cannot deadlock.
+          await takeAppointmentSchedulingLock(
+            tx as unknown as Database,
+            ctx.practiceId
+          );
+        }
         const txCtx: EncounterContext = { db: tx, practiceId: ctx.practiceId };
         const appointment = await lockAppointment(txCtx, input.appointmentId);
         if (
@@ -1837,7 +2039,19 @@ export const encountersRouter = createRouter({
 
         let followUpScheduledAt: Date | null = null;
         let followUpAssigneeName: string | null = null;
-        if (input.followUpDisposition === "scheduled") {
+        // An amendment that keeps the signed follow-up booking keeps its
+        // signed snapshot, even if that booking was later cancelled or missed
+        // and is being recovered operationally.
+        const keepsSignedFollowUpBooking = Boolean(
+          amendmentDraft &&
+            existing?.followUpDisposition === "scheduled" &&
+            input.followUpDisposition === "scheduled" &&
+            existing.followUpAppointmentId === input.followUpAppointmentId &&
+            existing.followUpScheduledAt
+        );
+        if (keepsSignedFollowUpBooking) {
+          followUpScheduledAt = existing!.followUpScheduledAt;
+        } else if (input.followUpDisposition === "scheduled") {
           const [followUp] = await tx
             .select({
               id: appointments.id,
@@ -1855,7 +2069,9 @@ export const encountersRouter = createRouter({
                 isNull(appointments.deletedAt)
               )
             )
-            .limit(1);
+            .limit(1)
+            // Hold the booking steady until the signed snapshot commits.
+            .for("share");
           if (!followUp) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
@@ -1902,13 +2118,17 @@ export const encountersRouter = createRouter({
         }
 
         const now = new Date();
+        // Operational follow-up state survives an amendment only when the
+        // clinical obligation is unchanged. A changed obligation starts fresh;
+        // the prior state stays in the amendment history.
         const preserveFollowUpResolution = Boolean(
           amendmentDraft &&
             existing &&
-            input.followUpDisposition === "needed" &&
-            existing.followUpDisposition === "needed" &&
-            existing.followUpDueDate === input.followUpDueDate &&
-            existing.followUpAssignedTo === input.followUpAssignedTo
+            ((input.followUpDisposition === "needed" &&
+              existing.followUpDisposition === "needed" &&
+              existing.followUpDueDate === input.followUpDueDate &&
+              existing.followUpAssignedTo === input.followUpAssignedTo) ||
+              keepsSignedFollowUpBooking)
         );
         const values = {
           ...clinicalDraftValues(input),
@@ -2169,6 +2389,14 @@ export const encountersRouter = createRouter({
     .input(resolveNeededFollowUpInput)
     .mutation(async ({ ctx, input }) =>
       ctx.db.transaction(async (tx) => {
+        // Same lock order as appointment status changes: the practice
+        // scheduling lock first, then appointment rows. Holding it keeps the
+        // linked and replacement bookings from being cancelled or restored
+        // while this decision is made.
+        await takeAppointmentSchedulingLock(
+          tx as unknown as Database,
+          ctx.practiceId
+        );
         const txCtx: EncounterContext = { db: tx, practiceId: ctx.practiceId };
         const appointment = await lockAppointment(txCtx, input.appointmentId);
         const closeout = await getCloseoutRow(txCtx, input.appointmentId);
@@ -2176,7 +2404,8 @@ export const encountersRouter = createRouter({
           !closeout ||
           (closeout.status !== "clinical_finalized" &&
             closeout.status !== "completed") ||
-          closeout.followUpDisposition !== "needed"
+          (closeout.followUpDisposition !== "needed" &&
+            closeout.followUpDisposition !== "scheduled")
         ) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
@@ -2185,18 +2414,32 @@ export const encountersRouter = createRouter({
         }
         assertAmendmentAppointmentState(appointment.status, closeout.status);
 
-        if (closeout.followUpResolvedAt) {
-          if (
-            closeout.followUpResolution === input.resolution &&
-            closeout.followUpResolutionAppointmentId ===
-              input.resolutionAppointmentId &&
-            closeout.followUpResolutionNotes === input.notes
-          ) {
-            return closeout;
+        const awaitingNeededFollowUp =
+          closeout.followUpDisposition === "needed" &&
+          !closeout.followUpResolvedAt;
+        const recovery = awaitingNeededFollowUp
+          ? null
+          : await lockFollowUpRecovery(txCtx, closeout);
+
+        if (!awaitingNeededFollowUp && !recovery) {
+          if (closeout.followUpResolvedAt) {
+            if (
+              closeout.followUpResolution === input.resolution &&
+              closeout.followUpResolutionAppointmentId ===
+                input.resolutionAppointmentId &&
+              closeout.followUpResolutionNotes === input.notes
+            ) {
+              return closeout;
+            }
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "This follow-up obligation is already resolved.",
+            });
           }
           throw new TRPCError({
-            code: "CONFLICT",
-            message: "This follow-up obligation is already resolved.",
+            code: "PRECONDITION_FAILED",
+            message:
+              "The follow-up appointment is still booked. It needs attention only if it is cancelled or missed.",
           });
         }
         if (closeout.revision !== input.expectedRevision) {
@@ -2223,7 +2466,8 @@ export const encountersRouter = createRouter({
                 isNull(appointments.deletedAt)
               )
             )
-            .limit(1);
+            .limit(1)
+            .for("update");
           if (!followUp) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
@@ -2233,30 +2477,37 @@ export const encountersRouter = createRouter({
           resolutionScheduledAt = followUp.startTime;
         }
 
-        const now = new Date();
+        // Only operational columns change; the signed follow-up fields stay
+        // exactly as the clinician finalized them.
+        const resolution = {
+          followUpResolution: input.resolution,
+          followUpResolutionAppointmentId:
+            input.resolution === "scheduled"
+              ? input.resolutionAppointmentId
+              : null,
+          followUpResolutionScheduledAt: resolutionScheduledAt,
+          followUpResolutionNotes: input.notes,
+          followUpResolvedAt: new Date(),
+          followUpResolvedBy: ctx.user.id,
+          followUpResolverName: ctx.user.name,
+          revision: closeout.revision + 1,
+        };
         const [resolved] = await tx
           .update(visitCloseouts)
-          .set({
-            followUpResolution: input.resolution,
-            followUpResolutionAppointmentId:
-              input.resolution === "scheduled"
-                ? input.resolutionAppointmentId
-                : null,
-            followUpResolutionScheduledAt: resolutionScheduledAt,
-            followUpResolutionNotes: input.notes,
-            followUpResolvedAt: now,
-            followUpResolvedBy: ctx.user.id,
-            followUpResolverName: ctx.user.name,
-            revision: closeout.revision + 1,
-          })
+          .set(resolution)
           .where(
             and(
               eq(visitCloseouts.id, closeout.id),
               eq(visitCloseouts.practiceId, ctx.practiceId),
               eq(visitCloseouts.status, closeout.status),
-              eq(visitCloseouts.followUpDisposition, "needed"),
+              eq(
+                visitCloseouts.followUpDisposition,
+                closeout.followUpDisposition
+              ),
               eq(visitCloseouts.revision, closeout.revision),
-              isNull(visitCloseouts.followUpResolvedAt),
+              awaitingNeededFollowUp
+                ? isNull(visitCloseouts.followUpResolvedAt)
+                : undefined,
               isNull(visitCloseouts.deletedAt)
             )
           )
@@ -2267,6 +2518,26 @@ export const encountersRouter = createRouter({
             message: "Follow-up changed; refresh and retry.",
           });
         }
+
+        await tx.insert(auditLog).values({
+          practiceId: ctx.practiceId,
+          userId: ctx.user.id,
+          action: recovery ? "follow_up_recovered" : "follow_up_resolved",
+          entityType: "visit_closeout",
+          entityId: closeout.id,
+          changes: {
+            appointmentId: input.appointmentId,
+            recovery: recovery
+              ? {
+                  reason: recovery.reason,
+                  missedAppointmentId: recovery.appointmentId,
+                  missedAppointmentAt: recovery.appointmentAt.toISOString(),
+                }
+              : null,
+            before: followUpResolutionSnapshot(closeout),
+            after: followUpResolutionSnapshot({ ...closeout, ...resolution }),
+          },
+        });
         return resolved;
       })
     ),

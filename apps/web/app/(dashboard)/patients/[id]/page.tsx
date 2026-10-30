@@ -37,6 +37,7 @@ import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { PatientHistorySearch } from "@/components/patients/patient-history-search";
+import { ImportedRecords } from "@/components/patients/imported-records";
 import { PatientDocumentUpload } from "@/components/records/patient-document-upload";
 import { PatientNotes } from "@/components/patients/patient-notes";
 import {
@@ -2692,6 +2693,7 @@ function MedicalRecordsTab({
 
   return (
     <div className="space-y-4">
+      <ImportedRecords patientId={patientId} timeZone={timeZone} />
       {canSearchPatientHistory ? (
         <PatientHistorySearch
           patientId={patientId}
