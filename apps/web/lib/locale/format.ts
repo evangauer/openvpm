@@ -10,6 +10,7 @@ const COUNTRY_LOCALE: Record<string, string> = {
   IE: "en-IE",
   CA: "en-CA",
   AU: "en-AU",
+  IT: "it-IT",
 };
 
 export function localeForCountry(country?: string | null): string {
@@ -25,6 +26,8 @@ export function formatCurrency(
   return new Intl.NumberFormat(localeForCountry(country), {
     style: "currency",
     currency: currency.toUpperCase(),
+    // Group 4-digit amounts too: CLDR's it-IT default would print "1234,50 €".
+    useGrouping: true,
   }).format(Number.isFinite(n) ? (n as number) : 0);
 }
 
