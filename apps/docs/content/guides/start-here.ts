@@ -133,7 +133,7 @@ export const startHere: Guide[] = [
       },
     ],
     faq: [
-      ["Charge capture says it's read-only for me", "Charges can be added by the front desk or an admin while the visit is [[In Exam]]. Vets and techs can see the charges but not change them. Before the exam starts, or after checkout, charges are read-only for everyone."],
+      ["Why can't I add charges to a visit?", "Charges can be added by the front desk or an admin while the visit is [[In Exam]]. Vets and techs can see the charges but not change them. Before the exam starts, or once closeout is complete, charges are locked for everyone. The charges panel says which of these applies."],
       ["How do I change someone's role?", "An admin can change it in [[Settings]] → [[Staff]]. See [Invite and manage staff](/guides/invite-and-manage-staff)."],
     ],
     next: "book-an-appointment",

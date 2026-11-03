@@ -28,10 +28,12 @@ root README.
    ```
 
 3. **Build and start the app with the same clock**, on port 3100. A production
-   build keeps development overlays out of the pictures.
+   build keeps development overlays out of the pictures. Build with an HTTPS
+   app URL: production builds won't create calendar feed links over plain
+   http, so the calendar guide's screen would show an error.
 
    ```sh
-   pnpm --filter @openpims/web build
+   NEXT_PUBLIC_APP_URL=https://app.openvpm.com pnpm --filter @openpims/web build
    NODE_OPTIONS="--import $PWD/apps/docs/capture/clock.mjs" \
      pnpm --filter @openpims/web exec next start -p 3100
    ```

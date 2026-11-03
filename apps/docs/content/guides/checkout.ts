@@ -9,7 +9,7 @@ export const checkout: Guide[] = [
     area: "billing",
     audience: "Front desk, admins",
     minutes: 4,
-    before: "The visit needs a client and a pet, and it must be [[In Exam]]. Before the exam starts, or after checkout, charges are read-only.",
+    before: "The visit needs a client and a pet, and it must be [[In Exam]]. Before the exam starts, or after checkout, charges are locked and the panel says why.",
     keywords: ["charges", "bill", "line items", "services", "products", "draft invoice", "charge capture"],
     steps: [
       {
