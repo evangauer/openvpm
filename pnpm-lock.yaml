@@ -45,7 +45,51 @@ importers:
         specifier: ^2.9.14
         version: 2.10.9
 
-  apps/docs: {}
+  apps/docs:
+    dependencies:
+      '@vercel/analytics':
+        specifier: ^2.0.1
+        version: 2.0.1(next@15.5.28(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(@types/node@20.19.37)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
+      lucide-react:
+        specifier: ^0.577.0
+        version: 0.577.0(react@19.2.8)
+      next:
+        specifier: ^15.5.28
+        version: 15.5.28(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(@types/node@20.19.37)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@openpims/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.37
+      '@types/react':
+        specifier: ^19.2.18
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: ^19.2.4
+        version: 19.2.4(@types/react@19.2.18)
+      autoprefixer:
+        specifier: ^10.4.0
+        version: 10.4.27(postcss@8.5.26)
+      postcss:
+        specifier: 8.5.26
+        version: 8.5.26
+      tailwindcss:
+        specifier: ^3.4.0
+        version: 3.4.19(tsx@4.23.12)
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.6
+        version: 3.2.6(@types/node@20.19.37)(jiti@1.21.7)(tsx@4.23.12)
 
   apps/web:
     dependencies:

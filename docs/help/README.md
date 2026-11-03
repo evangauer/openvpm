@@ -1,8 +1,11 @@
 # OpenVPM Help
 
-Short guides for running your clinic on OpenVPM. Each one takes a minute or
-two. The same walkthroughs live inside the app: open **Settings** and click
-**Guides** to see them with your own data.
+The staff guides now live at [docs.openvpm.com](https://docs.openvpm.com),
+built from [apps/docs](../../apps/docs). That site has every daily workflow
+with real screens, a tour of each screen, and a training path for each role.
+
+The pages below cover self-hosted setup and a few topics that haven't moved to
+the new site yet.
 
 ## Getting started
 

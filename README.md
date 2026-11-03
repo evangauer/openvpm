@@ -76,7 +76,7 @@ That's the bar we're building to.
 
 ## Help & Guides
 
-The searchable [OpenVPM Guides](https://docs.openvpm.com) cover front desk, clinical, checkout, client care, and practice administration workflows. Their MDX source and publishing workflow are documented in [docs/help](docs/help/README.md). Before evaluating OpenVPM for live clinic use, read the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md) for the current supported, configuration-dependent, and not-yet-supported boundaries. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
+[OpenVPM Help](https://docs.openvpm.com) has step-by-step guides with real screens for the front desk, clinical team, and practice managers, a tour of every screen, and a training path for each role. The site lives in [apps/docs](apps/docs), and its screenshots are captured from the seeded demo clinic ([how](apps/docs/capture/README.md)). Self-hosting setup guides stay in [docs/help](docs/help/README.md). Before evaluating OpenVPM for live clinic use, read the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md) for the current supported, configuration-dependent, and not-yet-supported boundaries. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
 
 ## Features
 

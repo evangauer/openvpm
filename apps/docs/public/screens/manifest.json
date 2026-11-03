@@ -1,0 +1,1043 @@
+{
+  "dashboard": {
+    "file": "dashboard.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-dashboard": [
+        8,
+        64,
+        223,
+        36
+      ],
+      "stats": [
+        264,
+        80,
+        992,
+        146
+      ],
+      "followups": [
+        264,
+        258,
+        992,
+        167
+      ],
+      "upcoming": [
+        264,
+        457,
+        992,
+        437
+      ],
+      "search": [
+        854,
+        10,
+        320,
+        36
+      ],
+      "new": [
+        1182,
+        10,
+        74,
+        36
+      ]
+    }
+  },
+  "search": {
+    "file": "search.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "palette": [
+        0,
+        0,
+        1280,
+        800
+      ]
+    }
+  },
+  "schedule": {
+    "file": "schedule.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-schedule": [
+        8,
+        178,
+        223,
+        36
+      ],
+      "date-nav": [
+        264,
+        144,
+        145,
+        36
+      ],
+      "views": [
+        723,
+        144,
+        167,
+        36
+      ],
+      "doctor-filter": [
+        898,
+        144,
+        186,
+        36
+      ],
+      "new-appointment": [
+        1092,
+        144,
+        164,
+        36
+      ],
+      "calendar-feed": [
+        1070,
+        86,
+        186,
+        36
+      ],
+      "lane": [
+        329,
+        197,
+        309,
+        52
+      ]
+    }
+  },
+  "schedule-new": {
+    "file": "schedule-new.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "dialog": [
+        416,
+        40,
+        448,
+        720
+      ],
+      "patient": [
+        433,
+        210,
+        414,
+        36
+      ],
+      "type": [
+        433,
+        262,
+        414,
+        64
+      ],
+      "doctor": [
+        433,
+        342,
+        414,
+        64
+      ]
+    }
+  },
+  "schedule-confirm": {
+    "file": "schedule-confirm.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "popover": [
+        448,
+        160,
+        384,
+        480
+      ],
+      "confirm": [
+        465,
+        591,
+        78,
+        36
+      ],
+      "edit": [
+        465,
+        503,
+        157,
+        36
+      ],
+      "cancel": [
+        738,
+        591,
+        70,
+        36
+      ],
+      "no-show": [
+        644,
+        591,
+        86,
+        36
+      ]
+    }
+  },
+  "schedule-check-in": {
+    "file": "schedule-check-in.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "popover": [
+        448,
+        160,
+        384,
+        480
+      ],
+      "check-in": [
+        465,
+        591,
+        83,
+        36
+      ],
+      "reminder": [
+        630,
+        503,
+        146,
+        36
+      ]
+    }
+  },
+  "schedule-in-exam": {
+    "file": "schedule-in-exam.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "popover": [
+        448,
+        184,
+        384,
+        432
+      ],
+      "open-visit": [
+        465,
+        523,
+        109,
+        36
+      ],
+      "view-chart": [
+        582,
+        523,
+        98,
+        36
+      ],
+      "in-exam": [
+        688,
+        523,
+        77,
+        36
+      ],
+      "no-show": [
+        465,
+        567,
+        86,
+        36
+      ]
+    }
+  },
+  "whiteboard": {
+    "file": "whiteboard.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-whiteboard": [
+        8,
+        520,
+        223,
+        36
+      ],
+      "live": [
+        476,
+        86,
+        38,
+        16
+      ],
+      "waiting": [
+        265,
+        153,
+        318,
+        44
+      ],
+      "in-progress": [
+        601,
+        153,
+        318,
+        44
+      ],
+      "completed": [
+        937,
+        153,
+        318,
+        44
+      ]
+    }
+  },
+  "visit": {
+    "file": "visit.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "header": [
+        1107,
+        161,
+        128,
+        40
+      ],
+      "start-exam": [
+        1107,
+        161,
+        128,
+        40
+      ],
+      "checklist": [
+        264,
+        294,
+        992,
+        166
+      ]
+    }
+  },
+  "visit-work": {
+    "file": "visit-work.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "clinical-work": [
+        264,
+        40,
+        538,
+        312
+      ],
+      "charge-capture": [
+        826,
+        40,
+        430,
+        212
+      ]
+    }
+  },
+  "patients": {
+    "file": "patients.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-patients": [
+        8,
+        102,
+        223,
+        36
+      ],
+      "search": [
+        264,
+        152,
+        384,
+        40
+      ],
+      "species": [
+        664,
+        152,
+        120,
+        40
+      ],
+      "new-patient": [
+        1120,
+        84,
+        136,
+        40
+      ],
+      "duplicates": [
+        932,
+        84,
+        179,
+        40
+      ],
+      "list": [
+        265,
+        217,
+        990,
+        1194
+      ]
+    }
+  },
+  "patient": {
+    "file": "patient.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "header": [
+        264,
+        132,
+        992,
+        201
+      ],
+      "allergies": [
+        264,
+        349,
+        992,
+        198
+      ],
+      "actions": [
+        289,
+        272,
+        800,
+        36
+      ],
+      "tabs": [
+        264,
+        571,
+        992,
+        44
+      ],
+      "owner": [
+        361,
+        237,
+        129,
+        20
+      ]
+    }
+  },
+  "patient-medical-records": {
+    "file": "patient-medical-records.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "tab": [
+        360,
+        311,
+        144,
+        44
+      ],
+      "panel": [
+        264,
+        380,
+        992,
+        493
+      ]
+    }
+  },
+  "patient-vitals": {
+    "file": "patient-vitals.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "tab": [
+        868,
+        311,
+        69,
+        44
+      ],
+      "panel": [
+        264,
+        380,
+        992,
+        516
+      ]
+    }
+  },
+  "patient-vaccinations": {
+    "file": "patient-vaccinations.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "tab": [
+        937,
+        311,
+        118,
+        44
+      ],
+      "panel": [
+        264,
+        380,
+        992,
+        439
+      ]
+    }
+  },
+  "patient-weight-history": {
+    "file": "patient-weight-history.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "tab": [
+        737,
+        311,
+        131,
+        44
+      ],
+      "panel": [
+        264,
+        380,
+        992,
+        419
+      ]
+    }
+  },
+  "patient-documents": {
+    "file": "patient-documents.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "tab": [
+        503,
+        311,
+        108,
+        44
+      ],
+      "panel": [
+        264,
+        380,
+        992,
+        378
+      ]
+    }
+  },
+  "clients": {
+    "file": "clients.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-clients": [
+        8,
+        140,
+        223,
+        36
+      ],
+      "search": [
+        264,
+        152,
+        384,
+        40
+      ],
+      "new-client": [
+        1127,
+        84,
+        129,
+        40
+      ],
+      "list": [
+        265,
+        217,
+        990,
+        1169
+      ]
+    }
+  },
+  "client": {
+    "file": "client.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "portal": [
+        264,
+        310,
+        992,
+        134
+      ],
+      "create-link": [
+        1105,
+        335,
+        126,
+        36
+      ],
+      "log": [
+        264,
+        468,
+        992,
+        336
+      ],
+      "pets": [
+        264,
+        974,
+        992,
+        28
+      ]
+    }
+  },
+  "records": {
+    "file": "records.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-records": [
+        8,
+        216,
+        223,
+        36
+      ],
+      "search": [
+        264,
+        152,
+        992,
+        40
+      ]
+    }
+  },
+  "lab-inbox": {
+    "file": "lab-inbox.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-lab": [
+        8,
+        254,
+        223,
+        36
+      ],
+      "filters": [
+        264,
+        160,
+        992,
+        40
+      ],
+      "result": [
+        264,
+        224,
+        992,
+        304
+      ],
+      "mark-reviewed": [
+        289,
+        402,
+        123,
+        36
+      ],
+      "assign-follow-up": [
+        420,
+        402,
+        139,
+        36
+      ]
+    }
+  },
+  "billing": {
+    "file": "billing.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-billing": [
+        8,
+        292,
+        223,
+        36
+      ],
+      "dispenses": [
+        264,
+        152,
+        992,
+        155
+      ],
+      "stats": [
+        264,
+        331,
+        992,
+        90
+      ],
+      "tabs": [
+        264,
+        445,
+        992,
+        38
+      ],
+      "list": [
+        265,
+        508,
+        990,
+        793
+      ],
+      "new-invoice": [
+        1122,
+        84,
+        134,
+        40
+      ]
+    }
+  },
+  "invoice-sent": {
+    "file": "invoice-sent.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "payments": [
+        264,
+        80,
+        992,
+        1332
+      ],
+      "record-payment": [
+        735,
+        559,
+        157,
+        36
+      ],
+      "take-card": [
+        901,
+        559,
+        157,
+        36
+      ],
+      "adjust": [
+        1066,
+        559,
+        157,
+        36
+      ],
+      "email": [
+        1078,
+        494,
+        132,
+        36
+      ]
+    }
+  },
+  "invoice-draft": {
+    "file": "invoice-draft.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "row": [
+        265,
+        614,
+        990,
+        61
+      ]
+    }
+  },
+  "inventory": {
+    "file": "inventory.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-inventory": [
+        8,
+        330,
+        223,
+        36
+      ],
+      "tabs": [
+        264,
+        144,
+        992,
+        38
+      ],
+      "stats": [
+        264,
+        254,
+        992,
+        70
+      ],
+      "search": [
+        264,
+        198,
+        384,
+        40
+      ],
+      "add-product": [
+        1129,
+        200,
+        127,
+        36
+      ],
+      "list": [
+        265,
+        341,
+        990,
+        3974
+      ]
+    }
+  },
+  "inbox": {
+    "file": "inbox.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-inbox": [
+        8,
+        368,
+        223,
+        36
+      ],
+      "filters": [
+        265,
+        291,
+        319,
+        43
+      ],
+      "list": [
+        265,
+        334,
+        319,
+        417
+      ],
+      "new-message": [
+        1105,
+        84,
+        151,
+        40
+      ]
+    }
+  },
+  "recalls": {
+    "file": "recalls.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-recalls": [
+        8,
+        406,
+        223,
+        36
+      ],
+      "stats": [
+        264,
+        176,
+        992,
+        94
+      ],
+      "preview": [
+        264,
+        294,
+        992,
+        374
+      ]
+    }
+  },
+  "care-reminders": {
+    "file": "care-reminders.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-reminders": [
+        8,
+        444,
+        223,
+        36
+      ],
+      "stats": [
+        264,
+        196,
+        992,
+        98
+      ],
+      "queue": [
+        264,
+        318,
+        992,
+        372
+      ],
+      "add": [
+        863,
+        128,
+        147,
+        40
+      ]
+    }
+  },
+  "controlled-substances": {
+    "file": "controlled-substances.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-controlled": [
+        8,
+        596,
+        223,
+        36
+      ],
+      "log-entry": [
+        1140,
+        84,
+        116,
+        40
+      ],
+      "balances": [
+        265,
+        153,
+        990,
+        44
+      ],
+      "log": [
+        265,
+        271,
+        1069,
+        514
+      ]
+    }
+  },
+  "reports": {
+    "file": "reports.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-reports": [
+        8,
+        634,
+        223,
+        36
+      ],
+      "range": [
+        777,
+        181,
+        466,
+        36
+      ],
+      "tabs": [
+        264,
+        254,
+        992,
+        46
+      ],
+      "export": [
+        975,
+        479,
+        260,
+        36
+      ]
+    }
+  },
+  "agent": {
+    "file": "agent.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-agent": [
+        8,
+        558,
+        223,
+        36
+      ],
+      "prompts": [
+        376,
+        238,
+        768,
+        410
+      ],
+      "composer": [
+        385,
+        669,
+        750,
+        36
+      ]
+    }
+  },
+  "imported-history": {
+    "file": "imported-history.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-imported": [
+        8,
+        482,
+        223,
+        36
+      ]
+    }
+  },
+  "settings": {
+    "file": "settings.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "nav-settings": [
+        8,
+        672,
+        223,
+        36
+      ],
+      "sections": [
+        264,
+        152,
+        224,
+        940
+      ],
+      "practice": [
+        520,
+        152,
+        356,
+        528
+      ]
+    }
+  },
+  "settings-staff": {
+    "file": "settings-staff.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "section": [
+        264,
+        232,
+        224,
+        36
+      ]
+    }
+  },
+  "settings-services": {
+    "file": "settings-services.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "section": [
+        264,
+        352,
+        224,
+        36
+      ]
+    }
+  },
+  "settings-appointment-types": {
+    "file": "settings-appointment-types.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "section": [
+        264,
+        272,
+        224,
+        36
+      ]
+    }
+  },
+  "settings-data": {
+    "file": "settings-data.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "section": [
+        264,
+        392,
+        224,
+        36
+      ]
+    }
+  },
+  "settings-plan": {
+    "file": "settings-plan.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "section": [
+        264,
+        592,
+        224,
+        36
+      ]
+    }
+  },
+  "visit-exam": {
+    "file": "visit-exam.jpg",
+    "width": 1280,
+    "height": 800,
+    "targets": {
+      "charge-capture": [
+        826,
+        40,
+        430,
+        368
+      ],
+      "clinical-work": [
+        264,
+        24,
+        538,
+        400
+      ]
+    }
+  }
+}

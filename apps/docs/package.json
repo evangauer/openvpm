@@ -2,5 +2,30 @@
   "name": "@openpims/docs",
   "version": "0.1.0",
   "private": true,
-  "scripts": {}
+  "scripts": {
+    "dev": "next dev -p 3200",
+    "build": "next build",
+    "start": "next start -p 3200",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "capture": "playwright test -c capture/playwright.config.ts"
+  },
+  "dependencies": {
+    "@vercel/analytics": "^2.0.1",
+    "lucide-react": "^0.577.0",
+    "next": "^15.5.28",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@openpims/config": "workspace:*",
+    "@types/node": "^20.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.6"
+  }
 }
