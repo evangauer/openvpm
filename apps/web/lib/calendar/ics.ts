@@ -12,6 +12,8 @@
  *   LAST-MODIFIED (from updatedAt) lets clients detect the change.
  */
 
+import { providerDisplayName } from "../provider-display-name";
+
 export interface CalendarFeedAppointment {
   id: string;
   startTime: Date;
@@ -131,7 +133,7 @@ export function buildPracticeCalendarIcs(input: CalendarFeedInput): string {
       lines.push(`LAST-MODIFIED:${formatIcsUtc(appt.updatedAt)}`);
     }
     if (appt.doctorName) {
-      lines.push(`DESCRIPTION:${escapeIcsText(`With Dr. ${appt.doctorName}`)}`);
+      lines.push(`DESCRIPTION:${escapeIcsText(`With ${providerDisplayName(appt.doctorName)}`)}`);
     }
     lines.push("END:VEVENT");
   }

@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
 import { CalendarSubscribe } from "@/components/schedule/calendar-subscribe";
 import { cn } from "@/lib/utils";
+import { providerDisplayName } from "@/lib/provider-display-name";
 import { dateInputTimeUtcInstant } from "@/lib/date-input";
 import {
   addCalendarDays,
@@ -704,7 +705,7 @@ function PhoneAgenda({
                   .filter(Boolean)
                   .join(" ");
                 const careTeam = appointment.doctorName
-                  ? `Dr. ${appointment.doctorName}`
+                  ? providerDisplayName(appointment.doctorName)
                   : "Team";
                 const place = [
                   appointment.locationName,
@@ -1363,7 +1364,7 @@ function AppointmentDetailPopover({
             {appointment.doctorName && (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <User className="h-3.5 w-3.5" />
-                <span>Dr. {appointment.doctorName}</span>
+                <span>{providerDisplayName(appointment.doctorName)}</span>
               </div>
             )}
             {appointment.locationName && (
@@ -1513,7 +1514,7 @@ function AppointmentDetailPopover({
                   <option value="">Unassigned</option>
                   {eligibleRescheduleDoctors.map((doctor) => (
                     <option key={doctor.id} value={doctor.id}>
-                      Dr. {doctor.name}
+                      {providerDisplayName(doctor.name)}
                     </option>
                   ))}
                 </select>
@@ -2269,7 +2270,7 @@ function BookingForm({
               </option>
               {eligibleDoctors?.map((doc) => (
                 <option key={doc.id} value={doc.id}>
-                  Dr. {doc.name}
+                  {providerDisplayName(doc.name)}
                 </option>
               ))}
             </select>
@@ -2886,7 +2887,7 @@ function SchedulePageContent() {
               <option value="all">All Doctors</option>
               {doctors?.map((doc) => (
                 <option key={doc.id} value={doc.id}>
-                  Dr. {doc.name}
+                  {providerDisplayName(doc.name)}
                 </option>
               ))}
             </select>

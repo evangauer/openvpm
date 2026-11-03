@@ -19,6 +19,7 @@ import { PATIENT_SPECIES_EMOJI } from "@/lib/patients/species";
 import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { providerDisplayName } from "@/lib/provider-display-name";
 
 // --- Types ---
 
@@ -274,7 +275,7 @@ function WhiteboardCard({
         {appointment.doctorName && (
           <span className="inline-flex items-center gap-1">
             <User className="h-3 w-3" />
-            Dr. {appointment.doctorName}
+            {providerDisplayName(appointment.doctorName)}
           </span>
         )}
         {(appointment.locationName || appointment.roomName) && (
@@ -488,7 +489,7 @@ function AppointmentDetailModal({
             {appointment.doctorName && (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <User className="h-3.5 w-3.5" />
-                <span>Dr. {appointment.doctorName}</span>
+                <span>{providerDisplayName(appointment.doctorName)}</span>
               </div>
             )}
             {appointment.typeName && (
