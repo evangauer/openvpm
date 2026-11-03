@@ -40,13 +40,13 @@ export const trainings: Training[] = [
       { title: "Get oriented", guides: ["your-first-day", "find-anything-fast"] },
       {
         title: "Run the schedule",
-        guides: ["book-an-appointment", "reschedule-or-cancel", "check-in-a-patient", "use-the-whiteboard", "send-appointment-reminders"],
+        guides: ["book-an-appointment", "reschedule-or-cancel", "check-in-a-patient", "use-the-whiteboard", "send-appointment-reminders", "see-the-schedule-in-your-calendar"],
       },
       {
         title: "Check out",
         guides: ["capture-visit-charges", "create-and-present-an-invoice", "take-a-payment", "place-a-balance-in-accounts-receivable"],
       },
-      { title: "Help clients", guides: ["give-client-portal-access", "manage-appointment-requests", "send-a-client-message"] },
+      { title: "Help clients", guides: ["give-client-portal-access", "manage-appointment-requests", "send-a-client-message", "send-vaccine-recalls"] },
     ],
   },
   {
@@ -55,10 +55,10 @@ export const trainings: Training[] = [
     shortTitle: "Vets and techs",
     summary: "Chart the visit, record treatments, and hand off cleanly.",
     sections: [
-      { title: "Get oriented", guides: ["your-first-day", "find-anything-fast", "understand-team-roles"] },
-      { title: "Chart the visit", guides: ["document-a-visit", "record-vitals", "write-a-soap-note"] },
+      { title: "Get oriented", guides: ["your-first-day", "find-anything-fast", "understand-team-roles", "ask-the-agent"] },
+      { title: "Chart the visit", guides: ["document-a-visit", "record-vitals", "write-a-soap-note", "upload-a-patient-document"] },
       { title: "Record treatments", guides: ["record-lab-results", "create-a-prescription", "record-a-vaccine"] },
-      { title: "Hand off", guides: ["complete-discharge-and-follow-up"] },
+      { title: "Hand off", guides: ["complete-discharge-and-follow-up", "work-the-care-reminder-queue"] },
     ],
   },
   {
@@ -68,7 +68,7 @@ export const trainings: Training[] = [
     summary: "Set up the clinic, manage staff, money, and your data.",
     sections: [
       { title: "Get oriented", guides: ["your-first-day", "understand-team-roles"] },
-      { title: "Set up the clinic", guides: ["set-up-your-clinic", "invite-and-manage-staff", "send-appointment-reminders"] },
+      { title: "Set up the clinic", guides: ["set-up-your-clinic", "invite-and-manage-staff", "send-appointment-reminders", "run-a-solo-practice"] },
       { title: "Money", guides: ["set-up-client-card-payments"] },
       { title: "Your data", guides: ["import-your-data", "export-and-back-up-your-data"] },
     ],

@@ -31,6 +31,7 @@ import {
   controlledSubstanceLog,
   treatmentTemplates,
   treatmentTemplateItems,
+  careReminders,
 } from "./schema/index";
 
 // Pre-hashed bcrypt value for "password123"
@@ -1636,6 +1637,90 @@ async function seed() {
   console.log(`Treatment templates: ${templatesData.length} created`);
 
   // =========================================================================
+  // 21. Overdue vaccines and care reminders — so Recalls and Care Reminders
+  //     show real work. Fixed patients and offsets, no random draws.
+  // =========================================================================
+  const patientByName = (name: string, species: string) => {
+    const idx = patientsData.findIndex((p) => p.name === name && p.species === species);
+    return insertedPatients[idx]!;
+  };
+  const hasVaccine = (patientId: string, prefix: string) =>
+    vaccinationValues.some((v) => v.patientId === patientId && v.vaccineName.startsWith(prefix));
+  const vaccineByPrefix = (prefix: string) => vaccineData.find((v) => v.name.startsWith(prefix))!;
+
+  // Each pet lapsed on the first vaccine in its list it has no newer record of.
+  const lapsed: { name: string; species: string; vaccines: string[]; givenDaysAgo: number }[] = [
+    { name: "Cooper", species: "canine", vaccines: ["Canine Influenza"], givenDaysAgo: 410 },
+    { name: "Daisy", species: "canine", vaccines: ["Canine Influenza"], givenDaysAgo: 392 },
+    { name: "Daisy", species: "canine", vaccines: ["Leptospirosis", "Lyme", "Bordetella"], givenDaysAgo: 392 },
+    { name: "Penny", species: "canine", vaccines: ["Canine Influenza"], givenDaysAgo: 381 },
+    { name: "Shadow", species: "feline", vaccines: ["FeLV", "FVRCP", "Rabies (1-year"], givenDaysAgo: 420 },
+    { name: "Cleo", species: "feline", vaccines: ["FVRCP", "FeLV", "Rabies (1-year"], givenDaysAgo: 375 },
+  ];
+  const overdueVaccinations = lapsed.flatMap((entry, i) => {
+    const patient = patientByName(entry.name, entry.species);
+    const prefix = entry.vaccines.find((v) => !hasVaccine(patient.id, v));
+    if (!prefix) return [];
+    const vax = vaccineByPrefix(prefix);
+    const adminDate = setTime(daysAgo(entry.givenDaysAgo), 10, 0);
+    const nextDue = new Date(adminDate);
+    nextDue.setMonth(nextDue.getMonth() + vax.nextDueMonths);
+    return [{
+      practiceId,
+      patientId: patient.id,
+      vaccineName: vax.name,
+      lotNumber: `LOT-OVD${String(i + 1).padStart(3, "0")}`,
+      manufacturer: vax.manufacturer,
+      administeredBy: vets[i % vets.length]!.id,
+      administeredAt: adminDate,
+      nextDueDate: dateStr(nextDue),
+    }];
+  });
+  if (overdueVaccinations.length) await db.insert(vaccinationRecords).values(overdueVaccinations);
+  console.log(`Overdue vaccinations: ${overdueVaccinations.length} created`);
+
+  const reminderValues: (typeof careReminders.$inferInsert)[] = [
+    { patient: ["Max", "canine"], title: "Recheck ears after otitis treatment", notes: "Ear cytology at recheck. Owner finishing the 10-day drops.", due: -3 },
+    { patient: ["Bella", "canine"], title: "Weight check after diet change", notes: "Target 10.5 kg. Weigh only, no exam needed.", due: 0 },
+    { patient: ["Mittens", "feline"], title: "Call owner about dental estimate", notes: "Estimate sent after last exam. Grade 2 tartar.", due: 4 },
+    { patient: ["Charlie", "canine"], title: "Repeat liver values", notes: "ALT mildly elevated last panel. Recheck in 6 weeks.", due: 12 },
+    { patient: ["Tucker", "canine"], title: "Annual heartworm test", due: 26 },
+    { patient: ["Luna", "canine"], title: "Suture removal", notes: "Lateral thigh mass removal.", due: -2, completed: true },
+    { patient: ["Rocky", "canine"], title: "Behavior consult follow-up", due: -10, dismissed: "Owner is now seeing a behavior specialist." },
+  ].map((r, i) => {
+    const patient = patientByName(r.patient[0]!, r.patient[1]!);
+    const staff = i % 2 === 0 ? vets[i % vets.length]! : techs[i % techs.length]!;
+    return {
+      practiceId,
+      patientId: patient.id,
+      title: r.title,
+      notes: r.notes ?? null,
+      dueDate: dateStr(daysFromNow(r.due)),
+      status: r.completed ? ("completed" as const) : r.dismissed ? ("dismissed" as const) : ("open" as const),
+      createdBy: staff.id,
+      completedAt: r.completed ? setTime(daysAgo(2), 15, 30) : null,
+      completedBy: r.completed ? staff.id : null,
+      dismissedAt: r.dismissed ? setTime(daysAgo(6), 11, 0) : null,
+      dismissedBy: r.dismissed ? insertedUsers.find((u) => u.role === "admin")!.id : null,
+      dismissalReason: r.dismissed ?? null,
+    };
+  });
+  // One task carried over from the clinic's previous system.
+  reminderValues.push({
+    practiceId,
+    patientId: patientByName("Daisy", "canine").id,
+    title: "Senior wellness exam",
+    notes: "Carried over from previous system.",
+    dueDate: dateStr(daysFromNow(-6)),
+    status: "open",
+    externalSource: "previous-system",
+    externalId: "reminder-1042",
+    importFingerprint: crypto.createHash("sha256").update("previous-system:reminder-1042").digest("hex"),
+  });
+  await db.insert(careReminders).values(reminderValues);
+  console.log(`Care reminders: ${reminderValues.length} created`);
+
+  // =========================================================================
   // Done!
   // =========================================================================
   console.log("\nSeed completed successfully!");
@@ -1660,6 +1745,7 @@ Summary:
   - ${insertedAudit.length} audit log entries
   - ${insertedCs.length} controlled substance log entries
   - ${templatesData.length} treatment templates
+  - ${overdueVaccinations.length} overdue vaccinations, ${reminderValues.length} care reminders
   - ${insertedServices.length} services
   - ${insertedProducts.length} products
   `);

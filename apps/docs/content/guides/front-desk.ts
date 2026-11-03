@@ -228,4 +228,58 @@ export const frontDesk: Guide[] = [
     ],
     next: "capture-visit-charges",
   },
+  {
+    slug: "see-the-schedule-in-your-calendar",
+    title: "See the schedule in your own calendar",
+    summary: "Subscribe once and the clinic's visits show up in Google, Apple, or Outlook.",
+    category: "front-desk",
+    area: "schedule",
+    audience: "Everyone",
+    minutes: 3,
+    keywords: ["calendar", "google calendar", "apple calendar", "ical", "ics", "outlook", "subscribe", "sync", "phone", "feed"],
+    steps: [
+      {
+        id: "link",
+        title: "Get the clinic's calendar link",
+        body: [
+          "Open [[Schedule]] and choose [[Add to your calendar]]. The first time, choose [[Turn on the calendar link]].",
+          "Choose [[Copy link]] ((1)) to copy the private link ((2)).",
+        ],
+        shot: {
+          id: "schedule-calendar-feed",
+          focus: "popover",
+          pad: 16,
+          callouts: ["copy", "link"],
+          alt: "The Add to your calendar panel on the schedule with the private calendar link and a Copy link button",
+        },
+        important: "The link shows patient names and visit types. Share it with your team only, never with clients.",
+      },
+      {
+        id: "google",
+        title: "Add it to Google Calendar",
+        body: ["On a computer, open Google Calendar. Next to **Other calendars**, choose the plus sign, then **From URL**. Paste the link and choose **Add calendar**."],
+      },
+      {
+        id: "apple",
+        title: "Or Apple Calendar or Outlook",
+        body: [
+          "**Apple Calendar** on a Mac: choose **File → New Calendar Subscription**, paste the link, and choose **Subscribe**.",
+          "**Outlook**: in the calendar, choose **Add calendar → Subscribe from web**, paste the link, and give it a name.",
+        ],
+      },
+      {
+        id: "updates",
+        title: "Let it update on its own",
+        body: [
+          "Book or change a visit in OpenVPM and your calendar picks it up. Calendar apps check on their own schedule, so a change can take a while to appear.",
+          "The calendar shows the last week and the next 60 days. Cancelled visits and no-shows are left out.",
+        ],
+      },
+    ],
+    faq: [
+      ["Someone who shouldn't have the link has it", "An admin can choose [[Get a new link]] in the same panel. The old link stops working for everyone, so the team will need to subscribe again with the new one."],
+      ["Can I change visits from my calendar?", "No. The calendar is read-only. Make changes on the [[Schedule]] in OpenVPM."],
+    ],
+    next: "check-in-a-patient",
+  },
 ];

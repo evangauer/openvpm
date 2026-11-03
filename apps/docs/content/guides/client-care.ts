@@ -105,4 +105,112 @@ export const clientCare: Guide[] = [
     ],
     next: "set-up-your-clinic",
   },
+  {
+    slug: "send-vaccine-recalls",
+    title: "Send vaccine recalls",
+    summary: "See which pets are overdue for vaccines and remind their owners on purpose.",
+    category: "client-care",
+    area: "recalls",
+    audience: "Front desk, vets, admins",
+    minutes: 4,
+    keywords: ["recall", "vaccine reminder", "overdue", "booster", "due", "lapsed", "reminder card"],
+    steps: [
+      {
+        id: "review",
+        title: "See who's overdue",
+        body: [
+          "Open [[Recalls]]. The counts at the top ((1)) show how many pets are overdue, ready to remind, blocked, or already reminded.",
+          "Each row lists the pet and owner and the vaccines that are overdue ((2)), with their due dates.",
+        ],
+        shot: {
+          id: "recalls",
+          callouts: ["stats", "vaccines"],
+          alt: "The Vaccination recalls screen listing overdue pets and their vaccines",
+        },
+      },
+      {
+        id: "check",
+        title: "Check why anyone is blocked",
+        body: [
+          "The last column ((1)) says **Ready**, **Already reminded**, or **Blocked** with the reason: the owner opted out, there's no working email or opted-in mobile number, it's quiet hours for texting, or the contact is a test or sample record.",
+        ],
+        shot: {
+          id: "recalls",
+          focus: "list",
+          pad: 12,
+          callouts: ["eligibility"],
+          alt: "Recall rows with the eligibility column showing why each one is blocked",
+        },
+        tip: "Fix contact details on the client's page, then choose [[Refresh preview]].",
+      },
+      {
+        id: "send",
+        title: "Send",
+        body: [
+          "Tick the pets you want to remind (up to 100 at a time), then choose [[Send selected]] ((1)) and confirm. Or use [[Send]] on a single row.",
+          "Each reminder goes by the client's usable channel, text or email, and is logged on their communication history.",
+        ],
+        shot: {
+          id: "recalls",
+          focus: "preview",
+          pad: 12,
+          callouts: ["send-selected"],
+          alt: "The Recipient preview with the Send selected button",
+        },
+      },
+    ],
+    faq: [
+      ["A pet I vaccinated last week is still on the list", "Recalls follow the most recent record of each vaccine. Check the new vaccine was recorded on the pet's [[Vaccinations]] tab with a next due date. See [Record a vaccine](/guides/record-a-vaccine)."],
+    ],
+    next: "work-the-care-reminder-queue",
+  },
+  {
+    slug: "work-the-care-reminder-queue",
+    title: "Work the care reminder queue",
+    summary: "Track rechecks, calls, and other follow-ups for each pet so none slip.",
+    category: "client-care",
+    area: "care-reminders",
+    audience: "Everyone on the team",
+    minutes: 4,
+    keywords: ["care reminder", "follow up", "to do", "task", "recheck", "callback", "due", "queue"],
+    steps: [
+      {
+        id: "queue",
+        title: "Start with what's due",
+        body: [
+          "Open [[Care Reminders]]. Each row ((1)) shows the due date, pet and owner, and what needs doing. Anything due today or earlier is in red.",
+          "Use the buttons ((2)) to switch between open, completed, and dismissed, or to see only overdue or upcoming work.",
+        ],
+        shot: {
+          id: "care-reminders",
+          focus: "queue",
+          pad: 12,
+          callouts: ["row", "filters"],
+          alt: "The Patient follow-up queue with open reminders, the first one overdue",
+        },
+      },
+      {
+        id: "add",
+        title: "Add a reminder",
+        body: ["Choose [[Add reminder]], search for the pet, write what needs doing in [[Reminder]], pick a [[Due date]], add notes if they help, and choose [[Save reminder]]."],
+      },
+      {
+        id: "close",
+        title: "Close it out",
+        body: [
+          "When it's done, choose [[Complete]] ((1)). If the owner needs to hear from you, choose [[Contact client]] ((2)), pick email or text, check the preview, and send.",
+          "If a reminder shouldn't be there at all, tick it and choose [[Dismiss selected]], with a short reason. Dismissed reminders can be restored.",
+        ],
+        shot: {
+          id: "care-reminders",
+          focus: "row",
+          pad: 28,
+          callouts: ["complete", "contact"],
+          alt: "A care reminder row with Complete and Contact client buttons",
+        },
+        important: "Nothing on this list is sent to clients on its own. Completing a reminder doesn't message anyone.",
+      },
+    ],
+    next: "send-a-client-message",
+  },
 ];

@@ -138,4 +138,48 @@ export const startHere: Guide[] = [
     ],
     next: "book-an-appointment",
   },
+  {
+    slug: "ask-the-agent",
+    title: "Ask the Agent about your clinic",
+    summary: "Ask a question in plain words instead of clicking through charts and reports.",
+    category: "start-here",
+    area: "agent",
+    audience: "Vets, admins",
+    minutes: 3,
+    keywords: ["ai", "assistant", "agent", "ask", "chat", "question", "summary", "overdue", "search"],
+    steps: [
+      {
+        id: "ask",
+        title: "Ask a question",
+        body: [
+          "Open [[Agent]] and type a question, or start with one of the suggestions ((1)). For example: “Which patients are overdue for vaccinations?” or “Summarize today's appointments.”",
+          "The Agent looks up your clinic's records to answer. It only sees your practice's data.",
+        ],
+        shot: {
+          id: "agent",
+          focus: "prompts",
+          pad: 16,
+          callouts: ["prompts"],
+          alt: "The OpenVPM Agent with four suggested questions",
+        },
+      },
+      {
+        id: "writes",
+        title: "Let it make a change only when you mean to",
+        body: [
+          "By default the Agent only reads. To have it book an appointment or record vitals, tick [[Allow writes: appointments and patient vitals]] under the message box before you send. The box clears after each request.",
+        ],
+      },
+      {
+        id: "check",
+        title: "Check the answer",
+        body: ["Treat answers like a colleague's notes: open the chart before acting on anything clinical, and double-check doses against your own references."],
+        important: "You're responsible for clinical decisions. The Agent helps you find things faster; it doesn't replace your judgment.",
+      },
+    ],
+    faq: [
+      ["I don't see the Agent, or it says it isn't available", "Only admins and veterinarians can use the Agent. On OpenVPM Cloud it's ready to go once your clinic has a card on file. If you run OpenVPM yourself, the server needs an AI provider set up first."],
+    ],
+    next: "find-anything-fast",
+  },
 ];

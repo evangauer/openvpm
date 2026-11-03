@@ -36,6 +36,10 @@ const card = (heading: string | RegExp): Target => ({
   closest: "section, [class*='rounded-xl'], [class*='rounded-lg']",
 });
 
+/** The file picker in the Add a patient document form (photo capture has its own). */
+const uploadInput = (page: Page) =>
+  page.getByRole("heading", { name: "Add a patient document" }).locator("xpath=ancestor::div[contains(@class,'rounded')][1]").locator("input[type=file]").first();
+
 async function settle(page: Page) {
   await page.waitForLoadState("networkidle");
   await page.waitForTimeout(600);
@@ -43,6 +47,10 @@ async function settle(page: Page) {
 
 /** Open a patient chart by name from the patient list. */
 async function openPatient(page: Page, name: string) {
+  // The list isn't in name order, so search rather than hoping the pet is on page one.
+  await page.getByPlaceholder(/Search patients/).fill(name);
+  await page.waitForTimeout(800);
+  await settle(page);
   const href = await page.getByRole("link", { name, exact: true }).first().getAttribute("href");
   if (!href) throw new Error(`No patient link for ${name}`);
   await page.goto(href);
@@ -191,6 +199,26 @@ export const shots: ShotDefinition[] = [
     },
   },
   {
+    id: "schedule-calendar-feed",
+    path: "/schedule",
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Add to your calendar" }).click();
+      const turnOn = page.getByRole("button", { name: "Turn on the calendar link" });
+      if (await turnOn.isVisible({ timeout: 3_000 }).catch(() => false)) await turnOn.click();
+      await page.getByRole("button", { name: "Copy link" }).waitFor();
+      // Keep the private token out of the picture.
+      await page.locator("[role=dialog] .font-mono").evaluate((el) => {
+        el.textContent = (el.textContent ?? "").replace(/calendar\/[^/.]+\.ics$/, "calendar/••••••••••••.ics");
+      });
+    },
+    targets: {
+      popover: { find: css("[role=dialog]") },
+      link: { find: css("[role=dialog] .font-mono") },
+      copy: { find: (page) => page.getByRole("dialog").getByRole("button", { name: "Copy link" }) },
+      "new-link": { find: (page) => page.getByRole("dialog").getByRole("button", { name: "Get a new link" }) },
+    },
+  },
+  {
     id: "whiteboard",
     path: "/whiteboard",
     targets: {
@@ -279,6 +307,32 @@ export const shots: ShotDefinition[] = [
       },
     }),
   ),
+  {
+    id: "patient-documents-upload",
+    path: "/patients",
+    prepare: async (page) => {
+      await openPatient(page, "Max");
+      await page.getByRole("tab", { name: "Documents" }).click();
+      await page.waitForTimeout(700);
+      await page.getByLabel("Document category").selectOption("lab-results");
+      await uploadInput(page).setInputFiles({
+        name: "outside-lab-cbc-chemistry.pdf",
+        mimeType: "application/pdf",
+        buffer: Buffer.from("%PDF-1.4\n%%EOF\n"),
+      });
+      await page.getByRole("heading", { name: "Add a patient document" }).scrollIntoViewIfNeeded();
+      await page.mouse.wheel(0, 200);
+      await page.waitForTimeout(400);
+    },
+    targets: {
+      form: { find: (page) => page.getByRole("heading", { name: "Add a patient document" }), closest: "div[class*='rounded']" },
+      category: { find: (page) => page.getByLabel("Document category") },
+      file: { find: uploadInput },
+      upload: { find: role("button", "Upload document") },
+      "lab-note": { find: text(/^The original report is saved in Documents/) },
+      tab: { find: (page) => page.getByRole("tab", { name: "Documents" }) },
+    },
+  },
   {
     id: "clients",
     path: "/clients",
@@ -388,6 +442,10 @@ export const shots: ShotDefinition[] = [
       "nav-recalls": nav("Recalls"),
       stats: { find: text(/^Overdue patients$/), closest: "div.grid" },
       preview: card("Recipient preview"),
+      list: { find: css("main table") },
+      vaccines: { find: (page) => page.locator("main thead th").filter({ hasText: "Overdue vaccines" }).first() },
+      eligibility: { find: (page) => page.locator("main tbody td").filter({ hasText: /^(Ready|Blocked|Already reminded)/ }).first() },
+      "send-selected": { find: role("button", /^Send selected/) },
     },
   },
   {
@@ -398,6 +456,10 @@ export const shots: ShotDefinition[] = [
       stats: { find: text(/^Due or overdue$/), closest: "div.grid" },
       queue: card("Patient follow-up queue"),
       add: { find: role("button", "Add reminder") },
+      filters: { find: (page) => page.locator("main").getByRole("button", { name: "Completed", exact: true }), closest: "div.flex" },
+      row: { find: (page) => page.locator("main tbody tr").first() },
+      complete: { find: role("button", "Complete") },
+      contact: { find: role("button", "Contact client") },
     },
   },
   {

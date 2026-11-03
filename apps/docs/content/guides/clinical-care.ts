@@ -277,4 +277,57 @@ export const clinicalCare: Guide[] = [
     ],
     next: "capture-visit-charges",
   },
+  {
+    slug: "upload-a-patient-document",
+    title: "Add an outside record or lab report",
+    summary: "Keep referral letters, scans, and outside lab PDFs on the pet's chart.",
+    category: "clinical-care",
+    area: "patients",
+    audience: "Vets, techs, front desk, admins",
+    minutes: 3,
+    keywords: ["upload", "attach", "pdf", "scan", "referral", "outside records", "external lab", "file", "document"],
+    steps: [
+      {
+        id: "open",
+        title: "Open the pet's Documents tab",
+        body: ["Go to [[Patients]], open the pet, and choose the [[Documents]] tab ((1))."],
+        shot: {
+          id: "patient-documents-upload",
+          focus: ["tab", "form"],
+          pad: 16,
+          callouts: ["tab"],
+          alt: "A patient chart open on the Documents tab with the Add a patient document form",
+        },
+      },
+      {
+        id: "upload",
+        title: "Pick the kind of file and upload it",
+        body: [
+          "Under **Add a patient document**, set [[Document category]] ((1)) to **External record** or **Lab report**. Choose the file ((2)), then [[Upload document]] ((3)).",
+          "PDF, JPG, PNG, and WebP files work, up to 4 MB each. Compress a large scan, or split a long record into smaller PDFs and upload each part.",
+        ],
+        shot: {
+          id: "patient-documents-upload",
+          focus: "form",
+          pad: 12,
+          callouts: ["category", "file", "upload"],
+          alt: "The Add a patient document form with Lab report chosen and a PDF selected",
+        },
+        tip: "Give files a useful name before you upload, like 2026-09-13-referral-part-1.pdf. The original file name shows in the list.",
+      },
+      {
+        id: "find",
+        title: "Find it again",
+        body: [
+          "The file appears in the list below the form. Use the **Lab reports** filter to see only outside lab files, and **View** or **Download** to open one.",
+        ],
+        important: "A lab report is saved as the original file. OpenVPM doesn't read the results out of it, so enter any values you need to track in [Lab results](/guides/record-lab-results).",
+      },
+    ],
+    faq: [
+      ["The upload stopped or I'm not sure it worked", "Choose [[Retry upload]] and keep the page open. OpenVPM checks and finishes the same upload, so you won't end up with two copies."],
+      ["Who can upload?", "Anyone on the team who can make changes. Viewer accounts can open and download documents but can't add them."],
+    ],
+    next: "record-lab-results",
+  },
 ];

@@ -18,7 +18,12 @@ describe("search", () => {
     ["invite a teammate", "/guides/invite-and-manage-staff"],
     ["controlled substances", "/screens/controlled-substances"],
     ["inventory", "/screens/inventory"],
-    ["vaccine reminder", "/screens/recalls"],
+    ["vaccine reminder", "/guides/send-vaccine-recalls"],
+    ["google calendar", "/guides/see-the-schedule-in-your-calendar"],
+    ["upload a referral pdf", "/guides/upload-a-patient-document"],
+    ["solo vet", "/guides/run-a-solo-practice"],
+    ["ask the ai", "/guides/ask-the-agent"],
+    ["recheck reminder", "/guides/work-the-care-reminder-queue"],
     ["stripe", "/guides/set-up-client-card-payments"],
     ["pay later", "/guides/place-a-balance-in-accounts-receivable"],
   ])("finds “%s”", (query, href) => {
