@@ -127,20 +127,6 @@ export function resolveClientIp(
   return { ip: null, source: "unverified" };
 }
 
-/**
- * The client address a request claims when the deployment can't verify one:
- * the leftmost `X-Forwarded-For` entry, else `X-Real-IP`. Anyone can forge
- * this, so only use it where a forged value lets a caller dodge a limit but
- * never lets them impose one on everyone else.
- */
-export function unverifiedForwardedIp(req: unknown): string | null {
-  const headers = (req as { headers?: unknown } | null)?.headers;
-  return (
-    normalizeIp(forwardedForEntries(headers)[0]) ??
-    normalizeIp(headerValue(headers, "x-real-ip"))
-  );
-}
-
 function ipv4Octets(ip: string): number[] | null {
   if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip)) return null;
   const octets = ip.split(".").map(Number);

@@ -346,7 +346,7 @@ function TrustedProxyNotice() {
             <p className="font-medium">Reverse proxy not configured</p>
             <p className="mt-1">
               OpenVPM can&apos;t verify client addresses, so per-IP sign-in
-              limits are reduced; per-account limits still apply. Only if you
+              limits are off; per-account limits still apply. Only if you
               run a reverse proxy in front of OpenVPM: set{" "}
               <code>OPENVPM_TRUSTED_PROXY_HOPS</code> to the number of proxies
               in front of the app and restart. See &ldquo;Reverse proxies and

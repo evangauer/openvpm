@@ -10,7 +10,6 @@ import {
   LOGIN_ACCOUNT_BACKOFF,
   ipPrefixBucket,
   loginIpBucket,
-  loginKnownNetworkKey,
   loginNetworkBucket,
   loginThrottleKeys,
 } from "../login-throttle";
@@ -85,25 +84,16 @@ describe("account backoff", () => {
 });
 
 describe("login throttle keys", () => {
-  it("normalizes the account and uses both windows for a verified IP", () => {
-    expect(
-      loginThrottleKeys(" Admin@Example.COM ", { bucket: "203.0.113.10", verified: true })
-    ).toMatchObject({
+  it("normalizes the account and keys both per-IP buckets for a verified IP", () => {
+    expect(loginThrottleKeys(" Admin@Example.COM ", "203.0.113.10")).toEqual({
       accountKey: "login:account:admin@example.com",
-      ipKeys: [
-        { key: "login:ip:203.0.113.10" },
-        { key: "login:ip-day:203.0.113.10" },
-      ],
+      ip: {
+        failureKey: "login:ip:203.0.113.10",
+        requestKey: "login:ip-req:203.0.113.10",
+      },
+      deviceAccountKey: null,
     });
-  });
-
-  it("uses only the short window for an unverified IP, and none without one", () => {
-    expect(
-      loginThrottleKeys("a@example.com", { bucket: "203.0.113.10", verified: false }).ipKeys
-    ).toEqual([
-      { key: "login:ip-unverified:203.0.113.10", limit: 50, windowMs: 15 * 60 * 1000 },
-    ]);
-    expect(loginThrottleKeys("a@example.com", null).ipKeys).toEqual([]);
+    expect(loginThrottleKeys("a@example.com", null).ip).toBeNull();
   });
 
   it("buckets IPv6 clients by /64", () => {
@@ -113,48 +103,34 @@ describe("login throttle keys", () => {
     expect(ipPrefixBucket("203.0.113.10")).toBe("203.0.113.10");
   });
 
-  it("falls back to the claimed address, never to a shared bucket", () => {
-    expect(loginIpBucket({ ip: "203.0.113.10", source: "vercel" })).toEqual({
-      bucket: "203.0.113.10",
-      verified: true,
-    });
-    const unverified = { ip: null, source: "unverified" } as const;
-    expect(
-      loginIpBucket(unverified, { headers: { "x-forwarded-for": "198.51.100.7, 10.0.0.1" } })
-    ).toEqual({ bucket: "198.51.100.7", verified: false });
-    expect(loginIpBucket(unverified, { headers: { "x-real-ip": "2001:db8::5" } })).toEqual({
-      bucket: "2001:db8:0:0::/64",
-      verified: false,
-    });
-    expect(loginIpBucket(unverified, { headers: { "x-forwarded-for": "127.0.0.1" } })).toBeNull();
-    expect(loginIpBucket(unverified, { headers: { "x-forwarded-for": "not-an-ip" } })).toBeNull();
-    expect(loginIpBucket(unverified, { headers: {} })).toBeNull();
-    expect(loginIpBucket({ ip: null, source: "trusted-proxy" }, { headers: {} })).toBeNull();
+  it("uses only verified addresses, never a claimed one", () => {
+    expect(loginIpBucket({ ip: "203.0.113.10", source: "vercel" })).toBe("203.0.113.10");
+    expect(loginIpBucket({ ip: "2001:db8::5", source: "trusted-proxy" })).toBe(
+      "2001:db8:0:0::/64"
+    );
+    expect(loginIpBucket({ ip: null, source: "unverified" })).toBeNull();
+    expect(loginIpBucket({ ip: null, source: "trusted-proxy" })).toBeNull();
   });
 
-  it("never keys per-IP limits on a non-public address, verified or not", () => {
-    const unverified = { ip: null, source: "unverified" } as const;
+  it("never keys per-IP limits on a non-public address", () => {
     for (const ip of ["172.18.0.1", "10.1.2.3", "192.168.65.1", "100.64.1.1", "fd00::1", "::ffff:172.18.0.1"]) {
-      expect(loginIpBucket(unverified, { headers: { "x-forwarded-for": ip } }), ip).toBeNull();
       expect(loginIpBucket({ ip, source: "trusted-proxy" }), ip).toBeNull();
       expect(loginIpBucket({ ip, source: "socket" }), ip).toBeNull();
       expect(loginNetworkBucket(ip), ip).toBeNull();
     }
+    expect(loginNetworkBucket(" 203.0.113.10 ")).toBe("203.0.113.10");
+    expect(loginNetworkBucket("not-an-ip")).toBeNull();
+    expect(loginNetworkBucket(null)).toBeNull();
   });
 
-  it("keys known networks by a hash of the account and the network bucket", () => {
-    const keys = loginThrottleKeys("Admin@Example.com", {
-      bucket: "203.0.113.10",
-      verified: true,
-    });
-    expect(keys.network).toEqual({
-      knownKey: loginKnownNetworkKey("admin@example.com", "203.0.113.10"),
-      accountKey: expect.stringMatching(/^login:account-net:[0-9a-f]{32}:203\.0\.113\.10$/),
-    });
-    expect(keys.network!.knownKey).toMatch(/^login:known:[0-9a-f]{32}:203\.0\.113\.10$/);
-    expect(loginThrottleKeys("a@example.com", null).network).toBeNull();
-    expect(loginNetworkBucket("2001:db8::5")).toBe("2001:db8:0:0::/64");
-    expect(loginNetworkBucket(" 203.0.113.10 ")).toBe("203.0.113.10");
-    expect(loginNetworkBucket(null)).toBeNull();
+  it("keys a known device's streak by a hash of the account and the device id", () => {
+    const keys = loginThrottleKeys("Admin@Example.com", null, "dev123");
+    expect(keys.deviceAccountKey).toMatch(/^login:account-dev:[0-9a-f]{32}:dev123$/);
+    expect(loginThrottleKeys("admin@example.com", null, "dev123").deviceAccountKey).toBe(
+      keys.deviceAccountKey
+    );
+    expect(loginThrottleKeys("other@example.com", null, "dev123").deviceAccountKey).not.toBe(
+      keys.deviceAccountKey
+    );
   });
 });

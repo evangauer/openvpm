@@ -269,46 +269,6 @@ export async function readBackoffBuckets(
   );
 }
 
-/** Stores a marker key that stays present for `ttlMs`, refreshing it if set. */
-export async function rememberRateLimitKey(
-  key: string,
-  ttlMs: number,
-  now: Date = new Date()
-): Promise<void> {
-  const normalizedKey = normalizeRateLimitKey(key);
-  const resetAt = new Date(now.getTime() + ttlMs);
-  await withSystem(db, (tx) =>
-    tx
-      .insert(rateLimitBuckets)
-      .values({ key: normalizedKey, count: 1, resetAt, updatedAt: now })
-      .onConflictDoUpdate({
-        target: rateLimitBuckets.key,
-        set: { count: 1, resetAt, updatedAt: now },
-      })
-  );
-}
-
-/** True while a key stored by `rememberRateLimitKey` hasn't expired. */
-export async function rateLimitKeyActive(
-  key: string,
-  now: Date = new Date()
-): Promise<boolean> {
-  const normalizedKey = normalizeRateLimitKey(key);
-  const [row] = await withSystem(db, (tx) =>
-    tx
-      .select({ key: rateLimitBuckets.key })
-      .from(rateLimitBuckets)
-      .where(
-        and(
-          eq(rateLimitBuckets.key, normalizedKey),
-          gt(rateLimitBuckets.resetAt, now)
-        )
-      )
-      .limit(1)
-  );
-  return Boolean(row);
-}
-
 /** Deletes every bucket whose key starts with `prefix`. */
 export async function clearRateLimitPrefix(prefix: string): Promise<void> {
   const pattern = `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;

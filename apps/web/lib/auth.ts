@@ -9,6 +9,7 @@ import { withSystem } from "@/lib/tenant-db";
 import { rateLimitRetryAfterSeconds } from "@/lib/rate-limit";
 import { resolveClientIp } from "@/lib/request-ip";
 import {
+  cleanupRateLimitsOccasionally,
   loginIpBucket,
   loginThrottleKeys,
   recordLoginFailure,
@@ -18,6 +19,11 @@ import {
   type LoginAttemptGate,
 } from "@/lib/login-throttle";
 import { loginRateLimitedErrorCode } from "@/lib/login-error-message";
+import {
+  knownDeviceCookieFromHeader,
+  knownDeviceForAccount,
+  rememberKnownDevice,
+} from "@/lib/known-device";
 import { AUTH_PASSWORD_MAX_LENGTH } from "@/lib/auth-password";
 import { AUTH_EMAIL_MAX_LENGTH } from "@/lib/auth-input-policy";
 import { nextAuthSecret } from "@/lib/auth-secret";
@@ -42,6 +48,12 @@ const loginCredentialsInput = z.object({
     .transform((value) => value.toLowerCase()),
   password: z.string().min(1).max(AUTH_PASSWORD_MAX_LENGTH),
 });
+
+function cookieHeader(headers: unknown): string | null {
+  const value = (headers as Record<string, string | string[] | undefined> | undefined)
+    ?.cookie;
+  return Array.isArray(value) ? value.join("; ") : (value ?? null);
+}
 
 export function parseLoginCredentials(
   credentials: Record<"email" | "password", string> | undefined
@@ -100,7 +112,16 @@ export const authOptions: NextAuthOptions = {
         const { email, password } = parsedCredentials;
         const client = resolveClientIp(req);
         warnUnverifiedLoginIpOnce(client);
-        const throttleKeys = loginThrottleKeys(email, loginIpBucket(client, req));
+        cleanupRateLimitsOccasionally();
+        const deviceCookie = knownDeviceCookieFromHeader(
+          cookieHeader(req?.headers)
+        );
+        const knownDevice = knownDeviceForAccount(deviceCookie, email);
+        const throttleKeys = loginThrottleKeys(
+          email,
+          loginIpBucket(client),
+          knownDevice?.deviceId ?? null
+        );
 
         // Budget is reserved before the password check and given back on
         // success, so only failed attempts count.
@@ -142,6 +163,7 @@ export const authOptions: NextAuthOptions = {
         }
 
         await releaseLoginAttempt(throttleKeys, gate);
+        await rememberKnownDevice(deviceCookie, email);
 
         // Email verification is a SOFT requirement on hosted: new users sign in
         // immediately after signup (so the trial + onboarding aren't blocked by

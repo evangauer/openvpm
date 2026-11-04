@@ -1,57 +1,49 @@
 import { createHash } from "node:crypto";
 import {
   backoffLockMs,
+  cleanupExpiredRateLimitBuckets,
   clearRateLimit,
   clearRateLimitPrefix,
   consumeBackoffAttempt,
   rateLimit,
-  rateLimitKeyActive,
   readBackoffBuckets,
   recordBackoffAttempt,
   refundRateLimit,
-  rememberRateLimitKey,
   type BackoffPolicy,
 } from "@/lib/rate-limit";
 import {
   isNonPublicIp,
   normalizeIp,
   TRUSTED_PROXY_HOPS_ENV,
-  unverifiedForwardedIp,
   type ResolvedClientIp,
 } from "@/lib/request-ip";
 
 /**
  * Credentials sign-in throttling.
  *
- * Only failed attempts spend budget. Every attempt reserves budget before the
- * password is checked, so parallel guesses cannot race past a limit, and a
- * successful sign-in gives its reservation back.
- *
  * - Per account (primary): 5 free failures, then a lock that starts at one
  *   minute and doubles per further failure up to one hour. The streak resets
  *   on success or after 24 hours without a counted failure. Applies the same
- *   way whether or not the account exists.
- * - Per client IP (secondary, against guessing across many accounts): failed
- *   attempts only, sized so a whole clinic behind one NAT stays well clear.
- *   When the deployment can't verify client addresses (a self-host without
- *   OPENVPM_TRUSTED_PROXY_HOPS), the address the request claims is used
- *   instead, with only the short window. A forged address can dodge that
- *   limit, which per-account backoff covers, but there is deliberately no
- *   bucket shared by every client, so failures can't lock out the clinic.
- *   Non-public addresses (loopback, private, CGNAT, link-local) are never
- *   limited per IP: they are almost always a proxy or container gateway that
- *   isn't forwarding the client's address, so limiting them would let one
- *   client lock everyone out.
- * - Known networks: each successful sign-in remembers the account's IP bucket
- *   for 90 days. From a known bucket, the account-wide lock doesn't apply;
- *   instead the same backoff runs on a streak scoped to that account and
- *   bucket. So someone failing from elsewhere can't keep the owner out of
- *   their usual network, while guessing from a known bucket is throttled just
- *   as hard (its failures also count toward the account-wide streak). Someone
- *   holding the correct password but on a new network is still held by the
- *   account lock. Where addresses are unverified, a guesser who claims one of
- *   the owner's known addresses gains one more backoff streak per known
- *   bucket, not unthrottled guesses.
+ *   way whether or not the account exists. Budget is reserved before the
+ *   password is checked, so parallel guesses can't race past it, and a
+ *   successful sign-in gives its reservation back.
+ * - Known devices: a successful sign-in sets a signed device cookie (see
+ *   `@/lib/known-device`). A browser with a valid cookie for the account is
+ *   not held by the account-wide lock; it runs the same backoff on its own
+ *   per-(account, device) streak, and its failures also count toward the
+ *   account-wide streak. Someone failing from elsewhere can't keep the owner
+ *   out of their usual browser, while someone holding the correct password on
+ *   a new device is still held by the account lock. Per-IP limits never apply
+ *   to a known device.
+ * - Per client IP, only when the address is verified (Vercel, or
+ *   OPENVPM_TRUSTED_PROXY_HOPS) and public: 50 failed attempts per 15 minutes
+ *   against guessing across many accounts, plus a 600-request cap per 15
+ *   minutes that successes don't refund, bounding how fast one address can
+ *   hammer locked accounts. An unverified address can be forged at will, so
+ *   limiting it would only let someone lock out the address they claim;
+ *   per-account backoff is the defense there. Non-public addresses (loopback,
+ *   private, CGNAT, link-local) are almost always a proxy or container
+ *   gateway that every client shares, so they aren't limited either.
  */
 export const LOGIN_ACCOUNT_BACKOFF: BackoffPolicy = {
   freeAttempts: 5,
@@ -60,59 +52,32 @@ export const LOGIN_ACCOUNT_BACKOFF: BackoffPolicy = {
   streakMs: 24 * 60 * 60 * 1000,
 };
 
-const IP_WINDOW = { scope: "ip", limit: 50, windowMs: 15 * 60 * 1000 } as const;
+/** Failed attempts per verified IP; successes are refunded. */
+export const LOGIN_IP_FAILURE_LIMIT = {
+  limit: 50,
+  windowMs: 15 * 60 * 1000,
+} as const;
 
-export const LOGIN_IP_LIMITS = [
-  IP_WINDOW,
-  { scope: "ip-day", limit: 1000, windowMs: 24 * 60 * 60 * 1000 },
-] as const;
-
-export const LOGIN_UNVERIFIED_IP_LIMITS = [
-  { ...IP_WINDOW, scope: "ip-unverified" },
-] as const;
-
-/** How long a successful sign-in keeps its network known for the account. */
-export const LOGIN_KNOWN_NETWORK_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+/** All attempts per verified IP from unknown devices; never refunded. */
+export const LOGIN_IP_REQUEST_LIMIT = {
+  limit: 600,
+  windowMs: 15 * 60 * 1000,
+} as const;
 
 export interface LoginThrottleKeys {
   accountKey: string;
-  ipKeys: { key: string; limit: number; windowMs: number }[];
-  /** Present when the request has a usable IP bucket. */
-  network: {
-    /** Marker row: the account has signed in from this bucket. */
-    knownKey: string;
-    /** Backoff streak for this account from this bucket. */
-    accountKey: string;
-  } | null;
+  /** Per-IP buckets; null for unverified or non-public addresses. */
+  ip: { failureKey: string; requestKey: string } | null;
+  /** Backoff streak for this account on a known device, when there is one. */
+  deviceAccountKey: string | null;
 }
 
 /** Per-IP bucket for a sign-in, or null when per-IP limits don't apply. */
-export interface LoginIpBucket {
-  bucket: string;
-  verified: boolean;
+export function loginIpBucket(client: ResolvedClientIp): string | null {
+  return loginNetworkBucket(client.ip);
 }
 
-/**
- * Picks the address sign-in limits are keyed on. A verified address is used
- * as is. Without one, the request's claimed address is used; a loopback
- * claim means a local proxy that isn't forwarding client addresses, which
- * would put every client in one bucket, so per-IP limits are skipped then.
- */
-export function loginIpBucket(
-  client: ResolvedClientIp,
-  req?: unknown
-): LoginIpBucket | null {
-  if (client.ip) {
-    if (isNonPublicIp(client.ip)) return null;
-    return { bucket: ipPrefixBucket(client.ip), verified: true };
-  }
-  if (client.source !== "unverified") return null;
-  const claimed = unverifiedForwardedIp(req);
-  if (!claimed || isNonPublicIp(claimed)) return null;
-  return { bucket: ipPrefixBucket(claimed), verified: false };
-}
-
-/** Sign-in network bucket for an already-resolved address (e.g. `ctx.ip`). */
+/** Network bucket for an already-verified address, or null if non-public. */
 export function loginNetworkBucket(ip: string | null | undefined): string | null {
   const normalized = normalizeIp(ip);
   if (!normalized || isNonPublicIp(normalized)) return null;
@@ -161,109 +126,107 @@ export function loginAccountKey(email: string): string {
   return `login:account:${normalizeEmail(email)}`;
 }
 
-/** Fixed-length account id for keys that also carry a network bucket. */
+/** Fixed-length account id for keys that also carry a device id. */
 function accountHash(email: string): string {
   return createHash("sha256").update(normalizeEmail(email)).digest("hex").slice(0, 32);
 }
 
-function networkAccountKeyPrefix(email: string): string {
-  return `login:account-net:${accountHash(email)}:`;
-}
-
-export function loginKnownNetworkKey(email: string, bucket: string): string {
-  return `login:known:${accountHash(email)}:${bucket}`;
+function deviceAccountKeyPrefix(email: string): string {
+  return `login:account-dev:${accountHash(email)}:`;
 }
 
 export function loginThrottleKeys(
   email: string,
-  ip: LoginIpBucket | null
+  ipBucket: string | null,
+  deviceId: string | null = null
 ): LoginThrottleKeys {
-  const limits = !ip ? [] : ip.verified ? LOGIN_IP_LIMITS : LOGIN_UNVERIFIED_IP_LIMITS;
   return {
     accountKey: loginAccountKey(email),
-    ipKeys: limits.map(({ scope, limit, windowMs }) => ({
-      key: `login:${scope}:${ip!.bucket}`,
-      limit,
-      windowMs,
-    })),
-    network: ip
+    ip: ipBucket
       ? {
-          knownKey: loginKnownNetworkKey(email, ip.bucket),
-          accountKey: `${networkAccountKeyPrefix(email)}${ip.bucket}`,
+          failureKey: `login:ip:${ipBucket}`,
+          requestKey: `login:ip-req:${ipBucket}`,
         }
       : null,
+    deviceAccountKey: deviceId ? `${deviceAccountKeyPrefix(email)}${deviceId}` : null,
   };
 }
 
 export type LoginAttemptGate =
   | {
       allowed: true;
-      ipReservations: { key: string; resetAt: Date }[];
-      /** Gated by the known-network streak instead of the account lock. */
-      knownNetwork: boolean;
+      /** Per-IP failure reservation, given back on success. */
+      ipReservation: { key: string; resetAt: Date } | null;
+      /** Gated by the known-device streak instead of the account lock. */
+      knownDevice: boolean;
     }
   | { allowed: false; retryAt: Date };
 
-async function refundAll(reservations: { key: string; resetAt: Date }[]) {
-  await Promise.all(
-    reservations.map(({ key, resetAt }) =>
-      refundRateLimit(key, resetAt).catch((err) => {
-        console.error("[auth] login rate limit refund failed:", err);
-      })
-    )
-  );
+async function refund(reservation: { key: string; resetAt: Date } | null) {
+  if (!reservation) return;
+  await refundRateLimit(reservation.key, reservation.resetAt).catch((err) => {
+    console.error("[auth] login rate limit refund failed:", err);
+  });
 }
 
 /**
- * Reserves one failure against every login bucket. Throws if the store is
- * unavailable; callers fail closed.
+ * Reserves one failure against the buckets that gate this attempt. Throws if
+ * the store is unavailable; callers fail closed.
  */
 export async function reserveLoginAttempt(
   keys: LoginThrottleKeys,
   now: Date = new Date()
 ): Promise<LoginAttemptGate> {
-  const ipResults = await Promise.all(
-    keys.ipKeys.map(async (bucket) => ({
-      key: bucket.key,
-      result: await rateLimit({ ...bucket, now }),
-    }))
-  );
-  const reserved = ipResults
-    .filter(({ result }) => result.success)
-    .map(({ key, result }) => ({ key, resetAt: result.resetAt }));
-  const blocked = ipResults.filter(({ result }) => !result.success);
-  if (blocked.length > 0) {
-    await refundAll(reserved);
-    const retryAt = Math.max(...blocked.map(({ result }) => result.resetAt.getTime()));
-    return { allowed: false, retryAt: new Date(retryAt) };
+  if (keys.deviceAccountKey) {
+    const device = await consumeBackoffAttempt({
+      key: keys.deviceAccountKey,
+      policy: LOGIN_ACCOUNT_BACKOFF,
+      now,
+    });
+    return device.success
+      ? { allowed: true, ipReservation: null, knownDevice: true }
+      : { allowed: false, retryAt: device.retryAt };
+  }
+
+  let ipReservation: { key: string; resetAt: Date } | null = null;
+  if (keys.ip) {
+    const requests = await rateLimit({
+      key: keys.ip.requestKey,
+      ...LOGIN_IP_REQUEST_LIMIT,
+      now,
+    });
+    if (!requests.success) return { allowed: false, retryAt: requests.resetAt };
+    const failures = await rateLimit({
+      key: keys.ip.failureKey,
+      ...LOGIN_IP_FAILURE_LIMIT,
+      now,
+    });
+    if (!failures.success) return { allowed: false, retryAt: failures.resetAt };
+    ipReservation = { key: keys.ip.failureKey, resetAt: failures.resetAt };
   }
 
   let account: Awaited<ReturnType<typeof consumeBackoffAttempt>>;
-  let knownNetwork = false;
   try {
-    knownNetwork = keys.network
-      ? await rateLimitKeyActive(keys.network.knownKey, now)
-      : false;
     account = await consumeBackoffAttempt({
-      key: knownNetwork ? keys.network!.accountKey : keys.accountKey,
+      key: keys.accountKey,
       policy: LOGIN_ACCOUNT_BACKOFF,
       now,
     });
   } catch (err) {
-    await refundAll(reserved);
+    await refund(ipReservation);
     throw err;
   }
   if (!account.success) {
     // Attempts against a locked account never reach the password check, so
-    // they don't spend the shared IP budget of everyone else on that network.
-    await refundAll(reserved);
+    // they don't spend the failure budget of everyone else on that network.
+    await refund(ipReservation);
     return { allowed: false, retryAt: account.retryAt };
   }
-  return { allowed: true, ipReservations: reserved, knownNetwork };
+  return { allowed: true, ipReservation, knownDevice: false };
 }
 
 /**
- * A failed sign-in from a known network also counts toward the account-wide
+ * A failed sign-in from a known device also counts toward the account-wide
  * streak, which didn't gate it. Other failures were already counted when the
  * attempt was reserved.
  */
@@ -272,7 +235,7 @@ export async function recordLoginFailure(
   gate: Extract<LoginAttemptGate, { allowed: true }>,
   now: Date = new Date()
 ): Promise<void> {
-  if (!gate.knownNetwork) return;
+  if (!gate.knownDevice) return;
   await recordBackoffAttempt({
     key: keys.accountKey,
     policy: LOGIN_ACCOUNT_BACKOFF,
@@ -283,57 +246,36 @@ export async function recordLoginFailure(
 }
 
 /**
- * A successful sign-in returns its reservations, resets the streak that gated
- * it, and remembers the network. Success from a known network leaves the
- * account-wide streak alone, so the owner signing in doesn't reset the
- * backoff of someone guessing from elsewhere.
+ * A successful sign-in returns its failure reservation and resets the streak
+ * that gated it. Success on a known device leaves the account-wide streak
+ * alone, so the owner signing in doesn't reset the backoff of someone
+ * guessing from elsewhere.
  */
 export async function releaseLoginAttempt(
   keys: LoginThrottleKeys,
-  gate: Extract<LoginAttemptGate, { allowed: true }>,
-  now: Date = new Date()
+  gate: Extract<LoginAttemptGate, { allowed: true }>
 ): Promise<void> {
   const streakKey =
-    gate.knownNetwork && keys.network ? keys.network.accountKey : keys.accountKey;
+    gate.knownDevice && keys.deviceAccountKey ? keys.deviceAccountKey : keys.accountKey;
   await Promise.all([
     clearRateLimit(streakKey).catch((err) => {
       console.error("[auth] login account limit reset failed:", err);
     }),
-    keys.network
-      ? rememberRateLimitKey(
-          keys.network.knownKey,
-          LOGIN_KNOWN_NETWORK_TTL_MS,
-          now
-        ).catch((err) => {
-          console.error("[auth] known sign-in network update failed:", err);
-        })
-      : undefined,
-    refundAll(gate.ipReservations),
+    refund(gate.ipReservation),
   ]);
 }
 
 /**
- * Clears every sign-in lock on the account (account-wide and per network).
- * Used once the owner proves control of the mailbox, e.g. by resetting the
- * password or accepting an invite, and when an admin unlocks a staff member.
- * Known networks are kept.
+ * Clears every sign-in lock on the account: account-wide and each known
+ * device's streak. Used once the owner proves control of the mailbox, e.g.
+ * by resetting the password or accepting an invite, and when an admin
+ * unlocks a staff member.
  */
 export async function clearLoginAccountLock(email: string): Promise<void> {
   await Promise.all([
     clearRateLimit(loginAccountKey(email)),
-    clearRateLimitPrefix(networkAccountKeyPrefix(email)),
+    clearRateLimitPrefix(deviceAccountKeyPrefix(email)),
   ]);
-}
-
-/** True while `email` has signed in successfully from `ip`'s bucket recently. */
-export async function isKnownLoginNetwork(
-  email: string,
-  ip: string | null | undefined,
-  now: Date = new Date()
-): Promise<boolean> {
-  const bucket = loginNetworkBucket(ip);
-  if (!bucket) return false;
-  return rateLimitKeyActive(loginKnownNetworkKey(email, bucket), now);
 }
 
 /** Accounts whose account-wide sign-in lock is in force, with unlock times. */
@@ -352,6 +294,23 @@ export async function loginAccountLocks(
   return locks;
 }
 
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+let lastCleanupAt = 0;
+
+/**
+ * Deletes expired rate-limit rows at most once an hour per server process,
+ * so the table stays bounded on deployments that don't run the
+ * `/api/cron/rate-limit-cleanup` job (self-hosts have no scheduler). Runs in
+ * the background; never delays or fails the sign-in.
+ */
+export function cleanupRateLimitsOccasionally(now: Date = new Date()): void {
+  if (now.getTime() - lastCleanupAt < CLEANUP_INTERVAL_MS) return;
+  lastCleanupAt = now.getTime();
+  void cleanupExpiredRateLimitBuckets({ now }).catch((err) => {
+    console.error("[auth] rate limit cleanup failed:", err);
+  });
+}
+
 let warnedUnverifiedIp = false;
 
 export function warnUnverifiedLoginIpOnce(client: ResolvedClientIp): void {
@@ -359,7 +318,7 @@ export function warnUnverifiedLoginIpOnce(client: ResolvedClientIp): void {
   warnedUnverifiedIp = true;
   console.warn(
     client.source === "unverified"
-      ? `[auth] Sign-in client IPs can't be verified, so per-IP sign-in limits use the address each request claims and can be sidestepped; per-account limits still apply. If OpenVPM runs behind a reverse proxy, set ${TRUSTED_PROXY_HOPS_ENV} to the number of proxies in front of it.`
+      ? `[auth] Sign-in client IPs can't be verified, so per-IP sign-in limits are off; per-account limits still apply. If OpenVPM runs behind a reverse proxy, set ${TRUSTED_PROXY_HOPS_ENV} to the number of proxies in front of it.`
       : `[auth] Sign-in request had no usable client IP from the ${client.source} source; per-IP sign-in limits were skipped.`
   );
 }

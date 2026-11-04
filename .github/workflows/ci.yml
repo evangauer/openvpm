@@ -251,12 +251,12 @@ jobs:
           DUPLICATE_SUBMIT_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/duplicate-submit-idempotency.integration.test.ts
 
-      # Sign-in limits live in PostgreSQL. Prove as openpims_app that random-
-      # account spraying can't lock a self-hosted clinic out (including through
-      # a proxy that doesn't forward client addresses), per-account backoff
-      # holds, a NAT'd clinic gets through, successes are refunded, owners get
-      # in and can request resets from known networks, and admins can lift a
-      # staff member's lock.
+      # Sign-in limits live in PostgreSQL. Prove as openpims_app that forged
+      # or proxy-hidden addresses can't lock a self-hosted clinic out, a guest
+      # on the clinic's network can't lock out staff on known devices,
+      # responses don't depend on the claimed address, per-account backoff
+      # holds under concurrency, device cookies can't be forged, reset
+      # flooding is bounded, and admins can lift a staff member's lock.
       - name: Execute sign-in rate limit contract
         env:
           SIGN_IN_RATE_LIMIT_DB_INTEGRATION: "1"

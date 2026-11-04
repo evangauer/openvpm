@@ -49,8 +49,9 @@ services:
     restart: unless-stopped
     # Published on every interface for installs where clients connect to the
     # app directly (OPENVPM_TRUSTED_PROXY_HOPS unset). That is safe for
-    # sign-in limits: without trusted hops, a forged X-Forwarded-For can only
-    # dodge a per-IP limit, never spend someone else's.
+    # sign-in limits: without trusted hops, client addresses aren't used for
+    # sign-in limits at all, so a forged X-Forwarded-For has no effect;
+    # per-account limits apply.
     #
     # If you set OPENVPM_TRUSTED_PROXY_HOPS below, the app MUST be reachable
     # only through your proxy, or anyone can forge X-Forwarded-For and burn

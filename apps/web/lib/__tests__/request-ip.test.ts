@@ -7,7 +7,6 @@ import {
   resolveClientIp,
   trustedProxyHops,
   trustedProxyNotForwarding,
-  unverifiedForwardedIp,
 } from "../request-ip";
 
 afterEach(() => {
@@ -199,19 +198,6 @@ describe("proxyWithoutTrustedHops", () => {
         SELF_HOST
       )
     ).toBe(true);
-  });
-});
-
-describe("unverifiedForwardedIp", () => {
-  it("returns the claimed client address, if it is an IP", () => {
-    expect(
-      unverifiedForwardedIp({ headers: { "x-forwarded-for": " 203.0.113.10:5000 , 10.0.0.1" } })
-    ).toBe("203.0.113.10");
-    expect(unverifiedForwardedIp({ headers: { "x-real-ip": "::ffff:198.51.100.5" } })).toBe(
-      "198.51.100.5"
-    );
-    expect(unverifiedForwardedIp({ headers: { "x-forwarded-for": "evil" } })).toBeNull();
-    expect(unverifiedForwardedIp(null)).toBeNull();
   });
 });
 

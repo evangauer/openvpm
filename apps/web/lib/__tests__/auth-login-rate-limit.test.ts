@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
     db: {},
     activeUser,
     buckets,
+    setCookie: vi.fn(),
     bcryptCompare: vi.fn(async (password: string) => password === "correct-password"),
     selectLimit,
     storeFailure: { current: null as Error | null },
@@ -90,19 +91,10 @@ vi.mock("@/lib/rate-limit", async () => {
         if (key.startsWith(prefix)) mocks.buckets.delete(key);
       }
     }),
-    rememberRateLimitKey: vi.fn(async (key: string, ttlMs: number, now = new Date()) => {
-      failIfDown();
-      mocks.buckets.set(key, {
-        count: 1,
-        resetAt: new Date(now.getTime() + ttlMs),
-        updatedAt: now,
-      });
-    }),
-    rateLimitKeyActive: vi.fn(async (key: string, now = new Date()) => {
-      failIfDown();
-      const bucket = mocks.buckets.get(key);
-      return Boolean(bucket && bucket.resetAt > now);
-    }),
+    cleanupExpiredRateLimitBuckets: vi.fn(async () => ({
+      deleted: 0,
+      cutoff: new Date(),
+    })),
     recordBackoffAttempt: vi.fn(
       async (options: { key: string; policy: { streakMs: number }; now?: Date }) => {
         failIfDown();
@@ -142,12 +134,19 @@ vi.mock("bcryptjs", () => ({
   compare: mocks.bcryptCompare,
 }));
 
+vi.mock("next/headers", () => ({
+  cookies: async () => ({ set: mocks.setCookie }),
+}));
+
 const { authOptions } = await import("../auth");
 const { createDemoAccessToken, DEMO_ACCESS_COOKIE_NAME } = await import(
   "../demo-access"
 );
 const { loginErrorMessage } = await import("../login-error-message");
-const { LOGIN_IP_LIMITS } = await import("../login-throttle");
+const { LOGIN_IP_FAILURE_LIMIT, LOGIN_IP_REQUEST_LIMIT } = await import(
+  "../login-throttle"
+);
+const { issueKnownDeviceCookie } = await import("../known-device");
 
 type CredentialsProviderWithAuthorize = {
   options: {
@@ -181,24 +180,41 @@ function advanceMinutes(minutes: number) {
   vi.setSystemTime(new Date(Date.now() + minutes * 60 * 1000));
 }
 
+/** A browser's cookie jar for the known-device cookie. */
+interface Browser {
+  cookie: string | null;
+}
+
+function newBrowser(): Browser {
+  return { cookie: null };
+}
+
 /** Resolves to "ok", "invalid", or the user-facing rate-limit message. */
 async function signIn(
   email: string,
   password: string,
-  headers: Record<string, string> = { "x-forwarded-for": "203.0.113.10" }
+  headers: Record<string, string> = { "x-forwarded-for": "203.0.113.10" },
+  browser?: Browser
 ): Promise<string> {
+  mocks.setCookie.mockClear();
   try {
     const user = await credentialsProvider().authorize(
       { email, password },
-      { headers }
+      {
+        headers: browser?.cookie
+          ? { ...headers, cookie: `other=1; ${browser.cookie}` }
+          : headers,
+      }
     );
+    const set = mocks.setCookie.mock.calls.at(-1) as [string, string] | undefined;
+    if (browser && set) browser.cookie = `${set[0]}=${set[1]}`;
     return user ? "ok" : "invalid";
   } catch (err) {
     return loginErrorMessage((err as Error).message);
   }
 }
 
-const FIRST_IP_LIMIT = LOGIN_IP_LIMITS[0].limit;
+const FIRST_IP_LIMIT = LOGIN_IP_FAILURE_LIMIT.limit;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -206,6 +222,7 @@ beforeEach(() => {
   // Model a Vercel deployment unless a test says otherwise.
   vi.stubEnv("VERCEL", "1");
   vi.stubEnv("OPENVPM_TRUSTED_PROXY_HOPS", "");
+  vi.stubEnv("NEXTAUTH_SECRET", "test-secret-at-least-32-characters-long");
 });
 
 afterEach(() => {
@@ -279,7 +296,7 @@ describe("credentials sign-in throttling", () => {
 
     expect(mocks.buckets.has("login:account:admin@example.com")).toBe(false);
     expect(mocks.buckets.get("login:ip:203.0.113.10")?.count).toBe(0);
-    expect(mocks.buckets.get("login:ip-day:203.0.113.10")?.count).toBe(0);
+    expect([...mocks.buckets.keys()].some((key) => key.includes("ip-day"))).toBe(false);
   });
 
   it("locks one account after repeated failures, with growing backoff", async () => {
@@ -429,53 +446,43 @@ describe("credentials sign-in throttling", () => {
     expect(mocks.buckets.has("login:ip:10.0.0.1")).toBe(false);
   });
 
-  it("can't be turned into a clinic-wide lockout on a self-host without a trusted proxy", async () => {
+  it("ignores claimed addresses entirely on a self-host without a trusted proxy", async () => {
     vi.stubEnv("VERCEL", "");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     mocks.selectLimit.mockResolvedValue([]);
-    // An attacker sprays random accounts; the claimed address changes each
-    // time, so no per-IP bucket fills and nothing is shared with the clinic.
+    // An attacker claiming the clinic's own address sprays random accounts.
+    const forged = { "x-forwarded-for": "203.0.113.10" };
     for (let i = 0; i < 1000; i += 1) {
       await expect(
-        signIn(`victim${i}@example.com`, "Password1", {
-          "x-forwarded-for": `198.18.${i >> 8}.${i & 255}`,
-        })
+        signIn(`victim${i}@example.com`, "Password1", forged)
       ).resolves.toBe("invalid");
     }
-    const ipKeys = [...mocks.buckets.keys()].filter((key) => key.includes(":ip"));
-    expect(ipKeys).toHaveLength(1000);
-    expect(ipKeys.every((key) => key.startsWith("login:ip-unverified:198.18."))).toBe(true);
+    expect([...mocks.buckets.keys()].filter((key) => key.includes(":ip"))).toEqual([]);
 
+    // Staff at that address sign in normally.
     mocks.selectLimit.mockResolvedValue([mocks.activeUser]);
     await expect(
-      signIn("admin@example.com", "correct-password", {
-        "x-forwarded-for": "203.0.113.10",
-      })
+      signIn("admin@example.com", "correct-password", forged)
     ).resolves.toBe("ok");
     expect(warnSpy.mock.calls.flat().join(" ")).toContain(
       "OPENVPM_TRUSTED_PROXY_HOPS"
     );
   });
 
-  it("still slows a single unverified client that doesn't rotate its address", async () => {
-    vi.stubEnv("VERCEL", "");
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    mocks.selectLimit.mockResolvedValue([]);
-    const attacker = { "x-forwarded-for": "192.0.2.66" };
-    for (let i = 0; i < FIRST_IP_LIMIT; i += 1) {
-      await signIn(`victim${i}@example.com`, "Password1", attacker);
+  it("caps sign-in requests per verified IP without refunding successes", async () => {
+    const headers = vercelHeaders("192.0.2.80");
+    for (let i = 0; i < LOGIN_IP_REQUEST_LIMIT.limit; i += 1) {
+      await signIn("admin@example.com", "correct-password", headers);
     }
+    expect(mocks.buckets.get("login:ip-req:192.0.2.80")?.count).toBe(
+      LOGIN_IP_REQUEST_LIMIT.limit
+    );
     await expect(
-      signIn("one-more@example.com", "Password1", attacker)
+      signIn("admin@example.com", "correct-password", headers)
     ).resolves.toBe("Too many sign-in attempts. Try again in 15 minutes.");
-    expect(mocks.buckets.has("login:ip-unverified:192.0.2.66")).toBe(true);
-
-    // Other clients have their own buckets.
-    mocks.selectLimit.mockResolvedValue([mocks.activeUser]);
+    // Another address is unaffected.
     await expect(
-      signIn("admin@example.com", "correct-password", {
-        "x-forwarded-for": "203.0.113.10",
-      })
+      signIn("admin@example.com", "correct-password", vercelHeaders("192.0.2.81"))
     ).resolves.toBe("ok");
   });
 
@@ -533,8 +540,8 @@ describe("credentials sign-in throttling", () => {
   });
 });
 
-describe("known sign-in networks", () => {
-  const home = vercelHeaders("203.0.113.10");
+describe("known devices", () => {
+  const office = vercelHeaders("203.0.113.10");
 
   async function lockFromElsewhere(failures = 10) {
     for (let i = 0; i < failures; i += 1) {
@@ -542,13 +549,38 @@ describe("known sign-in networks", () => {
     }
   }
 
-  it("lets the owner in from a network they've used while someone else keeps the account locked", async () => {
-    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
+  it("sets an HttpOnly device cookie on success, and none on failure", async () => {
+    await signIn("admin@example.com", "wrong-password", office);
+    expect(mocks.setCookie).not.toHaveBeenCalled();
+    await signIn("admin@example.com", "correct-password", office);
+    expect(mocks.setCookie).toHaveBeenCalledWith(
+      "__Host-openvpm-device",
+      expect.stringMatching(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/),
+      {
+        httpOnly: true,
+        secure: true,
+        sameSite: "lax",
+        path: "/",
+        maxAge: 90 * 24 * 60 * 60,
+      }
+    );
+  });
+
+  it("lets a known device in while someone else keeps the account locked", async () => {
+    const browser = newBrowser();
+    await expect(
+      signIn("admin@example.com", "correct-password", office, browser)
+    ).resolves.toBe("ok");
     await lockFromElsewhere();
     const lock = mocks.buckets.get("login:account:admin@example.com");
     expect(lock?.count).toBe(5);
 
-    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
+    // From any network, even one the attacker shares.
+    for (const ip of ["203.0.113.10", "198.51.100.3", "192.0.2.9"]) {
+      await expect(
+        signIn("admin@example.com", "correct-password", vercelHeaders(ip), browser)
+      ).resolves.toBe("ok");
+    }
     // The owner's success doesn't reset the other side's backoff.
     expect(mocks.buckets.get("login:account:admin@example.com")).toEqual(lock);
     await expect(
@@ -556,49 +588,114 @@ describe("known sign-in networks", () => {
     ).resolves.toMatch(/^Too many sign-in attempts/);
   });
 
-  it("still holds a correct password from a new network while the account is locked", async () => {
-    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
+  it("still holds a correct password from an unknown device while the account is locked", async () => {
+    await expect(
+      signIn("admin@example.com", "correct-password", office, newBrowser())
+    ).resolves.toBe("ok");
     await lockFromElsewhere();
     await expect(
-      signIn("admin@example.com", "correct-password", vercelHeaders("192.0.2.200"))
+      signIn("admin@example.com", "correct-password", office, newBrowser())
     ).resolves.toBe("Too many sign-in attempts. Try again in 1 minute.");
   });
 
-  it("throttles guessing from a known network with the same backoff, and counts it account-wide", async () => {
-    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
+  it("throttles guessing from a known device with the same backoff, and counts it account-wide", async () => {
+    const browser = newBrowser();
+    await signIn("admin@example.com", "correct-password", office, browser);
     for (let i = 0; i < 5; i += 1) {
-      await expect(signIn("admin@example.com", "wrong-password", home)).resolves.toBe("invalid");
+      await expect(
+        signIn("admin@example.com", "wrong-password", office, browser)
+      ).resolves.toBe("invalid");
     }
-    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe(
-      "Too many sign-in attempts. Try again in 1 minute."
-    );
+    await expect(
+      signIn("admin@example.com", "correct-password", office, browser)
+    ).resolves.toBe("Too many sign-in attempts. Try again in 1 minute.");
     expect(mocks.buckets.get("login:account:admin@example.com")?.count).toBe(5);
     await expect(
-      signIn("admin@example.com", "correct-password", vercelHeaders("192.0.2.200"))
+      signIn("admin@example.com", "correct-password", office, newBrowser())
     ).resolves.toBe("Too many sign-in attempts. Try again in 1 minute.");
   });
 
-  it("doesn't remember a network from a failed sign-in, or a non-public address", async () => {
-    await signIn("admin@example.com", "wrong-password", home);
-    vi.stubEnv("VERCEL", "");
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  it("isn't blocked by per-IP limits", async () => {
+    const browser = newBrowser();
+    await signIn("admin@example.com", "correct-password", office, browser);
+    mocks.selectLimit.mockResolvedValue([]);
+    for (let i = 0; i < FIRST_IP_LIMIT + 5; i += 1) {
+      await signIn(`victim${i}@example.com`, "Password1", office);
+    }
     await expect(
-      signIn("admin@example.com", "correct-password", { "x-forwarded-for": "172.18.0.1" })
+      signIn("victim-x@example.com", "Password1", office)
+    ).resolves.toMatch(/^Too many sign-in attempts/);
+    mocks.selectLimit.mockResolvedValue([mocks.activeUser]);
+    await expect(
+      signIn("admin@example.com", "correct-password", office, browser)
     ).resolves.toBe("ok");
-    expect([...mocks.buckets.keys()].filter((key) => key.startsWith("login:known:"))).toEqual([]);
   });
 
-  it("clears every lock on the account once the owner proves control of it", async () => {
-    const { clearLoginAccountLock } = await import("../login-throttle");
-    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
-    for (let i = 0; i < 6; i += 1) {
-      await signIn("admin@example.com", "wrong-password", home);
+  it("ignores forged, expired, and other accounts' cookies", async () => {
+    await lockFromElsewhere();
+    const locked = "Too many sign-in attempts. Try again in 1 minute.";
+    const valid = issueKnownDeviceCookie(null, "admin@example.com")!;
+    const [body, sig] = valid.value.split(".");
+    const tampered = `${body}.${sig!.slice(0, -2)}${sig!.endsWith("AA") ? "BB" : "AA"}`;
+    const other = issueKnownDeviceCookie(null, "tech@example.com")!;
+    const otherSecret = (() => {
+      vi.stubEnv("NEXTAUTH_SECRET", "a-different-secret-at-least-32-characters");
+      const cookie = issueKnownDeviceCookie(null, "admin@example.com")!;
+      vi.stubEnv("NEXTAUTH_SECRET", "test-secret-at-least-32-characters-long");
+      return cookie;
+    })();
+    const expired = issueKnownDeviceCookie(
+      null,
+      "admin@example.com",
+      new Date(Date.now() - 91 * 24 * 60 * 60 * 1000)
+    )!;
+    for (const value of [tampered, other.value, otherSecret.value, expired.value, "garbage"]) {
+      await expect(
+        signIn("admin@example.com", "correct-password", office, {
+          cookie: `${valid.name}=${value}`,
+        }),
+        value
+      ).resolves.toBe(locked);
     }
+    // The genuine cookie gets through.
+    await expect(
+      signIn("admin@example.com", "correct-password", office, {
+        cookie: `${valid.name}=${valid.value}`,
+      })
+    ).resolves.toBe("ok");
+  });
+
+  it("keeps several accounts on one shared browser", async () => {
+    const browser = newBrowser();
+    await signIn("admin@example.com", "correct-password", office, browser);
+    mocks.selectLimit.mockResolvedValue([
+      { ...mocks.activeUser, id: "user-2", email: "tech@example.com" },
+    ]);
+    await signIn("tech@example.com", "correct-password", office, browser);
+    mocks.selectLimit.mockResolvedValue([mocks.activeUser]);
+    await lockFromElsewhere();
+    await expect(
+      signIn("admin@example.com", "correct-password", office, browser)
+    ).resolves.toBe("ok");
+  });
+
+  it("clears every lock on the account, including device streaks, once the owner proves control", async () => {
+    const { clearLoginAccountLock } = await import("../login-throttle");
+    const browser = newBrowser();
+    await signIn("admin@example.com", "correct-password", office, browser);
+    for (let i = 0; i < 6; i += 1) {
+      await signIn("admin@example.com", "wrong-password", office, browser);
+    }
+    expect(
+      [...mocks.buckets.keys()].filter((key) => key.startsWith("login:account-dev:"))
+    ).toHaveLength(1);
     await clearLoginAccountLock("Admin@Example.com");
     expect(
       [...mocks.buckets.keys()].filter((key) => key.startsWith("login:account"))
     ).toEqual([]);
-    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
+    await expect(
+      signIn("admin@example.com", "correct-password", office, browser)
+    ).resolves.toBe("ok");
   });
 });
 

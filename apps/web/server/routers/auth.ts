@@ -8,8 +8,9 @@ import type { Database } from "@openpims/db/client";
 import { rateLimit } from "@/lib/rate-limit";
 import {
   clearLoginAccountLock,
-  isKnownLoginNetwork,
+  loginNetworkBucket,
 } from "@/lib/login-throttle";
+import { knownDeviceForAccount } from "@/lib/known-device";
 import { seedPractice, seedDemoData } from "@/lib/onboarding/defaults";
 import {
   billingEnforced,
@@ -725,25 +726,24 @@ export const authRouter = createRouter({
     .input(z.object({ email: authEmailInput }))
     .mutation(async ({ ctx, input }) => {
       const email = normalizeAuthEmail(input.email);
-      // Keyed per network first, so someone else spamming this address can't
-      // use up the owner's own requests. The per-address daily cap bounds how
-      // many reset emails anyone can make us send, but doesn't apply on a
-      // network the account has signed in from, so spam from elsewhere can't
-      // block the owner's own reset.
-      await assertPreAuthRateLimit({
-        key: `pwreset:${email}:ip:${ctx.ip ?? "unknown"}`,
-        limit: PASSWORD_RESET_PER_NETWORK_LIMIT,
-        windowMs: 60 * 60 * 1000,
-        message: "Too many requests. Please try again later.",
-        logContext: "requestPasswordReset",
-      });
-      const knownNetwork = await isKnownLoginNetwork(email, ctx.ip).catch(
-        (err) => {
-          console.error("[auth.requestPasswordReset] known network check failed:", err);
-          return false;
-        },
-      );
-      if (!knownNetwork) {
+      // Keyed per requesting network first (IPv6 by /64), so someone else
+      // spamming this address can't use up the owner's own requests. Only a
+      // verified public address gets that bucket: a claimed one can be
+      // forged to spend someone else's. The per-address daily cap bounds how
+      // many reset emails anyone can make us send, but doesn't apply to a
+      // browser that has signed in to this account, so spam from elsewhere
+      // can't block the owner's own reset.
+      const network = loginNetworkBucket(ctx.verifiedIp);
+      if (network) {
+        await assertPreAuthRateLimit({
+          key: `pwreset:${email}:net:${network}`,
+          limit: PASSWORD_RESET_PER_NETWORK_LIMIT,
+          windowMs: 60 * 60 * 1000,
+          message: "Too many requests. Please try again later.",
+          logContext: "requestPasswordReset",
+        });
+      }
+      if (!knownDeviceForAccount(ctx.knownDeviceCookie, email)) {
         await assertPreAuthRateLimit({
           key: `pwreset:${email}:day`,
           limit: PASSWORD_RESET_PER_EMAIL_DAILY_LIMIT,

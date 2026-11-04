@@ -10,6 +10,13 @@ import * as schema from "../../../../packages/db/schema/index";
 
 const mocks = vi.hoisted(() => ({
   sendPasswordResetEmail: vi.fn(async () => ({ success: true })),
+  setCookie: vi.fn(),
+}));
+
+// authorize() sets the known-device cookie through next/headers; capture it
+// the way the route handler would append it to the response.
+vi.mock("next/headers", () => ({
+  cookies: async () => ({ set: mocks.setCookie }),
 }));
 
 // The cost-12 dummy hash checked for unknown accounts takes ~250ms per call in
@@ -60,19 +67,53 @@ integration("Sign-in rate limiting PostgreSQL contract", () => {
   let authorize: Authorize;
   let loginErrorMessage: (error: string) => string;
 
+  /** A browser's cookie jar for the known-device cookie. */
+  type Browser = { cookie: string | null };
+  const newBrowser = (): Browser => ({ cookie: null });
+
   async function signIn(
     email: string,
     password: string,
     headers: Record<string, string>,
+    browser?: Browser,
   ): Promise<string> {
     try {
-      return (await authorize({ email, password }, { headers }))
-        ? "ok"
-        : "invalid";
+      const user = await authorize(
+        { email, password },
+        {
+          headers: browser?.cookie
+            ? { ...headers, cookie: browser.cookie }
+            : headers,
+        },
+      );
+      if (user && browser) {
+        const set = mocks.setCookie.mock.calls.at(-1) as [string, string];
+        browser.cookie = `${set[0]}=${set[1]}`;
+      }
+      return user ? "ok" : "invalid";
     } catch (err) {
       return loginErrorMessage((err as Error).message);
     }
   }
+
+  async function resetCaller(options: {
+    ip: string | null;
+    verified: boolean;
+    browser?: Browser;
+  }) {
+    const { authRouter } = await import("../routers/auth");
+    const { db } = await import("@openpims/db/client");
+    const { knownDeviceCookieFromHeader } = await import("@/lib/known-device");
+    return authRouter.createCaller({
+      db,
+      session: null,
+      ip: options.ip,
+      verifiedIp: options.verified ? options.ip : null,
+      knownDeviceCookie: knownDeviceCookieFromHeader(options.browser?.cookie),
+    } as never);
+  }
+
+  const LOCKED_1M = "Too many sign-in attempts. Try again in 1 minute.";
 
   async function addUsers(emails: string[]) {
     const passwordHash = await hash(PASSWORD, 4);
@@ -172,46 +213,32 @@ integration("Sign-in rate limiting PostgreSQL contract", () => {
     }
   }, 60_000);
 
-  it("can't be locked out clinic-wide by random-email spraying on an unconfigured self-host", async () => {
+
+  it("(A) can't be locked out by spraying with the clinic's forged address on an unconfigured self-host", async () => {
     useSelfHost();
     await clearBuckets();
-
-    // One attacker, 1000 failures across random accounts. Without a trusted
-    // proxy the claimed address is all there is; rotating it dodges the
-    // per-IP limit, holding it still trips that address's limit only.
-    const results: string[] = [];
-    for (let i = 0; i < 500; i += 1) {
-      results.push(
-        await signIn(`spray-${randomUUID()}@example.invalid`, "Password1", {
-          "x-forwarded-for": `198.18.${i >> 8}.${i & 255}`,
-        }),
-      );
-    }
-    for (let i = 0; i < 500; i += 1) {
-      results.push(
-        await signIn(`spray-${randomUUID()}@example.invalid`, "Password1", {
-          "x-forwarded-for": "192.0.2.66",
-        }),
-      );
-    }
-    expect(results.filter((r) => r === "invalid")).toHaveLength(550);
-    expect(results.filter((r) => r.startsWith("Too many"))).toHaveLength(450);
-
-    // No bucket is shared by every client, and nothing lasts a day.
-    expect(await buckets("login:ip:")).toEqual([]);
-    expect(await buckets("login:ip-day:")).toEqual([]);
-
-    // A fresh account with the right password, from the clinic, still works.
-    await addUsers(["fresh@example.invalid"]);
-    await expect(
-      signIn("fresh@example.invalid", PASSWORD, {
-        "x-forwarded-for": "203.0.113.10",
-      }),
-    ).resolves.toBe("ok");
-    // Even with no forwarded address at all (per-account limits only).
-    await expect(signIn("fresh@example.invalid", PASSWORD, {})).resolves.toBe(
-      "ok",
+    const staff = Array.from(
+      { length: 10 },
+      (_, i) => `forged-clinic-${i}@example.invalid`,
     );
+    await addUsers(staff);
+    const clinic = { "x-forwarded-for": "203.0.113.10" };
+
+    // The attacker claims the clinic's public address on every request.
+    for (let i = 0; i < 1000; i += 1) {
+      await expect(
+        signIn(`spray-${randomUUID()}@example.invalid`, "Password1", clinic),
+      ).resolves.toBe("invalid");
+    }
+    // Claimed addresses are never limited, so there is nothing to fill.
+    expect(await buckets("login:ip")).toEqual([]);
+
+    // Every staff member signs in from the clinic, with or without a
+    // forwarded address.
+    for (const email of staff) {
+      await expect(signIn(email, PASSWORD, clinic)).resolves.toBe("ok");
+    }
+    await expect(signIn(staff[0]!, PASSWORD, {})).resolves.toBe("ok");
   }, 120_000);
 
   it("locks one account with growing backoff and clears it on success", async () => {
@@ -232,7 +259,7 @@ integration("Sign-in rate limiting PostgreSQL contract", () => {
         signIn("backoff@example.invalid", PASSWORD, {
           "x-forwarded-for": "203.0.113.10",
         }),
-      ).resolves.toBe("Too many sign-in attempts. Try again in 1 minute.");
+      ).resolves.toBe(LOCKED_1M);
 
       vi.setSystemTime(Date.now() + 61_000);
       await expect(
@@ -294,10 +321,10 @@ integration("Sign-in rate limiting PostgreSQL contract", () => {
     }
     // Only the 20 typos were spent; every success gave its reservation back.
     expect(await bucketCount("login:ip:198.51.100.7")).toBe(20);
-    expect(await bucketCount("login:ip-day:198.51.100.7")).toBe(20);
+    expect(await buckets("login:ip-day:")).toEqual([]);
     expect(await buckets("login:account:nat-staff-")).toEqual([]);
 
-    // Many more successes leave the budget untouched.
+    // Many more successes leave the failure budget untouched.
     for (let i = 0; i < 100; i += 1) {
       await expect(signIn(staff[i % 60]!, PASSWORD, nat)).resolves.toBe("ok");
     }
@@ -327,50 +354,287 @@ integration("Sign-in rate limiting PostgreSQL contract", () => {
     ).resolves.toBe("ok");
   }, 60_000);
 
-  it("keeps the owner's reset requests working while an attacker spams their address", async () => {
+  it("(B) a guest on the clinic's Wi-Fi can't lock out staff on known devices, and nothing lasts a day", async () => {
+    process.env.VERCEL = "1";
+    await clearBuckets();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const clinic = { "x-vercel-forwarded-for": "198.51.100.20" };
+      const staff = ["wifi-a@example.invalid", "wifi-b@example.invalid"];
+      await addUsers([...staff, "wifi-new@example.invalid"]);
+      const browsers = staff.map(() => newBrowser());
+      for (const [i, email] of staff.entries()) {
+        await expect(signIn(email, PASSWORD, clinic, browsers[i])).resolves.toBe(
+          "ok",
+        );
+      }
+
+      // Same public IP: lock each staff account, then spray random accounts
+      // and hammer until every per-IP limit is spent.
+      for (const email of staff) {
+        for (let i = 0; i < 6; i += 1) await signIn(email, "wrong", clinic);
+      }
+      const results: string[] = [];
+      for (let i = 0; i < 620; i += 1) {
+        results.push(
+          await signIn(`guest-${i}@example.invalid`, "Password1", clinic),
+        );
+      }
+      expect(results.at(-1)).toBe(
+        "Too many sign-in attempts. Try again in 15 minutes.",
+      );
+      expect(await bucketCount("login:ip:198.51.100.20")).toBeGreaterThan(50);
+      expect(await bucketCount("login:ip-req:198.51.100.20")).toBeGreaterThan(600);
+
+      // Staff on their usual browsers get straight in.
+      for (const [i, email] of staff.entries()) {
+        await expect(signIn(email, PASSWORD, clinic, browsers[i])).resolves.toBe(
+          "ok",
+        );
+      }
+      // Someone on a new device is held for at most the 15-minute window,
+      // never a day: there is no daily per-IP bucket.
+      expect(await buckets("login:ip-day:")).toEqual([]);
+      await expect(
+        signIn("wifi-new@example.invalid", PASSWORD, clinic, newBrowser()),
+      ).resolves.toBe("Too many sign-in attempts. Try again in 15 minutes.");
+      vi.setSystemTime(Date.now() + 15 * 60 * 1000 + 1000);
+      await expect(
+        signIn("wifi-new@example.invalid", PASSWORD, clinic, newBrowser()),
+      ).resolves.toBe("ok");
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 120_000);
+
+  it("(C) gives the same answers whatever address is claimed, so there's no oracle", async () => {
     useSelfHost();
     await clearBuckets();
-    mocks.sendPasswordResetEmail.mockClear();
-    await addUsers(["reset@example.invalid"]);
-    const { authRouter } = await import("../routers/auth");
-    const { db } = await import("@openpims/db/client");
-    const caller = (ip: string) =>
-      authRouter.createCaller({ db, session: null, ip } as never);
+    await addUsers(["oracle@example.invalid"]);
+    const owner = newBrowser();
+    const home = { "x-forwarded-for": "203.0.113.50" };
+    await expect(
+      signIn("oracle@example.invalid", PASSWORD, home, owner),
+    ).resolves.toBe("ok");
 
-    for (let i = 0; i < 5; i += 1) {
-      await expect(
-        caller("192.0.2.66").requestPasswordReset({
-          email: "reset@example.invalid",
-        }),
-      ).resolves.toEqual({ ok: true });
+    const { clearLoginAccountLock } = await import("@/lib/login-throttle");
+    async function probe(headers: Record<string, string>) {
+      await clearLoginAccountLock("oracle@example.invalid");
+      const answers: string[] = [];
+      for (let i = 0; i < 8; i += 1) {
+        answers.push(await signIn("oracle@example.invalid", "wrong", headers));
+      }
+      answers.push(await signIn("oracle@example.invalid", PASSWORD, headers));
+      return answers;
+    }
+    const fromOwnersAddress = await probe(home);
+    const fromElsewhere = await probe({ "x-forwarded-for": "192.0.2.123" });
+    const fromNowhere = await probe({});
+    expect(fromOwnersAddress).toEqual(fromElsewhere);
+    expect(fromOwnersAddress).toEqual(fromNowhere);
+    expect(fromOwnersAddress).toEqual([
+      ...Array(5).fill("invalid"),
+      ...Array(4).fill(LOCKED_1M),
+    ]);
+    // Forging the owner's address didn't lock the owner's browser out either.
+    await expect(
+      signIn("oracle@example.invalid", PASSWORD, home, owner),
+    ).resolves.toBe("ok");
+  }, 60_000);
+
+  it("lets a known device in during an account-wide lock, but not a new one", async () => {
+    process.env.VERCEL = "1";
+    await clearBuckets();
+    await addUsers(["known@example.invalid"]);
+    const owner = newBrowser();
+    const from = (ip: string) => ({ "x-vercel-forwarded-for": ip });
+    await expect(
+      signIn("known@example.invalid", PASSWORD, from("203.0.113.20"), owner),
+    ).resolves.toBe("ok");
+    expect(owner.cookie).toMatch(/^__Host-openvpm-device=/);
+
+    // An attacker rotates addresses and keeps the account-wide lock engaged.
+    for (let i = 0; i < 20; i += 1) {
+      await signIn("known@example.invalid", "wrong", from(`192.0.2.${i + 1}`));
     }
     await expect(
-      caller("192.0.2.66").requestPasswordReset({
-        email: "reset@example.invalid",
-      }),
-    ).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+      signIn("known@example.invalid", "wrong", from("192.0.2.100")),
+    ).resolves.toMatch(/^Too many sign-in attempts/);
 
-    // The owner, on their own network, still gets a link.
+    // The owner's browser gets in from anywhere, repeatedly, without
+    // resetting the attacker's backoff.
+    for (const ip of ["203.0.113.20", "198.51.100.200", "192.0.2.1"]) {
+      await expect(
+        signIn("known@example.invalid", PASSWORD, from(ip), owner),
+      ).resolves.toBe("ok");
+    }
+    expect(await bucketCount("login:account:known@example.invalid")).toBe(5);
+
+    // The correct password on a new device is still held by the lock.
     await expect(
-      caller("203.0.113.10").requestPasswordReset({
-        email: "Reset@Example.invalid",
-      }),
-    ).resolves.toEqual({ ok: true });
+      signIn("known@example.invalid", PASSWORD, from("203.0.113.20"), newBrowser()),
+    ).resolves.toBe(LOCKED_1M);
 
-    // Rotating addresses can't flood the mailbox past the daily cap.
-    let accepted = 6;
+    // Guessing from the known device has its own backoff.
+    for (let i = 0; i < 5; i += 1) {
+      await expect(
+        signIn("known@example.invalid", "wrong", from("203.0.113.20"), owner),
+      ).resolves.toBe("invalid");
+    }
+    await expect(
+      signIn("known@example.invalid", PASSWORD, from("203.0.113.20"), owner),
+    ).resolves.toBe(LOCKED_1M);
+    expect(await buckets("login:account-dev:")).toHaveLength(1);
+  }, 60_000);
+
+  it("rejects forged, expired, and other accounts' device cookies", async () => {
+    process.env.VERCEL = "1";
+    await clearBuckets();
+    await addUsers(["cookie-a@example.invalid", "cookie-b@example.invalid"]);
+    const at = { "x-vercel-forwarded-for": "203.0.113.70" };
+    const a = newBrowser();
+    const b = newBrowser();
+    await signIn("cookie-a@example.invalid", PASSWORD, at, a);
+    await signIn("cookie-b@example.invalid", PASSWORD, at, b);
+    for (let i = 0; i < 6; i += 1) {
+      await signIn("cookie-a@example.invalid", "wrong", {
+        "x-vercel-forwarded-for": `192.0.2.${i + 1}`,
+      });
+    }
+
+    const { issueKnownDeviceCookie } = await import("@/lib/known-device");
+    const [name, value] = a.cookie!.split("=") as [string, string];
+    const [body, signature] = value.split(".") as [string, string];
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString());
+    payload.d = "A".repeat(22);
+    const reSigned = `${Buffer.from(JSON.stringify(payload)).toString("base64url")}.${signature}`;
+    const expired = issueKnownDeviceCookie(
+      null,
+      "cookie-a@example.invalid",
+      new Date(Date.now() - 91 * 24 * 60 * 60 * 1000),
+    )!;
+    process.env.NEXTAUTH_SECRET = "some-other-deployment-secret-32-characters";
+    const wrongKey = issueKnownDeviceCookie(null, "cookie-a@example.invalid")!;
+    process.env.NEXTAUTH_SECRET = "integration-secret-at-least-32-characters";
+
+    for (const cookie of [
+      b.cookie!, // another account's valid cookie
+      `${name}=${reSigned}`, // edited payload, old signature
+      `${name}=${expired.value}`,
+      `${name}=${wrongKey.value}`,
+      `${name}=not-a-cookie`,
+    ]) {
+      await expect(
+        signIn("cookie-a@example.invalid", PASSWORD, at, { cookie }),
+        cookie,
+      ).resolves.toBe(LOCKED_1M);
+    }
+    await expect(
+      signIn("cookie-a@example.invalid", PASSWORD, at, a),
+    ).resolves.toBe("ok");
+  }, 60_000);
+
+  it("holds 40 parallel guesses to the 5 free failures, with or without a device cookie", async () => {
+    process.env.VERCEL = "1";
+    await clearBuckets();
+    await addUsers(["parallel@example.invalid", "parallel-dev@example.invalid"]);
+    const at = { "x-vercel-forwarded-for": "203.0.113.80" };
+
+    const unknown = await Promise.all(
+      Array.from({ length: 40 }, () =>
+        signIn("parallel@example.invalid", "wrong", at),
+      ),
+    );
+    expect(unknown.filter((r) => r === "invalid")).toHaveLength(5);
+    expect(unknown.filter((r) => r.startsWith("Too many"))).toHaveLength(35);
+
+    const device = newBrowser();
+    await signIn("parallel-dev@example.invalid", PASSWORD, at, device);
+    const known = await Promise.all(
+      Array.from({ length: 40 }, () =>
+        signIn("parallel-dev@example.invalid", "wrong", at, { ...device }),
+      ),
+    );
+    expect(known.filter((r) => r === "invalid")).toHaveLength(5);
+    expect(known.filter((r) => r.startsWith("Too many"))).toHaveLength(35);
+  }, 60_000);
+
+  it("bounds IPv6 reset flooding and keeps the owner's own reset working", async () => {
+    process.env.VERCEL = "1";
+    await clearBuckets();
+    mocks.sendPasswordResetEmail.mockClear();
+    await addUsers(["reset6@example.invalid"]);
+    const owner = newBrowser();
+    await signIn("reset6@example.invalid", PASSWORD, {
+      "x-vercel-forwarded-for": "2001:db8:aa:1::10",
+    }, owner);
+
+    // Rotating addresses inside one /64 shares one bucket.
+    let accepted = 0;
     for (let i = 0; i < 30; i += 1) {
+      const caller = await resetCaller({
+        ip: `2001:db8:bad:1::${(i + 1).toString(16)}`,
+        verified: true,
+      });
       try {
-        await caller(`198.18.50.${i}`).requestPasswordReset({
-          email: "reset@example.invalid",
-        });
+        await caller.requestPasswordReset({ email: "reset6@example.invalid" });
         accepted += 1;
       } catch (err) {
         expect(err).toMatchObject({ code: "TOO_MANY_REQUESTS" });
       }
     }
+    expect(accepted).toBe(5);
+
+    // Rotating /64s runs into the per-address daily cap.
+    for (let i = 0; i < 60; i += 1) {
+      const caller = await resetCaller({
+        ip: `2001:db8:bad:${(i + 2).toString(16)}::1`,
+        verified: true,
+      });
+      await caller
+        .requestPasswordReset({ email: "reset6@example.invalid" })
+        .then(() => {
+          accepted += 1;
+        })
+        .catch((err) => expect(err).toMatchObject({ code: "TOO_MANY_REQUESTS" }));
+    }
     expect(accepted).toBe(20);
     expect(mocks.sendPasswordResetEmail).toHaveBeenCalledTimes(20);
+    expect(await buckets("pwreset:reset6@example.invalid:net:2001:db8:bad:1::/64")).toHaveLength(1);
+
+    // A browser without the device cookie is held by the cap...
+    await expect(
+      (await resetCaller({ ip: "2001:db8:aa:1::10", verified: true }))
+        .requestPasswordReset({ email: "reset6@example.invalid" }),
+    ).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    // ...the owner's known browser isn't.
+    await expect(
+      (await resetCaller({ ip: "2001:db8:aa:1::10", verified: true, browser: owner }))
+        .requestPasswordReset({ email: "Reset6@Example.invalid" }),
+    ).resolves.toEqual({ ok: true });
+    expect(mocks.sendPasswordResetEmail).toHaveBeenCalledTimes(21);
+  }, 60_000);
+
+  it("doesn't key reset limits on claimed or non-public addresses", async () => {
+    useSelfHost();
+    await clearBuckets();
+    mocks.sendPasswordResetEmail.mockClear();
+    await addUsers(["reset-claimed@example.invalid"]);
+    // Forging the owner's address can't use up their per-network bucket,
+    // because a claimed address doesn't get one; only the daily cap applies.
+    for (const ip of ["203.0.113.90", "172.18.0.1", null]) {
+      for (let i = 0; i < 6; i += 1) {
+        await (await resetCaller({ ip, verified: false }))
+          .requestPasswordReset({ email: "reset-claimed@example.invalid" });
+      }
+    }
+    expect(await buckets("pwreset:reset-claimed@example.invalid:net:")).toEqual([]);
+    expect(await bucketCount("pwreset:reset-claimed@example.invalid:day")).toBe(18);
+    await expect(
+      (await resetCaller({ ip: "10.0.0.5", verified: true }))
+        .requestPasswordReset({ email: "reset-claimed@example.invalid" }),
+    ).resolves.toEqual({ ok: true });
+    expect(await buckets("pwreset:reset-claimed@example.invalid:net:")).toEqual([]);
   }, 60_000);
 
   for (const hops of [undefined, "1"]) {
@@ -391,84 +655,28 @@ integration("Sign-in rate limiting PostgreSQL contract", () => {
       await expect(
         signIn(`gateway-${hops ?? "unset"}@example.invalid`, PASSWORD, viaGateway),
       ).resolves.toBe("ok");
-      expect(await buckets("login:known:")).toEqual([]);
     }, 120_000);
   }
 
-  it("lets the owner in from a known network while an attacker keeps the account locked", async () => {
-    process.env.VERCEL = "1";
-    await clearBuckets();
-    await addUsers(["known@example.invalid"]);
-    const home = { "x-vercel-forwarded-for": "203.0.113.20" };
-    const from = (ip: string) => ({ "x-vercel-forwarded-for": ip });
-
-    await expect(signIn("known@example.invalid", PASSWORD, home)).resolves.toBe("ok");
-    expect(await buckets("login:known:")).toHaveLength(1);
-
-    // An attacker rotates addresses and keeps the account-wide lock engaged.
-    for (let i = 0; i < 20; i += 1) {
-      await signIn("known@example.invalid", "wrong", from(`192.0.2.${i + 1}`));
-    }
-    await expect(
-      signIn("known@example.invalid", "wrong", from("192.0.2.100")),
-    ).resolves.toMatch(/^Too many sign-in attempts/);
-
-    // The owner still gets in from home, repeatedly, without resetting it.
-    for (let i = 0; i < 3; i += 1) {
-      await expect(signIn("known@example.invalid", PASSWORD, home)).resolves.toBe("ok");
-    }
-    expect(await bucketCount("login:account:known@example.invalid")).toBe(5);
-
-    // The correct password from a new network is still held by the lock.
-    await expect(
-      signIn("known@example.invalid", PASSWORD, from("198.51.100.200")),
-    ).resolves.toBe("Too many sign-in attempts. Try again in 1 minute.");
-
-    // Guessing from the known network has its own backoff.
-    for (let i = 0; i < 5; i += 1) {
-      await expect(signIn("known@example.invalid", "wrong", home)).resolves.toBe("invalid");
-    }
-    await expect(signIn("known@example.invalid", PASSWORD, home)).resolves.toMatch(
-      /^Too many sign-in attempts/,
-    );
-  }, 60_000);
-
-  it("lets the owner request a reset from a known network after the daily cap is spent", async () => {
+  it("prunes expired limit records without a scheduler", async () => {
     useSelfHost();
     await clearBuckets();
-    mocks.sendPasswordResetEmail.mockClear();
-    await addUsers(["known-reset@example.invalid"]);
-    await expect(
-      signIn("known-reset@example.invalid", PASSWORD, {
-        "x-forwarded-for": "203.0.113.30",
-      }),
-    ).resolves.toBe("ok");
-    const { authRouter } = await import("../routers/auth");
-    const { db } = await import("@openpims/db/client");
-    const caller = (ip: string) =>
-      authRouter.createCaller({ db, session: null, ip } as never);
-
-    for (let i = 0; i < 30; i += 1) {
-      await caller(`198.18.60.${i}`)
-        .requestPasswordReset({ email: "known-reset@example.invalid" })
-        .catch(() => undefined);
+    await ownerDb.insert(schema.rateLimitBuckets).values({
+      key: "login:account:stale@example.invalid",
+      count: 3,
+      resetAt: new Date(Date.now() - 60_000),
+    });
+    const { cleanupRateLimitsOccasionally } = await import("@/lib/login-throttle");
+    cleanupRateLimitsOccasionally(new Date(Date.now() + 2 * 60 * 60 * 1000));
+    let left = await buckets("login:account:stale@");
+    for (let i = 0; i < 50 && left.length > 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      left = await buckets("login:account:stale@");
     }
-    expect(mocks.sendPasswordResetEmail).toHaveBeenCalledTimes(20);
-    await expect(
-      caller("198.18.61.1").requestPasswordReset({
-        email: "known-reset@example.invalid",
-      }),
-    ).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
-
-    await expect(
-      caller("203.0.113.30").requestPasswordReset({
-        email: "known-reset@example.invalid",
-      }),
-    ).resolves.toEqual({ ok: true });
-    expect(mocks.sendPasswordResetEmail).toHaveBeenCalledTimes(21);
+    expect(left).toEqual([]);
   }, 60_000);
 
-  it("lets an admin clear a staff member's sign-in lock, with an audit entry", async () => {
+  it("lets an admin clear a staff member's sign-in lock and device streaks, with an audit entry", async () => {
     useSelfHost();
     await clearBuckets();
     const [adminUser] = await ownerDb
@@ -486,15 +694,17 @@ integration("Sign-in rate limiting PostgreSQL contract", () => {
       .select({ id: schema.users.id })
       .from(schema.users)
       .where(like(schema.users.email, "locked-out@example.invalid"));
+    const device = newBrowser();
+    await signIn("locked-out@example.invalid", PASSWORD, {}, device);
     for (let i = 0; i < 6; i += 1) {
-      await signIn("locked-out@example.invalid", "wrong", {
-        "x-forwarded-for": `192.0.2.${i + 1}`,
-      });
+      await signIn("locked-out@example.invalid", "wrong", {});
+      await signIn("locked-out@example.invalid", "wrong", {}, device);
     }
     await expect(
-      signIn("locked-out@example.invalid", PASSWORD, {
-        "x-forwarded-for": "203.0.113.40",
-      }),
+      signIn("locked-out@example.invalid", PASSWORD, {}),
+    ).resolves.toMatch(/^Too many sign-in attempts/);
+    await expect(
+      signIn("locked-out@example.invalid", PASSWORD, {}, device),
     ).resolves.toMatch(/^Too many sign-in attempts/);
 
     const { appRouter } = await import("../routers/_app");
@@ -522,10 +732,12 @@ integration("Sign-in rate limiting PostgreSQL contract", () => {
       caller("admin").clearStaffSignInLock({ id: target!.id }),
     ).resolves.toEqual({ id: target!.id });
     await expect(caller("admin").staffSignInLocks()).resolves.toEqual([]);
+    expect(await buckets("login:account-dev:")).toEqual([]);
     await expect(
-      signIn("locked-out@example.invalid", PASSWORD, {
-        "x-forwarded-for": "203.0.113.40",
-      }),
+      signIn("locked-out@example.invalid", PASSWORD, {}),
+    ).resolves.toBe("ok");
+    await expect(
+      signIn("locked-out@example.invalid", PASSWORD, {}, device),
     ).resolves.toBe("ok");
 
     // The audit entry is written after the response; wait for it briefly.

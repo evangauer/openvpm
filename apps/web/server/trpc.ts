@@ -14,8 +14,10 @@ import { assertHostedRlsRoleOnce } from "@/lib/rls-assertion";
 import {
   clientIpFromRequest,
   proxyWithoutTrustedHops,
+  resolveClientIp,
   trustedProxyNotForwarding,
 } from "@/lib/request-ip";
+import { knownDeviceCookieFromHeader } from "@/lib/known-device";
 import { externallyVisibleRequestOrigin } from "@/lib/request-origin";
 import { practices, users } from "@openpims/db";
 import {
@@ -57,6 +59,13 @@ export type TRPCContext = {
   session: AppSession | null;
   ip?: string | null;
   portalSessionToken?: string | null;
+  /**
+   * Client address only when the deployment can verify it (Vercel or
+   * OPENVPM_TRUSTED_PROXY_HOPS); `ip` may be a claimed, forgeable value.
+   */
+  verifiedIp?: string | null;
+  /** Raw signed known-device cookie, if the request carries one. */
+  knownDeviceCookie?: string | null;
   requestOrigin?: string | null;
   requestUrlOrigin?: string | null;
   /**
@@ -166,6 +175,10 @@ export async function createTRPCContext(opts?: {
     session,
     ip: clientIp(opts?.req),
     portalSessionToken: portalSessionTokenFromCookie(
+      opts?.req?.headers.get("cookie"),
+    ),
+    verifiedIp: opts?.req ? resolveClientIp(opts.req).ip : null,
+    knownDeviceCookie: knownDeviceCookieFromHeader(
       opts?.req?.headers.get("cookie"),
     ),
     requestOrigin: opts?.req?.headers.get("origin") ?? null,
