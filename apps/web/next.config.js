@@ -2,10 +2,13 @@ const {
   capabilityHeaders,
   securityHeaders,
 } = require("./lib/security-headers.js");
+const { join } = require("node:path");
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
+  // Keep deployment tracing inside this workspace when ancestor lockfiles exist.
+  outputFileTracingRoot: join(__dirname, "../.."),
   poweredByHeader: false,
   transpilePackages: ["@openpims/api", "@openpims/db", "@openpims/email"],
   async headers() {
