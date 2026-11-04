@@ -11,7 +11,7 @@ import {
   readReplicaObject,
 } from "@/lib/s3";
 import { withSystem } from "@/lib/tenant-db";
-import { hasBlankConfiguredNextAuthSecret } from "@/lib/auth-secret";
+import { nextAuthSecretRejected } from "@/lib/auth-secret";
 import {
   contentDispositionForFile,
   isAllowedUploadCategory,
@@ -129,7 +129,7 @@ export async function GET(
 
   const isPublic = category === "branding";
   if (!isPublic) {
-    if (hasBlankConfiguredNextAuthSecret()) {
+    if (nextAuthSecretRejected()) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

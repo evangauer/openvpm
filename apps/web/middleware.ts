@@ -5,7 +5,14 @@ import {
   applyCapabilitySecurityHeaders,
   applySecurityHeaders,
 } from "./lib/security-headers";
-import { nextAuthSecret } from "./lib/auth-secret";
+import {
+  AUTH_SECRET_SETUP_COMMAND,
+  authSecretProblemMessage,
+  nextAuthSecret,
+  nextAuthSecretProblem,
+  nextAuthSecretRejected,
+} from "./lib/auth-secret";
+import { isSecretIndependentPath } from "./lib/secret-independent-paths";
 
 const CAPABILITY_PATH_PREFIXES = [
   "/capture",
@@ -62,9 +69,66 @@ function isVercelObservabilityPath(pathname: string): boolean {
   return /^\/[a-f0-9]{16}\/(?:script\.js|view|event|session)$/i.test(pathname);
 }
 
+// Rendered straight from middleware so it never depends on a working session
+// layer. It names the problem but never echoes the configured value.
+function authSecretSetupResponse(pathname: string): NextResponse {
+  const reason = authSecretProblemMessage(nextAuthSecretProblem() ?? "missing");
+
+  if (pathname === "/api" || pathname.startsWith("/api/")) {
+    return applySecurityHeaders(
+      NextResponse.json(
+        {
+          error: "Authentication secret is not configured securely",
+          detail: `${reason} Set a new NEXTAUTH_SECRET (${AUTH_SECRET_SETUP_COMMAND}) and restart OpenVPM.`,
+        },
+        { status: 503, headers: { "Cache-Control": "no-store" } },
+      ),
+    );
+  }
+
+  const html = `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>OpenVPM setup required</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="font-family:system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;line-height:1.5">
+<h1>Set NEXTAUTH_SECRET to finish setup</h1>
+<p>${reason} Sign-in is disabled until this is fixed, because a known or weak secret would let anyone forge a staff session and read clinic records.</p>
+<ol>
+<li>Generate a secret: <code>${AUTH_SECRET_SETUP_COMMAND}</code></li>
+<li>Set it as <code>NEXTAUTH_SECRET</code> in your <code>.env</code> file or deployment environment.</li>
+<li>Restart OpenVPM. Everyone will need to sign in again once.</li>
+</ol>
+</body>
+</html>`;
+  return applySecurityHeaders(
+    new NextResponse(html, {
+      status: 503,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    }),
+  );
+}
+
 export async function middleware(request: NextRequest) {
   const requestUrl = new URL(request.url);
   const pathname = requestUrl.pathname;
+
+  // Fail closed before any route can read or issue a session. Health stays
+  // reachable so operators and orchestrators can see why the app is down.
+  if (
+    nextAuthSecretRejected() &&
+    pathname !== "/api/health" &&
+    !isSecretIndependentPath(pathname)
+  ) {
+    // Only root-level files (where public/ is served) skip the guard, so a
+    // nested route ending in .json or .txt can't slip past it. /_next never
+    // reaches middleware (see matcher).
+    const isStaticAsset =
+      PUBLIC_FILE_PATTERN.test(pathname) && !pathname.slice(1).includes("/");
+    if (!isStaticAsset) return authSecretSetupResponse(pathname);
+  }
 
   if (isVercelObservabilityPath(pathname)) {
     return applySecurityHeaders(NextResponse.next());

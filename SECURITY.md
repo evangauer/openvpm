@@ -25,8 +25,8 @@ We follow a 90-day disclosure timeline: we ask that you give us 90 days to addre
 
 If you deploy OpenVPM on your own infrastructure:
 
-- Generate a strong `NEXTAUTH_SECRET` using `openssl rand -base64 32`
-- Never expose your PostgreSQL database publicly — keep it in a private network
+- Generate a strong `NEXTAUTH_SECRET` using `openssl rand -base64 32`. Production refuses to sign anyone in with a secret published in this repository or shorter than 32 characters. If you set `PORTAL_SESSION_SECRET`, the same rule applies.
+- Never expose your PostgreSQL database or MinIO publicly — keep them in a private network (the bundled Docker Compose file publishes them on `127.0.0.1` only)
 - Use HTTPS in production — do not serve patient data over HTTP
 - Rotate API keys and database credentials regularly
 - Review the audit log (`audit_log` table) for unexpected activity

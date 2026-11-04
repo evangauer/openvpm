@@ -41,8 +41,12 @@ root README.
    build keeps development overlays out of the pictures. Production builds
    won't create calendar feed links over plain http, so build with an HTTPS
    app URL. It only sets the address printed on screen; nothing connects to it.
+   A production build also refuses to sign anyone in with a placeholder or
+   short `NEXTAUTH_SECRET`, so export a strong one first; any generated value
+   works, since it only signs the capture run's sessions.
 
    ```sh
+   export NEXTAUTH_SECRET="$(openssl rand -base64 32)"
    NEXT_PUBLIC_APP_URL=https://app.openvpm.com pnpm --filter @openpims/web build
    NODE_OPTIONS="--import $PWD/apps/docs/capture/clock.mjs" \
      pnpm --filter @openpims/web exec next start -p 3100
