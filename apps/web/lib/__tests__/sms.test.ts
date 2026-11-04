@@ -735,6 +735,7 @@ describe("durable SMS dispatch", () => {
     expect(state().updates).toContainEqual({
       status: "sent",
       providerMessageId: "sms-atomic-1",
+      reminderOutcome: null,
     });
   });
 
@@ -1631,6 +1632,7 @@ describe("durable SMS dispatch", () => {
     expect(ledger.updates).toContainEqual({
       status: "sent",
       providerMessageId: "msg-resend",
+      reminderOutcome: null,
     });
   });
 

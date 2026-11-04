@@ -410,7 +410,7 @@ export async function sendVaccinationRecallReminders(
     const durableSmsCommunication =
       reminderChannel === "sms" && Boolean(smsSender);
     const claimCommunication = async (
-      tx: Pick<Database, "insert" | "select">,
+      tx: Pick<Database, "insert" | "update">,
     ) => {
       const [insertedClaim] = await tx
         .insert(communications)

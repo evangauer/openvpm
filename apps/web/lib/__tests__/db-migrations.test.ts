@@ -1401,6 +1401,47 @@ describe("committed Drizzle migrations", () => {
     );
   });
 
+  it("adds reminder retry tracking without a full-table validation scan", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ idx?: number; tag?: string }> };
+    const tags = journal.entries?.map((entry) => entry.tag) ?? [];
+    expect(tags).toContain("0109_reminder_retry_tracking");
+    expect(tags).toContain("0110_reminder_claim_fencing");
+    expect(tags.indexOf("0110_reminder_claim_fencing")).toBe(
+      tags.indexOf("0109_reminder_retry_tracking") + 1,
+    );
+    expect(
+      existsSync(
+        resolve(repoRoot, "packages/db/drizzle/0110_reminder_attempt_started_at.sql"),
+      ),
+    ).toBe(false);
+
+    const retry = readRepoFile(
+      "packages/db/drizzle/0109_reminder_retry_tracking.sql",
+    );
+    expect(retry).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(retry).toContain('ADD COLUMN "reminder_attempt" integer');
+    expect(retry).toContain('ADD COLUMN "reminder_automated_attempts" integer');
+    expect(retry).toContain('ADD COLUMN "reminder_outcome" varchar(32)');
+    expect(retry).toMatch(
+      /ADD CONSTRAINT "communications_reminder_outcome_check" CHECK \([^;]*'staff_failure', 'automated_failure', 'outcome_unknown'\)\) NOT VALID;/,
+    );
+    // Validating in the migration's own transaction would scan the whole
+    // communications table while holding the ADD COLUMN lock.
+    expect(retry).not.toContain("VALIDATE CONSTRAINT");
+
+    const fencing = readRepoFile(
+      "packages/db/drizzle/0110_reminder_claim_fencing.sql",
+    );
+    expect(fencing).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(fencing).toContain(
+      'ADD COLUMN "reminder_attempt_started_at" timestamp with time zone',
+    );
+    expect(fencing).toContain('ADD COLUMN "reminder_claim_token" uuid');
+    expect(fencing).not.toMatch(/DEFAULT|NOT NULL|VALIDATE/);
+  });
+
   it("adds an append-only tenant-bound prescription lifecycle ledger", () => {
     const journal = JSON.parse(
       readRepoFile("packages/db/drizzle/meta/_journal.json"),

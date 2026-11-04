@@ -208,8 +208,20 @@ describe("sendEmail", () => {
         appointmentDate: "July 2",
         appointmentTime: "9:00 AM",
         practiceName: "Neighborhood Veterinary",
+        idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
       }),
-    ).resolves.toMatchObject({ success: true, id: "email-appt-1" });
+    ).resolves.toMatchObject({
+      success: true,
+      id: "email-appt-1",
+      outcome: "accepted",
+    });
+    expect(mocks.resendSend).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
+      }),
+    );
 
     await expect(
       sendVaccinationReminder({
@@ -438,6 +450,211 @@ describe("sendEmail", () => {
     expect(consoleError).toHaveBeenCalledWith(
       "[Email] Resend error:",
       expect.objectContaining({ name: "application_error" }),
+    );
+  });
+});
+
+describe("appointment reminder email outcomes", () => {
+  const reminder = {
+    to: "client@example.com",
+    clientName: "Ada Lovelace",
+    patientName: "Miso",
+    appointmentDate: "July 2",
+    appointmentTime: "9:00 AM",
+    practiceName: "Neighborhood Veterinary",
+    idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
+  };
+
+  it("reports a timed-out reminder as an unknown outcome", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.resendSend.mockImplementation(
+      (_payload: unknown, options?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () =>
+            reject(new Error("aborted")),
+          );
+        }),
+    );
+    const { EMAIL_SEND_TIMEOUT_MS, sendAppointmentReminder } =
+      await loadEmail();
+
+    const result = sendAppointmentReminder(reminder);
+    await vi.advanceTimersByTimeAsync(EMAIL_SEND_TIMEOUT_MS);
+
+    await expect(result).resolves.toMatchObject({
+      success: false,
+      outcome: "outcome_unknown",
+    });
+  });
+
+  it.each(["invalid_idempotent_request", "concurrent_idempotent_requests"])(
+    "reports a %s conflict as an unknown outcome",
+    async (name) => {
+      vi.stubEnv("RESEND_API_KEY", "re_test");
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      mocks.resendSend.mockResolvedValueOnce({
+        data: null,
+        error: { message: "conflict", statusCode: 409, name },
+      });
+      const { sendAppointmentReminder } = await loadEmail();
+
+      const result = await sendAppointmentReminder(reminder);
+      expect(result).toMatchObject({ success: false, outcome: "outcome_unknown" });
+      // Only a changed payload is reported as a conflict staff must follow
+      // up; a concurrent request is still in flight.
+      expect(Boolean(result.idempotencyConflict)).toBe(
+        name === "invalid_idempotent_request",
+      );
+    },
+  );
+
+  it("reports a provider rejection as a definite failure", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.resendSend.mockResolvedValueOnce({
+      data: null,
+      error: { message: "bad from", statusCode: 422, name: "validation_error" },
+    });
+    const { sendAppointmentReminder } = await loadEmail();
+
+    await expect(sendAppointmentReminder(reminder)).resolves.toMatchObject({
+      success: false,
+      outcome: "definite_failure",
+    });
+  });
+});
+
+describe("appointment reminder email outcomes through the Resend SDK", () => {
+  const reminder = {
+    to: "client@example.com",
+    clientName: "Ada Lovelace",
+    patientName: "Miso",
+    appointmentDate: "July 2",
+    appointmentTime: "9:00 AM",
+    practiceName: "Neighborhood Veterinary",
+    idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
+  };
+
+  // Drive the real SDK against a stubbed fetch, so these cases cover how the
+  // SDK itself reports transport and gateway failures.
+  async function sendThroughRealSdk(fetchImpl: typeof fetch) {
+    const actual = await vi.importActual<typeof import("resend")>("resend");
+    mocks.Resend.mockImplementation(
+      (key?: string) => new actual.Resend(key) as never,
+    );
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubGlobal("fetch", vi.fn(fetchImpl));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { sendAppointmentReminder } = await loadEmail();
+    return sendAppointmentReminder(reminder);
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reports a connection reset as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(async () => {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("socket hang up"), {
+            code: "ECONNRESET",
+          }),
+        });
+      }),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it("reports a 502 HTML gateway page as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response("<html><body>502 Bad Gateway</body></html>", {
+            status: 502,
+            headers: { "content-type": "text/html" },
+          }),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it("reports a 500 provider error as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response(
+            JSON.stringify({
+              statusCode: 500,
+              name: "internal_server_error",
+              message: "An unexpected error occurred.",
+            }),
+            { status: 500, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it("reports a 200 with a truncated body as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response('{"id":"4ef9a417-02e9', {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it("reports a 429 as an unknown outcome so a retry reuses the same key", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response(
+            JSON.stringify({
+              statusCode: 429,
+              name: "rate_limit_exceeded",
+              message: "Too many requests",
+            }),
+            { status: 429, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it.each([
+    [422, "validation_error"],
+    [403, "invalid_from_address"],
+  ])("reports a %s %s answer as a definite failure", async (status, name) => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response(
+            JSON.stringify({ statusCode: status, name, message: "Rejected" }),
+            { status, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "definite_failure" });
+  });
+
+  it("accepts a 200 with a message id", async () => {
+    const fetchCalls: RequestInit[] = [];
+    await expect(
+      sendThroughRealSdk(async (_url, init) => {
+        fetchCalls.push(init ?? {});
+        return new Response(JSON.stringify({ id: "email-123" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      id: "email-123",
+      outcome: "accepted",
+    });
+    expect(new Headers(fetchCalls[0]?.headers).get("Idempotency-Key")).toBe(
+      reminder.idempotencyKey,
     );
   });
 });

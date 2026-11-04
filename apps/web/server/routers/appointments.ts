@@ -76,6 +76,10 @@ import {
   takeAppointmentSchedulingLock,
   type AppointmentLocationFailure,
 } from "@/lib/scheduling/location";
+import {
+  computeOccurrenceDate,
+  resolveRecurrenceTimeZone,
+} from "@/lib/scheduling/recurrence";
 import { ambulatoryWorkspaceSettings } from "@/lib/ambulatory-workspace";
 import { ambulatoryWorkspaceRolloutEnabled } from "@/server/ambulatory-rollout";
 
@@ -2166,112 +2170,4 @@ export const appointmentsRouter = createRouter({
 
 function calendarFeedUrl(token: string | null): string | null {
   return token ? `${appBaseUrl()}/api/calendar/${token}.ics` : null;
-}
-
-/** Compute the start date/time for the Nth occurrence (0-based). */
-function computeOccurrenceDate(
-  baseDate: Date,
-  frequency: "weekly" | "monthly" | "annual",
-  interval: number,
-  n: number,
-  timeZone?: string | null,
-): Date {
-  const resolvedTimeZone = resolveRecurrenceTimeZone(timeZone);
-  const base = recurrenceBaseParts(baseDate, resolvedTimeZone);
-  const occurrenceDate = recurrenceDateInput(
-    base.dateInput,
-    frequency,
-    interval,
-    n,
-  );
-
-  return dateInputTimeUtcInstant(
-    occurrenceDate,
-    {
-      hour: base.hour,
-      minute: base.minute,
-      second: base.second,
-    },
-    resolvedTimeZone,
-  );
-}
-
-function resolveRecurrenceTimeZone(timeZone?: string | null): string {
-  const resolved = timeZone?.trim() || "UTC";
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: resolved }).format(
-      new Date(0),
-    );
-    return resolved;
-  } catch {
-    return "UTC";
-  }
-}
-
-function recurrenceBaseParts(
-  date: Date,
-  timeZone: string,
-): { dateInput: string; hour: number; minute: number; second: number } {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).formatToParts(date);
-
-  const value = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((part) => part.type === type)?.value;
-  const year = value("year");
-  const month = value("month");
-  const day = value("day");
-  const hour = Number(value("hour"));
-  const minute = Number(value("minute"));
-  const second = Number(value("second"));
-
-  if (!year || !month || !day || [hour, minute, second].some(Number.isNaN)) {
-    const fallback = new Date(date);
-    return {
-      dateInput: formatDateInputForTimeZone(fallback, "UTC"),
-      hour: fallback.getUTCHours(),
-      minute: fallback.getUTCMinutes(),
-      second: fallback.getUTCSeconds(),
-    };
-  }
-
-  return {
-    dateInput: `${year}-${month}-${day}`,
-    hour,
-    minute,
-    second,
-  };
-}
-
-function recurrenceDateInput(
-  baseDateInput: string,
-  frequency: "weekly" | "monthly" | "annual",
-  interval: number,
-  n: number,
-): string {
-  const [year, month, day] = baseDateInput.split("-").map(Number) as [
-    number,
-    number,
-    number,
-  ];
-  const d = new Date(Date.UTC(year, month - 1, day));
-  switch (frequency) {
-    case "weekly":
-      d.setUTCDate(d.getUTCDate() + 7 * interval * n);
-      break;
-    case "monthly":
-      d.setUTCMonth(d.getUTCMonth() + interval * n);
-      break;
-    case "annual":
-      d.setUTCFullYear(d.getUTCFullYear() + interval * n);
-      break;
-  }
-  return formatDateInputForTimeZone(d, "UTC");
 }

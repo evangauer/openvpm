@@ -764,6 +764,20 @@
       "when": 1793759280582,
       "tag": "0108_idempotent_stock_and_controlled_substance_entries",
       "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1793761064342,
+      "tag": "0109_reminder_retry_tracking",
+      "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1793762268665,
+      "tag": "0110_reminder_claim_fencing",
+      "breakpoints": true
     }
   ]
 }

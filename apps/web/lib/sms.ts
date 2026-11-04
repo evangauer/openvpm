@@ -41,6 +41,7 @@ export async function sendAppointmentReminderSms(data: {
   source?: string;
   sourceId?: string;
   idempotencyKey?: string;
+  reminderClaimToken?: string;
 }): Promise<SmsDispatchResult> {
   const phoneInfo = data.practicePhone
     ? `Call ${data.practicePhone} to reschedule.`
@@ -58,6 +59,7 @@ export async function sendAppointmentReminderSms(data: {
     source: data.source ?? "appointment_reminder",
     sourceId: data.sourceId,
     idempotencyKey: data.idempotencyKey,
+    reminderClaimToken: data.reminderClaimToken,
   });
   return result;
 }

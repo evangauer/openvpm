@@ -37,9 +37,21 @@ import {
 } from "@/lib/email-suppression";
 import { hasNonBlankMessagingSender } from "@/lib/messaging/sender-query";
 import {
+  type AppointmentReminderClaim,
+  appointmentReminderConflictMessage,
   appointmentReminderDedupeKey,
+  appointmentReminderEmailFields,
+  appointmentReminderEmailIdempotencyKey,
+  appointmentReminderMessageFields,
+  appointmentReminderResultForClaim,
   appointmentReminderSmsIdempotencyKey,
   claimAppointmentReminderCommunication,
+  emailReminderFailureReason,
+  recordAppointmentReminderOutcome,
+  sendClaimedAppointmentReminderEmail,
+  reminderFailureReason,
+  smsReminderFailureReason,
+  switchAppointmentReminderClaimToEmail,
 } from "@/lib/messaging/appointment-reminder";
 import { withDurableSmsCommunication } from "@/lib/messaging/durable-sms-communication";
 import { alertOps } from "@/lib/alerts";
@@ -119,36 +131,6 @@ function latestValidVaccinationRecordPredicate(practiceId: string) {
         )
       )
   )`;
-}
-
-function formatDate(d: Date | string, timeZone?: string | null): string {
-  const date = new Date(d);
-  const options: Intl.DateTimeFormatOptions = {
-    timeZone: timeZone?.trim() || "UTC",
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  };
-  try {
-    return date.toLocaleDateString("en-US", options);
-  } catch {
-    return date.toLocaleDateString("en-US", { ...options, timeZone: "UTC" });
-  }
-}
-
-function formatTime(d: Date | string, timeZone?: string | null): string {
-  const date = new Date(d);
-  const options: Intl.DateTimeFormatOptions = {
-    timeZone: timeZone?.trim() || "UTC",
-    hour: "numeric",
-    minute: "2-digit",
-  };
-  try {
-    return date.toLocaleTimeString("en-US", options);
-  } catch {
-    return date.toLocaleTimeString("en-US", { ...options, timeZone: "UTC" });
-  }
 }
 
 export const REMINDER_BATCH_MAX_TARGETS = 100;
@@ -283,6 +265,28 @@ async function activeReminderSmsSender(
   return smsSenders.length === 1 ? smsSenders[0]! : null;
 }
 
+/**
+ * Send a reminder email fenced by its claim (see
+ * sendClaimedAppointmentReminderEmail): a claim that was taken over never
+ * sends, and a failure after the provider call is an unknown outcome.
+ */
+async function sendFencedReminderEmail(
+  practiceId: string,
+  claim: AppointmentReminderClaim,
+  email: Parameters<typeof sendAppointmentReminder>[0],
+  providerCall: { called: boolean } = { called: false },
+): Promise<Awaited<ReturnType<typeof sendAppointmentReminder>> | "superseded"> {
+  const sent = await sendClaimedAppointmentReminderEmail(
+    (fn) => withDurableSmsCommunication(practiceId, fn),
+    { practiceId, claim },
+    () => {
+      providerCall.called = true;
+      return sendAppointmentReminder(email);
+    },
+  );
+  return sent.status === "called" ? sent.result : "superseded";
+}
+
 export const notificationsRouter = createRouter({
   sendAppointmentReminder: protectedProcedure
     .use(requireRole("admin", "veterinarian", "front_desk"))
@@ -382,54 +386,61 @@ export const notificationsRouter = createRouter({
 
       // Manual send: respect the client's preferred channel + SMS consent.
       // Quiet hours don't apply — this is a deliberate staff action.
-      let reminderCommunicationId: string | null = null;
-      let durableSmsCommunication = false;
+      let reminderClaim: AppointmentReminderClaim | null = null;
+      let failureChannel: "sms" | "email" = "email";
+      // Shared with the hourly sweep so a resend under the same provider
+      // idempotency key is byte-identical.
+      const message = appointmentReminderMessageFields({
+        startTime: appt.startTime,
+        timeZone: appt.practiceTimezone,
+        patientName: appt.patientName,
+        practiceName: appt.practiceName,
+        practicePhone: appt.practicePhone,
+      });
+      const reminderDate = message.appointmentDate;
       const logReminder = async (
         channel: "sms" | "email",
-        providerMessageId?: string,
-        status: "sent" | "failed" = "sent",
+        requested: "sent" | "failed" | "unknown",
+        detail: { providerMessageId?: string; reason?: string } = {},
       ) => {
+        const result = appointmentReminderResultForClaim(
+          reminderClaim!,
+          requested,
+        );
+        const label =
+          result === "sent"
+            ? "sent"
+            : result === "failed"
+              ? "failed"
+              : "delivery unknown";
         const project = (tx: Pick<Database, "update">) =>
-          tx
-            .update(communications)
-            .set({
-              channel,
-              content: `Appointment reminder ${status === "sent" ? "sent" : "failed"} for ${appt.patientName} on ${formatDate(
-                appt.startTime,
-                appt.practiceTimezone,
-              )}`,
-              status,
-              providerMessageId,
-            })
-            .where(
-              and(
-                eq(communications.id, reminderCommunicationId!),
-                eq(communications.practiceId, ctx.practiceId),
-                or(
-                  eq(communications.status, "pending"),
-                  and(
-                    eq(communications.status, "sent"),
-                    providerMessageId
-                      ? eq(communications.providerMessageId, providerMessageId)
-                      : undefined,
-                  ),
-                ),
-                isNull(communications.deletedAt),
-              ),
-            );
-        if (!durableSmsCommunication) return project(ctx.db);
+          recordAppointmentReminderOutcome(tx, {
+            practiceId: ctx.practiceId,
+            claim: reminderClaim!,
+            channel,
+            result,
+            source: "staff",
+            content: `Appointment reminder ${label} for ${appt.patientName} on ${reminderDate}${result !== "sent" && detail.reason ? `: ${detail.reason}` : ""}`,
+            providerMessageId: detail.providerMessageId,
+          });
         try {
           return await withDurableSmsCommunication(ctx.practiceId, project);
         } catch (error) {
           await alertOps(
-            "SMS appointment reminder projection failed",
-            `practice=${ctx.practiceId} communication=${reminderCommunicationId ?? "unknown"} source=appointment_reminder status=${status}`,
+            "Appointment reminder projection failed",
+            `practice=${ctx.practiceId} communication=${reminderClaim?.id ?? "unknown"} source=appointment_reminder status=${result}`,
           ).catch(() => undefined);
           throw error;
         }
       };
 
+      let emailGatePassed = false;
+      let emailAccepted = false;
+      let emailOutcomeUnknown = false;
+      let superseded = false;
+      let smsFailureReason: string | null = null;
       const sendEmail = async () => {
+        failureChannel = "email";
         const clientEmail = normalizeEmailSuppressionAddress(appt.clientEmail);
         if (!clientEmail) {
           throw new TRPCError({
@@ -445,24 +456,49 @@ export const notificationsRouter = createRouter({
             ),
           });
         }
-        await assertStaffOutboundEmailAllowed(ctx, "appointment_reminder");
-        const result = await sendAppointmentReminder({
-          to: clientEmail,
-          clientName: `${appt.clientFirstName} ${appt.clientLastName}`,
-          patientName: appt.patientName ?? "Unknown",
-          appointmentDate: formatDate(appt.startTime, appt.practiceTimezone),
-          appointmentTime: formatTime(appt.startTime, appt.practiceTimezone),
-          practiceName: practiceDisplayName(appt.practiceName),
-          practicePhone: appt.practicePhone ?? undefined,
-        });
-        if (!result.success) {
-          await logReminder("email", undefined, "failed");
+        if (!emailGatePassed) {
+          await assertStaffOutboundEmailAllowed(ctx, "appointment_reminder");
+          emailGatePassed = true;
+        }
+        const result = await sendFencedReminderEmail(
+          ctx.practiceId,
+          reminderClaim!,
+          {
+            to: clientEmail,
+            ...appointmentReminderEmailFields({
+              startTime: appt.startTime,
+              timeZone: appt.practiceTimezone,
+              clientFirstName: appt.clientFirstName,
+              clientLastName: appt.clientLastName,
+              patientName: appt.patientName,
+              practiceName: appt.practiceName,
+              practicePhone: appt.practicePhone,
+            }),
+            idempotencyKey: appointmentReminderEmailIdempotencyKey(
+              appt,
+              reminderClaim!.attempt,
+            ),
+          },
+        );
+        if (result === "superseded") {
+          superseded = true;
           throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: result.error ?? "Could not send email reminder",
+            code: "CONFLICT",
+            message:
+              "Another send took over this reminder. Check the client's timeline before sending again.",
           });
         }
-        await logReminder("email", result.id);
+        if (!result.success) {
+          emailOutcomeUnknown = result.outcome === "outcome_unknown";
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: emailReminderFailureReason(result),
+          });
+        }
+        // The provider accepted it: never let a projection error below turn
+        // a delivered reminder into a "failed" one that invites a duplicate.
+        emailAccepted = true;
+        await logReminder("email", "sent", { providerMessageId: result.id });
       };
 
       let channel = pickReminderChannel({
@@ -524,6 +560,10 @@ export const notificationsRouter = createRouter({
             ),
           });
         }
+        // Run the sender gate before claiming so a blocked send never leaves a
+        // reminder row behind.
+        await assertStaffOutboundEmailAllowed(ctx, "appointment_reminder");
+        emailGatePassed = true;
       }
 
       const claimOptions = {
@@ -534,59 +574,120 @@ export const notificationsRouter = createRouter({
         patientName: appt.patientName,
         startTime: new Date(appt.startTime),
       };
-      durableSmsCommunication = channel === "sms";
-      reminderCommunicationId = durableSmsCommunication
-        ? await withDurableSmsCommunication(ctx.practiceId, (tx) =>
-            claimAppointmentReminderCommunication(tx, claimOptions),
-          )
-        : await claimAppointmentReminderCommunication(ctx.db, claimOptions);
-      if (!reminderCommunicationId) {
+      // The claim and every outcome commit on their own, outside the request
+      // transaction: once a provider may have sent the reminder, a rolled-back
+      // request must not erase the claim and invite a duplicate.
+      reminderClaim = await withDurableSmsCommunication(ctx.practiceId, (tx) =>
+        claimAppointmentReminderCommunication(tx, claimOptions),
+      );
+      if (!reminderClaim) {
         throw new TRPCError({
           code: "CONFLICT",
-          message:
-            "A reminder for this appointment is already pending or was already sent.",
+          message: await appointmentReminderConflictMessage(ctx.db, {
+            practiceId: ctx.practiceId,
+            appointmentId: appt.id,
+            startTime: new Date(appt.startTime),
+          }),
         });
       }
 
-      if (channel === "sms") {
-        const result = await sendAppointmentReminderSms({
-          to: appt.clientPhone!,
-          patientName: appt.patientName ?? "Unknown",
-          appointmentDate: formatDate(appt.startTime, appt.practiceTimezone),
-          appointmentTime: formatTime(appt.startTime, appt.practiceTimezone),
-          practiceName: practiceDisplayName(appt.practiceName),
-          practicePhone: appt.practicePhone ?? undefined,
-          practiceId: ctx.practiceId,
-          locationId: smsSender!.locationId,
-          clientId: appt.clientId!,
-          communicationId: reminderCommunicationId,
-          source: "appointment_reminder",
-          sourceId: appointmentReminderDedupeKey(appt),
-          idempotencyKey: appointmentReminderSmsIdempotencyKey(appt),
-        });
-        if (result.success) {
-          await logReminder("sms", result.sid);
-          return { success: true, channel: "sms" as const };
+      // From here on the claim must end as sent, failed, or delivery unknown,
+      // never a stray pending row: a pending row blocks every later reminder
+      // for the visit. An SMS whose provider outcome is unknown stays pending
+      // (marked unknown) until the provider result is reconciled.
+      let preservePendingSmsOutcome = false;
+      try {
+        // A reclaimed pending email (for example an interrupted SMS-to-email
+        // fallback) is resent by email under its own key, never as a text.
+        if (reminderClaim.channel === "sms") {
+          failureChannel = "sms";
+          preservePendingSmsOutcome = true;
+          let result:
+            | Awaited<ReturnType<typeof sendAppointmentReminderSms>>
+            | {
+                success: false;
+                outcome: "outcome_unknown";
+                error: string;
+              };
+          try {
+            result = await sendAppointmentReminderSms({
+              to: appt.clientPhone!,
+              ...message,
+              practiceId: ctx.practiceId,
+              locationId: smsSender!.locationId,
+              clientId: appt.clientId!,
+              communicationId: reminderClaim.id,
+              source: "appointment_reminder",
+              sourceId: appointmentReminderDedupeKey(appt),
+              idempotencyKey: appointmentReminderSmsIdempotencyKey(
+                appt,
+                reminderClaim.attempt,
+              ),
+              reminderClaimToken: reminderClaim.claimToken,
+            });
+          } catch (error) {
+            // The SMS may have reached the provider. Record it as unknown;
+            // its durable attempt keeps any retry on the same key.
+            console.error("[appointment-reminder] SMS send threw:", error);
+            result = {
+              success: false,
+              outcome: "outcome_unknown",
+              error: "SMS dispatch ended without a known outcome",
+            };
+          }
+          if (result.success) {
+            await logReminder("sms", "sent", { providerMessageId: result.sid });
+            preservePendingSmsOutcome = false;
+            return { success: true, channel: "sms" as const };
+          }
+          const reason = smsReminderFailureReason(result);
+          if (result.outcome === "outcome_unknown") {
+            await logReminder("sms", "unknown", { reason }).catch(
+              () => undefined,
+            );
+            throw new TRPCError({ code: "BAD_REQUEST", message: reason });
+          }
+          preservePendingSmsOutcome = false;
+          smsFailureReason = reason;
+          // SMS blocked (e.g. opted out) — fall back to email if we can.
+          if (normalizeEmailSuppressionAddress(appt.clientEmail)) {
+            failureChannel = "email";
+            const switched = await withDurableSmsCommunication(
+              ctx.practiceId,
+              (tx) =>
+                switchAppointmentReminderClaimToEmail(tx, {
+                  practiceId: ctx.practiceId,
+                  claim: reminderClaim!,
+                }),
+            );
+            if (!switched) {
+              superseded = true;
+              throw new TRPCError({ code: "BAD_REQUEST", message: reason });
+            }
+            await sendEmail();
+            return { success: true, channel: "email" as const };
+          }
+          throw new TRPCError({ code: "BAD_REQUEST", message: reason });
         }
-        // SMS blocked (e.g. opted out) — fall back to email if we can.
-        if (
-          result.outcome !== "outcome_unknown" &&
-          normalizeEmailSuppressionAddress(appt.clientEmail)
-        ) {
-          await sendEmail();
-          return { success: true, channel: "email" as const };
-        }
-        if (result.outcome === "definite_failure") {
-          await logReminder("sms", undefined, "failed");
-        }
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: result.error ?? "Could not send SMS reminder",
-        });
-      }
 
-      await sendEmail();
-      return { success: true, channel: "email" as const };
+        await sendEmail();
+        return { success: true, channel: "email" as const };
+      } catch (error) {
+        if (!preservePendingSmsOutcome && !emailAccepted && !superseded) {
+          const reason = reminderFailureReason(error);
+          await logReminder(
+            failureChannel,
+            emailOutcomeUnknown ? "unknown" : "failed",
+            {
+              reason:
+                smsFailureReason && failureChannel === "email"
+                  ? `Text message: ${smsFailureReason} Email fallback: ${reason}`
+                  : reason,
+            },
+          ).catch(() => undefined);
+        }
+        throw error;
+      }
     }),
 
   sendInvoiceEmail: protectedProcedure
@@ -922,87 +1023,133 @@ export const notificationsRouter = createRouter({
       };
 
       for (const appt of appts) {
-        const appointmentDate = formatDate(
-          appt.startTime,
-          appt.practiceTimezone,
-        );
-        const appointmentTime = formatTime(
-          appt.startTime,
-          appt.practiceTimezone,
-        );
+        // Shared with the hourly sweep so a resend under the same provider
+        // idempotency key is byte-identical.
+        const message = appointmentReminderMessageFields({
+          startTime: appt.startTime,
+          timeZone: appt.practiceTimezone,
+          patientName: appt.patientName,
+          practiceName: appt.practiceName,
+          practicePhone: appt.practicePhone,
+        });
+        const appointmentDate = message.appointmentDate;
 
-        let reminderCommunicationId: string | null = null;
-        let durableSmsCommunication = false;
+        let reminderClaim: AppointmentReminderClaim | null = null;
         const logReminder = async (
           channel: "sms" | "email",
-          providerMessageId?: string,
-          status: "sent" | "failed" = "sent",
+          requested: "sent" | "failed" | "unknown",
+          detail: { providerMessageId?: string; reason?: string } = {},
         ) => {
+          const result = appointmentReminderResultForClaim(
+            reminderClaim!,
+            requested,
+          );
+          const label =
+            result === "sent"
+              ? "sent"
+              : result === "failed"
+                ? "failed"
+                : "delivery unknown";
           const project = (tx: Pick<Database, "update">) =>
-            tx
-              .update(communications)
-              .set({
-                channel,
-                content: `Reminder ${status === "sent" ? "sent" : "failed"} for ${appt.patientName} on ${appointmentDate}`,
-                status,
-                providerMessageId,
-              })
-              .where(
-                and(
-                  eq(communications.id, reminderCommunicationId!),
-                  eq(communications.practiceId, ctx.practiceId),
-                  or(
-                    eq(communications.status, "pending"),
-                    and(
-                      eq(communications.status, "sent"),
-                      providerMessageId
-                        ? eq(
-                            communications.providerMessageId,
-                            providerMessageId,
-                          )
-                        : undefined,
-                    ),
-                  ),
-                  isNull(communications.deletedAt),
-                ),
-              );
-          if (!durableSmsCommunication) return project(ctx.db);
+            recordAppointmentReminderOutcome(tx, {
+              practiceId: ctx.practiceId,
+              claim: reminderClaim!,
+              channel,
+              result,
+              source: "staff",
+              content: `Reminder ${label} for ${appt.patientName} on ${appointmentDate}${result !== "sent" && detail.reason ? `: ${detail.reason}` : ""}`,
+              providerMessageId: detail.providerMessageId,
+            });
           try {
             return await withDurableSmsCommunication(ctx.practiceId, project);
           } catch (error) {
             await alertOps(
-              "SMS appointment reminder projection failed",
-              `practice=${ctx.practiceId} communication=${reminderCommunicationId ?? "unknown"} source=appointment_reminder status=${status}`,
+              "Appointment reminder projection failed",
+              `practice=${ctx.practiceId} communication=${reminderClaim?.id ?? "unknown"} source=appointment_reminder status=${result}`,
             ).catch(() => undefined);
             throw error;
           }
         };
 
-        const sendEmail = async (): Promise<boolean> => {
+        type EmailAttempt =
+          | { result: "sent" }
+          | { result: "superseded" }
+          | { result: "failed" | "unknown"; reason: string };
+        const sendEmail = async (): Promise<EmailAttempt> => {
           const clientEmail = normalizeEmailSuppressionAddress(
             appt.clientEmail,
           );
-          if (!clientEmail) return false;
-          if (appt.emailSuppressionReason) return false;
+          if (!clientEmail) {
+            return {
+              result: "failed",
+              reason: "Client does not have an email address on file",
+            };
+          }
+          if (appt.emailSuppressionReason) {
+            return {
+              result: "failed",
+              reason: emailSuppressionSendBlockMessage(
+                appt.emailSuppressionReason,
+              ),
+            };
+          }
+          let emailAccepted = false;
+          const providerCall = { called: false };
           try {
             await assertStaffOutboundEmailAllowed(
               ctx,
               "appointment_reminder",
             );
-            const result = await sendAppointmentReminder({
-              to: clientEmail,
-              clientName: `${appt.clientFirstName} ${appt.clientLastName}`,
-              patientName: appt.patientName ?? "Unknown",
-              appointmentDate,
-              appointmentTime,
-              practiceName: practiceDisplayName(appt.practiceName),
-              practicePhone: appt.practicePhone ?? undefined,
+            const result = await sendFencedReminderEmail(
+              ctx.practiceId,
+              reminderClaim!,
+              {
+                to: clientEmail,
+                ...appointmentReminderEmailFields({
+                  startTime: appt.startTime,
+                  timeZone: appt.practiceTimezone,
+                  clientFirstName: appt.clientFirstName,
+                  clientLastName: appt.clientLastName,
+                  patientName: appt.patientName,
+                  practiceName: appt.practiceName,
+                  practicePhone: appt.practicePhone,
+                }),
+                idempotencyKey: appointmentReminderEmailIdempotencyKey(
+                  appt,
+                  reminderClaim!.attempt,
+                ),
+              },
+              providerCall,
+            );
+            if (result === "superseded") return { result: "superseded" };
+            if (!result.success) {
+              return {
+                result:
+                  result.outcome === "outcome_unknown" ? "unknown" : "failed",
+                reason: emailReminderFailureReason(result),
+              };
+            }
+            // The provider accepted it: a projection error below must not
+            // turn a delivered reminder into a "failed" one.
+            emailAccepted = true;
+            await logReminder("email", "sent", {
+              providerMessageId: result.id,
             });
-            if (!result.success) return false;
-            await logReminder("email", result.id);
-            return true;
-          } catch {
-            return false;
+            return { result: "sent" };
+          } catch (error) {
+            if (emailAccepted) {
+              console.error(
+                "[notifications] accepted reminder email projection failed:",
+                error,
+              );
+              return { result: "sent" };
+            }
+            // Once the provider was called, an error is never proof that the
+            // email did not go out.
+            return {
+              result: providerCall.called ? "unknown" : "failed",
+              reason: reminderFailureReason(error),
+            };
           }
         };
 
@@ -1049,41 +1196,42 @@ export const notificationsRouter = createRouter({
           patientName: appt.patientName,
           startTime: new Date(appt.startTime),
         };
-        durableSmsCommunication = channel === "sms";
-        reminderCommunicationId = durableSmsCommunication
-          ? await withDurableSmsCommunication(ctx.practiceId, (tx) =>
-              claimAppointmentReminderCommunication(tx, claimOptions),
-            )
-          : await claimAppointmentReminderCommunication(ctx.db, claimOptions);
-        if (!reminderCommunicationId) {
+        // Committed outside the request transaction (see sendAppointmentReminder).
+        reminderClaim = await withDurableSmsCommunication(
+          ctx.practiceId,
+          (tx) => claimAppointmentReminderCommunication(tx, claimOptions),
+        );
+        if (!reminderClaim) {
           failed++;
           continue;
         }
 
-        if (channel === "sms") {
+        // A reclaimed pending email (for example an interrupted SMS-to-email
+        // fallback) is resent by email under its own key, never as a text.
+        if (reminderClaim.channel === "sms") {
           let result:
             | Awaited<ReturnType<typeof sendAppointmentReminderSms>>
             | {
                 success: false;
-                outcome: "definite_failure";
+                outcome: "outcome_unknown";
                 replayed: false;
                 error: string;
               };
           try {
             result = await sendAppointmentReminderSms({
               to: appt.clientPhone!,
-              patientName: appt.patientName ?? "Unknown",
-              appointmentDate,
-              appointmentTime,
-              practiceName: practiceDisplayName(appt.practiceName),
-              practicePhone: appt.practicePhone ?? undefined,
+              ...message,
               practiceId: ctx.practiceId,
               locationId: smsSender!.locationId,
               clientId: appt.clientId!,
-              communicationId: reminderCommunicationId,
+              communicationId: reminderClaim.id,
               source: "appointment_reminder",
               sourceId: appointmentReminderDedupeKey(appt),
-              idempotencyKey: appointmentReminderSmsIdempotencyKey(appt),
+              idempotencyKey: appointmentReminderSmsIdempotencyKey(
+                appt,
+                reminderClaim.attempt,
+              ),
+              reminderClaimToken: reminderClaim.claimToken,
             });
           } catch (error) {
             result = {
@@ -1097,35 +1245,64 @@ export const notificationsRouter = createRouter({
             };
           }
           if (result.success) {
-            await logReminder("sms", result.sid);
+            await logReminder("sms", "sent", { providerMessageId: result.sid });
             sent++;
             continue;
           }
 
-          if (result.outcome !== "outcome_unknown" && (await sendEmail())) {
-            sent++;
+          const smsReason = smsReminderFailureReason(result);
+          if (result.outcome === "outcome_unknown") {
+            // Keep the claim pending (marked unknown) until reconciled.
+            await logReminder("sms", "unknown", { reason: smsReason }).catch(
+              () => undefined,
+            );
+            failed++;
             continue;
           }
 
-          if (result.outcome === "definite_failure") {
-            await logReminder("sms", undefined, "failed");
+          // SMS blocked (e.g. opted out) — fall back to email if we can.
+          if (!normalizeEmailSuppressionAddress(appt.clientEmail)) {
+            await logReminder("sms", "failed", { reason: smsReason });
+            failed++;
+            continue;
           }
+          const switched = await withDurableSmsCommunication(
+            ctx.practiceId,
+            (tx) =>
+              switchAppointmentReminderClaimToEmail(tx, {
+                practiceId: ctx.practiceId,
+                claim: reminderClaim!,
+              }),
+          );
+          const email: EmailAttempt = switched
+            ? await sendEmail()
+            : { result: "superseded" };
+          if (email.result === "sent") {
+            sent++;
+            continue;
+          }
+          if (email.result === "superseded") {
+            failed++;
+            continue;
+          }
+
+          await logReminder("email", email.result, {
+            reason: `Text message: ${smsReason} Email fallback: ${email.reason}`,
+          });
 
           failed++;
           continue;
         }
 
-        if (channel === "email") {
-          if (await sendEmail()) {
-            sent++;
-          } else {
-            await logReminder("email", undefined, "failed");
-            failed++;
-          }
-          continue;
+        const email = await sendEmail();
+        if (email.result === "sent") {
+          sent++;
+        } else if (email.result === "superseded") {
+          failed++;
+        } else {
+          await logReminder("email", email.result, { reason: email.reason });
+          failed++;
         }
-
-        failed++;
       }
 
       return { sent, failed };

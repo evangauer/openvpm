@@ -1643,6 +1643,47 @@ describe("appointments target safety", () => {
     );
   });
 
+  it("clamps monthly series to month ends at the practice's local time", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [{ id: PATIENT_ID, clientId: CLIENT_ID }],
+        [{ id: CLIENT_ID }],
+        [{ timezone: "America/New_York" }],
+      ],
+      insertedRows: [{ id: SERIES_ID }],
+    });
+
+    await expect(
+      callerWithDb(db).createRecurring({
+        patientId: PATIENT_ID,
+        clientId: CLIENT_ID,
+        // 9:00-9:30 AM EST on Dec 31, 2026.
+        startTime: "2026-12-31T14:00:00.000Z",
+        endTime: "2026-12-31T14:30:00.000Z",
+        frequency: "monthly",
+        interval: 1,
+        occurrences: 4,
+      }),
+    ).resolves.toEqual({ seriesId: SERIES_ID, created: 4, skipped: 0 });
+
+    expect(insertValues).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ endDate: "2027-03-31" }),
+    );
+    const occurrences = (
+      insertValues.mock.calls.slice(1) as unknown as Array<
+        [{ startTime: Date; endTime: Date }]
+      >
+    ).map(([row]) => [row.startTime.toISOString(), row.endTime.toISOString()]);
+    expect(occurrences).toEqual([
+      ["2026-12-31T14:00:00.000Z", "2026-12-31T14:30:00.000Z"],
+      ["2027-01-31T14:00:00.000Z", "2027-01-31T14:30:00.000Z"],
+      ["2027-02-28T14:00:00.000Z", "2027-02-28T14:30:00.000Z"],
+      // 9:00 AM EDT after the Mar 14, 2027 DST change.
+      ["2027-03-31T13:00:00.000Z", "2027-03-31T13:30:00.000Z"],
+    ]);
+  });
+
   it("creates recurring appointments with normalized notes", async () => {
     const { db, insertValues, transaction } = createDb({
       selectResults: [
@@ -1851,9 +1892,10 @@ describe("appointments display join scoping", () => {
 
   it("creates recurring appointments from the practice timezone wall clock", () => {
     expect(source).toContain("const timezone = await practiceTimeZone(txCtx)");
-    expect(source).toContain("resolveRecurrenceTimeZone");
-    expect(source).toContain("recurrenceBaseParts");
-    expect(source).toContain("dateInputTimeUtcInstant(");
+    expect(source).toContain('from "@/lib/scheduling/recurrence"');
+    expect(source).toContain("resolveRecurrenceTimeZone(timezone)");
+    expect(source).not.toContain("setUTCMonth");
+    expect(source).not.toContain("setUTCFullYear");
     expect(source).toContain(
       "formatDateInputForTimeZone(\n              lastOccurrenceDate",
     );

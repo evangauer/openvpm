@@ -10,6 +10,7 @@ export type CommunicationStatusInput = {
   channel?: string | null;
   direction?: string | null;
   readAt?: Date | string | null;
+  reminderOutcome?: string | null;
 };
 
 const communicationStatusLabels: Record<CommunicationStatus, string> = {
@@ -26,6 +27,11 @@ export function communicationStatusLabel(
 ): string {
   const status = input.status?.trim();
   if (!status) return "";
+
+  // The provider never confirmed this send; it may have been delivered.
+  if (status === "pending" && input.reminderOutcome === "outcome_unknown") {
+    return "Delivery unknown";
+  }
 
   if (input.direction === "inbound") {
     if (input.readAt || status === "read") return "Read by clinic";

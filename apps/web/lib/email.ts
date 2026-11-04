@@ -57,9 +57,13 @@ export interface EmailProviderEvidence {
   failureCode?:
     | "provider_not_configured"
     | "provider_rejected"
+    | "provider_unavailable"
     | "send_timeout"
     | "provider_exception"
-    | "missing_provider_id";
+    | "missing_provider_id"
+    | "idempotency_conflict";
+  /** HTTP status of a provider error answer, when there was one. */
+  providerStatus?: number;
 }
 
 function emailSendTimeoutMessage(): string {
@@ -229,12 +233,39 @@ async function dispatchEmail(
           : error,
       );
       const timedOut = controller.signal.aborted;
+      // An idempotency conflict means an earlier request with this key exists
+      // (or is still running), so the email may already have been sent.
+      const idempotencyConflict =
+        error.name === "invalid_idempotent_request" ||
+        error.name === "concurrent_idempotent_requests";
+      // Only a changed payload under a reused key means "can't be resent
+      // safely"; a concurrent request is still in flight and will settle.
+      const payloadConflict = error.name === "invalid_idempotent_request";
+      // The SDK turns network errors, unreadable success bodies, and gateway
+      // failures into an error result instead of throwing. Without a 4xx
+      // answer the request may have been accepted, so only a 4xx (including
+      // 429, which Resend rejects before sending) is a definite failure.
+      const statusCode = (error as { statusCode?: number | null }).statusCode;
+      const noDefiniteAnswer =
+        typeof statusCode !== "number" || statusCode >= 500 || statusCode < 400;
       return {
         success: false,
         provider,
+        ...(typeof statusCode === "number" ? { providerStatus: statusCode } : {}),
         error: timedOut ? emailSendTimeoutMessage() : error.message,
-        outcome: timedOut ? "outcome_unknown" : "definite_failure",
-        failureCode: timedOut ? "send_timeout" : "provider_rejected",
+        outcome:
+          timedOut || idempotencyConflict || noDefiniteAnswer
+            ? "outcome_unknown"
+            : "definite_failure",
+        failureCode: timedOut
+          ? "send_timeout"
+          : payloadConflict
+            ? "idempotency_conflict"
+            : idempotencyConflict
+              ? "provider_unavailable"
+            : noDefiniteAnswer
+              ? "provider_unavailable"
+              : "provider_rejected",
       };
     }
 
@@ -310,7 +341,19 @@ export async function sendAppointmentReminder(data: {
   practiceName: string;
   practicePhone?: string;
   practiceAddress?: string;
-}): Promise<{ success: boolean; id?: string; error?: string }> {
+  /** Stable per send attempt, so a replayed request never emails twice. */
+  idempotencyKey: string;
+}): Promise<{
+  success: boolean;
+  id?: string;
+  error?: string;
+  outcome: EmailProviderOutcome;
+  /**
+   * The provider refused this idempotency key: an earlier request under it
+   * exists (or is still running) and may have sent the email.
+   */
+  idempotencyConflict?: boolean;
+}> {
   const body = `
     <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${data.clientName},</p>
     <p style="margin:0 0 24px;color:#111827;font-size:15px;line-height:1.6;">This is a friendly reminder about an upcoming appointment for <strong>${data.patientName}</strong>.</p>
@@ -336,13 +379,30 @@ export async function sendAppointmentReminder(data: {
 
   const html = emailLayout(data.practiceName, body, footer);
 
-  const result = await sendEmail({
+  // Callers must know when the provider may have accepted the email, so the
+  // reminder is never retried after a timeout or idempotency conflict.
+  const result = await dispatchEmail({
     to: data.to,
     subject: `Appointment Reminder for ${data.patientName} – ${data.appointmentDate}`,
     html,
+    idempotencyKey: data.idempotencyKey,
   });
 
-  return { success: result.success, id: result.id, error: result.error };
+  return {
+    success: result.success,
+    id: result.id,
+    error: result.error,
+    ...(result.failureCode === "idempotency_conflict"
+      ? { idempotencyConflict: true }
+      : {}),
+    // A 429 rejects this request only. It says nothing about an earlier
+    // request under the same key, so calling it a failure would invite a
+    // retry under a new key; a retry under this same key is safe.
+    outcome:
+      result.outcome === "definite_failure" && result.providerStatus === 429
+        ? "outcome_unknown"
+        : result.outcome,
+  };
 }
 
 // ---------------------------------------------------------------------------
