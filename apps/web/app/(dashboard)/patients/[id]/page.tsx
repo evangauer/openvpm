@@ -45,6 +45,7 @@ import {
 } from "@/lib/records/patient-note-policy";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
+import { ClientAccountBalance } from "@/components/clients/client-account-balance";
 import { RecentClinicalItems } from "@/components/records/recent-clinical-items";
 import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
 import { cn } from "@/lib/utils";
@@ -1043,6 +1044,11 @@ export default function PatientDetailPage() {
                   {patient.clientFirstName} {patient.clientLastName}
                 </button>
               )}
+              {patient.clientId ? (
+                <div className="mt-2">
+                  <ClientAccountBalance clientId={patient.clientId} />
+                </div>
+              ) : null}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">

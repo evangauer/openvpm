@@ -38,6 +38,7 @@ import {
   formatClinicalDateTime,
 } from "@/lib/records/clinical-dates";
 import { communicationStatusLabel } from "@/lib/communications/status";
+import { ClientAccountBalance } from "@/components/clients/client-account-balance";
 
 const speciesEmoji: Record<string, string> = PATIENT_SPECIES_EMOJI;
 
@@ -187,6 +188,9 @@ export default function ClientDetailPage() {
             <h2 className="font-heading text-xl font-semibold">
               {client.firstName} {client.lastName}
             </h2>
+            <div className="mt-2">
+              <ClientAccountBalance clientId={client.id} />
+            </div>
             <div className="mt-2 flex flex-col gap-1 text-sm text-muted-foreground">
               {client.email && (
                 <span className="flex items-center gap-2">

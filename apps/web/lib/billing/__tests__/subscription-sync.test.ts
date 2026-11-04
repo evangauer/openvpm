@@ -8,10 +8,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/stripe", () => ({
-  stripe: {
+  subscriptionStripe: vi.fn(() => ({
     subscriptions: { retrieve: mocks.retrieve },
     subscriptionItems: { update: mocks.update, create: mocks.create },
-  },
+  })),
 }));
 
 import {

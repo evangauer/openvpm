@@ -7,6 +7,8 @@ import {
   AgentBillingAccessError,
   AgentRateLimitedError,
   AgentRecoveryHoldError,
+  configuredModel,
+  isAgentConfigured,
   runAgent,
 } from "../runner";
 
@@ -96,6 +98,7 @@ function deferred<T = void>() {
 }
 
 beforeEach(() => {
+  vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "false");
   vi.stubEnv("AI_MODEL", "claude-sonnet-4-6");
   vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
 
@@ -114,6 +117,52 @@ beforeEach(() => {
     text: " Done ",
     steps: [{}],
     finishReason: "stop",
+  });
+});
+
+describe("agent demo isolation", () => {
+  it.each(["true", " true ", "\ntrue\t"])("blocks configured credentials before provider or tenant work for %j", async (flag) => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", flag);
+    vi.stubEnv("GOOGLE_VERTEX_PROJECT", "synthetic-project");
+    vi.stubEnv("GOOGLE_VERTEX_LOCATION", "global");
+    vi.stubEnv("GOOGLE_CLIENT_EMAIL", "synthetic@example.test");
+    vi.stubEnv("GOOGLE_PRIVATE_KEY", "synthetic-private-key");
+    for (const model of ["claude-sonnet-4-6", "gemini-3.5-flash"]) {
+      vi.stubEnv("AI_MODEL", model);
+      expect(isAgentConfigured()).toBe(false);
+      expect(() => configuredModel()).toThrow(AgentNotConfiguredError);
+      await expect(runAgent({ instruction: "Synthetic instruction", context, model })).rejects.toBeInstanceOf(AgentNotConfiguredError);
+    }
+    expect(mocks.createAnthropic).not.toHaveBeenCalled();
+    expect(mocks.createVertex).not.toHaveBeenCalled();
+    expect(mocks.externalAccountFromJson).not.toHaveBeenCalled();
+    expect(mocks.getVercelOidcToken).not.toHaveBeenCalled();
+    expect(mocks.generateText).not.toHaveBeenCalled();
+    expect(mocks.lockPracticeForExternalSideEffects).not.toHaveBeenCalled();
+    expect(mocks.readHostedAiAccess).not.toHaveBeenCalled();
+    expect(mocks.rateLimit).not.toHaveBeenCalled();
+    expect(mocks.recordUsage).not.toHaveBeenCalled();
+  });
+
+  it.each(["false", "", "TRUE", "1"])("preserves non-demo configuredModel behavior for %j", (flag) => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", flag);
+    expect(isAgentConfigured()).toBe(true);
+    expect(configuredModel()).toEqual({ provider: "anthropic", modelId: "claude-sonnet-4-6" });
+    expect(mocks.createAnthropic).toHaveBeenCalledOnce();
+  });
+
+  it("rechecks demo after awaited tenant work before resolving a paid model", async () => {
+    const lock = deferred<boolean>();
+    mocks.lockPracticeForExternalSideEffects.mockReturnValueOnce(lock.promise);
+    const run = runAgent({ instruction: "Synthetic instruction", context });
+    expect(mocks.lockPracticeForExternalSideEffects).toHaveBeenCalledOnce();
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+    lock.resolve(true);
+    await expect(run).rejects.toBeInstanceOf(AgentNotConfiguredError);
+    expect(mocks.createAnthropic).not.toHaveBeenCalled();
+    expect(mocks.createVertex).not.toHaveBeenCalled();
+    expect(mocks.generateText).not.toHaveBeenCalled();
+    expect(mocks.recordUsage).not.toHaveBeenCalled();
   });
 });
 
