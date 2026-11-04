@@ -103,8 +103,10 @@ export interface InvoiceData {
   tax: string;
   total: string;
   paidAmount: string;
-  /** Pre-formatted balance due (region-aware currency). Falls back to total − paid. */
-  balanceDue?: string;
+  /** Region-formatted sum of credits and write-offs from the invoice ledger. */
+  adjustedAmount: string;
+  /** Region-formatted authoritative balance from the invoice ledger. */
+  balanceDue: string;
 }
 
 export function generateInvoicePdf(data: InvoiceData): jsPDF {
@@ -239,12 +241,14 @@ export function generateInvoicePdf(data: InvoiceData): jsPDF {
     y += 6;
   }
 
+  // Keep the entire totals block together and clear of the footer.
+  y = ensureSpace(doc, y, 66);
   y += 4;
   drawLine(doc, y);
   y += 8;
 
   // --- Totals ----------------------------------------------------------------
-  const totalsX = PAGE_WIDTH - PAGE_MARGIN - 60;
+  const totalsX = PAGE_WIDTH - PAGE_MARGIN - 80;
   const totalsValX = PAGE_WIDTH - PAGE_MARGIN;
 
   doc.setFont(FONT, "normal");
@@ -276,17 +280,15 @@ export function generateInvoicePdf(data: InvoiceData): jsPDF {
   doc.text(data.paidAmount, totalsValX, y, { align: "right" });
   y += 6;
 
-  // Balance due — prefer the caller's region-formatted value; otherwise derive
-  // it from total − paid (legacy callers without a currency context).
-  const balanceParts = [data.total, data.paidAmount].map((v) =>
-    parseFloat(v.replace(/[^0-9.-]/g, "")),
-  );
-  const balance =
-    data.balanceDue ?? `$${(balanceParts[0]! - balanceParts[1]!).toFixed(2)}`;
+  doc.text("Credits / write-offs:", totalsX, y);
+  doc.text(data.adjustedAmount, totalsValX, y, { align: "right" });
+  y += 6;
+
+  // Use the server's ledger balance; never parse localized currency strings.
   doc.setFont(FONT, "bold");
   setColor(doc, COLOR_TEAL);
   doc.text("Balance Due:", totalsX, y);
-  doc.text(balance, totalsValX, y, { align: "right" });
+  doc.text(data.balanceDue, totalsValX, y, { align: "right" });
 
   // --- Footer ----------------------------------------------------------------
   const pageHeight = doc.internal.pageSize.getHeight();
