@@ -70,7 +70,7 @@ describe("known-device cookie", () => {
 
   it.each([
     ["a published placeholder", "docker-dev-secret-change-in-production"],
-    ["a short secret", "short-but-private"],
+    ["a short secret", "Xk7pQ2mR9vLw"],
   ])("is off in production with %s, so a forged cookie can't bypass the lock", (_label, secret) => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("NEXTAUTH_SECRET", secret);
@@ -86,7 +86,7 @@ describe("known-device cookie", () => {
 
   it("works on a short secret only while OPENVPM_ALLOW_SHORT_AUTH_SECRET is set", () => {
     vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("NEXTAUTH_SECRET", "short-but-private");
+    vi.stubEnv("NEXTAUTH_SECRET", "Xk7pQ2mR9vLw");
     vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
     const cookie = issueKnownDeviceCookie(null, "a@example.com", now)!;
     expect(knownDeviceForAccount(cookie.value, "a@example.com", now)).not.toBeNull();

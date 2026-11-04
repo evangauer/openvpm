@@ -187,9 +187,12 @@ their own credentials and never read the staff session.
 secret that is private but shorter than 32 characters, set
 `OPENVPM_ALLOW_SHORT_AUTH_SECRET=1` before releasing this check so sign-in keeps
 working while a rotation is scheduled. It never excuses a missing or published
-secret. While it is active the app logs a warning at startup and
-`/api/health` reports `authSecret` as an advisory (non-failing) check that says
-to rotate. Treat it as a short-lived exception, not a configuration.
+secret, nor one shorter than 10 characters or an obvious word like `secret`
+or `changeme`. While it is active the app logs the reason at startup and
+`/api/health` reports `authSecret` as a generic advisory (non-failing) check
+that says to rotate, without revealing that the secret is short. Treat it as a
+short-lived exception, not a configuration: anyone can test guesses against a
+short secret offline, because NextAuth's CSRF cookie is keyed with it.
 
 To rotate:
 

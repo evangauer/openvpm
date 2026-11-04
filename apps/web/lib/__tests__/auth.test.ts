@@ -120,16 +120,28 @@ describe("nextAuthSecretRejected", () => {
 });
 
 describe("OPENVPM_ALLOW_SHORT_AUTH_SECRET", () => {
+  it.each(["secret", "changeme", "auth-secret", "Short", "aaaaaaaaaaaa", "password"])(
+    "still refuses a guessable short secret (%s) with the override",
+    async (value) => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("NEXTAUTH_SECRET", value);
+      vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
+      const { nextAuthSecretRejected, nextAuthSecret } = await import("@/lib/auth-secret");
+      expect(nextAuthSecretRejected()).toBe(true);
+      expect(nextAuthSecret()).toBeUndefined();
+    },
+  );
+
   it.each(["1", "true"])(
     "lets production serve on a short secret when set to %j",
     (flag) => {
       vi.stubEnv("NODE_ENV", "production");
-      vi.stubEnv("NEXTAUTH_SECRET", "short-but-private");
+      vi.stubEnv("NEXTAUTH_SECRET", "Xk7pQ2mR9vLw");
       vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", flag);
 
       expect(nextAuthSecretRejected()).toBe(false);
       expect(nextAuthSecretShortOverrideActive()).toBe(true);
-      expect(nextAuthSecret()).toBe("short-but-private");
+      expect(nextAuthSecret()).toBe("Xk7pQ2mR9vLw");
     },
   );
 
@@ -156,7 +168,7 @@ describe("OPENVPM_ALLOW_SHORT_AUTH_SECRET", () => {
 
   it("is inactive when unset, falsy, or the secret is already strong", () => {
     vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("NEXTAUTH_SECRET", "short-but-private");
+    vi.stubEnv("NEXTAUTH_SECRET", "Xk7pQ2mR9vLw");
     vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "0");
     expect(nextAuthSecretRejected()).toBe(true);
 

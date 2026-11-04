@@ -261,7 +261,7 @@ describe("health route auth secret", () => {
 
   it("reports a short secret allowed by OPENVPM_ALLOW_SHORT_AUTH_SECRET as advisory", async () => {
     vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("NEXTAUTH_SECRET", "short-but-private");
+    vi.stubEnv("NEXTAUTH_SECRET", "Xk7pQ2mR9vLw");
     vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
 
     const response = await GET();
@@ -271,8 +271,9 @@ describe("health route auth secret", () => {
     expect(response.status).toBe(200);
     expect(json.ok).toBe(true);
     expect(json.checks.authSecret).toMatchObject({ ok: false, advisory: true });
-    expect(json.checks.authSecret.detail).toContain("Rotate it to a 32+");
-    expect(body).not.toContain("short-but-private");
+    expect(json.checks.authSecret.detail).toBe("Rotate NEXTAUTH_SECRET; see the server log.");
+    expect(body).not.toMatch(/shorter than|OPENVPM_ALLOW_SHORT_AUTH_SECRET/);
+    expect(body).not.toContain("Xk7pQ2mR9vLw");
   });
 
   it("keeps failing readiness for a published secret despite OPENVPM_ALLOW_SHORT_AUTH_SECRET", async () => {
@@ -304,8 +305,8 @@ describe("health route auth secret", () => {
       ok: false,
       advisory: true,
     });
-    expect(json.checks.portalSessionSecret.detail).toContain(
-      "keyed with NEXTAUTH_SECRET",
+    expect(json.checks.portalSessionSecret.detail).toBe(
+      "Replace or remove PORTAL_SESSION_SECRET; see the server log.",
     );
     expect(body).not.toContain("short-portal");
   });

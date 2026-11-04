@@ -429,7 +429,7 @@ describe("middleware NEXTAUTH_SECRET guard", () => {
 
   it("serves on a short secret when OPENVPM_ALLOW_SHORT_AUTH_SECRET is set", async () => {
     vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("NEXTAUTH_SECRET", "short-but-private");
+    vi.stubEnv("NEXTAUTH_SECRET", "Xk7pQ2mR9vLw");
     vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
     mocks.getToken.mockResolvedValue({ id: "user-1" });
 
@@ -439,7 +439,7 @@ describe("middleware NEXTAUTH_SECRET guard", () => {
 
     expect(mocks.getToken).toHaveBeenCalledWith({
       req,
-      secret: "short-but-private",
+      secret: "Xk7pQ2mR9vLw",
     });
     expect(response.status).toBe(200);
     expect(login.status).toBe(200);

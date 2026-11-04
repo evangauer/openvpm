@@ -46,7 +46,7 @@ import {
   nextAuthSecretProblem,
   nextAuthSecretRejected,
   nextAuthSecretShortOverrideActive,
-  shortAuthSecretOverrideMessage,
+  AUTH_SECRET_ROTATION_ADVISORY,
 } from "@/lib/auth-secret";
 import { portalSessionSecretProblem } from "@/lib/portal/tokens";
 
@@ -563,7 +563,9 @@ export async function GET() {
     checks.authSecret = {
       ok: false,
       advisory: true,
-      detail: shortAuthSecretOverrideMessage(),
+      // The public endpoint must not advertise that a short secret is in use;
+      // the specific reason is in the startup log.
+      detail: AUTH_SECRET_ROTATION_ADVISORY,
     };
   }
 
@@ -572,11 +574,7 @@ export async function GET() {
     checks.portalSessionSecret = {
       ok: false,
       advisory: true,
-      detail: `PORTAL_SESSION_SECRET is ${
-        portalSecretProblem === "too_short"
-          ? `shorter than ${MIN_AUTH_SECRET_LENGTH} characters`
-          : "a published placeholder value"
-      }, so portal metadata is keyed with NEXTAUTH_SECRET instead. Replace it (${AUTH_SECRET_SETUP_COMMAND}) or remove it.`,
+      detail: "Replace or remove PORTAL_SESSION_SECRET; see the server log.",
     };
   }
 

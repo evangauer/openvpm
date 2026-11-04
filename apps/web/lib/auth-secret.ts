@@ -54,6 +54,35 @@ export function nextAuthSecretProblem(): AuthSecretProblem | null {
  */
 export const SHORT_AUTH_SECRET_OVERRIDE_ENV = "OPENVPM_ALLOW_SHORT_AUTH_SECRET";
 
+// Even with the override, a secret this short or this guessable is refused:
+// NextAuth's CSRF cookie lets anyone test guesses offline without an account.
+export const SHORT_AUTH_SECRET_OVERRIDE_MIN_LENGTH = 10;
+const GUESSABLE_SHORT_AUTH_SECRETS = new Set([
+  "secret",
+  "secrets",
+  "password",
+  "changeme",
+  "change-me",
+  "nextauth",
+  "nextauth-secret",
+  "auth-secret",
+  "openvpm",
+  "openpims",
+  "development",
+  "test",
+  "testing",
+  "Xk7pQ2mR9vLw",
+]);
+
+function shortSecretGuessable(value: string): boolean {
+  const lower = value.toLowerCase();
+  return (
+    value.length < SHORT_AUTH_SECRET_OVERRIDE_MIN_LENGTH ||
+    GUESSABLE_SHORT_AUTH_SECRETS.has(lower) ||
+    new Set(lower).size < 4
+  );
+}
+
 function shortAuthSecretOverrideEnabled(): boolean {
   const value = process.env[SHORT_AUTH_SECRET_OVERRIDE_ENV]?.trim().toLowerCase();
   return value === "1" || value === "true";
@@ -65,9 +94,13 @@ export function nextAuthSecretShortOverrideActive(): boolean {
     authSecretStrengthEnforced() &&
     !hasBlankConfiguredNextAuthSecret() &&
     nextAuthSecretProblem() === "too_short" &&
-    shortAuthSecretOverrideEnabled()
+    shortAuthSecretOverrideEnabled() &&
+    !shortSecretGuessable(process.env.NEXTAUTH_SECRET?.trim() ?? "")
   );
 }
+
+/** Public wording: says rotation is due without revealing why. */
+export const AUTH_SECRET_ROTATION_ADVISORY = "Rotate NEXTAUTH_SECRET; see the server log.";
 
 export function shortAuthSecretOverrideMessage(): string {
   return `NEXTAUTH_SECRET is shorter than ${MIN_AUTH_SECRET_LENGTH} characters and is allowed only because ${SHORT_AUTH_SECRET_OVERRIDE_ENV} is set. Rotate it to a ${MIN_AUTH_SECRET_LENGTH}+ character secret (${AUTH_SECRET_SETUP_COMMAND}) and remove ${SHORT_AUTH_SECRET_OVERRIDE_ENV}.`;
