@@ -129,7 +129,8 @@ export const startHere: Guide[] = [
         title: "Some actions are protected",
         body: [
           "If a button is missing or read-only, check which role you're signed in with before assuming something is broken.",
-          "Only admins and front desk staff can change billing. Some clinical corrections and all refunds need an admin.",
+          "Only admins and front desk staff can change billing, including marking visit work as no charge and setting product prices or tax status. Some clinical corrections and all refunds need an admin.",
+          "The controlled-substance log is visible only to admins and veterinarians.",
         ],
       },
     ],

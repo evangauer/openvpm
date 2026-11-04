@@ -22,6 +22,9 @@ import {
   INVENTORY_SUPPLIER_NAME_MAX_LENGTH,
   INVENTORY_SUPPLIER_NOTES_MAX_LENGTH,
   INVENTORY_SUPPLIER_PHONE_MAX_LENGTH,
+  PRODUCT_PRICING_FIELDS,
+  PRODUCT_PRICING_FORBIDDEN_MESSAGE,
+  canManageProductPricing,
   isInventoryCurrencyAmountInputValid,
 } from "@/lib/inventory/policy";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
@@ -144,6 +147,9 @@ type InventoryContext = {
 
 const inventoryManagerProcedure = protectedProcedure.use(
   requireRole("admin", "veterinarian", "technician", "front_desk")
+);
+const productPricingProcedure = protectedProcedure.use(
+  requireRole("admin", "front_desk")
 );
 
 function activePracticePredicate(practiceId: string) {
@@ -306,7 +312,8 @@ export const inventoryRouter = createRouter({
       };
     }),
 
-  create: inventoryManagerProcedure
+  // A new product carries a selling price, so creating one is a pricing action.
+  create: productPricingProcedure
     .input(productCreateInput)
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -333,6 +340,15 @@ export const inventoryRouter = createRouter({
   update: inventoryManagerProcedure
     .input(productUpdateInput)
     .mutation(async ({ ctx, input }) => {
+      if (
+        !canManageProductPricing(ctx.user.role) &&
+        PRODUCT_PRICING_FIELDS.some((field) => input[field] !== undefined)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: PRODUCT_PRICING_FORBIDDEN_MESSAGE,
+        });
+      }
       const { id, ...updates } = input;
       // Filter out undefined values
       const setValues: Record<string, unknown> = {};

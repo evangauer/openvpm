@@ -151,6 +151,82 @@ describe("inventory mutation safety", () => {
     ).resolves.toMatchObject({ id: PRODUCT_ID });
   });
 
+  it.each(["veterinarian", "technician"])(
+    "blocks %s from setting product price, cost, or tax status",
+    async (role) => {
+      const { db, select, insertValues, updateSet } = createDb();
+      const caller = callerWithDb(db, role);
+
+      await expect(
+        caller.create({ name: "Carprofen", unitPrice: "12.50" })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      for (const pricing of [
+        { unitPrice: "0.01" },
+        { taxable: false },
+        { costPrice: "1.00" },
+      ]) {
+        await expect(
+          caller.update({ id: PRODUCT_ID, name: "Carprofen", ...pricing })
+        ).rejects.toMatchObject({
+          code: "FORBIDDEN",
+          message: expect.stringContaining("front desk"),
+        });
+      }
+
+      expect(select).not.toHaveBeenCalled();
+      expect(insertValues).not.toHaveBeenCalled();
+      expect(updateSet).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["veterinarian", "technician"])(
+    "lets %s keep editing product details, lot, and expiry",
+    async (role) => {
+      const { db, updateSet } = createDb({
+        updatedRows: [{ id: PRODUCT_ID }],
+      });
+
+      await expect(
+        callerWithDb(db, role).update({
+          id: PRODUCT_ID,
+          name: "Carprofen 25mg",
+          reorderPoint: 5,
+          lotNumber: "LOT-7",
+          expirationDate: "2027-01-31",
+        })
+      ).resolves.toMatchObject({ id: PRODUCT_ID });
+      expect(updateSet).toHaveBeenCalledWith({
+        name: "Carprofen 25mg",
+        reorderPoint: 5,
+        lotNumber: "LOT-7",
+        expirationDate: "2027-01-31",
+      });
+    }
+  );
+
+  it.each(["admin", "front_desk"])(
+    "lets %s change product price and tax status",
+    async (role) => {
+      const { db, updateSet } = createDb({
+        updatedRows: [{ id: PRODUCT_ID }],
+      });
+
+      await expect(
+        callerWithDb(db, role).update({
+          id: PRODUCT_ID,
+          unitPrice: "14.00",
+          taxable: false,
+          costPrice: "9.00",
+        })
+      ).resolves.toMatchObject({ id: PRODUCT_ID });
+      expect(updateSet).toHaveBeenCalledWith({
+        unitPrice: "14.00",
+        taxable: false,
+        costPrice: "9.00",
+      });
+    }
+  );
+
   it("uses the practice timezone for inventory expiration alert cutoffs", () => {
     const source = readFileSync("server/routers/inventory.ts", "utf8");
 

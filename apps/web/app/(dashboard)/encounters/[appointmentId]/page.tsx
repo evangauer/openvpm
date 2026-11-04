@@ -966,6 +966,7 @@ export default function EncounterWorkspacePage() {
                 role === "veterinarian" ||
                 role === "front_desk")
             }
+            canNoCharge={canManageBilling(role)}
             canVoid={role === "admin" || role === "veterinarian"}
           />
         </div>
@@ -2360,6 +2361,7 @@ function VisitCloseout({
         {clinicalLocked && !isCompleted && canManageVisit(role) ? (
           <OperationalCloseoutForm
             activeInvoice={activeInvoice}
+            canWaiveCharges={canManageBilling(role)}
             chargeDisposition={chargeDisposition}
             setChargeDisposition={setChargeDisposition}
             invoiceDueDate={invoiceDueDate}
@@ -3143,6 +3145,7 @@ function FollowUpResolutionPanel({
 
 function OperationalCloseoutForm({
   activeInvoice,
+  canWaiveCharges,
   chargeDisposition,
   setChargeDisposition,
   invoiceDueDate,
@@ -3166,6 +3169,7 @@ function OperationalCloseoutForm({
     balanceDueCents: number;
     dueDate: Date | string | null;
   } | null;
+  canWaiveCharges: boolean;
   chargeDisposition: "" | "paid" | "accounts_receivable" | "no_charge";
   setChargeDisposition: (
     value: "" | "paid" | "accounts_receivable" | "no_charge",
@@ -3204,7 +3208,8 @@ function OperationalCloseoutForm({
     moneyToCents(activeInvoice.adjustedAmount) === 0 &&
     activeInvoice.balanceDueCents === 0,
   );
-  const noChargeReady = !activeInvoice || zeroDollarInvoiceReady;
+  const noChargeReady =
+    canWaiveCharges && (!activeInvoice || zeroDollarInvoiceReady);
   const selectedDispositionReady =
     (chargeDisposition === "paid" && paidReady) ||
     (chargeDisposition === "accounts_receivable" && accountsReceivableReady) ||
@@ -3252,11 +3257,13 @@ function OperationalCloseoutForm({
               Pay later — present with due date
             </option>
             <option value="no_charge" disabled={!noChargeReady}>
-              {zeroDollarInvoiceReady
-                ? "No charge — $0 invoice"
-                : `No charge for this visit${
-                    noChargeReady ? "" : " — invoice has a balance"
-                  }`}
+              {!canWaiveCharges
+                ? "No charge — admin or front desk only"
+                : zeroDollarInvoiceReady
+                  ? "No charge — $0 invoice"
+                  : `No charge for this visit${
+                      noChargeReady ? "" : " — invoice has a balance"
+                    }`}
             </option>
           </select>
         </div>
@@ -3476,11 +3483,13 @@ function VisitWorkReconciliation({
   appointmentId,
   canManage,
   canCorrect,
+  canNoCharge,
   canVoid,
 }: {
   appointmentId: string;
   canManage: boolean;
   canCorrect: boolean;
+  canNoCharge: boolean;
   canVoid: boolean;
 }) {
   const utils = trpc.useUtils();
@@ -3645,6 +3654,7 @@ function VisitWorkReconciliation({
                           </div>
                           <ReconciliationReasonActions
                             label={item.sourceLabel}
+                            canNoCharge={canNoCharge}
                             canVoid={canVoid}
                             disabled={resolve.isPending || reopen.isPending}
                             onResolve={(resolution) =>

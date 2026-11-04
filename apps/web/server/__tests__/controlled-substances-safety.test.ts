@@ -26,13 +26,13 @@ const PATIENT_ID = "00000000-0000-0000-0000-000000000002";
 const WITNESS_ID = "00000000-0000-0000-0000-000000000003";
 const ENTRY_ID = "00000000-0000-0000-0000-000000000004";
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, role = "veterinarian") {
   const session = {
     user: {
       id: USER_ID,
-      email: "doctor@example.com",
+      email: `${role}@example.com`,
       name: "Doctor",
-      role: "veterinarian",
+      role,
       practiceId: PRACTICE_ID,
     },
   };
@@ -270,6 +270,22 @@ describe("controlled substance log safety", () => {
     expect(select).toHaveBeenCalledTimes(5);
     expect(insertValues).not.toHaveBeenCalled();
   });
+
+  it.each(["technician", "front_desk"])(
+    "blocks %s from reading the controlled-substance log or summary",
+    async (role) => {
+      const { db, select } = createDb();
+      const caller = callerWithDb(db, role);
+
+      await expect(caller.list({})).rejects.toMatchObject({
+        code: "FORBIDDEN",
+      });
+      await expect(caller.summary({})).rejects.toMatchObject({
+        code: "FORBIDDEN",
+      });
+      expect(select).not.toHaveBeenCalled();
+    }
+  );
 
   it("lists controlled-substance logs within practice-local date filters", async () => {
     const row = {

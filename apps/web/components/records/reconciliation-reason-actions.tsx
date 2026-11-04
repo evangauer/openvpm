@@ -5,11 +5,13 @@ import { Input } from "@/components/ui/input";
 
 export function ReconciliationReasonActions({
   label,
+  canNoCharge,
   canVoid,
   disabled,
   onResolve,
 }: {
   label: string;
+  canNoCharge: boolean;
   canVoid: boolean;
   disabled: boolean;
   onResolve: (resolution: {
@@ -22,15 +24,17 @@ export function ReconciliationReasonActions({
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          aria-pressed={status === "no_charge"}
-          disabled={disabled}
-          onClick={() => setStatus("no_charge")}
-        >
-          No charge
-        </Button>
+        {canNoCharge && (
+          <Button
+            type="button"
+            variant="outline"
+            aria-pressed={status === "no_charge"}
+            disabled={disabled}
+            onClick={() => setStatus("no_charge")}
+          >
+            No charge
+          </Button>
+        )}
         {canVoid && (
           <Button
             type="button"
@@ -43,6 +47,12 @@ export function ReconciliationReasonActions({
           </Button>
         )}
       </div>
+      {!canNoCharge && (
+        <p className="text-xs text-muted-foreground">
+          Only an administrator or front desk teammate can mark performed work
+          as no charge.
+        </p>
+      )}
       {status && (
         <div className="space-y-2 rounded-md border p-3">
           <label className="block text-sm">
