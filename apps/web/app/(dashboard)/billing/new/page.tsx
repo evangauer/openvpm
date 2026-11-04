@@ -1,5 +1,7 @@
 "use client";
 
+import { browserUuid } from "@/lib/browser-uuid";
+
 import { quantityLineTotalCents } from "@/lib/quantity";
 
 import { Suspense, useEffect, useState, useMemo, type ReactNode } from "react";
@@ -347,7 +349,7 @@ function NewInvoiceForm({
     setItems((prev) => [
       ...prev,
       {
-        id: crypto.randomUUID(),
+        id: browserUuid(),
         description: trimmedItemDescription,
         quantity: itemQuantity,
         unitPrice: itemUnitPrice.trim(),
