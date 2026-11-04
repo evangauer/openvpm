@@ -12,6 +12,7 @@ import {
 } from "@/lib/s3";
 import { withSystem } from "@/lib/tenant-db";
 import { nextAuthSecretRejected } from "@/lib/auth-secret";
+import { sessionVersionIsCurrent } from "@/lib/session-version";
 import {
   contentDispositionForFile,
   isAllowedUploadCategory,
@@ -140,7 +141,7 @@ export async function GET(
 
     const [activeUser] = await withSystem(db, (tx) =>
       tx
-        .select({ id: users.id })
+        .select({ id: users.id, sessionVersion: users.sessionVersion })
         .from(users)
         .innerJoin(
           practices,
@@ -155,7 +156,13 @@ export async function GET(
         )
         .limit(1),
     );
-    if (!activeUser) {
+    if (
+      !activeUser ||
+      !sessionVersionIsCurrent(
+        session.user.sessionVersion,
+        activeUser.sessionVersion,
+      )
+    ) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
   }

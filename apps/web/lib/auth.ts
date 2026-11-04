@@ -71,6 +71,8 @@ declare module "next-auth" {
       name: string;
       role: "admin" | "veterinarian" | "technician" | "front_desk" | "viewer";
       practiceId: string;
+      /** Identity generation the session was issued for (users.session_version). */
+      sessionVersion?: number;
       emailVerifiedAt?: Date | string | null;
       practiceCreatedAt?: Date | string | null;
     };
@@ -81,14 +83,19 @@ declare module "next-auth" {
     name: string;
     role: "admin" | "veterinarian" | "technician" | "front_desk" | "viewer";
     practiceId: string;
+    sessionVersion: number;
   }
 }
 
 declare module "next-auth/jwt" {
   interface JWT {
     id: string;
+    // Display hint only. Server authorization re-reads the role from the
+    // database on every request.
     role: "admin" | "veterinarian" | "technician" | "front_desk" | "viewer";
     practiceId: string;
+    /** Absent on sessions issued before versioning; treated as the default. */
+    sessionVersion?: number;
   }
 }
 
@@ -174,6 +181,7 @@ export const authOptions: NextAuthOptions = {
           name: user.name,
           role: user.role,
           practiceId: user.practiceId,
+          sessionVersion: user.sessionVersion,
         };
       },
     }),
@@ -224,6 +232,7 @@ export const authOptions: NextAuthOptions = {
           name: user.name,
           role: user.role,
           practiceId: user.practiceId,
+          sessionVersion: user.sessionVersion,
         };
       },
     }),
@@ -234,6 +243,7 @@ export const authOptions: NextAuthOptions = {
         token.id = user.id;
         token.role = user.role;
         token.practiceId = user.practiceId;
+        token.sessionVersion = user.sessionVersion;
       }
       return token;
     },
@@ -241,6 +251,7 @@ export const authOptions: NextAuthOptions = {
       session.user.id = token.id;
       session.user.role = token.role;
       session.user.practiceId = token.practiceId;
+      session.user.sessionVersion = token.sessionVersion;
       return session;
     },
   },

@@ -257,7 +257,7 @@ describe("file proxy response headers", () => {
 
   it("serves private document files as attachments with nosniff", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: 1 }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -290,7 +290,7 @@ describe("file proxy response headers", () => {
   it("serves a checksum-verified replica when the primary provider fails", async () => {
     const replicaBody = new Uint8Array([1, 2, 3]);
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: 1 }],
       [
         mocks.fileMetadata({
           fileName: "lab report.pdf",
@@ -343,7 +343,7 @@ describe("file proxy response headers", () => {
 
   it("does not serve a replica whose stored version is provider-null", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: 1 }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -372,7 +372,7 @@ describe("file proxy response headers", () => {
 
   it("does not report a missing primary as definitive when replica verification fails", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: 1 }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -404,7 +404,7 @@ describe("file proxy response headers", () => {
 
   it("treats oversized storage objects as missing", async () => {
     mocks.selectResults.push(
-      [{ id: mocks.userId }],
+      [{ id: mocks.userId, sessionVersion: 1 }],
       [
         mocks.fileMetadata({
           fileName: "lab.pdf",
@@ -430,7 +430,7 @@ describe("file proxy response headers", () => {
   });
 
   it("does not fetch private objects without active file metadata", async () => {
-    mocks.selectResults.push([{ id: mocks.userId }], []);
+    mocks.selectResults.push([{ id: mocks.userId, sessionVersion: 1 }], []);
 
     const response = await GET(
       fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
@@ -456,6 +456,36 @@ describe("file proxy response headers", () => {
     await expect(response.json()).resolves.toEqual({ error: "Forbidden" });
     expect(mocks.withSystem).toHaveBeenCalledTimes(1);
     expect(mocks.readPrimaryObject).not.toHaveBeenCalled();
+  });
+
+  it("does not fetch private objects for sessions revoked by a version bump", async () => {
+    mocks.getServerSession.mockResolvedValue({
+      user: { id: mocks.userId, practiceId: mocks.practiceId, sessionVersion: 1 },
+    } as never);
+    mocks.selectResults.push([{ id: mocks.userId, sessionVersion: 2 }]);
+
+    const response = await GET(
+      fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
+      routeContext([mocks.practiceId, "documents", "lab.pdf"]),
+    );
+
+    expect(response.status).toBe(403);
+    expect(mocks.withSystem).toHaveBeenCalledTimes(1);
+    expect(mocks.readPrimaryObject).not.toHaveBeenCalled();
+  });
+
+  it("accepts sessions issued before versioning while the account is unbumped", async () => {
+    // The default getServerSession mock carries no sessionVersion.
+    mocks.selectResults.push([{ id: mocks.userId, sessionVersion: 1 }], []);
+
+    const response = await GET(
+      fileRequest(`${mocks.practiceId}/documents/lab.pdf`),
+      routeContext([mocks.practiceId, "documents", "lab.pdf"]),
+    );
+
+    // Past the session gate: the next lookup (file metadata) decides.
+    expect(response.status).toBe(404);
+    expect(mocks.withSystem).toHaveBeenCalledTimes(2);
   });
 
   it("does not fetch private objects for another practice", async () => {

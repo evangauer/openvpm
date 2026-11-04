@@ -51,6 +51,11 @@ import {
 } from "@/lib/onboarding/demo-data-lifecycle";
 import { createAuthToken } from "@/lib/auth-tokens";
 import { PASSWORD_HASH_COST } from "@/lib/auth-hashing";
+import {
+  bumpSessionVersion,
+  bumpSessionVersionOnRestore,
+  bumpSessionVersionOnRoleChange,
+} from "@/lib/session-version";
 import { authPasswordInput } from "@/lib/auth-password";
 import {
   ACCOUNT_DELETION_REASON_MAX_LENGTH,
@@ -2632,6 +2637,10 @@ export const settingsRouter = createRouter({
           ? { isVeterinarian: true }
           : {}),
       };
+      // A role change signs the staff member out everywhere so every open tab
+      // reloads with the new permissions.
+      const sessionVersion = bumpSessionVersionOnRoleChange(data.role);
+      const updateSet = sessionVersion ? { ...data, sessionVersion } : data;
       if (
         (data.role !== undefined && data.role !== "admin") ||
         data.isVeterinarian === false
@@ -2704,7 +2713,7 @@ export const settingsRouter = createRouter({
 
           const [updated] = await tx
             .update(users)
-            .set(data)
+            .set(updateSet)
             .where(
               and(
                 eq(users.id, id),
@@ -2729,7 +2738,7 @@ export const settingsRouter = createRouter({
 
       const [updated] = await ctx.db
         .update(users)
-        .set(data)
+        .set(updateSet)
         .where(
           and(
             eq(users.id, id),
@@ -2847,7 +2856,7 @@ export const settingsRouter = createRouter({
 
         const [updated] = await tx
           .update(users)
-          .set({ deletedAt: new Date() })
+          .set({ deletedAt: new Date(), sessionVersion: bumpSessionVersion() })
           .where(
             and(
               eq(users.id, input.id),
@@ -2879,7 +2888,9 @@ export const settingsRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       const [updated] = await ctx.db
         .update(users)
-        .set({ deletedAt: null })
+        // Restoring an account never revives sessions issued before it was
+        // deactivated; the staff member signs in again.
+        .set({ deletedAt: null, sessionVersion: bumpSessionVersionOnRestore() })
         .where(
           and(
             eq(users.id, input.id),
