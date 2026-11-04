@@ -32,6 +32,7 @@ import {
   appointmentReminderDispatchEligible,
   currentAppointmentReminderEmailRecipient,
   claimAppointmentReminderCommunication,
+  reminderFailureReason,
 } from "@/lib/messaging/appointment-reminder";
 import { lockPracticeForExternalSideEffects } from "@/lib/recovery-hold";
 
@@ -106,6 +107,8 @@ async function claimReminderCommunication(opts: {
       channel: opts.channel,
       patientName: opts.patientName,
       startTime: opts.startTime,
+      source: "automated",
+      now: opts.now,
     });
     return communicationId
       ? { status: "claimed", communicationId }
@@ -421,9 +424,14 @@ export async function GET(request: Request) {
                 held: false as const,
                 success: result.success,
                 providerMessageId: result.id,
+                error: result.error,
               };
-            } catch {
-              return { held: false as const, success: false as const };
+            } catch (error) {
+              return {
+                held: false as const,
+                success: false as const,
+                error: reminderFailureReason(error),
+              };
             }
           },
         );
@@ -459,7 +467,10 @@ export async function GET(request: Request) {
           practiceId: appt.practiceId,
           communicationId,
           channel: "email",
-          content: `Automated appointment reminder failed for ${appt.patientName} on ${appt.startTime.toISOString()}`,
+          content: `Automated appointment reminder failed for ${appt.patientName} on ${appt.startTime.toISOString()}: ${
+            ("error" in providerResult && providerResult.error) ||
+            "unknown error"
+          }`,
           status: "failed",
         });
         return false;

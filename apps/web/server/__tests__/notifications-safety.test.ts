@@ -110,6 +110,8 @@ function callerWithDb(db: Record<string, unknown>) {
 function createDb(opts?: {
   selectResults?: unknown[][];
   practiceRows?: unknown[];
+  claimResults?: unknown[][];
+  reclaimResults?: unknown[][];
 }) {
   const selectResults = [
     opts?.practiceRows ?? [{ id: PRACTICE_ID }],
@@ -136,7 +138,11 @@ function createDb(opts?: {
     return builder;
   });
 
-  const insertReturning = vi.fn(async () => [{ id: COMMUNICATION_ID }]);
+  const claimResults = [...(opts?.claimResults ?? [])];
+  const reclaimResults = [...(opts?.reclaimResults ?? [])];
+  const insertReturning = vi.fn(
+    async () => claimResults.shift() ?? [{ id: COMMUNICATION_ID }],
+  );
   const onConflictDoNothing = vi.fn(() => ({ returning: insertReturning }));
   const insertValues = vi.fn(() => ({
     onConflictDoNothing,
@@ -146,7 +152,14 @@ function createDb(opts?: {
     ) => Promise.resolve(undefined).then(resolve, reject),
   }));
   const insert = vi.fn(() => ({ values: insertValues }));
-  const updateWhere = vi.fn(async () => undefined);
+  const updateReturning = vi.fn(async () => reclaimResults.shift() ?? []);
+  const updateWhere = vi.fn(() => ({
+    returning: updateReturning,
+    then: (
+      resolve: (value: undefined) => unknown,
+      reject?: (error: unknown) => unknown,
+    ) => Promise.resolve(undefined).then(resolve, reject),
+  }));
   const updateSet = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set: updateSet }));
 
@@ -158,7 +171,14 @@ function createDb(opts?: {
     update,
   };
 
-  return { db, select, insertValues, insertReturning, updateSet };
+  return {
+    db,
+    select,
+    insertValues,
+    insertReturning,
+    updateSet,
+    updateReturning,
+  };
 }
 
 beforeEach(() => {
@@ -1533,6 +1553,254 @@ describe("notification target safety", () => {
     });
 
     expect(insertValues).not.toHaveBeenCalled();
+  });
+});
+
+function reminderAppointment(overrides: Record<string, unknown> = {}) {
+  return {
+    id: APPOINTMENT_ID,
+    status: "confirmed",
+    startTime: new Date("2026-07-02T16:00:00Z"),
+    patientName: "Miso",
+    clientId: CLIENT_ID,
+    clientFirstName: "Ada",
+    clientLastName: "Lovelace",
+    clientEmail: "ada@example.com",
+    emailSuppressionReason: null,
+    clientPhone: null,
+    preferredContactMethod: "email",
+    smsConsent: false,
+    practiceName: "Neighborhood Veterinary",
+    practicePhone: "555-0100",
+    practiceTimezone: "America/Los_Angeles",
+    locationId: LOCATION_ID,
+    ...overrides,
+  };
+}
+
+describe("appointment reminder state transitions", () => {
+  it("records a failed email with the provider's reason instead of leaving it pending", async () => {
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: false,
+      id: undefined,
+      error: "Mailbox unavailable",
+    });
+    const { db, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).rejects.toMatchObject({ message: "Mailbox unavailable" });
+
+    expect(updateSet).toHaveBeenCalledOnce();
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "email",
+        status: "failed",
+        content: expect.stringContaining(": Mailbox unavailable"),
+      }),
+    );
+  });
+
+  it("records a failed email when the provider call throws", async () => {
+    mocks.sendAppointmentReminder.mockRejectedValueOnce(
+      new Error("Email provider timed out"),
+    );
+    const { db, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).rejects.toThrow("Email provider timed out");
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "failed",
+        content: expect.stringContaining(": Email provider timed out"),
+      }),
+    );
+  });
+
+  it("checks the sender gate before claiming so a blocked send leaves no row", async () => {
+    mocks.assertOutboundEmailAllowed.mockRejectedValueOnce(
+      new Error("Verify your email address before sending external email."),
+    );
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).rejects.toThrow("Verify your email address");
+
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+  });
+
+  it("lets staff retry after an earlier failure for the same visit", async () => {
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: true,
+      id: "email-retry-1",
+      error: undefined,
+    });
+    const { db, updateSet, updateReturning } = createDb({
+      selectResults: [[reminderAppointment()]],
+      // The dedupe key already exists (the failed attempt)...
+      claimResults: [[]],
+      // ...and the failed row is reclaimed for this retry.
+      reclaimResults: [[{ id: COMMUNICATION_ID }]],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).resolves.toEqual({ success: true, channel: "email" });
+
+    expect(updateReturning).toHaveBeenCalledOnce();
+    expect(updateSet).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ status: "pending", providerMessageId: null }),
+    );
+    expect(updateSet).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "sent",
+        providerMessageId: "email-retry-1",
+      }),
+    );
+    expect(mocks.assertOutboundEmailAllowed).toHaveBeenCalledOnce();
+  });
+
+  it("still rejects a send while another reminder for the visit is in flight or sent", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+      claimResults: [[]],
+      reclaimResults: [[]],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+    // Only the (unsuccessful) reclaim ran; no outcome was written.
+    expect(updateSet).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an SMS with an unknown provider outcome pending", async () => {
+    mocks.sendAppointmentReminderSms.mockRejectedValueOnce(
+      new Error("Provider unavailable"),
+    );
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          reminderAppointment({
+            clientPhone: "(555) 555-0100",
+            preferredContactMethod: "sms",
+            smsConsent: true,
+          }),
+        ],
+        [{ locationId: LOCATION_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).rejects.toThrow("Provider unavailable");
+
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("records the reason when an SMS fails and the email fallback is blocked", async () => {
+    mocks.sendAppointmentReminderSms.mockResolvedValueOnce({
+      success: false,
+      outcome: "definite_failure",
+      error: "Recipient opted out",
+    } as never);
+    mocks.assertOutboundEmailAllowed.mockRejectedValueOnce(
+      new Error("Email sending is temporarily unavailable."),
+    );
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          reminderAppointment({
+            clientPhone: "(555) 555-0100",
+            preferredContactMethod: "sms",
+            smsConsent: true,
+          }),
+        ],
+        [{ locationId: LOCATION_ID }],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).rejects.toThrow("Email sending is temporarily unavailable.");
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "email",
+        status: "failed",
+        content: expect.stringContaining(
+          ": Email sending is temporarily unavailable.",
+        ),
+      }),
+    );
+  });
+
+  it("records the reason for failed bulk reminder emails", async () => {
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: false,
+      id: undefined,
+      error: "Mailbox unavailable",
+    });
+    const { db, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+    });
+
+    await expect(
+      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] }),
+    ).resolves.toEqual({ sent: 0, failed: 1 });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "email",
+        status: "failed",
+        content: expect.stringContaining(": Mailbox unavailable"),
+      }),
+    );
+  });
+
+  it("retries a previously failed visit in a bulk send", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+      claimResults: [[]],
+      reclaimResults: [[{ id: COMMUNICATION_ID }]],
+    });
+
+    await expect(
+      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] }),
+    ).resolves.toEqual({ sent: 1, failed: 0 });
+
+    expect(updateSet).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "sent" }),
+    );
   });
 });
 

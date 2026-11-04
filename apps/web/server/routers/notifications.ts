@@ -40,6 +40,7 @@ import {
   appointmentReminderDedupeKey,
   appointmentReminderSmsIdempotencyKey,
   claimAppointmentReminderCommunication,
+  reminderFailureReason,
 } from "@/lib/messaging/appointment-reminder";
 import { withDurableSmsCommunication } from "@/lib/messaging/durable-sms-communication";
 import { alertOps } from "@/lib/alerts";
@@ -384,10 +385,12 @@ export const notificationsRouter = createRouter({
       // Quiet hours don't apply — this is a deliberate staff action.
       let reminderCommunicationId: string | null = null;
       let durableSmsCommunication = false;
+      let failureChannel: "sms" | "email" = "email";
       const logReminder = async (
         channel: "sms" | "email",
         providerMessageId?: string,
         status: "sent" | "failed" = "sent",
+        failureReason?: string,
       ) => {
         const project = (tx: Pick<Database, "update">) =>
           tx
@@ -397,7 +400,7 @@ export const notificationsRouter = createRouter({
               content: `Appointment reminder ${status === "sent" ? "sent" : "failed"} for ${appt.patientName} on ${formatDate(
                 appt.startTime,
                 appt.practiceTimezone,
-              )}`,
+              )}${status === "failed" && failureReason ? `: ${failureReason}` : ""}`,
               status,
               providerMessageId,
             })
@@ -429,7 +432,10 @@ export const notificationsRouter = createRouter({
         }
       };
 
+      let emailGatePassed = false;
+      let emailAccepted = false;
       const sendEmail = async () => {
+        failureChannel = "email";
         const clientEmail = normalizeEmailSuppressionAddress(appt.clientEmail);
         if (!clientEmail) {
           throw new TRPCError({
@@ -445,7 +451,10 @@ export const notificationsRouter = createRouter({
             ),
           });
         }
-        await assertStaffOutboundEmailAllowed(ctx, "appointment_reminder");
+        if (!emailGatePassed) {
+          await assertStaffOutboundEmailAllowed(ctx, "appointment_reminder");
+          emailGatePassed = true;
+        }
         const result = await sendAppointmentReminder({
           to: clientEmail,
           clientName: `${appt.clientFirstName} ${appt.clientLastName}`,
@@ -456,12 +465,14 @@ export const notificationsRouter = createRouter({
           practicePhone: appt.practicePhone ?? undefined,
         });
         if (!result.success) {
-          await logReminder("email", undefined, "failed");
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: result.error ?? "Could not send email reminder",
           });
         }
+        // The provider accepted it: never let a projection error below turn
+        // a delivered reminder into a "failed" one that invites a duplicate.
+        emailAccepted = true;
         await logReminder("email", result.id);
       };
 
@@ -524,6 +535,10 @@ export const notificationsRouter = createRouter({
             ),
           });
         }
+        // Run the sender gate before claiming so a blocked send never leaves a
+        // reminder row behind.
+        await assertStaffOutboundEmailAllowed(ctx, "appointment_reminder");
+        emailGatePassed = true;
       }
 
       const claimOptions = {
@@ -548,45 +563,66 @@ export const notificationsRouter = createRouter({
         });
       }
 
-      if (channel === "sms") {
-        const result = await sendAppointmentReminderSms({
-          to: appt.clientPhone!,
-          patientName: appt.patientName ?? "Unknown",
-          appointmentDate: formatDate(appt.startTime, appt.practiceTimezone),
-          appointmentTime: formatTime(appt.startTime, appt.practiceTimezone),
-          practiceName: practiceDisplayName(appt.practiceName),
-          practicePhone: appt.practicePhone ?? undefined,
-          practiceId: ctx.practiceId,
-          locationId: smsSender!.locationId,
-          clientId: appt.clientId!,
-          communicationId: reminderCommunicationId,
-          source: "appointment_reminder",
-          sourceId: appointmentReminderDedupeKey(appt),
-          idempotencyKey: appointmentReminderSmsIdempotencyKey(appt),
-        });
-        if (result.success) {
-          await logReminder("sms", result.sid);
-          return { success: true, channel: "sms" as const };
+      // From here on the claim must end as sent or failed, never a stray
+      // pending row: a pending row blocks every later reminder for the visit.
+      // The one exception is an SMS whose provider outcome is unknown; that
+      // claim stays pending until the provider result is reconciled.
+      let preservePendingSmsOutcome = false;
+      try {
+        if (channel === "sms") {
+          failureChannel = "sms";
+          preservePendingSmsOutcome = true;
+          const result = await sendAppointmentReminderSms({
+            to: appt.clientPhone!,
+            patientName: appt.patientName ?? "Unknown",
+            appointmentDate: formatDate(appt.startTime, appt.practiceTimezone),
+            appointmentTime: formatTime(appt.startTime, appt.practiceTimezone),
+            practiceName: practiceDisplayName(appt.practiceName),
+            practicePhone: appt.practicePhone ?? undefined,
+            practiceId: ctx.practiceId,
+            locationId: smsSender!.locationId,
+            clientId: appt.clientId!,
+            communicationId: reminderCommunicationId,
+            source: "appointment_reminder",
+            sourceId: appointmentReminderDedupeKey(appt),
+            idempotencyKey: appointmentReminderSmsIdempotencyKey(appt),
+          });
+          if (result.success) {
+            await logReminder("sms", result.sid);
+            preservePendingSmsOutcome = false;
+            return { success: true, channel: "sms" as const };
+          }
+          if (result.outcome === "outcome_unknown") {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: result.error ?? "Could not send SMS reminder",
+            });
+          }
+          preservePendingSmsOutcome = false;
+          // SMS blocked (e.g. opted out) — fall back to email if we can.
+          if (normalizeEmailSuppressionAddress(appt.clientEmail)) {
+            await sendEmail();
+            return { success: true, channel: "email" as const };
+          }
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: result.error ?? "Could not send SMS reminder",
+          });
         }
-        // SMS blocked (e.g. opted out) — fall back to email if we can.
-        if (
-          result.outcome !== "outcome_unknown" &&
-          normalizeEmailSuppressionAddress(appt.clientEmail)
-        ) {
-          await sendEmail();
-          return { success: true, channel: "email" as const };
-        }
-        if (result.outcome === "definite_failure") {
-          await logReminder("sms", undefined, "failed");
-        }
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: result.error ?? "Could not send SMS reminder",
-        });
-      }
 
-      await sendEmail();
-      return { success: true, channel: "email" as const };
+        await sendEmail();
+        return { success: true, channel: "email" as const };
+      } catch (error) {
+        if (!preservePendingSmsOutcome && !emailAccepted) {
+          await logReminder(
+            failureChannel,
+            undefined,
+            "failed",
+            reminderFailureReason(error),
+          ).catch(() => undefined);
+        }
+        throw error;
+      }
     }),
 
   sendInvoiceEmail: protectedProcedure
@@ -937,13 +973,14 @@ export const notificationsRouter = createRouter({
           channel: "sms" | "email",
           providerMessageId?: string,
           status: "sent" | "failed" = "sent",
+          failureReason?: string,
         ) => {
           const project = (tx: Pick<Database, "update">) =>
             tx
               .update(communications)
               .set({
                 channel,
-                content: `Reminder ${status === "sent" ? "sent" : "failed"} for ${appt.patientName} on ${appointmentDate}`,
+                content: `Reminder ${status === "sent" ? "sent" : "failed"} for ${appt.patientName} on ${appointmentDate}${status === "failed" && failureReason ? `: ${failureReason}` : ""}`,
                 status,
                 providerMessageId,
               })
@@ -978,12 +1015,19 @@ export const notificationsRouter = createRouter({
           }
         };
 
-        const sendEmail = async (): Promise<boolean> => {
+        // Returns null on success, otherwise the reason the email was not sent.
+        const sendEmail = async (): Promise<string | null> => {
           const clientEmail = normalizeEmailSuppressionAddress(
             appt.clientEmail,
           );
-          if (!clientEmail) return false;
-          if (appt.emailSuppressionReason) return false;
+          if (!clientEmail) {
+            return "Client does not have an email address on file";
+          }
+          if (appt.emailSuppressionReason) {
+            return emailSuppressionSendBlockMessage(
+              appt.emailSuppressionReason,
+            );
+          }
           try {
             await assertStaffOutboundEmailAllowed(
               ctx,
@@ -998,11 +1042,13 @@ export const notificationsRouter = createRouter({
               practiceName: practiceDisplayName(appt.practiceName),
               practicePhone: appt.practicePhone ?? undefined,
             });
-            if (!result.success) return false;
+            if (!result.success) {
+              return result.error ?? "Could not send email reminder";
+            }
             await logReminder("email", result.id);
-            return true;
-          } catch {
-            return false;
+            return null;
+          } catch (error) {
+            return reminderFailureReason(error);
           }
         };
 
@@ -1102,24 +1148,37 @@ export const notificationsRouter = createRouter({
             continue;
           }
 
-          if (result.outcome !== "outcome_unknown" && (await sendEmail())) {
+          if (result.outcome === "outcome_unknown") {
+            failed++;
+            continue;
+          }
+
+          // SMS blocked (e.g. opted out) — fall back to email if we can.
+          const emailFailure = await sendEmail();
+          if (emailFailure === null) {
             sent++;
             continue;
           }
 
-          if (result.outcome === "definite_failure") {
-            await logReminder("sms", undefined, "failed");
-          }
+          await logReminder(
+            "sms",
+            undefined,
+            "failed",
+            `${reminderFailureReason(
+              result.error ?? "Could not send SMS reminder",
+            )} (email fallback: ${emailFailure})`,
+          );
 
           failed++;
           continue;
         }
 
         if (channel === "email") {
-          if (await sendEmail()) {
+          const emailFailure = await sendEmail();
+          if (emailFailure === null) {
             sent++;
           } else {
-            await logReminder("email", undefined, "failed");
+            await logReminder("email", undefined, "failed", emailFailure);
             failed++;
           }
           continue;
