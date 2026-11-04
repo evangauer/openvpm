@@ -1,0 +1,2 @@
+# Present = Vercel builds the help site (docs.openvpm.com) from git.
+# The openvpm-docs project skips builds while this file is missing.
