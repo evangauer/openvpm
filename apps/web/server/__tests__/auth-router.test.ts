@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
     remaining: 4,
     resetAt: new Date(),
   })),
+  clearRateLimit: vi.fn(async () => undefined),
+  clearRateLimitPrefix: vi.fn(async () => undefined),
   createAuthToken: vi.fn(async () => "token-123"),
   consumeAuthToken: vi.fn(),
   sendPasswordResetEmail: vi.fn(async () => ({ success: true })),
@@ -40,10 +42,17 @@ const mocks = vi.hoisted(() => ({
   billingEnforced: vi.fn(() => false),
   noCardTrialEnabled: vi.fn(() => false),
   recordAuditLog: vi.fn(async () => undefined),
+  setCookie: vi.fn(),
+}));
+
+vi.mock("next/headers", () => ({
+  cookies: async () => ({ set: mocks.setCookie }),
 }));
 
 vi.mock("@/lib/rate-limit", () => ({
   rateLimit: mocks.rateLimit,
+  clearRateLimit: mocks.clearRateLimit,
+  clearRateLimitPrefix: mocks.clearRateLimitPrefix,
 }));
 
 vi.mock("@/lib/auth-tokens", () => ({
@@ -124,11 +133,16 @@ function sqlIncludesValue(
   );
 }
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(
+  db: Record<string, unknown>,
+  extra: { verifiedIp?: string | null; knownDeviceCookie?: string | null } = {},
+) {
   return authRouter.createCaller({
     db,
     session: null,
     ip: "198.51.100.20",
+    verifiedIp: "198.51.100.20",
+    ...extra,
   } as never);
 }
 
@@ -867,6 +881,50 @@ describe("auth router email normalization", () => {
     ).toBe(true);
   });
 
+  it("skips the per-address daily reset cap for a browser that has signed in to the account", async () => {
+    vi.stubEnv("NEXTAUTH_SECRET", "test-secret-at-least-32-characters-long");
+    const { issueKnownDeviceCookie } = await import("@/lib/known-device");
+    const device = issueKnownDeviceCookie(null, "admin@example.com")!;
+    const { db } = createSelectDb([
+      [{ id: "user-1", email: "admin@example.com", name: "Admin" }],
+    ]);
+
+    await expect(
+      callerWithDb(db, { knownDeviceCookie: device.value }).requestPasswordReset({
+        email: "Admin@Example.COM",
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(mocks.rateLimit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "pwreset:admin@example.com:net:198.51.100.20",
+      }),
+    );
+    expect(mocks.rateLimit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ key: "pwreset:admin@example.com:day" }),
+    );
+    vi.unstubAllEnvs();
+  });
+
+  it("keys the per-network reset bucket only on a verified public address, by /64 for IPv6", async () => {
+    const { db } = createSelectDb([[], [], []]);
+    await callerWithDb(db, { verifiedIp: null }).requestPasswordReset({
+      email: "a@example.com",
+    });
+    await callerWithDb(db, { verifiedIp: "10.0.0.5" }).requestPasswordReset({
+      email: "a@example.com",
+    });
+    expect(mocks.rateLimit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ key: expect.stringContaining(":net:") }),
+    );
+    await callerWithDb(db, {
+      verifiedIp: "2001:db8:1:2:aaaa::1",
+    }).requestPasswordReset({ email: "a@example.com" });
+    expect(mocks.rateLimit).toHaveBeenCalledWith(
+      expect.objectContaining({ key: "pwreset:a@example.com:net:2001:db8:1:2::/64" }),
+    );
+  });
+
   it("normalizes password-reset rate-limit keys and account lookups", async () => {
     const { db, selectWhere } = createSelectDb([
       [{ id: "user-1", email: "admin@example.com", name: "Admin" }],
@@ -876,10 +934,16 @@ describe("auth router email normalization", () => {
       callerWithDb(db).requestPasswordReset({ email: "Admin@Example.COM" }),
     ).resolves.toEqual({ ok: true });
 
+    // Per address and network, plus a daily per-address cap on reset emails.
     expect(mocks.rateLimit).toHaveBeenCalledWith({
-      key: "pwreset:admin@example.com",
+      key: "pwreset:admin@example.com:net:198.51.100.20",
       limit: 5,
       windowMs: 3600000,
+    });
+    expect(mocks.rateLimit).toHaveBeenCalledWith({
+      key: "pwreset:admin@example.com:day",
+      limit: 20,
+      windowMs: 24 * 3600000,
     });
     expect(
       sqlIncludesValue(selectWhere.mock.calls[0]?.[0], "admin@example.com"),
@@ -1166,8 +1230,8 @@ describe("auth router token validation", () => {
     const { db, updateWhere } = createAuthUpdateDb({
       returningRows: [
         [{ id: "user-1" }],
-        [{ id: "user-1" }],
-        [{ id: "user-1" }],
+        [{ id: "user-1", email: "Owner@Example.com" }],
+        [{ id: "user-1", email: "invitee@example.com" }],
       ],
     });
     mocks.consumeAuthToken.mockResolvedValue({
@@ -1186,6 +1250,18 @@ describe("auth router token validation", () => {
       caller.acceptInvite({ token: validToken, password: "password123" }),
     ).resolves.toEqual({ ok: true });
 
+    // A completed reset or accepted invite lifts any sign-in lock.
+    expect(mocks.clearRateLimit).toHaveBeenCalledTimes(2);
+    expect(mocks.clearRateLimit).toHaveBeenCalledWith(
+      "login:account:owner@example.com",
+    );
+    expect(mocks.clearRateLimit).toHaveBeenCalledWith(
+      "login:account:invitee@example.com",
+    );
+    expect(mocks.clearRateLimitPrefix).toHaveBeenCalledTimes(2);
+    expect(mocks.clearRateLimitPrefix).toHaveBeenCalledWith(
+      expect.stringMatching(/^login:account-dev:[0-9a-f]{32}:$/),
+    );
     expect(mocks.consumeAuthToken).toHaveBeenCalledWith(
       validToken,
       "email_verify",
@@ -1202,6 +1278,61 @@ describe("auth router token validation", () => {
     for (const call of updateWhere.mock.calls) {
       expect(sqlIncludesValue(call[0], users.deletedAt)).toBe(true);
     }
+  });
+
+  it("makes the browser a known device after a reset or accepted invite", async () => {
+    vi.stubEnv("NEXTAUTH_SECRET", "test-secret-at-least-32-characters-long");
+    const { issueKnownDeviceCookie, knownDeviceForAccount } = await import(
+      "@/lib/known-device"
+    );
+    const existing = issueKnownDeviceCookie(null, "front-desk@example.com")!;
+    const { db } = createAuthUpdateDb({
+      returningRows: [
+        [{ id: "user-1", email: "Owner@Example.com" }],
+        [{ id: "user-2", email: "invitee@example.com" }],
+      ],
+    });
+    mocks.consumeAuthToken.mockResolvedValue({
+      userId: "user-1",
+      email: "owner@example.com",
+    });
+    const caller = callerWithDb(db, { knownDeviceCookie: existing.value });
+
+    await caller.resetPassword({ token: validToken, password: "password123" });
+    await caller.acceptInvite({ token: validToken, password: "password123" });
+
+    expect(mocks.setCookie).toHaveBeenCalledTimes(2);
+    const [reset, invite] = mocks.setCookie.mock.calls as [
+      string,
+      string,
+      Record<string, unknown>,
+    ][];
+    expect(reset![0]).toBe(existing.name);
+    expect(reset![2]).toEqual(existing.options);
+    expect(knownDeviceForAccount(reset![1], "owner@example.com")).not.toBeNull();
+    expect(knownDeviceForAccount(invite![1], "invitee@example.com")).not.toBeNull();
+    // Merged into the browser's existing device, keeping its other accounts.
+    expect(
+      knownDeviceForAccount(reset![1], "front-desk@example.com")?.deviceId,
+    ).toBe(knownDeviceForAccount(existing.value, "front-desk@example.com")?.deviceId);
+  });
+
+  it("doesn't issue a known-device cookie when the reset or invite fails", async () => {
+    const { db } = createAuthUpdateDb({ returningRows: [[], []] });
+    mocks.consumeAuthToken.mockResolvedValueOnce(null);
+    mocks.consumeAuthToken.mockResolvedValue({
+      userId: "user-1",
+      email: "owner@example.com",
+    });
+    const caller = callerWithDb(db);
+
+    await expect(
+      caller.resetPassword({ token: validToken, password: "password123" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      caller.acceptInvite({ token: validToken, password: "password123" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(mocks.setCookie).not.toHaveBeenCalled();
   });
 
   it("rejects issued auth tokens when the target user is deleted", async () => {

@@ -11,7 +11,13 @@ import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
 import { withTenant, withSystem } from "@/lib/tenant-db";
 import { assertHostedRlsRoleOnce } from "@/lib/rls-assertion";
-import { clientIpFromRequest } from "@/lib/request-ip";
+import {
+  clientIpFromRequest,
+  proxyWithoutTrustedHops,
+  resolveClientIp,
+  trustedProxyNotForwarding,
+} from "@/lib/request-ip";
+import { knownDeviceCookieFromHeader } from "@/lib/known-device";
 import { externallyVisibleRequestOrigin } from "@/lib/request-origin";
 import { practices, users } from "@openpims/db";
 import {
@@ -53,8 +59,26 @@ export type TRPCContext = {
   session: AppSession | null;
   ip?: string | null;
   portalSessionToken?: string | null;
+  /**
+   * Client address only when the deployment can verify it (Vercel or
+   * OPENVPM_TRUSTED_PROXY_HOPS); `ip` may be a claimed, forgeable value.
+   */
+  verifiedIp?: string | null;
+  /** Raw signed known-device cookie, if the request carries one. */
+  knownDeviceCookie?: string | null;
   requestOrigin?: string | null;
   requestUrlOrigin?: string | null;
+  /**
+   * The request came through a reverse proxy, but OPENVPM_TRUSTED_PROXY_HOPS
+   * is unset so client addresses can't be verified. Shown to admins.
+   */
+  untrustedProxy?: boolean;
+  /**
+   * OPENVPM_TRUSTED_PROXY_HOPS is set, but the proxy chain reported a missing
+   * or non-public client address, so the proxy likely isn't forwarding
+   * client addresses. Shown to admins.
+   */
+  proxyNotForwarding?: { address: string | null } | null;
   /** Pre-resolved only by portalProcedure (or explicitly injected test callers). */
   portalClient?: PortalSessionClient;
   portalSessionId?: string;
@@ -153,10 +177,16 @@ export async function createTRPCContext(opts?: {
     portalSessionToken: portalSessionTokenFromCookie(
       opts?.req?.headers.get("cookie"),
     ),
+    verifiedIp: opts?.req ? resolveClientIp(opts.req).ip : null,
+    knownDeviceCookie: knownDeviceCookieFromHeader(
+      opts?.req?.headers.get("cookie"),
+    ),
     requestOrigin: opts?.req?.headers.get("origin") ?? null,
     requestUrlOrigin: opts?.req
       ? externallyVisibleRequestOrigin(opts.req)
       : null,
+    untrustedProxy: opts?.req ? proxyWithoutTrustedHops(opts.req) : false,
+    proxyNotForwarding: opts?.req ? trustedProxyNotForwarding(opts.req) : null,
   };
 }
 

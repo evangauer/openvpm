@@ -34,6 +34,7 @@ import {
   HeartPulse,
   Compass,
   ReceiptText,
+  LockOpen,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -312,6 +313,53 @@ function SettingsLoadError({
   );
 }
 
+function TrustedProxyNotice() {
+  const notices = trpc.settings.deploymentNotices.useQuery(undefined, {
+    staleTime: Infinity,
+  });
+  const data = notices.data;
+  if (!data?.trustedProxyHopsMissing && !data?.proxyNotForwarding) return null;
+  return (
+    <div className="mt-4 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+      <div>
+        {data.proxyNotForwarding ? (
+          <>
+            <p className="font-medium">
+              Your proxy isn&apos;t forwarding client addresses
+            </p>
+            <p className="mt-1">
+              <code>OPENVPM_TRUSTED_PROXY_HOPS</code> is set, but requests
+              arrive from{" "}
+              {data.proxyNotForwarding.address
+                ? `an internal address (${data.proxyNotForwarding.address})`
+                : "no client address"}
+              , which is usually the proxy itself. Per-IP sign-in limits are
+              off until the proxy sends <code>X-Forwarded-For</code>;
+              per-account limits still apply. If staff only connect from
+              inside your network, this is expected. See &ldquo;Reverse
+              proxies and sign-in limits&rdquo; in the README.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="font-medium">Reverse proxy not configured</p>
+            <p className="mt-1">
+              OpenVPM can&apos;t verify client addresses, so per-IP sign-in
+              limits are off; per-account limits still apply. Only if you
+              run a reverse proxy in front of OpenVPM: set{" "}
+              <code>OPENVPM_TRUSTED_PROXY_HOPS</code> to the number of proxies
+              in front of the app and restart. See &ldquo;Reverse proxies and
+              sign-in limits&rdquo; in the README for nginx, Caddy, and Traefik
+              settings.
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ───────────────────────────────────────────────
 export default function SettingsPage() {
   return (
@@ -376,6 +424,8 @@ function SettingsPageInner() {
           Guides
         </Button>
       </div>
+
+      <TrustedProxyNotice />
 
       <div className="mt-6 flex min-w-0 w-full max-w-full flex-col gap-6 lg:flex-row lg:gap-8">
         {/* Section nav: horizontal scroll on small screens, vertical on lg+ */}
@@ -2098,6 +2148,20 @@ function StaffTab() {
       toast.error(err.message);
     },
   });
+  const signInLocks = trpc.settings.staffSignInLocks.useQuery();
+  const lockedStaff = new Set(
+    (signInLocks.data ?? []).map((lock) => lock.userId),
+  );
+  const clearSignInLockMutation =
+    trpc.settings.clearStaffSignInLock.useMutation({
+      onSuccess: () => {
+        utils.settings.staffSignInLocks.invalidate();
+        toast.success("Sign-in lock cleared");
+      },
+      onError: (err) => {
+        toast.error(err.message);
+      },
+    });
   const inviteMutation = trpc.settings.inviteStaff.useMutation({
     onSuccess: (res) => {
       utils.settings.listUsers.invalidate();
@@ -2582,7 +2646,14 @@ function StaffTab() {
                   </>
                 ) : (
                   <>
-                    <td className="px-4 py-3 font-medium">{user.name}</td>
+                    <td className="px-4 py-3 font-medium">
+                      {user.name}
+                      {lockedStaff.has(user.id) && (
+                        <span className="ml-2 text-xs font-normal text-amber-700">
+                          Sign-in locked
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {user.email}
                     </td>
@@ -2632,6 +2703,20 @@ function StaffTab() {
                         </div>
                       ) : (
                         <div className="flex justify-end gap-1">
+                          {lockedStaff.has(user.id) && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              title="Clear sign-in lock"
+                              aria-label={`Clear sign-in lock for ${user.name}`}
+                              disabled={clearSignInLockMutation.isPending}
+                              onClick={() =>
+                                clearSignInLockMutation.mutate({ id: user.id })
+                              }
+                            >
+                              <LockOpen className="h-4 w-4" />
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="ghost"

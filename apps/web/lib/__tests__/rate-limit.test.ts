@@ -6,19 +6,22 @@ const mocks = vi.hoisted(() => {
   const onConflictDoUpdate = vi.fn(() => ({ returning }));
   const insertValues = vi.fn(() => ({ onConflictDoUpdate }));
   const insert = vi.fn(() => ({ values: insertValues }));
-  const deleteReturning = vi.fn(async () => [
-    { key: "login:ip:203.0.113.10" },
-    { key: "portal-read:token" },
-  ]);
-  const deleteWhere = vi.fn(() => ({ returning: deleteReturning }));
+  const deleteReturning = vi.fn();
+  const deleteWhere = vi.fn(() =>
+    Object.assign(Promise.resolve({ count: 2 }), { returning: deleteReturning })
+  );
   const deleteFn = vi.fn(() => ({ where: deleteWhere }));
-  const tx = { insert, delete: deleteFn };
+  const selectLimit = vi.fn(() => ({}));
+  const selectWhere = vi.fn(() => ({ limit: selectLimit }));
+  const select = vi.fn(() => ({ from: () => ({ where: selectWhere }) }));
+  const tx = { insert, delete: deleteFn, select };
   return {
     db: {},
     tx,
     insertValues,
     deleteReturning,
     deleteWhere,
+    selectLimit,
     returnedResetAt,
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn(tx)
@@ -100,9 +103,31 @@ describe("durable rate limit keys", () => {
 
     expect(mocks.withSystem).toHaveBeenCalledTimes(1);
     expect(mocks.deleteWhere).toHaveBeenCalledTimes(1);
-    expect(mocks.deleteReturning).toHaveBeenCalledWith(
-      expect.objectContaining({ key: expect.anything() })
-    );
+    // Counts rows instead of returning every deleted key.
+    expect(mocks.deleteReturning).not.toHaveBeenCalled();
+  });
+
+  it("keeps deleting in batches until a batch comes back short", async () => {
+    const now = new Date("2026-06-27T12:00:00Z");
+    mocks.deleteWhere
+      .mockImplementationOnce(() =>
+        Object.assign(Promise.resolve({ count: 2 }), {
+          returning: mocks.deleteReturning,
+        })
+      )
+      .mockImplementationOnce(() =>
+        Object.assign(Promise.resolve({ count: 1 }), {
+          returning: mocks.deleteReturning,
+        })
+      );
+
+    await expect(
+      cleanupExpiredRateLimitBuckets({ now, batchSize: 2 })
+    ).resolves.toEqual({ deleted: 3, cutoff: now });
+
+    expect(mocks.withSystem).toHaveBeenCalledTimes(2);
+    expect(mocks.selectLimit).toHaveBeenCalledWith(2);
+    expect(mocks.deleteReturning).not.toHaveBeenCalled();
   });
 
   it("builds reset-aware public 429 headers", () => {

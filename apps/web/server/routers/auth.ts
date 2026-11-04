@@ -6,6 +6,11 @@ import { createRouter, publicProcedure, protectedProcedure } from "../trpc";
 import { users, practices, locations } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { rateLimit } from "@/lib/rate-limit";
+import {
+  clearLoginAccountLock,
+  loginNetworkBucket,
+} from "@/lib/login-throttle";
+import { knownDeviceForAccount, rememberKnownDevice } from "@/lib/known-device";
 import { seedPractice, seedDemoData } from "@/lib/onboarding/defaults";
 import {
   billingEnforced,
@@ -65,6 +70,9 @@ function deriveName(name: string | undefined, email: string): string {
 function normalizeAuthEmail(email: string): string {
   return email.trim().toLowerCase();
 }
+
+export const PASSWORD_RESET_PER_NETWORK_LIMIT = 5;
+export const PASSWORD_RESET_PER_EMAIL_DAILY_LIMIT = 20;
 
 async function assertPreAuthRateLimit(input: {
   key: string;
@@ -718,13 +726,32 @@ export const authRouter = createRouter({
     .input(z.object({ email: authEmailInput }))
     .mutation(async ({ ctx, input }) => {
       const email = normalizeAuthEmail(input.email);
-      await assertPreAuthRateLimit({
-        key: `pwreset:${email}`,
-        limit: 5,
-        windowMs: 3600000,
-        message: "Too many requests. Please try again later.",
-        logContext: "requestPasswordReset",
-      });
+      // Keyed per requesting network first (IPv6 by /64), so someone else
+      // spamming this address can't use up the owner's own requests. Only a
+      // verified public address gets that bucket: a claimed one can be
+      // forged to spend someone else's. The per-address daily cap bounds how
+      // many reset emails anyone can make us send, but doesn't apply to a
+      // browser that has signed in to this account, so spam from elsewhere
+      // can't block the owner's own reset.
+      const network = loginNetworkBucket(ctx.verifiedIp);
+      if (network) {
+        await assertPreAuthRateLimit({
+          key: `pwreset:${email}:net:${network}`,
+          limit: PASSWORD_RESET_PER_NETWORK_LIMIT,
+          windowMs: 60 * 60 * 1000,
+          message: "Too many requests. Please try again later.",
+          logContext: "requestPasswordReset",
+        });
+      }
+      if (!knownDeviceForAccount(ctx.knownDeviceCookie, email)) {
+        await assertPreAuthRateLimit({
+          key: `pwreset:${email}:day`,
+          limit: PASSWORD_RESET_PER_EMAIL_DAILY_LIMIT,
+          windowMs: 24 * 60 * 60 * 1000,
+          message: "Too many requests. Please try again later.",
+          logContext: "requestPasswordReset",
+        });
+      }
 
       const [user] = await ctx.db
         .select({ id: users.id, email: users.email, name: users.name })
@@ -776,13 +803,21 @@ export const authRouter = createRouter({
         .update(users)
         .set({ passwordHash })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
-        .returning({ id: users.id });
+        .returning({ id: users.id, email: users.email });
       if (!updated) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "This reset link is invalid or has expired.",
         });
       }
+      // The owner just proved control of the account; a sign-in lock left by
+      // someone else's guesses shouldn't keep them out with the new password.
+      await clearLoginAccountLock(updated.email).catch((err) => {
+        console.error("[resetPassword] login lock reset failed:", err);
+      });
+      // Mailbox control is as strong as a correct password, so this browser
+      // becomes a known device for the account, as after a sign-in.
+      await rememberKnownDevice(ctx.knownDeviceCookie, updated.email);
       return { ok: true };
     }),
 
@@ -809,13 +844,19 @@ export const authRouter = createRouter({
         .update(users)
         .set({ passwordHash, emailVerifiedAt: new Date() })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
-        .returning({ id: users.id });
+        .returning({ id: users.id, email: users.email });
       if (!updated) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "This invite link is invalid or has expired.",
         });
       }
+      // As with a password reset: the invitee proved control of the mailbox,
+      // so earlier failed guesses shouldn't keep them out.
+      await clearLoginAccountLock(updated.email).catch((err) => {
+        console.error("[acceptInvite] login lock reset failed:", err);
+      });
+      await rememberKnownDevice(ctx.knownDeviceCookie, updated.email);
       return { ok: true };
     }),
 
