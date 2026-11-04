@@ -56,6 +56,11 @@ import { tryCalculateInvoiceTaxTotals } from "@/lib/billing/invoice-tax";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes-guard";
 import { useOnlineStatus } from "@/lib/use-online-status";
+import { providerDisplayName } from "@/lib/provider-display-name";
+import {
+  getChargeCaptureLock,
+  type ChargeCaptureLock,
+} from "@/lib/encounters/charge-capture-access";
 import {
   getVisitCompletionAction,
   requiresPrescriptionInventoryUnitReview,
@@ -130,14 +135,6 @@ type ClinicalDraftFields = {
   followUpAssignedTo: string;
   documentationExceptionReason: string;
 };
-
-function providerDisplayName(name: string | null): string {
-  const normalized = name?.trim();
-  if (!normalized) return "Unassigned provider";
-  return /^(dr\.?|doctor)\s/i.test(normalized)
-    ? normalized
-    : `Dr. ${normalized}`;
-}
 
 function chargeItemsFingerprint(items: ChargeItem[]): string {
   return JSON.stringify(
@@ -978,11 +975,13 @@ export default function EncounterWorkspacePage() {
             appointmentId={appointmentId}
             clientId={appointment.clientId}
             patientId={appointment.patientId}
-            canManage={
-              canManageBilling(role) &&
-              appointment.status === "in_exam" &&
-              closeoutQuery.data?.closeout?.status !== "completed"
-            }
+            lock={getChargeCaptureLock({
+              roleCanManageBilling: canManageBilling(role),
+              appointmentStatus: appointment.status,
+              appointmentStatusLabel:
+                APPOINTMENT_STATUS_LABELS[appointment.status],
+              closeoutStatus: closeoutQuery.data?.closeout?.status,
+            })}
             activeInvoice={
               activeInvoices[0]
                 ? {
@@ -3730,7 +3729,7 @@ function ChargeCapture({
   appointmentId,
   clientId,
   patientId,
-  canManage,
+  lock,
   activeInvoice,
   invoiceStateReady,
   invoiceStateLoading,
@@ -3739,7 +3738,7 @@ function ChargeCapture({
   appointmentId: string;
   clientId: string | null;
   patientId: string | null;
-  canManage: boolean;
+  lock: ChargeCaptureLock | null;
   activeInvoice: { id: string; status: string } | null;
   invoiceStateReady: boolean;
   invoiceStateLoading: boolean;
@@ -3757,6 +3756,7 @@ function ChargeCapture({
     dispenseChargeDescription: string | null;
   }>;
 }) {
+  const canManage = lock === null;
   const utils = trpc.useUtils();
   const isOnline = useOnlineStatus();
   const [selectedCatalogId, setSelectedCatalogId] = useState("");
@@ -4109,10 +4109,9 @@ function ChargeCapture({
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {!canManage ? (
+        {lock ? (
           <div className="rounded-md border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-            Charge capture is read-only for your role. An admin or front desk
-            teammate can create the invoice.
+            {lock.message}
           </div>
         ) : invoiceStateLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

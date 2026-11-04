@@ -60,6 +60,12 @@ describe("ICS calendar feed builder", () => {
     expect(ics).toContain("DESCRIPTION:With Dr. Sarah Chen");
   });
 
+  it("does not double the doctor prefix when the stored name includes it", () => {
+    const ics = build([appt({ doctorName: "Dr. Sarah Chen" })]);
+    expect(ics).toContain("DESCRIPTION:With Dr. Sarah Chen");
+    expect(ics).not.toContain("Dr. Dr.");
+  });
+
   it("excludes cancelled and no-show appointments", () => {
     const ics = build([
       appt({ id: "keep" }),
