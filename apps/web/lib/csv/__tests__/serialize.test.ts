@@ -30,7 +30,7 @@ describe("csvCell", () => {
   );
 
   it("neutralizes leading tab and carriage return", () => {
-    expect(csvCell("\t=cmd")).toBe("'\t=cmd");
+    expect(csvCell("\t=cmd")).toBe("\"'\t=cmd\"");
     expect(csvCell("\r=cmd")).toBe("\"'\r=cmd\"");
     expect(csvCell("\n=cmd")).toBe("\"'\n=cmd\"");
   });
@@ -82,9 +82,14 @@ describe("csvCell", () => {
 
   it("writes booleans and dates predictably", () => {
     expect(csvCell(true)).toBe("true");
-    expect(csvCell(new Date("2026-06-27T12:00:00.000Z"))).toBe(
-      "2026-06-27T12:00:00.000Z",
-    );
+    // Local wall-clock time, in a format spreadsheets read as a date.
+    expect(csvCell(new Date(2026, 5, 27, 9, 5))).toBe("2026-06-27 09:05");
+  });
+
+  it("quotes semicolons and tabs so locale CSV splitting can't start a formula cell", () => {
+    expect(csvCell("Exam; =1+1")).toBe('"Exam; =1+1"');
+    expect(csvCell("x;=cmd|' /C calc'!A0")).toBe(`"x;=cmd|' /C calc'!A0"`);
+    expect(csvCell("a\tb")).toBe('"a\tb"');
   });
 
   it("escapes values that already start with a quote before a trigger", () => {

@@ -3,7 +3,9 @@
  * exports, report exports). Pure apart from `downloadCsv`, which needs a DOM.
  *
  * - RFC 4180: fields containing a comma, double quote, CR or LF are quoted,
- *   embedded quotes are doubled, and rows end with CRLF.
+ *   embedded quotes are doubled, and rows end with CRLF. Semicolons and tabs
+ *   are quoted too, because Excel in many locales splits a CSV on `;`, and an
+ *   unquoted `a;=1+1` would start a new cell that runs as a formula.
  * - Spreadsheet formula injection (OWASP "CSV Injection"): text that starts
  *   with `=`, `+`, `-`, `@`, tab, CR or LF is prefixed with a single quote so
  *   Excel, Sheets and LibreOffice show it as text instead of evaluating it.
@@ -27,7 +29,7 @@
 // OWASP's list (= + - @ tab CR) plus LF, because importers normalize CR to LF.
 const FORMULA_TRIGGER = /^'*[=+\-@\t\r\n]/;
 const PLAIN_NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
-const NEEDS_QUOTES = /[",\r\n]/;
+const NEEDS_QUOTES = /[",;\t\r\n]/;
 
 /** Prefix a single quote when `text` would be read as a spreadsheet formula. */
 export function neutralizeCsvFormula(text: string): string {
@@ -40,6 +42,16 @@ export function unescapeCsvFormulaPrefix(text: string): string {
   return /^'(?='*[=+\-@\t\r\n])/.test(text) ? text.slice(1) : text;
 }
 
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/**
+ * Timestamps are written in the viewer's local time as `yyyy-MM-dd HH:mm`,
+ * which Excel and Sheets read as a date, rather than UTC ISO strings.
+ */
+function formatTimestamp(date: Date): string {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 /** Encode one value as a CSV field. null/undefined become an empty field. */
 export function csvCell(value: unknown): string {
   if (value == null) return "";
@@ -47,7 +59,7 @@ export function csvCell(value: unknown): string {
     return String(value);
   }
   const text = neutralizeCsvFormula(
-    value instanceof Date ? value.toISOString() : String(value),
+    value instanceof Date ? formatTimestamp(value) : String(value),
   );
   return NEEDS_QUOTES.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
@@ -80,5 +92,6 @@ export function downloadCsv(filename: string, csv: string): void {
   document.body.appendChild(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
+  // Revoking immediately can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
