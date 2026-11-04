@@ -500,10 +500,13 @@ describe("appointment reminder email outcomes", () => {
       });
       const { sendAppointmentReminder } = await loadEmail();
 
-      await expect(sendAppointmentReminder(reminder)).resolves.toMatchObject({
-        success: false,
-        outcome: "outcome_unknown",
-      });
+      const result = await sendAppointmentReminder(reminder);
+      expect(result).toMatchObject({ success: false, outcome: "outcome_unknown" });
+      // Only a changed payload is reported as a conflict staff must follow
+      // up; a concurrent request is still in flight.
+      expect(Boolean(result.idempotencyConflict)).toBe(
+        name === "invalid_idempotent_request",
+      );
     },
   );
 

@@ -238,6 +238,9 @@ async function dispatchEmail(
       const idempotencyConflict =
         error.name === "invalid_idempotent_request" ||
         error.name === "concurrent_idempotent_requests";
+      // Only a changed payload under a reused key means "can't be resent
+      // safely"; a concurrent request is still in flight and will settle.
+      const payloadConflict = error.name === "invalid_idempotent_request";
       // The SDK turns network errors, unreadable success bodies, and gateway
       // failures into an error result instead of throwing. Without a 4xx
       // answer the request may have been accepted, so only a 4xx (including
@@ -256,8 +259,10 @@ async function dispatchEmail(
             : "definite_failure",
         failureCode: timedOut
           ? "send_timeout"
-          : idempotencyConflict
+          : payloadConflict
             ? "idempotency_conflict"
+            : idempotencyConflict
+              ? "provider_unavailable"
             : noDefiniteAnswer
               ? "provider_unavailable"
               : "provider_rejected",
