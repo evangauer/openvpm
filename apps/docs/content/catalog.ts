@@ -40,7 +40,7 @@ export const trainings: Training[] = [
       { title: "Get oriented", guides: ["your-first-day", "find-anything-fast"] },
       {
         title: "Run the schedule",
-        guides: ["book-an-appointment", "reschedule-or-cancel", "check-in-a-patient", "use-the-whiteboard", "send-appointment-reminders", "see-the-schedule-in-your-calendar"],
+        guides: ["add-a-new-client-and-pet", "book-an-appointment", "reschedule-or-cancel", "check-in-a-patient", "use-the-whiteboard", "send-appointment-reminders", "see-the-schedule-in-your-calendar"],
       },
       {
         title: "Check out",

@@ -24,8 +24,12 @@ async function signIn(page: Page) {
   ]);
   await page.waitForLoadState("networkidle");
   // Product screens only: no first-run checklist or verification banners.
+  // The setup checklist renders once its data loads, so wait for it.
   const dismiss = page.getByRole("button", { name: /don.t show this again/i });
-  if (await dismiss.isVisible().catch(() => false)) await dismiss.click();
+  if (await dismiss.waitFor({ timeout: 10_000 }).then(() => true, () => false)) {
+    await dismiss.click();
+    await page.waitForLoadState("networkidle");
+  }
   await page.evaluate(() => sessionStorage.setItem("ovpm_verify_email_dismissed", "1"));
 }
 
@@ -57,6 +61,9 @@ test("capture guide screenshots", async ({ page }) => {
         await page.goto(shot.path);
         await page.waitForLoadState("networkidle");
         await page.waitForTimeout(500);
+        // The dashboard's setup checklist can come back on each load.
+        const checklist = page.getByRole("button", { name: /don.t show this again/i });
+        if (await checklist.isVisible().catch(() => false)) await checklist.click();
         await shot.prepare?.(page);
         if (shot.scrollTo) {
           const target = shot.targets[shot.scrollTo]!;

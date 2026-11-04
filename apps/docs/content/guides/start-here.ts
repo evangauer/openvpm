@@ -29,15 +29,15 @@ export const startHere: Guide[] = [
         id: "check-in",
         title: "Check the pet in",
         body: [
-          "When the client confirms, open the visit and choose [[Confirm]]. When the pet arrives, choose [[Check In]].",
-          "The pet now shows on the [[Whiteboard]] for the whole team.",
+          "When the client confirms, open the visit and choose [[Confirm]]. The pet shows in **Waiting** ((1)) on the [[Whiteboard]].",
+          "When the pet arrives, choose [[Check In]]. It moves to **In Progress** ((2)), and to **Completed** ((3)) once checkout is done.",
         ],
         shot: {
           id: "whiteboard",
-          focus: ["waiting", "in-progress", "completed"],
-          pad: 12,
-          callouts: ["waiting", "in-progress", "completed"],
-          alt: "The whiteboard with Waiting, In Progress, and Completed columns",
+          focus: ["waiting-card", "in-progress-card", "completed-card"],
+          pad: 104,
+          callouts: ["waiting-head", "in-progress-head", "completed-head"],
+          alt: "The whiteboard with Waiting, In Progress, and Completed columns, each with a pet card",
         },
       },
       {
@@ -64,7 +64,7 @@ export const startHere: Guide[] = [
         id: "pay",
         title: "Get paid and send them home",
         body: [
-          "Take payment, or set the balance to pay later with a due date. Then record how you gave the owner their instructions, and finish the visit.",
+          "Take payment, or set the balance to pay later with a due date. Then set **Owner handoff** to printed or downloaded, reviewed verbally, or owner declined, and choose [[Complete visit]].",
         ],
         tip: "The [[Finish this visit]] checklist on the visit page shows what's left: clinical record, charges, reconciliation, owner handoff, and checkout.",
       },
@@ -87,6 +87,7 @@ export const startHere: Guide[] = [
         body: [
           "The sidebar follows the clinic day. [[Schedule]] and [[Whiteboard]] show today. [[Patients]], [[Clients]], and [[Records]] hold the charts.",
           "[[Billing]], [[Inventory]], [[Inbox]], [[Reports]], and [[Settings]] cover the rest of the practice.",
+          "You only see the areas your role can use. For example, only admins see [[Settings]].",
         ],
       },
       {

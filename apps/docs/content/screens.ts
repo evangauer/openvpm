@@ -31,7 +31,7 @@ export const tours: ScreenTour[] = [
       { title: "Patient list", body: "Click a name to open the chart: allergies, records, vaccines, vitals, documents, and invoices." },
     ],
     goodToKnow: ["Allergies show in red at the top of every chart, so nobody misses them."],
-    tasks: ["record-a-vaccine", "record-vitals", "create-a-prescription", "upload-a-patient-document", "find-anything-fast"],
+    tasks: ["add-a-new-client-and-pet", "record-a-vaccine", "record-vitals", "upload-a-patient-document", "find-anything-fast"],
     keywords: ["pet", "animal", "chart", "patient list"],
   },
   {
@@ -45,7 +45,7 @@ export const tours: ScreenTour[] = [
       { title: "New Client", body: "Add a household. Search first to avoid duplicates." },
       { title: "Client list", body: "Click a client to see their pets, portal link, communication log, and wellness membership." },
     ],
-    tasks: ["give-client-portal-access", "send-a-client-message", "find-anything-fast"],
+    tasks: ["add-a-new-client-and-pet", "give-client-portal-access", "send-a-client-message", "find-anything-fast"],
     keywords: ["owner", "household", "pet parent", "customer"],
   },
   {
@@ -74,11 +74,16 @@ export const tours: ScreenTour[] = [
     area: "records",
     title: "Records",
     navLabel: "Records",
-    summary: "Search for a pet to read their medical records and history.",
+    summary: "Search for a pet to read their medical history and add to it.",
     shot: { id: "records", callouts: ["search"], alt: "The Medical Records screen with a patient search box" },
-    legend: [{ title: "Find a patient", body: "Search by pet or owner name to open their medical records." }],
+    legend: [
+      {
+        title: "Find a patient",
+        body: "Search by pet or owner name. Their tabs hold SOAP notes, vaccinations, prescriptions, problems, lab results, and procedures, and that's where you add or correct them.",
+      },
+    ],
     goodToKnow: ["Records are also on each pet's chart, under the [[Medical Records]] tab."],
-    tasks: ["write-a-soap-note", "document-a-visit"],
+    tasks: ["write-a-soap-note", "document-a-visit", "record-a-vaccine", "create-a-prescription", "record-lab-results"],
     keywords: ["medical records", "history", "soap", "notes"],
   },
   {
@@ -200,8 +205,8 @@ export const tours: ScreenTour[] = [
     shot: { id: "whiteboard", callouts: ["live", "waiting", "in-progress", "completed"], alt: "The whiteboard with three columns of patient cards" },
     legend: [
       { title: "Live", body: "The board updates on its own. Leave it up on a screen in the treatment area." },
-      { title: "Waiting", body: "Checked in and waiting to be seen." },
-      { title: "In Progress", body: "In an exam, with the doctor and room." },
+      { title: "Waiting", body: "Confirmed for today and not here yet." },
+      { title: "In Progress", body: "Checked in or in an exam, with the doctor and room." },
       { title: "Completed", body: "Checked out today." },
     ],
     tasks: ["use-the-whiteboard", "check-in-a-patient"],
@@ -232,7 +237,10 @@ export const tours: ScreenTour[] = [
       { title: "Drug Balance Summary", body: "How much of each controlled drug you should have on hand." },
       { title: "The log", body: "Date, drug, schedule, action, amount, patient, who did it, and the witness." },
     ],
-    goodToKnow: ["Follow your clinic's and your state's rules for controlled drug records. OpenVPM keeps the log, but your team is responsible for it."],
+    goodToKnow: [
+      "Only admins and veterinarians see this screen.",
+      "Follow your clinic's and your state's rules for controlled drug records. OpenVPM keeps the log, but your team is responsible for it.",
+    ],
     tasks: [],
     keywords: ["dea", "controlled", "narcotics", "log", "ketamine", "schedule ii", "witness"],
   },
@@ -257,7 +265,7 @@ export const tours: ScreenTour[] = [
     summary: "Practice details, team, schedule setup, prices, data, and billing. Admins only.",
     shot: { id: "settings", callouts: ["sections", "practice"], alt: "Settings with the Practice details form" },
     legend: [
-      { title: "Sections", body: "Practice info, locations, staff, appointment types, rooms, services and pricing, data, templates, messaging, online booking, and plan and billing." },
+      { title: "Sections", body: "Practice info, locations, staff, appointment types, rooms, services and pricing, data, templates, wellness plans, messaging, online booking, and plan and billing." },
       { title: "Practice details", body: "Your clinic's name, address, contact details, timezone, currency, and tax." },
     ],
     tasks: ["set-up-your-clinic", "invite-and-manage-staff", "set-up-client-card-payments", "import-your-data", "export-and-back-up-your-data", "understand-team-roles", "run-a-solo-practice"],

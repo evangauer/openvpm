@@ -32,12 +32,57 @@ function union(boxes: Box[]): Box {
 // is harder to recognize than one shown at its usual size.
 const MIN_CROP_WIDTH = 640;
 
+/**
+ * Where a callout's number sits: a point in the frame (percent) plus a pixel
+ * nudge, so the badge lands just outside the ring instead of on the label.
+ */
+export interface Badge {
+  left: number;
+  top: number;
+  dx: number;
+  dy: number;
+}
+
+/** Rings are drawn this far outside the measured box, so they don't touch the label. */
+export const RING_OUTSET = 4;
+/** Badge diameter (26px) plus the ring's outset. */
+const BADGE_SPACE = 30;
+/** Narrowest a screenshot is drawn (a phone), so placements work everywhere. */
+const MIN_RENDER_WIDTH = 320;
+
+/**
+ * Put the badge outside the ring: above-left if there's room, otherwise above,
+ * to the left, inside a box that fills the picture, below, or to the right.
+ * Room is judged at phone width, where a badge covers the most of the picture.
+ */
+function placeBadge(left: number, top: number, width: number, height: number, frameAspect: number): Badge {
+  const pxX = MIN_RENDER_WIDTH / 100;
+  const pxY = MIN_RENDER_WIDTH / frameAspect / 100;
+  const room = {
+    left: left * pxX,
+    top: top * pxY,
+    right: (100 - left - width) * pxX,
+    bottom: (100 - top - height) * pxY,
+  };
+  const S = BADGE_SPACE;
+  const gap = RING_OUTSET + 2;
+  if (room.left >= S && room.top >= S) return { left, top, dx: -S, dy: -S };
+  if (room.top >= S) return { left, top, dx: 0, dy: -S };
+  if (room.left >= S) return { left, top, dx: -S, dy: 0 };
+  // A box that fills most of the picture: its own top-left padding is the
+  // emptiest spot, and keeps the badge clear of the callouts around it.
+  if (width > 60 && height > 40) return { left, top, dx: 8, dy: 8 };
+  if (room.bottom >= S) return { left, top: top + height, dx: 0, dy: gap };
+  if (room.right >= S) return { left: left + width, top, dx: gap, dy: 0 };
+  return { left, top, dx: 4, dy: 4 };
+}
+
 export interface ShotLayout {
   shot: CapturedShot;
   /** Visible region of the screenshot, in screen pixels. */
   frame: Box;
   /** Callout rings, as percentages of the frame. */
-  callouts: { n: number; left: number; top: number; width: number; height: number }[];
+  callouts: { n: number; left: number; top: number; width: number; height: number; badge: Badge }[];
   zoomed: boolean;
 }
 
@@ -94,15 +139,11 @@ export function layoutShot(ref: ShotRef): ShotLayout | undefined {
     const x2 = Math.min(box[0] + box[2], fx + fw);
     const y2 = Math.min(box[1] + box[3], fy + fh);
     if (x2 <= x1 || y2 <= y1) return [];
-    return [
-      {
-        n: i + 1,
-        left: ((x1 - fx) / fw) * 100,
-        top: ((y1 - fy) / fh) * 100,
-        width: ((x2 - x1) / fw) * 100,
-        height: ((y2 - y1) / fh) * 100,
-      },
-    ];
+    const left = ((x1 - fx) / fw) * 100;
+    const top = ((y1 - fy) / fh) * 100;
+    const width = ((x2 - x1) / fw) * 100;
+    const height = ((y2 - y1) / fh) * 100;
+    return [{ n: i + 1, left, top, width, height, badge: placeBadge(left, top, width, height, fw / fh) }];
   });
 
   return { shot, frame, callouts, zoomed: focusBoxes.length > 0 };

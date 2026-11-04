@@ -1,5 +1,5 @@
 import type { ShotRef } from "@/content/types";
-import { layoutShot } from "@/lib/shots";
+import { layoutShot, RING_OUTSET } from "@/lib/shots";
 
 /**
  * A real OpenVPM screen, optionally zoomed into one area, with numbered
@@ -35,12 +35,29 @@ export function Screenshot({ shot, browser = false, priority = false }: { shot: 
           />
           {callouts.map((c) => (
             <span
-              key={c.n}
+              key={`ring-${c.n}`}
               className="shot-ring"
-              style={{ left: `${c.left}%`, top: `${c.top}%`, width: `${c.width}%`, height: `${c.height}%` }}
+              style={{
+                left: `calc(${c.left}% - ${RING_OUTSET}px)`,
+                top: `calc(${c.top}% - ${RING_OUTSET}px)`,
+                width: `calc(${c.width}% + ${RING_OUTSET * 2}px)`,
+                height: `calc(${c.height}% + ${RING_OUTSET * 2}px)`,
+              }}
+              aria-hidden="true"
+            />
+          ))}
+          {/* Numbers sit outside their rings and stay inside the picture. */}
+          {callouts.map((c) => (
+            <span
+              key={`dot-${c.n}`}
+              className="shot-dot"
+              style={{
+                left: `clamp(2px, calc(${c.badge.left}% + ${c.badge.dx}px), calc(100% - 28px))`,
+                top: `clamp(2px, calc(${c.badge.top}% + ${c.badge.dy}px), calc(100% - 28px))`,
+              }}
               aria-hidden="true"
             >
-              <span className="shot-dot">{c.n}</span>
+              {c.n}
             </span>
           ))}
         </div>

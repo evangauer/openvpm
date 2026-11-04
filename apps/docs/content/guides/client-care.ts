@@ -4,7 +4,7 @@ export const clientCare: Guide[] = [
   {
     slug: "give-client-portal-access",
     title: "Give a client portal access",
-    summary: "Share one private link where owners see their pets, visits, and bills.",
+    summary: "Send an owner a one-time link into a private portal with their pets, visits, and bills.",
     category: "client-care",
     area: "clients",
     audience: "Front desk, admins",
@@ -20,21 +20,26 @@ export const clientCare: Guide[] = [
         id: "link",
         title: "Create and copy the private link",
         body: [
-          "Find **Client Portal** ((1)). Choose [[Create Link]] if there isn't one yet, then copy it.",
+          "Find **Client Portal** and choose [[Create Link]] ((1)), then [[Copy]]. The link works once and expires after 15 minutes, so create it when you're ready to send it.",
+          "If the client has had a link before, the button says [[Reset Access]]. Resetting cancels the old link and signs the client out of the portal everywhere.",
           "The portal shows the household's pets, upcoming visits, health records, invoices, and online payment. Clients don't need a password.",
         ],
         shot: {
           id: "client",
           focus: "portal",
           pad: 16,
-          callouts: ["portal"],
-          alt: "The Client Portal section on a client's page with a Create Link button",
+          callouts: ["create-link"],
+          alt: "The Client Portal section on a client's page, which explains that links are one-time and expire after 15 minutes",
         },
       },
       {
         id: "share",
         title: "Send it securely",
-        body: ["Send the link by your clinic's usual email or text. It only shows that household's information. Open it yourself if you want to see what the client sees."],
+        body: [
+          "Send it right away by your clinic's usual email or text. It only shows that household's information.",
+          "When the client opens it and chooses **Continue securely**, it starts a portal session on their device and the link stops working. If they're signed out later, create a new one.",
+        ],
+        important: "Don't open the link yourself to test it. That uses it up, and the client will need a new one.",
       },
     ],
     next: "manage-appointment-requests",
@@ -124,6 +129,8 @@ export const clientCare: Guide[] = [
         ],
         shot: {
           id: "recalls",
+          focus: ["stats", "vaccines"],
+          pad: 12,
           callouts: ["stats", "vaccines"],
           alt: "The Vaccination recalls screen listing overdue pets and their vaccines",
         },
@@ -132,7 +139,7 @@ export const clientCare: Guide[] = [
         id: "check",
         title: "Check why anyone is blocked",
         body: [
-          "The last column ((1)) says **Ready**, **Already reminded**, or **Blocked** with the reason: the owner opted out, there's no working email or opted-in mobile number, it's quiet hours for texting, or the contact is a test or sample record.",
+          "The **Eligibility** column ((1)) says **Ready**, **Already reminded**, or **Blocked** with the reason: the owner opted out, there's no working email or opted-in mobile number, it's quiet hours for texting, or the contact is a test or sample record.",
         ],
         shot: {
           id: "recalls",
@@ -147,15 +154,15 @@ export const clientCare: Guide[] = [
         id: "send",
         title: "Send",
         body: [
-          "Tick the pets you want to remind (up to 100 at a time), then choose [[Send selected]] ((1)) and confirm. Or use [[Send]] on a single row.",
+          "Tick the **Ready** pets you want to remind ((1)), up to 100 at a time. Then choose [[Send selected]] ((2)) and confirm. Or use [[Send]] on a single row.",
           "Each reminder goes by the client's usable channel, text or email, and is logged on their communication history.",
         ],
         shot: {
           id: "recalls",
           focus: "preview",
           pad: 12,
-          callouts: ["send-selected"],
-          alt: "The Recipient preview with the Send selected button",
+          callouts: ["ready-row", "send-selected"],
+          alt: "The Recipient preview with a ready pet ticked and the Send selected button",
         },
       },
     ],
@@ -170,7 +177,7 @@ export const clientCare: Guide[] = [
     summary: "Track rechecks, calls, and other follow-ups for each pet so none slip.",
     category: "client-care",
     area: "care-reminders",
-    audience: "Everyone on the team",
+    audience: "Everyone except viewers",
     minutes: 4,
     keywords: ["care reminder", "follow up", "to do", "task", "recheck", "callback", "due", "queue"],
     steps: [

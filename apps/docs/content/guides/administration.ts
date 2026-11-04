@@ -41,7 +41,8 @@ export const administration: Guide[] = [
         id: "test-day",
         title: "Run one test day",
         body: [
-          "Create a test client and pet. Book the visit, check it in, chart it, invoice it, record a test payment, and run an export.",
+          "To explore first, choose [[Add sample data]] in [[Settings]] → [[Data]]. It fills the clinic with made-up clients and pets. Choose [[Remove sample data]] when you're done.",
+          "Then create a test client and pet. Book the visit, check it in, chart it, invoice it, record a test payment, and run an export.",
           "If any step surprises you, fix the setup now rather than on a busy morning.",
         ],
       },
@@ -61,7 +62,10 @@ export const administration: Guide[] = [
       {
         id: "add",
         title: "Add the teammate",
-        body: ["Open [[Settings]] → [[Staff]]. Add their work email and name, and pick the role that matches their job."],
+        body: [
+          "Open [[Settings]] → [[Staff]]. Choose [[Invite by email]], enter their work email, and pick the role that matches their job. Then choose [[Send invite]].",
+          "Or choose [[Add Staff]] to set up the account yourself.",
+        ],
         shot: {
           id: "settings-staff",
           alt: "The Staff section of Settings, with Invite by email and Add Staff buttons above the team list",
@@ -75,7 +79,10 @@ export const administration: Guide[] = [
       {
         id: "review",
         title: "Keep access up to date",
-        body: ["Change roles when jobs change. Turn off access as soon as someone leaves."],
+        body: [
+          "Change roles when jobs change with the pencil button on their row.",
+          "As soon as someone leaves, choose the trash-can button on their row and answer **Deactivate?** with [[Yes]]. They can't sign in after that.",
+        ],
       },
     ],
     next: "set-up-client-card-payments",
@@ -97,6 +104,7 @@ export const administration: Guide[] = [
         shot: {
           id: "settings-plan",
           alt: "Plan & Billing in Settings, showing Client payment processing as not configured",
+          caption: "The self-hosted view. On OpenVPM Cloud, this card walks you through Stripe setup and adds Refresh and Open Stripe buttons.",
         },
       },
       {
@@ -110,7 +118,10 @@ export const administration: Guide[] = [
       {
         id: "verify",
         title: "Test before you use it for real",
-        body: ["Refresh the status and make sure card payments and payouts are on. Then run a test invoice through checkout."],
+        body: [
+          "On OpenVPM Cloud, choose [[Refresh]] to update the status, and [[Open Stripe]] to manage your Stripe account. Make sure card payments and payouts are on.",
+          "If you run OpenVPM yourself, check the card says payments are ready. Then run a test invoice through checkout.",
+        ],
         important: "A saved Stripe key doesn't mean everything works. Always run a test payment first.",
       },
     ],
