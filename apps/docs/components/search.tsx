@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowRight, BookOpen, CornerDownLeft, Monitor, Search as SearchIcon, X } from "lucide-react";
+import { SUPPORT_EMAIL } from "@/content/catalog";
 import { buildIndex, search, type SearchEntry } from "@/lib/search";
 
 const OPEN_EVENT = "openvpm-help:search";
@@ -37,6 +38,7 @@ export function SearchDialog({ entries }: { entries: SearchEntry[] }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const input = useRef<HTMLInputElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
   const listId = useId();
   const index = useMemo(() => buildIndex(entries), [entries]);
   const hits = useMemo(() => search(index, query), [index, query]);
@@ -52,7 +54,8 @@ export function SearchDialog({ entries }: { entries: SearchEntry[] }) {
     function onKey(event: KeyboardEvent) {
       const target = event.target as HTMLElement;
       const typing = target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
-      if ((event.key === "k" && (event.metaKey || event.ctrlKey)) || (event.key === "/" && !typing)) {
+      if (event.key === "Escape") setOpen(false);
+      else if ((event.key === "k" && (event.metaKey || event.ctrlKey)) || (event.key === "/" && !typing)) {
         event.preventDefault();
         setActive(0);
         setOpen(true);
@@ -68,11 +71,13 @@ export function SearchDialog({ entries }: { entries: SearchEntry[] }) {
 
   useEffect(() => {
     if (!open) return;
+    const opener = document.activeElement as HTMLElement | null;
     input.current?.focus();
     const { overflow } = document.body.style;
     document.body.style.overflow = "hidden";
     return () => {
       document.body.style.overflow = overflow;
+      if (opener?.isConnected) opener.focus();
     };
   }, [open]);
 
@@ -84,8 +89,19 @@ export function SearchDialog({ entries }: { entries: SearchEntry[] }) {
   }
 
   function onKeyDown(event: React.KeyboardEvent) {
-    if (event.key === "Escape") close();
-    else if (event.key === "ArrowDown") {
+    if (event.key === "Tab") {
+      // Keep focus inside the dialog while it's open.
+      const focusable = [...(panel.current?.querySelectorAll<HTMLElement>("input, button, a[href]") ?? [])];
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    } else if (event.key === "ArrowDown") {
       event.preventDefault();
       setActive((a) => Math.min(a + 1, hits.length - 1));
     } else if (event.key === "ArrowUp") {
@@ -99,7 +115,7 @@ export function SearchDialog({ entries }: { entries: SearchEntry[] }) {
 
   return (
     <div className="search-overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-      <div className="search-panel" role="dialog" aria-modal="true" aria-label="Search the guides" onKeyDown={onKeyDown}>
+      <div ref={panel} className="search-panel" role="dialog" aria-modal="true" aria-label="Search the guides" onKeyDown={onKeyDown}>
         <div className="search-input-row">
           <SearchIcon className="h-5 w-5 text-primary" aria-hidden="true" />
           <input
@@ -126,7 +142,10 @@ export function SearchDialog({ entries }: { entries: SearchEntry[] }) {
               <p className="px-1 pb-2 text-xs font-semibold text-muted-foreground">Try</p>
               <div className="flex flex-wrap gap-2">
                 {suggestions.map((s) => (
-                  <button key={s} type="button" className="chip" onClick={() => setQuery(s)}>
+                  <button key={s} type="button" className="chip" onClick={() => {
+                      setQuery(s);
+                      input.current?.focus();
+                    }}>
                     {s}
                   </button>
                 ))}
@@ -135,8 +154,8 @@ export function SearchDialog({ entries }: { entries: SearchEntry[] }) {
           ) : hits.length === 0 ? (
             <p className="px-3 py-6 text-center text-sm text-muted-foreground">
               Nothing matches “{query}” yet. Try fewer words, or email{" "}
-              <a className="text-link" href="mailto:hello@openvpm.com">
-                hello@openvpm.com
+              <a className="text-link" href={`mailto:${SUPPORT_EMAIL}`}>
+                {SUPPORT_EMAIL}
               </a>{" "}
               and we&apos;ll help.
             </p>

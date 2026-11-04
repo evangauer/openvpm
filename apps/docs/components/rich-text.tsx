@@ -26,7 +26,7 @@ export function RichText({ text }: { text: string }) {
             );
           case "ref":
             return (
-              <span key={i} className="callout-ref" aria-label={`callout ${token.value}`}>
+              <span key={i} className="callout-ref" role="img" aria-label={`callout ${token.value}`}>
                 {token.value}
               </span>
             );
