@@ -970,6 +970,58 @@ describe("appointment reminder cron", () => {
     expect(mocks.sendAppointmentReminder).toHaveBeenCalledOnce();
   });
 
+  it("resends a reclaimed email by email for a client who prefers texts", async () => {
+    // An SMS that fell back to email, then was interrupted: the row is an
+    // email claim and must be resent by email under its own key.
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: true,
+      id: "email-redispatch-1",
+      outcome: "accepted",
+    });
+    mocks.selectResults.push(
+      [
+        appointment({
+          startTime: new Date("2026-07-02T16:00:00Z"),
+          locationId: LOCATION_ID,
+        }),
+      ],
+      [{ locationId: LOCATION_ID }],
+    );
+    mocks.claimResults.push([]);
+    mocks.reclaimResults.push([
+      {
+        id: "comm-fallback",
+        channel: "email",
+        attempt: 1,
+        claimToken: "token-2",
+        redispatch: true,
+      },
+    ]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({ sent: 1, failed: 0 });
+    expect(mocks.insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "sms" }),
+    );
+    expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
+    expect(mocks.sendAppointmentReminder).toHaveBeenCalledOnce();
+    expect(mocks.sendAppointmentReminder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: `email:reminder:appointment:${APPOINTMENT_ID}:2026-07-02T16:00:00.000Z:attempt-1`,
+      }),
+    );
+    expect(mocks.updateSet).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        channel: "email",
+        status: "sent",
+        providerMessageId: "email-redispatch-1",
+      }),
+    );
+  });
+
   it("never projects an accepted SMS as failed when status persistence errors", async () => {
     mocks.selectResults.push(
       [appointment({ locationId: LOCATION_ID })],

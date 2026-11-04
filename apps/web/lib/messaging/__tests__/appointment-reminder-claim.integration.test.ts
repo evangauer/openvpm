@@ -16,8 +16,10 @@ import {
   appointmentReminderEmailIdempotencyKey,
   appointmentReminderSmsIdempotencyKey,
   claimAppointmentReminderCommunication,
+  lockAppointmentReminderClaimForSend,
   recordAppointmentReminderOutcome,
   sendClaimedAppointmentReminderEmail,
+  switchAppointmentReminderClaimToEmail,
 } from "@/lib/messaging/appointment-reminder";
 
 const integration =
@@ -40,6 +42,19 @@ const AUTOMATED_ONLY: Claimer[] = MIXED.map((claimer) => ({
   ...claimer,
   source: "automated",
 }));
+/** Senders for a client who prefers texts: staff and the sweep both ask for SMS. */
+const SMS_ONLY: Claimer[] = MIXED.map((claimer) => ({
+  ...claimer,
+  channel: "sms",
+}));
+const SMS_STAFF_ONLY: Claimer[] = SMS_ONLY.map((claimer) => ({
+  ...claimer,
+  source: "staff",
+}));
+const SMS_AUTOMATED_ONLY: Claimer[] = SMS_ONLY.map((claimer) => ({
+  ...claimer,
+  source: "automated",
+}));
 
 type ExistingRow = {
   channel: "sms" | "email";
@@ -59,7 +74,10 @@ type Scenario = {
   claimers: Claimer[];
   /** Exact number of winners expected (never more than one). */
   winners: 0 | 1;
+  /** The channel the winning claim must send on (the row's channel). */
   winnerChannel?: "sms" | "email";
+  /** Whether the winner resumes an attempt that may already have been sent. */
+  winnerRedispatch?: boolean;
   winnerSource?: "staff" | "automated";
   attemptAfterClaim?: number;
   /** Row state expected when nobody wins. */
@@ -85,8 +103,45 @@ const SCENARIOS: Scenario[] = [
     winners: 1,
     // Never handed to SMS: the abandoned email may have gone out.
     winnerChannel: "email",
+    winnerRedispatch: true,
     // A reclaimed abandoned claim keeps its attempt (and idempotency key).
     attemptAfterClaim: 1,
+  },
+  // An SMS that fell back to email and was interrupted, for a client who
+  // prefers texts: every sender keeps asking for SMS, and one of them must
+  // resend the email under its own key.
+  ...(
+    [
+      ["staff and sweep", SMS_ONLY],
+      ["staff", SMS_STAFF_ONLY],
+      ["sweep", SMS_AUTOMATED_ONLY],
+    ] as const
+  ).map(
+    ([who, claimers]): Scenario => ({
+      name: `stale pending email, SMS-preferring ${who} claimers`,
+      existing: { channel: "email", status: "pending", ageMinutes: 20, reminderAttempt: 1 },
+      claimers,
+      winners: 1,
+      winnerChannel: "email",
+      winnerRedispatch: true,
+      attemptAfterClaim: 1,
+    }),
+  ),
+  {
+    name: "stale pending email past the key window, SMS-preferring claimers",
+    existing: {
+      channel: "email",
+      status: "pending",
+      ageMinutes: KEY_WINDOW_MINUTES + 5,
+      reminderAttempt: 1,
+    },
+    claimers: SMS_ONLY,
+    winners: 0,
+    rowAfterNoWinner: {
+      status: "pending",
+      reminderAttempt: 1,
+      reminderOutcome: "outcome_unknown",
+    },
   },
   {
     name: "stale pending SMS with no reserved attempt",
@@ -231,7 +286,42 @@ const SCENARIOS: Scenario[] = [
     winners: 1,
     // Resent only as email, under the same attempt (and idempotency key).
     winnerChannel: "email",
+    winnerRedispatch: true,
     attemptAfterClaim: 1,
+  },
+  {
+    name: "email outcome unknown within the key window, SMS-preferring claimers",
+    existing: {
+      channel: "email",
+      status: "pending",
+      ageMinutes: 1,
+      reminderAttempt: 1,
+      reminderOutcome: "outcome_unknown",
+      attemptStartedMinutesAgo: KEY_WINDOW_MINUTES - 5,
+    },
+    claimers: SMS_ONLY,
+    winners: 1,
+    winnerChannel: "email",
+    winnerRedispatch: true,
+    attemptAfterClaim: 1,
+  },
+  {
+    name: "email outcome unknown past the key window, SMS-preferring claimers",
+    existing: {
+      channel: "email",
+      status: "pending",
+      ageMinutes: 60,
+      reminderAttempt: 1,
+      reminderOutcome: "outcome_unknown",
+      attemptStartedMinutesAgo: KEY_WINDOW_MINUTES + 5,
+    },
+    claimers: SMS_ONLY,
+    winners: 0,
+    rowAfterNoWinner: {
+      status: "pending",
+      reminderAttempt: 1,
+      reminderOutcome: "outcome_unknown",
+    },
   },
   {
     name: "email outcome unknown on a retried attempt",
@@ -448,7 +538,7 @@ async function unknownEmailLifecycle(
       claimers: MIXED,
     });
     expect(winners, `retry after failure ${i + 1}`).toHaveLength(1);
-    expect(winners[0]!.claimer.channel).toBe("email");
+    expect(winners[0]!.channel).toBe("email");
     expect(winners[0]!.attempt).toBe(1);
     claim = winners[0]!;
   }
@@ -830,6 +920,76 @@ async function stalledEmailClaimantNeverSends(f: ReminderFixture) {
   return "stalled email claimant: blocked mid-send and after; one provider call";
 }
 
+/**
+ * A client who prefers texts: the SMS fails definitely, the claim falls back
+ * to email, and the process dies mid-send. Every later sender still asks for
+ * SMS. Exactly one of them must resume the email under its own key, and none
+ * may text the client or start a new attempt.
+ */
+async function interruptedSmsFallbackEmailIsResentByEmail(f: ReminderFixture) {
+  const appointment = newAppointment(20);
+  const dedupeKey = appointmentReminderDedupeKey(appointment);
+  const { seenKeys, sendAppointmentReminder } = await scriptedEmailProvider([
+    () => {
+      throw new TypeError("fetch failed");
+    },
+    acceptedEmail("email-fallback-resent"),
+  ]);
+  const first = (await claimOnce(f, appointment, { channel: "sms", source: "automated" }))!;
+  expect(first).toMatchObject({ channel: "sms", attempt: 1 });
+  await expect(
+    withTenant(f.appDb, f.practiceId, (tx) =>
+      switchAppointmentReminderClaimToEmail(tx, { practiceId: f.practiceId, claim: first }),
+    ),
+  ).resolves.toBe(true);
+  // The email request goes out, then the process dies before any outcome.
+  await expect(
+    fencedSend(f, first, sendAppointmentReminder, appointment),
+  ).resolves.toMatchObject({ status: "called" });
+  // Still pending and fresh: nobody may take it over yet.
+  expect(await claimAll(f, appointment, SMS_ONLY)).toHaveLength(0);
+  await f.ownerDb
+    .update(schema.communications)
+    .set({ updatedAt: sql`now() - interval '20 minutes'` })
+    .where(eq(schema.communications.dedupeKey, dedupeKey));
+
+  const winners = await claimAll(f, appointment, SMS_ONLY);
+  expect(winners).toHaveLength(1);
+  const [winner] = winners;
+  expect(winner).toMatchObject({ channel: "email", attempt: 1, redispatch: true });
+  // The SMS fence refuses this claim, so no text can go out under it.
+  await expect(
+    withTenant(f.appDb, f.practiceId, (tx) =>
+      lockAppointmentReminderClaimForSend(tx, {
+        practiceId: f.practiceId,
+        claim: winner!,
+        channel: "sms",
+      }),
+    ),
+  ).resolves.toBe(false);
+  await expect(
+    fencedSend(f, winner!, sendAppointmentReminder, appointment),
+  ).resolves.toMatchObject({ status: "called", result: { success: true } });
+  await record(f, winner!, "sent", "automated", {
+    providerMessageId: "email-fallback-resent",
+  });
+  expect(await reminderRow(f, appointment)).toEqual({
+    status: "sent",
+    reminderAttempt: 1,
+    reminderOutcome: null,
+  });
+  expect(await claimAll(f, appointment, SMS_ONLY)).toHaveLength(0);
+  expect(seenKeys).toEqual(
+    Array(2).fill(appointmentReminderEmailIdempotencyKey(appointment, 1)),
+  );
+  const [{ smsAttempts }] = await f.ownerDb
+    .select({ smsAttempts: sql<number>`count(*)::int` })
+    .from(schema.smsSendAttempts)
+    .where(eq(schema.smsSendAttempts.sourceId, dedupeKey));
+  expect(smsAttempts).toBe(0);
+  return "interrupted SMS-to-email fallback: 1 of 16 SMS-preferring claimers resent the email under attempt 1; no text";
+}
+
 type CachedDbGlobal = {
   __openpimsDb?: { client: { end: (o: { timeout: number }) => Promise<void> } };
 };
@@ -1133,7 +1293,10 @@ integration("appointment reminder claim under PostgreSQL concurrency", () => {
             const [winner] = winners;
             if (winner) {
               if (scenario.winnerChannel) {
-                expect(winner.claimer.channel, label).toBe(scenario.winnerChannel);
+                expect(winner.channel, label).toBe(scenario.winnerChannel);
+              }
+              if (scenario.winnerRedispatch !== undefined) {
+                expect(winner.redispatch, label).toBe(scenario.winnerRedispatch);
               }
               if (scenario.winnerSource) {
                 expect(winner.claimer.source, label).toBe(scenario.winnerSource);
@@ -1151,7 +1314,7 @@ integration("appointment reminder claim under PostgreSQL concurrency", () => {
                 .where(eq(schema.communications.dedupeKey, dedupeKey));
               expect(row, label).toMatchObject({
                 status: "pending",
-                channel: winner.claimer.channel,
+                channel: winner.channel,
                 reminderAttempt: scenario.attemptAfterClaim,
                 reminderOutcome: null,
                 fresh: true,
@@ -1186,6 +1349,7 @@ integration("appointment reminder claim under PostgreSQL concurrency", () => {
         results.push(await rateLimitedEmailRetriesUnderOneKey(fixture));
         results.push(await commitFailureAfterAcceptanceIsUnknown(fixture));
         results.push(await stalledEmailClaimantNeverSends(fixture));
+        results.push(await interruptedSmsFallbackEmailIsResentByEmail(fixture));
         results.push(
           await stalledSmsClaimantNeverSends(fixture, databaseUrl.toString()),
         );

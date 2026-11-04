@@ -326,9 +326,13 @@ function boundedReason(raw: string): string {
 export function emailReminderFailureReason(result: {
   outcome: "accepted" | "definite_failure" | "outcome_unknown";
   error?: string;
+  idempotencyConflict?: boolean;
 }): string {
   if (result.error) {
     console.error("[appointment-reminder] email provider:", result.error);
+  }
+  if (result.idempotencyConflict) {
+    return "An earlier attempt of this reminder may already have been sent, and it can't be resent safely (for example, the client's email address changed since then). Contact the client directly to confirm they have the appointment details.";
   }
   if (result.outcome === "outcome_unknown") {
     return "The email provider did not confirm the send. It may have been delivered.";
@@ -361,6 +365,12 @@ export function smsReminderFailureReason(result: {
 
 export type AppointmentReminderClaim = {
   id: string;
+  /**
+   * The channel this claim must send on. A reclaimed pending email stays an
+   * email even when the claimer asked for SMS: callers send by email
+   * whenever this is "email".
+   */
+  channel: "sms" | "email";
   /** Send attempt; scopes provider idempotency keys. */
   attempt: number;
   /**
@@ -389,14 +399,17 @@ export type AppointmentReminderClaim = {
  *   restarts the attempt clock). Staff sends (manual and bulk) can always
  *   retry it. The automated sweep retries a staff failure, and its own
  *   failure only after a delay, and retries a definite failure at most once.
- * - A pending email is reclaimable by another email send, keeping its send
- *   attempt so the provider idempotency key replays any earlier send, while
- *   that key is still honored (EMAIL_REMINDER_KEY_REUSE_WINDOW_MS). That
- *   covers an abandoned claim (no outcome recorded for 15 minutes) and an
- *   email whose provider outcome is unknown. Past the window an abandoned
- *   claim is marked "Delivery unknown" instead; an unconfirmed email is never
- *   resent under a new key and never switched to SMS, either of which could
- *   reach a client who was already emailed.
+ * - A pending email is reclaimable by any send, whichever channel it asked
+ *   for, as an email redispatch: it keeps its channel and send attempt so the
+ *   provider idempotency key replays any earlier send, while that key is
+ *   still honored (EMAIL_REMINDER_KEY_REUSE_WINDOW_MS). That covers an
+ *   abandoned claim (no outcome recorded for 15 minutes) and an email whose
+ *   provider outcome is unknown, including an SMS reminder that fell back to
+ *   email for a client who prefers texts. The claim returns the row's
+ *   channel, and callers must send by email when it is "email". Past the
+ *   window an abandoned claim is marked "Delivery unknown" instead; an
+ *   unconfirmed email is never resent under a new key and never switched to
+ *   SMS, either of which could reach a client who was already emailed.
  * - A pending SMS claim is only recovered when no provider attempt was ever
  *   reserved (see recoverStaleUnreservedSmsCommunication). An SMS whose
  *   provider outcome is unknown is never reclaimed.
@@ -450,7 +463,13 @@ export async function claimAppointmentReminderCommunication(
       claimToken: communications.reminderClaimToken,
     });
   if (row) {
-    return { id: row.id, attempt: 1, claimToken: row.claimToken!, redispatch: false };
+    return {
+      id: row.id,
+      channel: options.channel,
+      attempt: 1,
+      claimToken: row.claimToken!,
+      redispatch: false,
+    };
   }
 
   const staleEmailClaim = sql`${communications.updatedAt} <= now() - make_interval(secs => ${STALE_EMAIL_REMINDER_CLAIM_MS / 1000})`;
@@ -487,7 +506,9 @@ export async function claimAppointmentReminderCommunication(
   const [reclaimed] = await db
     .update(communications)
     .set({
-      channel: options.channel,
+      // A retried failure is sent on the requested channel; a reclaimed
+      // pending email stays an email under its own key.
+      channel: sql`case when ${communications.status} = 'failed' then ${options.channel}::comm_channel else ${communications.channel} end`,
       subject,
       content,
       status: "pending",
@@ -506,24 +527,23 @@ export async function claimAppointmentReminderCommunication(
     .where(
       and(
         sameRow,
-        options.channel === "email"
-          ? or(
-              retryableFailure,
-              and(
-                eq(communications.status, "pending"),
-                eq(communications.channel, "email"),
-                emailKeyStillHonored,
-                or(
-                  and(isNull(communications.reminderOutcome), staleEmailClaim),
-                  eq(communications.reminderOutcome, "outcome_unknown"),
-                ),
-              ),
-            )
-          : retryableFailure,
+        or(
+          retryableFailure,
+          and(
+            eq(communications.status, "pending"),
+            eq(communications.channel, "email"),
+            emailKeyStillHonored,
+            or(
+              and(isNull(communications.reminderOutcome), staleEmailClaim),
+              eq(communications.reminderOutcome, "outcome_unknown"),
+            ),
+          ),
+        ),
       ),
     )
     .returning({
       id: communications.id,
+      channel: communications.channel,
       attempt: communications.reminderAttempt,
       claimToken: communications.reminderClaimToken,
       // RETURNING sees the new row. A retried failure restarts the attempt
@@ -534,6 +554,7 @@ export async function claimAppointmentReminderCommunication(
   if (reclaimed) {
     return {
       id: reclaimed.id,
+      channel: reclaimed.channel === "sms" ? "sms" : "email",
       attempt: reclaimed.attempt ?? 1,
       claimToken: reclaimed.claimToken!,
       redispatch: Boolean(reclaimed.redispatch),
@@ -591,6 +612,7 @@ export async function claimAppointmentReminderCommunication(
   if (!recovered?.claimToken) return null;
   return {
     id: recoveredId,
+    channel: "sms",
     attempt: recovered.attempt ?? 1,
     claimToken: recovered.claimToken,
     redispatch: false,
@@ -636,6 +658,7 @@ type ReminderEmailProviderResult = {
   success: boolean;
   id?: string;
   error?: string;
+  idempotencyConflict?: boolean;
   outcome: "accepted" | "definite_failure" | "outcome_unknown";
 };
 

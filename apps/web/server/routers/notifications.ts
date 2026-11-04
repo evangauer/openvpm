@@ -597,24 +597,44 @@ export const notificationsRouter = createRouter({
       // (marked unknown) until the provider result is reconciled.
       let preservePendingSmsOutcome = false;
       try {
-        if (channel === "sms") {
+        // A reclaimed pending email (for example an interrupted SMS-to-email
+        // fallback) is resent by email under its own key, never as a text.
+        if (reminderClaim.channel === "sms") {
           failureChannel = "sms";
           preservePendingSmsOutcome = true;
-          const result = await sendAppointmentReminderSms({
-            to: appt.clientPhone!,
-            ...message,
-            practiceId: ctx.practiceId,
-            locationId: smsSender!.locationId,
-            clientId: appt.clientId!,
-            communicationId: reminderClaim.id,
-            source: "appointment_reminder",
-            sourceId: appointmentReminderDedupeKey(appt),
-            idempotencyKey: appointmentReminderSmsIdempotencyKey(
-              appt,
-              reminderClaim.attempt,
-            ),
-            reminderClaimToken: reminderClaim.claimToken,
-          });
+          let result:
+            | Awaited<ReturnType<typeof sendAppointmentReminderSms>>
+            | {
+                success: false;
+                outcome: "outcome_unknown";
+                error: string;
+              };
+          try {
+            result = await sendAppointmentReminderSms({
+              to: appt.clientPhone!,
+              ...message,
+              practiceId: ctx.practiceId,
+              locationId: smsSender!.locationId,
+              clientId: appt.clientId!,
+              communicationId: reminderClaim.id,
+              source: "appointment_reminder",
+              sourceId: appointmentReminderDedupeKey(appt),
+              idempotencyKey: appointmentReminderSmsIdempotencyKey(
+                appt,
+                reminderClaim.attempt,
+              ),
+              reminderClaimToken: reminderClaim.claimToken,
+            });
+          } catch (error) {
+            // The SMS may have reached the provider. Record it as unknown;
+            // its durable attempt keeps any retry on the same key.
+            console.error("[appointment-reminder] SMS send threw:", error);
+            result = {
+              success: false,
+              outcome: "outcome_unknown",
+              error: "SMS dispatch ended without a known outcome",
+            };
+          }
           if (result.success) {
             await logReminder("sms", "sent", { providerMessageId: result.sid });
             preservePendingSmsOutcome = false;
@@ -1186,7 +1206,9 @@ export const notificationsRouter = createRouter({
           continue;
         }
 
-        if (channel === "sms") {
+        // A reclaimed pending email (for example an interrupted SMS-to-email
+        // fallback) is resent by email under its own key, never as a text.
+        if (reminderClaim.channel === "sms") {
           let result:
             | Awaited<ReturnType<typeof sendAppointmentReminderSms>>
             | {
@@ -1272,20 +1294,15 @@ export const notificationsRouter = createRouter({
           continue;
         }
 
-        if (channel === "email") {
-          const email = await sendEmail();
-          if (email.result === "sent") {
-            sent++;
-          } else if (email.result === "superseded") {
-            failed++;
-          } else {
-            await logReminder("email", email.result, { reason: email.reason });
-            failed++;
-          }
-          continue;
+        const email = await sendEmail();
+        if (email.result === "sent") {
+          sent++;
+        } else if (email.result === "superseded") {
+          failed++;
+        } else {
+          await logReminder("email", email.result, { reason: email.reason });
+          failed++;
         }
-
-        failed++;
       }
 
       return { sent, failed };

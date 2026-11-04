@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
       id?: string;
       error?: string;
       outcome?: "accepted" | "definite_failure" | "outcome_unknown";
+      idempotencyConflict?: boolean;
     }> => ({ success: true }),
   ),
   sendInvoiceEmail: vi.fn(async () => ({
@@ -374,6 +375,146 @@ describe("notification target safety", () => {
       }),
     );
     expect(mocks.withDurableSmsCommunication).toHaveBeenCalledTimes(2);
+  });
+
+  it("resends a reclaimed email reminder by email for a client who prefers texts", async () => {
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: true,
+      id: "email-redispatch-1",
+    });
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "confirmed",
+            startTime: new Date("2026-07-01T04:30:00Z"),
+            patientName: "Miso",
+            clientId: CLIENT_ID,
+            clientFirstName: "Ada",
+            clientLastName: "Lovelace",
+            clientEmail: "ada@example.com",
+            clientPhone: "(555) 555-0100",
+            preferredContactMethod: "sms",
+            smsConsent: true,
+            practiceName: "Neighborhood Veterinary",
+            practicePhone: "555-0100",
+            practiceTimezone: "America/Los_Angeles",
+            locationId: LOCATION_ID,
+          },
+        ],
+        [{ locationId: LOCATION_ID }],
+      ],
+      claimResults: [[]],
+      reclaimResults: [
+        [
+          {
+            id: COMMUNICATION_ID,
+            channel: "email",
+            attempt: 1,
+            claimToken: "token-2",
+            redispatch: true,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).resolves.toEqual({ success: true, channel: "email" });
+
+    expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
+    expect(mocks.sendAppointmentReminder).toHaveBeenCalledOnce();
+    expect(mocks.sendAppointmentReminder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "ada@example.com",
+        idempotencyKey: expect.stringMatching(
+          /^email:reminder:appointment:.*:attempt-1$/,
+        ),
+      }),
+    );
+    expect(updateSet).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        channel: "email",
+        status: "sent",
+        providerMessageId: "email-redispatch-1",
+      }),
+    );
+  });
+
+  it("resends a reclaimed email reminder by email in a bulk send", async () => {
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: true,
+      id: "email-redispatch-2",
+    });
+    const { db } = createDb({
+      selectResults: [
+        [
+          {
+            id: APPOINTMENT_ID,
+            status: "confirmed",
+            startTime: new Date("2026-07-01T04:30:00Z"),
+            patientName: "Miso",
+            clientId: CLIENT_ID,
+            clientFirstName: "Ada",
+            clientLastName: "Lovelace",
+            clientEmail: "ada@example.com",
+            clientPhone: "(555) 555-0100",
+            preferredContactMethod: "sms",
+            smsConsent: true,
+            practiceName: "Neighborhood Veterinary",
+            practicePhone: "555-0100",
+            practiceTimezone: "America/Los_Angeles",
+            locationId: LOCATION_ID,
+          },
+        ],
+        [{ locationId: LOCATION_ID }],
+      ],
+      claimResults: [[]],
+      reclaimResults: [
+        [
+          {
+            id: COMMUNICATION_ID,
+            channel: "email",
+            attempt: 1,
+            claimToken: "token-2",
+            redispatch: true,
+          },
+        ],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] }),
+    ).resolves.toEqual({ sent: 1, failed: 0 });
+
+    expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
+    expect(mocks.sendAppointmentReminder).toHaveBeenCalledOnce();
+  });
+
+  it("explains an idempotency conflict without inviting a resend", async () => {
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: false,
+      outcome: "outcome_unknown",
+      idempotencyConflict: true,
+      error: "Same idempotency key used with a different request payload.",
+    });
+    const { db, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).rejects.toThrow(
+      /may already have been sent.*Contact the client directly/,
+    );
+    expect(updateSet).toHaveBeenLastCalledWith(
+      expect.objectContaining({ reminderOutcome: "outcome_unknown" }),
+    );
   });
 
   it("blocks an SMS-only manual reminder during the clinic's quiet hours", async () => {
@@ -1873,7 +2014,7 @@ describe("appointment reminder state transitions", () => {
         [{ locationId: LOCATION_ID }],
       ],
       claimResults: [[]],
-      reclaimResults: [[{ id: COMMUNICATION_ID, attempt: 2 }]],
+      reclaimResults: [[{ id: COMMUNICATION_ID, channel: "sms", attempt: 2 }]],
     });
 
     await expect(
@@ -1892,7 +2033,7 @@ describe("appointment reminder state transitions", () => {
     );
   });
 
-  it("keeps an SMS with an unknown provider outcome pending", async () => {
+  it("records delivery unknown when a manual SMS send throws", async () => {
     mocks.sendAppointmentReminderSms.mockRejectedValueOnce(
       new Error("Provider unavailable"),
     );
@@ -1913,10 +2054,19 @@ describe("appointment reminder state transitions", () => {
       callerWithDb(db).sendAppointmentReminder({
         appointmentId: APPOINTMENT_ID,
       }),
-    ).rejects.toThrow("Provider unavailable");
+    ).rejects.toThrow("did not confirm");
 
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
-    expect(updateSet).not.toHaveBeenCalled();
+    // The SMS may have gone out: recorded as unknown, never as a failure.
+    // Its durable attempt keeps any retry on the same key.
+    expect(updateSet).toHaveBeenCalledOnce();
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "sms",
+        status: "pending",
+        reminderOutcome: "outcome_unknown",
+      }),
+    );
   });
 
   it("records the reason when an SMS fails and the email fallback is blocked", async () => {
@@ -2098,7 +2248,9 @@ describe("appointment reminder state transitions", () => {
       });
 
       await expect(
-        callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] }),
+        callerWithDb(db).sendBulkReminders({
+          appointmentIds: [APPOINTMENT_ID],
+        }),
       ).resolves.toEqual({ sent: 0, failed: 1 });
 
       // The first send may have gone out. Recording a failure would let the

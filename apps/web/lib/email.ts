@@ -343,6 +343,11 @@ export async function sendAppointmentReminder(data: {
   id?: string;
   error?: string;
   outcome: EmailProviderOutcome;
+  /**
+   * The provider refused this idempotency key: an earlier request under it
+   * exists (or is still running) and may have sent the email.
+   */
+  idempotencyConflict?: boolean;
 }> {
   const body = `
     <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${data.clientName},</p>
@@ -382,6 +387,9 @@ export async function sendAppointmentReminder(data: {
     success: result.success,
     id: result.id,
     error: result.error,
+    ...(result.failureCode === "idempotency_conflict"
+      ? { idempotencyConflict: true }
+      : {}),
     // A 429 rejects this request only. It says nothing about an earlier
     // request under the same key, so calling it a failure would invite a
     // retry under a new key; a retry under this same key is safe.

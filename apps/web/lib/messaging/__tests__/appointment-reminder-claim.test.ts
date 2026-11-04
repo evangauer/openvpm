@@ -112,6 +112,7 @@ describe("appointment reminder claim", () => {
 
     await expect(claim(db)).resolves.toEqual({
       id: "new",
+      channel: "email",
       attempt: 1,
       claimToken: "token-1",
       redispatch: false,
@@ -146,12 +147,19 @@ describe("appointment reminder claim", () => {
     const { db, state } = claimDb({
       inserted: [],
       reclaimed: [
-        { id: "failed-row", attempt: 2, claimToken: "token-2", redispatch: false },
+        {
+          id: "failed-row",
+          channel: "email",
+          attempt: 2,
+          claimToken: "token-2",
+          redispatch: false,
+        },
       ],
     });
 
     await expect(claim(db)).resolves.toEqual({
       id: "failed-row",
+      channel: "email",
       attempt: 2,
       claimToken: "token-2",
       redispatch: false,
@@ -170,6 +178,11 @@ describe("appointment reminder claim", () => {
     // The reclaim refreshes updated_at on the database clock in the same
     // statement, so no other claimer can treat the row as stale.
     expect(render(state.updateSet!.updatedAt).sql).toBe("now()");
+    // Only a retried failure takes the requested channel; a reclaimed pending
+    // email stays an email.
+    expect(render(state.updateSet!.channel).sql).toBe(
+      `case when "communications"."status" = 'failed' then $1::comm_channel else "communications"."channel" end`,
+    );
     // Only a retried failure starts a new send attempt.
     expect(render(state.updateSet!.reminderAttempt).sql).toBe(
       `case when "communications"."status" = 'failed' then "communications"."reminder_attempt" + 1 else "communications"."reminder_attempt" end`,
@@ -254,14 +267,36 @@ describe("appointment reminder claim", () => {
     );
   });
 
-  it("never lets an SMS claim take over a stale email claim", async () => {
-    const { db, state } = claimDb({ inserted: [], reclaimed: [] });
+  it("lets an SMS claim resume a pending email only as an email redispatch", async () => {
+    const { db, state } = claimDb({
+      inserted: [],
+      reclaimed: [
+        {
+          id: "email-row",
+          channel: "email",
+          attempt: 1,
+          claimToken: "token-2",
+          redispatch: true,
+        },
+      ],
+    });
 
-    await expect(claim(db, { channel: "sms" })).resolves.toBeNull();
+    await expect(claim(db, { channel: "sms" })).resolves.toEqual({
+      id: "email-row",
+      channel: "email",
+      attempt: 1,
+      claimToken: "token-2",
+      redispatch: true,
+    });
 
-    const { sql } = render(state.updateWhere);
-    expect(sql).not.toContain('"communications"."channel" = $');
-    expect(sql).not.toContain("make_interval(secs => $");
+    const { sql, params } = render(state.updateWhere);
+    expect(sql).toMatch(
+      /"communications"\."status" = \$\d+ and "communications"\."channel" = \$\d+ and "communications"\."reminder_attempt_started_at" > now\(\) - make_interval\(secs => \$\d+\)/,
+    );
+    expect(params).toEqual(expect.arrayContaining(["pending", "email"]));
+    // The row keeps its email channel; "sms" applies only to a retried failure.
+    expect(render(state.updateSet!.channel).params).toEqual(["sms"]);
+    expect(mocks.recoverStaleUnreservedSmsCommunication).not.toHaveBeenCalled();
   });
 
   it("bounds the sweep's retries and waits before retrying its own failure", async () => {
@@ -304,6 +339,7 @@ describe("appointment reminder claim", () => {
 
     await expect(claim(db, { channel: "sms" })).resolves.toEqual({
       id: "stale-sms",
+      channel: "sms",
       attempt: 3,
       claimToken: "token-3",
       // No provider attempt was ever reserved, so nothing may have gone out.
@@ -363,7 +399,13 @@ describe("recordAppointmentReminderOutcome", () => {
   }
   const base = {
     practiceId: PRACTICE_ID,
-    claim: { id: "row", attempt: 1, claimToken: "token-1", redispatch: false },
+    claim: {
+      id: "row",
+      channel: "email" as const,
+      attempt: 1,
+      claimToken: "token-1",
+      redispatch: false,
+    },
     channel: "email" as const,
     content: "x",
   };

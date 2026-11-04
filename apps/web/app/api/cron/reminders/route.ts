@@ -467,6 +467,10 @@ export async function GET(request: Request) {
         }
         const reminderClaim = claim.claim;
         activeClaim = reminderClaim;
+        // A reclaimed pending email (for example an interrupted SMS-to-email
+        // fallback) is resent by email under its own key, never as a text.
+        const sendChannel: ReminderChannel = reminderClaim.channel;
+        claimedChannel = sendChannel;
         const message = appointmentReminderMessageFields({
           startTime: startDate,
           timeZone: appt.practiceTimezone,
@@ -475,7 +479,7 @@ export async function GET(request: Request) {
           practicePhone: appt.practicePhone,
         });
 
-        if (channel === "sms") {
+        if (sendChannel === "sms") {
           const senderLocationId = await activeSenderLocation(
             appt.practiceId,
             appt.locationId ?? undefined,
@@ -583,7 +587,7 @@ export async function GET(request: Request) {
               }
             }
           }
-        } else if (channel === "email") {
+        } else {
           const email = await emailReminder(reminderClaim);
           if (email.result === "sent") {
             sent++;
@@ -598,8 +602,6 @@ export async function GET(request: Request) {
             );
             failed++;
           }
-        } else {
-          failed++;
         }
       } catch (error) {
         if (activeClaim && preservePendingSmsOutcome) {
