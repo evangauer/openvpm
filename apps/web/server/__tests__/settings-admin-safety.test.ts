@@ -1294,3 +1294,19 @@ describe("settings scheduling metadata delete safety", () => {
     expect(updateUserBlock).toContain("eq(users.role, targetUser.role)");
   });
 });
+
+describe("settings staff responses", () => {
+  it("never returns a staff member's password hash or session version", () => {
+    const start = SETTINGS_SOURCE.indexOf("updateUser: adminProcedure");
+    const end = SETTINGS_SOURCE.indexOf("\n  }),\n", start);
+    const updateUser = SETTINGS_SOURCE.slice(start, end);
+    expect(updateUser).not.toMatch(/\.returning\(\s*\)/);
+    expect(updateUser).toContain(".returning(STAFF_USER_COLUMNS)");
+    const columnsStart = SETTINGS_SOURCE.indexOf("const STAFF_USER_COLUMNS = {");
+    const columns = SETTINGS_SOURCE.slice(
+      columnsStart,
+      SETTINGS_SOURCE.indexOf("};", columnsStart),
+    );
+    expect(columns).not.toMatch(/passwordHash|sessionVersion/);
+  });
+});

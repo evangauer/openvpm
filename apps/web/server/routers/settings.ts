@@ -613,6 +613,21 @@ interface PracticeSettings {
   [k: string]: unknown;
 }
 
+// Columns safe to send to an admin's browser about a staff member. Never the
+// password hash or session version.
+const STAFF_USER_COLUMNS = {
+  id: users.id,
+  name: users.name,
+  email: users.email,
+  role: users.role,
+  isVeterinarian: users.isVeterinarian,
+  locationId: users.locationId,
+  phone: users.phone,
+  licenseNumber: users.licenseNumber,
+  createdAt: users.createdAt,
+  deletedAt: users.deletedAt,
+};
+
 export const settingsRouter = createRouter({
   // ── Practice ──────────────────────────────────────────────
 
@@ -2723,7 +2738,7 @@ export const settingsRouter = createRouter({
                 isNull(users.deletedAt),
               ),
             )
-            .returning();
+            .returning(STAFF_USER_COLUMNS);
 
           if (!updated) {
             throw new TRPCError({
@@ -2747,7 +2762,7 @@ export const settingsRouter = createRouter({
             isNull(users.deletedAt),
           ),
         )
-        .returning();
+        .returning(STAFF_USER_COLUMNS);
       if (!updated) {
         throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
       }
