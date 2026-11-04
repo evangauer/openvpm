@@ -49,9 +49,9 @@ connect by API when you are ready. See
 ## Keep exploring
 
 - [Your day sheet](your-day.md)
-- [Ask the AI about a pet](ask-the-ai.md)
+- [Ask the Agent about your clinic](https://docs.openvpm.com/guides/ask-the-agent)
 - [Give every client a portal](client-portal.md)
-- [See your schedule in your own calendar](calendar-feed.md)
+- [See the schedule in your own calendar](https://docs.openvpm.com/guides/see-the-schedule-in-your-calendar)
 - [Review clinic pilot fit and launch limits](../clinic-pilot-readiness.md)
 
 Every guide here also runs inside the app with your own data: open

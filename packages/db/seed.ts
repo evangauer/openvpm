@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 config({ path: "../../.env" });
 import crypto from "crypto";
+import { eq } from "drizzle-orm";
 import { db } from "./client";
 import {
   practices,
@@ -31,6 +32,8 @@ import {
   controlledSubstanceLog,
   treatmentTemplates,
   treatmentTemplateItems,
+  careReminders,
+  visitCloseouts,
 } from "./schema/index";
 
 // Pre-hashed bcrypt value for "password123"
@@ -1098,6 +1101,19 @@ async function seed() {
     createdAt: Date;
   }[] = [];
 
+  // Line items come first so every invoice's subtotal, tax, and total add
+  // up to what's on it. Every seeded service is taxable at 8%.
+  type SeedInvoiceItem = {
+    description: string;
+    quantity: number;
+    unitPrice: string;
+    total: string;
+    taxable: boolean;
+    itemType: "service" | "product";
+  };
+  const itemsByInvoice: SeedInvoiceItem[][] = [];
+  let paidThisMonth = false;
+
   for (let i = 0; i < invoiceStatuses.length; i++) {
     const status = invoiceStatuses[i]!;
     const client = insertedClients[i % insertedClients.length]!;
@@ -1107,16 +1123,36 @@ async function seed() {
     const patient = patientIdx >= 0 ? insertedPatients[patientIdx]! : insertedPatients[0]!;
     const appt = i < insertedAppointments.length ? insertedAppointments[i]! : null;
 
-    const subtotal = (50 + Math.floor(Math.random() * 400)).toFixed(2);
-    const tax = (parseFloat(subtotal) * 0.08).toFixed(2);
-    const total = (parseFloat(subtotal) + parseFloat(tax)).toFixed(2);
-    const paidAmount = status === "paid" ? total : status === "overdue" ? "0.00" : "0.00";
+    const items = pickN(insertedServices, 1 + Math.floor(Math.random() * 4)).map((svc) => ({
+      description: svc.name,
+      quantity: 1,
+      unitPrice: svc.defaultPrice,
+      total: parseFloat(svc.defaultPrice).toFixed(2),
+      taxable: svc.taxable,
+      itemType: "service" as const,
+    }));
+    itemsByInvoice.push(items);
+    const subtotalCents = items.reduce((sum, item) => sum + Math.round(parseFloat(item.total) * 100), 0);
+    const taxableCents = items
+      .filter((item) => item.taxable)
+      .reduce((sum, item) => sum + Math.round(parseFloat(item.total) * 100), 0);
+    const taxCents = Math.round(taxableCents * 0.08);
+    const subtotal = (subtotalCents / 100).toFixed(2);
+    const tax = (taxCents / 100).toFixed(2);
+    const total = ((subtotalCents + taxCents) / 100).toFixed(2);
+    const paidAmount = status === "paid" ? total : "0.00";
 
     // Issue every invoice before its due date so no invoice reads as "due
     // before it was created" in the UI.
     let dueDate: string;
     let createdAt: Date;
-    if (status === "paid") {
+    if (status === "paid" && !paidThisMonth) {
+      // One visit paid today, so month-to-date revenue isn't empty early in
+      // the month.
+      paidThisMonth = true;
+      createdAt = daysAgo(0);
+      dueDate = dateStr(daysAgo(0));
+    } else if (status === "paid") {
       const dueDaysAgo = Math.floor(Math.random() * 30);
       createdAt = daysAgo(dueDaysAgo + 14);
       dueDate = dateStr(daysAgo(dueDaysAgo));
@@ -1151,38 +1187,9 @@ async function seed() {
   console.log(`Invoices: ${insertedInvoices.length} created`);
 
   // Invoice items
-  const invoiceItemValues: {
-    invoiceId: string;
-    description: string;
-    quantity: number;
-    unitPrice: string;
-    total: string;
-    taxable: boolean;
-    itemType: "service" | "product";
-  }[] = [];
-
-  for (const inv of insertedInvoices) {
-    const numItems = 1 + Math.floor(Math.random() * 4);
-    let runningTotal = 0;
-
-    for (let j = 0; j < numItems; j++) {
-      const svc = pickRandom(insertedServices);
-      const qty = 1;
-      const unitPrice = svc.defaultPrice;
-      const itemTotal = (parseFloat(unitPrice) * qty).toFixed(2);
-      runningTotal += parseFloat(itemTotal);
-
-      invoiceItemValues.push({
-        invoiceId: inv.id,
-        description: svc.name,
-        quantity: qty,
-        unitPrice,
-        total: itemTotal,
-        taxable: svc.taxable,
-        itemType: "service",
-      });
-    }
-  }
+  const invoiceItemValues = insertedInvoices.flatMap((inv, i) =>
+    itemsByInvoice[i]!.map((item) => ({ ...item, invoiceId: inv.id }))
+  );
 
   await db.insert(invoiceItems).values(invoiceItemValues);
   console.log(`Invoice items: ${invoiceItemValues.length} created`);
@@ -1282,7 +1289,7 @@ async function seed() {
     amount: inv.total,
     method: paymentMethods[i % paymentMethods.length]!,
     receivedBy: frontDeskUsers[i % frontDeskUsers.length]!.id,
-    receivedAt: daysAgo(Math.floor(Math.random() * 14)),
+    receivedAt: inv.createdAt >= setTime(daysAgo(0), 0, 0) ? inv.createdAt : daysAgo(Math.floor(Math.random() * 14)),
     notes: null,
   }));
   const insertedPayments = await db.insert(payments).values(paymentValues).returning();
@@ -1485,7 +1492,7 @@ async function seed() {
       witnessedBy: techUsers[0]!.id,
       lotNumber: "TR-2026-0318-A",
       notes: "Post-op pain management, dental extraction",
-      performedAt: daysAgo(2),
+      performedAt: setTime(daysAgo(2), 9, 15),
     },
     {
       practiceId,
@@ -1499,7 +1506,7 @@ async function seed() {
       witnessedBy: techUsers[0]!.id,
       lotNumber: "BUP-2026-Q1-7",
       notes: "Pre-surgical analgesia",
-      performedAt: daysAgo(4),
+      performedAt: setTime(daysAgo(4), 14, 40),
     },
     {
       practiceId,
@@ -1513,7 +1520,7 @@ async function seed() {
       witnessedBy: techUsers[1]!.id,
       lotNumber: "PB-2026-0201",
       notes: "30-day supply dispensed for seizure control",
-      performedAt: daysAgo(6),
+      performedAt: setTime(daysAgo(6), 11, 5),
     },
     {
       practiceId,
@@ -1527,7 +1534,7 @@ async function seed() {
       witnessedBy: techUsers[0]!.id,
       lotNumber: "KET-2026-0405",
       notes: "Induction for spay procedure",
-      performedAt: daysAgo(1),
+      performedAt: setTime(daysAgo(1), 16, 20),
     },
     {
       practiceId,
@@ -1541,7 +1548,7 @@ async function seed() {
       witnessedBy: vetUsers[1]!.id,
       lotNumber: "MOR-2026-0112",
       notes: "Partial vial waste after dose preparation — witnessed disposal",
-      performedAt: daysAgo(3),
+      performedAt: setTime(daysAgo(3), 8, 50),
     },
     {
       practiceId,
@@ -1555,7 +1562,7 @@ async function seed() {
       witnessedBy: techUsers[1]!.id,
       lotNumber: "GAB-2026-0227",
       notes: "30-day supply for chronic pain management",
-      performedAt: daysAgo(8),
+      performedAt: setTime(daysAgo(8), 13, 35),
     },
   ];
   const insertedCs = await db.insert(controlledSubstanceLog).values(csEntries).returning();
@@ -1636,6 +1643,143 @@ async function seed() {
   console.log(`Treatment templates: ${templatesData.length} created`);
 
   // =========================================================================
+  // 21. Overdue vaccines and care reminders — so Recalls and Care Reminders
+  //     show real work. Fixed patients and offsets, no random draws.
+  // =========================================================================
+  const patientByName = (name: string, species: string) => {
+    const idx = patientsData.findIndex((p) => p.name === name && p.species === species);
+    return insertedPatients[idx]!;
+  };
+  const hasVaccine = (patientId: string, prefix: string) =>
+    vaccinationValues.some((v) => v.patientId === patientId && v.vaccineName.startsWith(prefix));
+  const vaccineByPrefix = (prefix: string) => vaccineData.find((v) => v.name.startsWith(prefix))!;
+
+  // Each pet lapsed on the first vaccine in its list it has no newer record of.
+  const lapsed: { name: string; species: string; vaccines: string[]; givenDaysAgo: number }[] = [
+    { name: "Cooper", species: "canine", vaccines: ["Canine Influenza"], givenDaysAgo: 410 },
+    { name: "Daisy", species: "canine", vaccines: ["Canine Influenza"], givenDaysAgo: 392 },
+    { name: "Daisy", species: "canine", vaccines: ["Leptospirosis", "Lyme", "Bordetella"], givenDaysAgo: 392 },
+    { name: "Penny", species: "canine", vaccines: ["Canine Influenza"], givenDaysAgo: 381 },
+    { name: "Shadow", species: "feline", vaccines: ["FeLV", "FVRCP", "Rabies (1-year"], givenDaysAgo: 420 },
+    { name: "Cleo", species: "feline", vaccines: ["FVRCP", "FeLV", "Rabies (1-year"], givenDaysAgo: 375 },
+  ];
+  const overdueVaccinations = lapsed.flatMap((entry, i) => {
+    const patient = patientByName(entry.name, entry.species);
+    const prefix = entry.vaccines.find((v) => !hasVaccine(patient.id, v));
+    if (!prefix) return [];
+    const vax = vaccineByPrefix(prefix);
+    const adminDate = setTime(daysAgo(entry.givenDaysAgo), 10, 0);
+    const nextDue = new Date(adminDate);
+    nextDue.setMonth(nextDue.getMonth() + vax.nextDueMonths);
+    return [{
+      practiceId,
+      patientId: patient.id,
+      vaccineName: vax.name,
+      lotNumber: `LOT-OVD${String(i + 1).padStart(3, "0")}`,
+      manufacturer: vax.manufacturer,
+      administeredBy: vets[i % vets.length]!.id,
+      administeredAt: adminDate,
+      nextDueDate: dateStr(nextDue),
+    }];
+  });
+  if (overdueVaccinations.length) await db.insert(vaccinationRecords).values(overdueVaccinations);
+  console.log(`Overdue vaccinations: ${overdueVaccinations.length} created`);
+
+  const reminderValues: (typeof careReminders.$inferInsert)[] = [
+    { patient: ["Max", "canine"], title: "Recheck ears after otitis treatment", notes: "Ear cytology at recheck. Owner finishing the 10-day drops.", due: -3 },
+    { patient: ["Bella", "canine"], title: "Weight check after diet change", notes: "Target 10.5 kg. Weigh only, no exam needed.", due: 0 },
+    { patient: ["Mittens", "feline"], title: "Call owner about dental estimate", notes: "Estimate sent after last exam. Grade 2 tartar.", due: 4 },
+    { patient: ["Charlie", "canine"], title: "Repeat liver values", notes: "ALT mildly elevated last panel. Recheck in 6 weeks.", due: 12 },
+    { patient: ["Tucker", "canine"], title: "Annual heartworm test", due: 26 },
+    { patient: ["Luna", "canine"], title: "Suture removal", notes: "Lateral thigh mass removal.", due: -2, completed: true },
+    { patient: ["Rocky", "canine"], title: "Behavior consult follow-up", due: -10, dismissed: "Owner is now seeing a behavior specialist." },
+  ].map((r, i) => {
+    const patient = patientByName(r.patient[0]!, r.patient[1]!);
+    const staff = i % 2 === 0 ? vets[i % vets.length]! : techs[i % techs.length]!;
+    return {
+      practiceId,
+      patientId: patient.id,
+      title: r.title,
+      notes: r.notes ?? null,
+      dueDate: dateStr(daysFromNow(r.due)),
+      status: r.completed ? ("completed" as const) : r.dismissed ? ("dismissed" as const) : ("open" as const),
+      createdBy: staff.id,
+      completedAt: r.completed ? setTime(daysAgo(2), 15, 30) : null,
+      completedBy: r.completed ? staff.id : null,
+      dismissedAt: r.dismissed ? setTime(daysAgo(6), 11, 0) : null,
+      dismissedBy: r.dismissed ? insertedUsers.find((u) => u.role === "admin")!.id : null,
+      dismissalReason: r.dismissed ?? null,
+    };
+  });
+  // One task carried over from the clinic's previous system.
+  reminderValues.push({
+    practiceId,
+    patientId: patientByName("Daisy", "canine").id,
+    title: "Senior wellness exam",
+    notes: "Carried over from previous system.",
+    dueDate: dateStr(daysFromNow(-6)),
+    status: "open",
+    externalSource: "previous-system",
+    externalId: "reminder-1042",
+    importFingerprint: crypto.createHash("sha256").update("previous-system:reminder-1042").digest("hex"),
+  });
+  await db.insert(careReminders).values(reminderValues);
+  console.log(`Care reminders: ${reminderValues.length} created`);
+
+  // =========================================================================
+  // 22. One finished visit whose follow-up nobody has picked up yet, so the
+  //     dashboard's follow-up queue has work in it.
+  // =========================================================================
+  const invoicedAppointmentIds = new Set(insertedInvoices.map((inv) => inv.appointmentId));
+  const followUpVisit = insertedAppointments.find(
+    (a) => a.status === "checked_out" && a.startTime < daysAgo(2) && !invoicedAppointmentIds.has(a.id)
+  );
+  if (followUpVisit) {
+    const finalizer = insertedUsers.find((u) => u.id === followUpVisit.doctorId) ?? vets[0]!;
+    const assignee = techs[0]!;
+    const finishedAt = addMinutes(followUpVisit.endTime, 15);
+    await db.insert(visitCloseouts).values({
+      practiceId,
+      appointmentId: followUpVisit.id,
+      status: "completed",
+      diagnosisSummary: "Mild otitis externa, right ear.",
+      dischargeInstructions: "Clean the right ear once daily and apply the ear drops twice daily for 10 days.",
+      warningSigns: "Head tilt, loss of balance, or the ear becoming swollen or very painful.",
+      prescriptionDisposition: "not_needed",
+      medicationSnapshot: [],
+      followUpDisposition: "needed",
+      followUpNotes: "Call the owner to book an ear recheck in 2 weeks.",
+      followUpDueDate: dateStr(daysFromNow(2)),
+      followUpAssignedTo: assignee.id,
+      followUpAssigneeName: assignee.name,
+      clinicalFinalizedAt: finishedAt,
+      clinicalFinalizedBy: finalizer.id,
+      clinicalFinalizerName: finalizer.name,
+      chargeDisposition: "no_charge",
+      noChargeReason: "Recheck of a problem treated last month.",
+      handoffMethod: "verbal",
+      completedAt: finishedAt,
+      completedBy: frontDeskUsers[0]!.id,
+    });
+    console.log("Open visit follow-up: 1 created");
+  }
+
+  // =========================================================================
+  // 23. Help-site captures only: give one owner with an overdue pet a contact
+  //     the recall screen will accept, so the screenshots show a recall that
+  //     is ready to send. Capture servers have no email or text provider, so
+  //     nothing is delivered. Normal seeds keep every contact unreachable.
+  // =========================================================================
+  if (process.env.DOCS_CAPTURE === "1") {
+    const owner = insertedClients[patientsData[insertedPatients.indexOf(patientByName("Cooper", "canine"))]!.clientIdx]!;
+    await db
+      .update(clients)
+      .set({ email: "michael.rossi@openvpm.com" })
+      .where(eq(clients.id, owner.id));
+    console.log("Docs capture: one recall contact made sendable");
+  }
+
+  // =========================================================================
   // Done!
   // =========================================================================
   console.log("\nSeed completed successfully!");
@@ -1660,6 +1804,7 @@ Summary:
   - ${insertedAudit.length} audit log entries
   - ${insertedCs.length} controlled substance log entries
   - ${templatesData.length} treatment templates
+  - ${overdueVaccinations.length} overdue vaccinations, ${reminderValues.length} care reminders
   - ${insertedServices.length} services
   - ${insertedProducts.length} products
   `);

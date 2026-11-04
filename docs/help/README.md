@@ -1,8 +1,11 @@
 # OpenVPM Help
 
-Short guides for running your clinic on OpenVPM. Each one takes a minute or
-two. The same walkthroughs live inside the app: open **Settings** and click
-**Guides** to see them with your own data.
+The staff guides live at [docs.openvpm.com](https://docs.openvpm.com), built
+from [apps/docs](../../apps/docs). That site has every daily workflow with
+real screens, a tour of each screen, and a training path for each role.
+
+The pages below cover self-hosted setup and a few topics that haven't moved to
+the new site yet.
 
 ## Getting started
 
@@ -14,18 +17,24 @@ two. The same walkthroughs live inside the app: open **Settings** and click
 
 ## Daily work
 
-- [Upload patient documents and lab reports](upload-patient-documents.md). Keep
-  outside records and scans in the patient chart.
-
 - [Your day sheet](your-day.md). Book visits, check pets in, and keep the
   whole team on the same page.
-- [Ask the AI about a pet](ask-the-ai.md). Stop digging through charts. Just
-  ask in plain words.
+- [Add an outside record or lab report](https://docs.openvpm.com/guides/upload-a-patient-document).
+  Keep referral letters, scans, and outside lab PDFs on the pet's chart.
+- [Ask the Agent about your clinic](https://docs.openvpm.com/guides/ask-the-agent).
+  Ask in plain words instead of digging through charts.
+- [Send vaccine recalls](https://docs.openvpm.com/guides/send-vaccine-recalls)
+  and [work the care reminder queue](https://docs.openvpm.com/guides/work-the-care-reminder-queue).
 
-## Self-hosted setup and solo practice
+## Solo practice
 
-- [A solo veterinarian's workflow](solo-vet-workflow.md). Use the owner/admin
-  account and optional ambulatory workspace for consultation through checkout.
+- [Run a solo practice](https://docs.openvpm.com/guides/run-a-solo-practice).
+  Handle the exam, the bill, and the follow-up from one admin account, with an
+  optional field workflow for house calls. Running your own server? See
+  [Turning on the ambulatory workspace](solo-vet-workflow.md).
+
+## Self-hosted setup
+
 - [Set up Stripe payments](self-hosted-payments.md). Configure credentials and
   webhooks, then verify payment capture, balances, and refunds.
 - [Set up SMS](self-hosted-sms.md). Understand provider setup, location
@@ -38,8 +47,8 @@ two. The same walkthroughs live inside the app: open **Settings** and click
 
 ## Your schedule and your data
 
-- [See your schedule in your own calendar](calendar-feed.md). Google, Apple,
-  or Outlook. It stays up to date on its own.
+- [See the schedule in your own calendar](https://docs.openvpm.com/guides/see-the-schedule-in-your-calendar).
+  Google, Apple, or Outlook. It stays up to date on its own.
 - [Your data: export, backup, and import](your-data.md). You own everything
   here. Take it with you any time.
 
