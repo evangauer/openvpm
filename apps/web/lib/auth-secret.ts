@@ -19,6 +19,7 @@ const KNOWN_PUBLIC_AUTH_SECRETS = new Set(
     "generate-a-secret-with-openssl-rand-base64-32",
     "test-secret-at-least-32-characters-long",
     "openvpm-local-portal-metadata-secret",
+    "ci-only-synthetic-nextauth-secret-not-for-deployment",
   ].map((value) => value.toLowerCase()),
 );
 
@@ -46,12 +47,40 @@ export function nextAuthSecretProblem(): AuthSecretProblem | null {
 }
 
 /**
+ * Temporary escape hatch for a deployment that already runs on a secret that
+ * is merely short (not missing, not published): rotating it signs everyone
+ * out, so an operator can keep serving while they schedule the rotation. It
+ * never excuses a missing or published secret.
+ */
+export const SHORT_AUTH_SECRET_OVERRIDE_ENV = "OPENVPM_ALLOW_SHORT_AUTH_SECRET";
+
+function shortAuthSecretOverrideEnabled(): boolean {
+  const value = process.env[SHORT_AUTH_SECRET_OVERRIDE_ENV]?.trim().toLowerCase();
+  return value === "1" || value === "true";
+}
+
+/** True when production is serving on a short secret only because of the override. */
+export function nextAuthSecretShortOverrideActive(): boolean {
+  return (
+    authSecretStrengthEnforced() &&
+    !hasBlankConfiguredNextAuthSecret() &&
+    nextAuthSecretProblem() === "too_short" &&
+    shortAuthSecretOverrideEnabled()
+  );
+}
+
+export function shortAuthSecretOverrideMessage(): string {
+  return `NEXTAUTH_SECRET is shorter than ${MIN_AUTH_SECRET_LENGTH} characters and is allowed only because ${SHORT_AUTH_SECRET_OVERRIDE_ENV} is set. Rotate it to a ${MIN_AUTH_SECRET_LENGTH}+ character secret (${AUTH_SECRET_SETUP_COMMAND}) and remove ${SHORT_AUTH_SECRET_OVERRIDE_ENV}.`;
+}
+
+/**
  * True when the app must not accept or issue staff sessions: the secret is
  * explicitly blank, or production is running with a missing, published, or
  * short secret.
  */
 export function nextAuthSecretRejected(): boolean {
   if (hasBlankConfiguredNextAuthSecret()) return true;
+  if (nextAuthSecretShortOverrideActive()) return false;
   return authSecretStrengthEnforced() && nextAuthSecretProblem() !== null;
 }
 
@@ -90,6 +119,10 @@ export function logNextAuthSecretProblemAtStartup(): void {
   if (process.env.NODE_ENV === "test") return;
   const problem = nextAuthSecretProblem();
   if (!problem) return;
+  if (nextAuthSecretShortOverrideActive()) {
+    console.warn(`[openvpm] ${shortAuthSecretOverrideMessage()}`);
+    return;
+  }
   const message = `[openvpm] ${authSecretProblemMessage(problem)} Generate one with: ${AUTH_SECRET_SETUP_COMMAND}.`;
   if (authSecretStrengthEnforced()) {
     console.error(

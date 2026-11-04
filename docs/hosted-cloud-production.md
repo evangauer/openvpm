@@ -173,6 +173,46 @@ before this is treated as two-person approval. See
 [`repository-governance.md`](repository-governance.md) for the target promotion
 model.
 
+### NEXTAUTH_SECRET strength and rotation
+
+Production refuses to sign anyone in when `NEXTAUTH_SECRET` is missing, is a
+placeholder published in this repository, or is shorter than 32 characters:
+pages show a setup notice, session-backed APIs return `503`, and
+`/api/health` fails the `authSecret` check. Stripe, Telnyx, and Resend
+webhooks, cron jobs, `/api/v1` API-key routes, calendar feeds, unsubscribe
+links, and the SMS program pages keep running, because they authenticate with
+their own credentials and never read the staff session.
+
+**Temporary override for a short secret.** If a deployment already runs on a
+secret that is private but shorter than 32 characters, set
+`OPENVPM_ALLOW_SHORT_AUTH_SECRET=1` before releasing this check so sign-in keeps
+working while a rotation is scheduled. It never excuses a missing or published
+secret. While it is active the app logs a warning at startup and
+`/api/health` reports `authSecret` as an advisory (non-failing) check that says
+to rotate. Treat it as a short-lived exception, not a configuration.
+
+To rotate:
+
+1. Generate a new secret: `openssl rand -base64 32`.
+2. Set it as `NEXTAUTH_SECRET` (Production) in both the app and demo Vercel
+   projects, and remove `OPENVPM_ALLOW_SHORT_AUTH_SECRET`.
+3. Redeploy through the
+   [transitional production release gate](#transitional-production-release-gate);
+   a changed variable only takes effect in a new or redeployed build.
+4. Confirm `/api/health` no longer lists `authSecret`.
+5. Expect every staff member to be signed out once; they sign in again with
+   their usual password.
+6. Re-send any outstanding invoice payment links and demo access links, which
+   are signed with this secret and stop verifying after rotation. Patient-portal
+   sign-in links and portal sessions are stored tokens and are not affected;
+   a client whose link expired can request a new one.
+
+`PORTAL_SESSION_SECRET` is optional. If it is set but short or a published
+placeholder, production ignores it, keys portal request metadata with
+`NEXTAUTH_SECRET` instead, logs a warning, and reports a
+`portalSessionSecret` advisory in `/api/health`. Replace it with
+`openssl rand -base64 32` or remove it.
+
 `STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only. They must not be used for new checkout or required hosted readiness.
 
 Any nonblank `FILE_REPLICA_*` value starts the replica readiness gate. Partial

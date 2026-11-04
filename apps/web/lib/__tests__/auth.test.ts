@@ -10,6 +10,7 @@ import {
   hasBlankConfiguredNextAuthSecret,
   nextAuthSecret,
   nextAuthSecretRejected,
+  nextAuthSecretShortOverrideActive,
 } from "../auth-secret";
 
 const STRONG_SECRET = "q3vV9rJcK0m8yTfLw2ZpXa7Ns4Hd6Bu1Ee5Gi0Ko9Rs=";
@@ -57,6 +58,7 @@ describe("authSecretProblem", () => {
     "generate-a-secret-with-openssl-rand-base64-32",
     "test-secret-at-least-32-characters-long",
     "openvpm-local-portal-metadata-secret",
+    "ci-only-synthetic-nextauth-secret-not-for-deployment",
     " DOCKER-DEV-SECRET-CHANGE-IN-PRODUCTION ",
   ])("rejects the published placeholder %j", (value) => {
     expect(authSecretProblem(value)).toBe("known_public");
@@ -114,6 +116,53 @@ describe("nextAuthSecretRejected", () => {
     vi.stubEnv("NEXTAUTH_SECRET", "  ");
 
     expect(nextAuthSecretRejected()).toBe(true);
+  });
+});
+
+describe("OPENVPM_ALLOW_SHORT_AUTH_SECRET", () => {
+  it.each(["1", "true"])(
+    "lets production serve on a short secret when set to %j",
+    (flag) => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("NEXTAUTH_SECRET", "short-but-private");
+      vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", flag);
+
+      expect(nextAuthSecretRejected()).toBe(false);
+      expect(nextAuthSecretShortOverrideActive()).toBe(true);
+      expect(nextAuthSecret()).toBe("short-but-private");
+    },
+  );
+
+  it("never excuses a published placeholder", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "docker-dev-secret-change-in-production");
+    vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
+
+    expect(nextAuthSecretRejected()).toBe(true);
+    expect(nextAuthSecretShortOverrideActive()).toBe(false);
+    expect(nextAuthSecret()).toBeUndefined();
+  });
+
+  it("never excuses a missing or blank secret", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
+
+    vi.stubEnv("NEXTAUTH_SECRET", undefined);
+    expect(nextAuthSecretRejected()).toBe(true);
+    vi.stubEnv("NEXTAUTH_SECRET", "   ");
+    expect(nextAuthSecretRejected()).toBe(true);
+    expect(nextAuthSecretShortOverrideActive()).toBe(false);
+  });
+
+  it("is inactive when unset, falsy, or the secret is already strong", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "short-but-private");
+    vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "0");
+    expect(nextAuthSecretRejected()).toBe(true);
+
+    vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
+    vi.stubEnv("NEXTAUTH_SECRET", STRONG_SECRET);
+    expect(nextAuthSecretShortOverrideActive()).toBe(false);
   });
 });
 

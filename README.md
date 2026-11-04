@@ -269,8 +269,15 @@ credentials are for this single-host setup and must not be exposed to a network.
 > Generate a new secret as above, put it in `.env`, and restart with
 > `docker compose --env-file .env -f docker/docker-compose.yml up -d`. Changing
 > the secret signs everyone out once; staff sign in again with their usual
-> password. Patient-portal and invoice-payment links signed with the old secret
-> also stop working and should be re-sent.
+> password. Invoice payment links signed with the old secret also stop working
+> and should be re-sent. Patient-portal sign-in links are not affected.
+>
+> The same upgrade binds PostgreSQL (`5432`) and the MinIO API and console
+> (`9000`, `9001`) to `127.0.0.1` on the Docker host, so they are no longer
+> reachable from other machines. If you administered them remotely, use an SSH
+> tunnel instead, for example
+> `ssh -N -L 5432:127.0.0.1:5432 -L 9001:127.0.0.1:9001 you@your-server`, then
+> connect to `localhost:5432` or open `http://localhost:9001`.
 
 The Docker setup includes PostgreSQL 16 with health checks, MinIO for S3-compatible file storage, automatic MinIO bucket bootstrap, and a multi-stage production build of the web application. For production, run `pnpm db:migrate`, then `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls`, verify with `OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test`, and point the app at the generated least-privilege `openpims_app` database role before serving traffic.
 

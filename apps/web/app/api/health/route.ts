@@ -42,9 +42,13 @@ import { hostedSmsCredentialIssueCount } from "@/lib/messaging/hosted-sms-readin
 import {
   AUTH_SECRET_SETUP_COMMAND,
   authSecretProblemMessage,
+  MIN_AUTH_SECRET_LENGTH,
   nextAuthSecretProblem,
   nextAuthSecretRejected,
+  nextAuthSecretShortOverrideActive,
+  shortAuthSecretOverrideMessage,
 } from "@/lib/auth-secret";
+import { portalSessionSecretProblem } from "@/lib/portal/tokens";
 
 export const dynamic = "force-dynamic";
 
@@ -552,6 +556,27 @@ export async function GET() {
     checks.authSecret = {
       ok: false,
       detail: `${authSecretProblemMessage(nextAuthSecretProblem() ?? "missing")} Sign-in is disabled; set a new secret (${AUTH_SECRET_SETUP_COMMAND}).`,
+    };
+  } else if (nextAuthSecretShortOverrideActive()) {
+    // Serving, but on borrowed time: visible to operators without failing
+    // readiness, so the override can't take a deployment down by itself.
+    checks.authSecret = {
+      ok: false,
+      advisory: true,
+      detail: shortAuthSecretOverrideMessage(),
+    };
+  }
+
+  const portalSecretProblem = portalSessionSecretProblem();
+  if (portalSecretProblem) {
+    checks.portalSessionSecret = {
+      ok: false,
+      advisory: true,
+      detail: `PORTAL_SESSION_SECRET is ${
+        portalSecretProblem === "too_short"
+          ? `shorter than ${MIN_AUTH_SECRET_LENGTH} characters`
+          : "a published placeholder value"
+      }, so portal metadata is keyed with NEXTAUTH_SECRET instead. Replace it (${AUTH_SECRET_SETUP_COMMAND}) or remove it.`,
     };
   }
 

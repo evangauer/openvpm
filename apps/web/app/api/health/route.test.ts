@@ -259,6 +259,57 @@ describe("health route auth secret", () => {
     expect(body).not.toContain("docker-dev-secret-change-in-production");
   });
 
+  it("reports a short secret allowed by OPENVPM_ALLOW_SHORT_AUTH_SECRET as advisory", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "short-but-private");
+    vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
+
+    const response = await GET();
+    const body = await response.text();
+    const json = JSON.parse(body);
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.checks.authSecret).toMatchObject({ ok: false, advisory: true });
+    expect(json.checks.authSecret.detail).toContain("Rotate it to a 32+");
+    expect(body).not.toContain("short-but-private");
+  });
+
+  it("keeps failing readiness for a published secret despite OPENVPM_ALLOW_SHORT_AUTH_SECRET", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "docker-dev-secret-change-in-production");
+    vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.authSecret.advisory).toBeUndefined();
+  });
+
+  it("flags a short PORTAL_SESSION_SECRET as advisory without failing readiness", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv(
+      "NEXTAUTH_SECRET",
+      "q3vV9rJcK0m8yTfLw2ZpXa7Ns4Hd6Bu1Ee5Gi0Ko9Rs=",
+    );
+    vi.stubEnv("PORTAL_SESSION_SECRET", "short-portal");
+
+    const response = await GET();
+    const body = await response.text();
+    const json = JSON.parse(body);
+
+    expect(response.status).toBe(200);
+    expect(json.checks.portalSessionSecret).toMatchObject({
+      ok: false,
+      advisory: true,
+    });
+    expect(json.checks.portalSessionSecret.detail).toContain(
+      "keyed with NEXTAUTH_SECRET",
+    );
+    expect(body).not.toContain("short-portal");
+  });
+
   it("omits the check in production with a strong secret", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv(

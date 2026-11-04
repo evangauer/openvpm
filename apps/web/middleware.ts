@@ -12,6 +12,7 @@ import {
   nextAuthSecretProblem,
   nextAuthSecretRejected,
 } from "./lib/auth-secret";
+import { isSecretIndependentPath } from "./lib/secret-independent-paths";
 
 const CAPABILITY_PATH_PREFIXES = [
   "/capture",
@@ -116,9 +117,16 @@ export async function middleware(request: NextRequest) {
 
   // Fail closed before any route can read or issue a session. Health stays
   // reachable so operators and orchestrators can see why the app is down.
-  if (nextAuthSecretRejected() && pathname !== "/api/health") {
+  if (
+    nextAuthSecretRejected() &&
+    pathname !== "/api/health" &&
+    !isSecretIndependentPath(pathname)
+  ) {
+    // Only root-level files (where public/ is served) skip the guard, so a
+    // nested route ending in .json or .txt can't slip past it. /_next never
+    // reaches middleware (see matcher).
     const isStaticAsset =
-      PUBLIC_FILE_PATTERN.test(pathname) && !pathname.startsWith("/api/");
+      PUBLIC_FILE_PATTERN.test(pathname) && !pathname.slice(1).includes("/");
     if (!isStaticAsset) return authSecretSetupResponse(pathname);
   }
 
