@@ -200,8 +200,12 @@ cd openvpm
 # Copy environment config
 cp .env.example .env
 
+# Replace the placeholder NEXTAUTH_SECRET in .env with a generated one
+# (or paste the output of `openssl rand -base64 32` into .env yourself)
+sed -i.bak "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=\"$(openssl rand -base64 32)\"|" .env && rm .env.bak
+
 # Start the local PostgreSQL and MinIO dependencies
-docker compose -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
+docker compose --env-file .env -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
 
 # Install dependencies
 pnpm install --frozen-lockfile
@@ -244,8 +248,29 @@ local build is not, by itself, a production-readiness assessment.
 ### Deploy with Docker
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+# One time: create .env with a unique session secret
+cp .env.example .env
+sed -i.bak "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=\"$(openssl rand -base64 32)\"|" .env && rm .env.bak
+
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
+
+`NEXTAUTH_SECRET` signs every staff session, so it must be unique to your
+installation. Compose refuses to start the app without it, and a production
+build refuses to sign anyone in while it is a placeholder published in this
+repository or shorter than 32 characters: every page shows a setup notice, API
+routes return `503`, and `/api/health` reports the `authSecret` check as
+failing. PostgreSQL and MinIO are published on `127.0.0.1` only; their default
+credentials are for this single-host setup and must not be exposed to a network.
+
+> **Upgrading an existing Docker install:** earlier versions of
+> `docker/docker-compose.yml` shipped a fixed `NEXTAUTH_SECRET`. Anyone who knows
+> that public value can forge a staff session on an install still using it.
+> Generate a new secret as above, put it in `.env`, and restart with
+> `docker compose --env-file .env -f docker/docker-compose.yml up -d`. Changing
+> the secret signs everyone out once; staff sign in again with their usual
+> password. Patient-portal and invoice-payment links signed with the old secret
+> also stop working and should be re-sent.
 
 The Docker setup includes PostgreSQL 16 with health checks, MinIO for S3-compatible file storage, automatic MinIO bucket bootstrap, and a multi-stage production build of the web application. For production, run `pnpm db:migrate`, then `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls`, verify with `OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test`, and point the app at the generated least-privilege `openpims_app` database role before serving traffic.
 

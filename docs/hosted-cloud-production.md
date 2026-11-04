@@ -75,7 +75,7 @@ FIRST_CLINIC_WIN_ENABLED=false
 FIRST_CLINIC_WIN_ROLLOUT_AT=
 NEXTAUTH_URL=https://app.openvpm.com
 NEXT_PUBLIC_APP_URL=https://app.openvpm.com
-NEXTAUTH_SECRET=...
+NEXTAUTH_SECRET=... # `openssl rand -base64 32`; production refuses published or <32-char values
 DATABASE_URL=...
 # Transitional production release lock. Set only to the exact approved
 # 40-character commit, redeploy that revision, then clear or rotate it.

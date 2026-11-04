@@ -5,7 +5,7 @@ import { db } from "@openpims/db/client";
 import { patients, practices, users } from "@openpims/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { withSystem, withTenant } from "@/lib/tenant-db";
-import { hasBlankConfiguredNextAuthSecret } from "@/lib/auth-secret";
+import { nextAuthSecretRejected } from "@/lib/auth-secret";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
 import {
   ALLOWED_UPLOAD_MIME_TYPES,
@@ -88,7 +88,7 @@ async function enforceUploadRateLimits(userId: string, practiceId: string) {
 
 export async function POST(req: NextRequest) {
   // ---------- Auth ----------
-  if (hasBlankConfiguredNextAuthSecret()) {
+  if (nextAuthSecretRejected()) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

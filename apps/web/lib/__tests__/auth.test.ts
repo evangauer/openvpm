@@ -6,9 +6,13 @@ import {
 } from "../auth";
 import { AUTH_PASSWORD_MAX_LENGTH } from "../auth-password";
 import {
+  authSecretProblem,
   hasBlankConfiguredNextAuthSecret,
   nextAuthSecret,
+  nextAuthSecretRejected,
 } from "../auth-secret";
+
+const STRONG_SECRET = "q3vV9rJcK0m8yTfLw2ZpXa7Ns4Hd6Bu1Ee5Gi0Ko9Rs=";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -39,6 +43,77 @@ describe("nextAuthSecret", () => {
       if (previous === undefined) delete process.env.NEXTAUTH_SECRET;
       else process.env.NEXTAUTH_SECRET = previous;
     }
+  });
+});
+
+describe("authSecretProblem", () => {
+  it("accepts a generated 32-byte base64 secret", () => {
+    expect(authSecretProblem(STRONG_SECRET)).toBeNull();
+    expect(authSecretProblem(` ${STRONG_SECRET}\n`)).toBeNull();
+  });
+
+  it.each([
+    "docker-dev-secret-change-in-production",
+    "generate-a-secret-with-openssl-rand-base64-32",
+    "test-secret-at-least-32-characters-long",
+    "openvpm-local-portal-metadata-secret",
+    " DOCKER-DEV-SECRET-CHANGE-IN-PRODUCTION ",
+  ])("rejects the published placeholder %j", (value) => {
+    expect(authSecretProblem(value)).toBe("known_public");
+  });
+
+  it("rejects secrets shorter than 32 characters", () => {
+    expect(authSecretProblem("a".repeat(31))).toBe("too_short");
+    expect(authSecretProblem("a".repeat(32))).toBeNull();
+  });
+
+  it("reports missing and blank secrets", () => {
+    expect(authSecretProblem(undefined)).toBe("missing");
+    expect(authSecretProblem("   ")).toBe("missing");
+  });
+});
+
+describe("nextAuthSecretRejected", () => {
+  it.each([
+    ["the compose default", "docker-dev-secret-change-in-production"],
+    ["the .env.example placeholder", "generate-a-secret-with-openssl-rand-base64-32"],
+    ["a short secret", "short-secret"],
+  ])("fails closed in production with %s", (_label, value) => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", value);
+
+    expect(nextAuthSecretRejected()).toBe(true);
+    expect(nextAuthSecret()).toBeUndefined();
+  });
+
+  it("fails closed in production when the secret is missing", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", undefined);
+
+    expect(nextAuthSecretRejected()).toBe(true);
+  });
+
+  it("accepts a strong secret in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", STRONG_SECRET);
+
+    expect(nextAuthSecretRejected()).toBe(false);
+    expect(nextAuthSecret()).toBe(STRONG_SECRET);
+  });
+
+  it("keeps development working with a placeholder secret", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("NEXTAUTH_SECRET", "docker-dev-secret-change-in-production");
+
+    expect(nextAuthSecretRejected()).toBe(false);
+    expect(nextAuthSecret()).toBe("docker-dev-secret-change-in-production");
+  });
+
+  it("still rejects an explicitly blank secret outside production", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("NEXTAUTH_SECRET", "  ");
+
+    expect(nextAuthSecretRejected()).toBe(true);
   });
 });
 

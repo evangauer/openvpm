@@ -11,11 +11,12 @@ Thank you for your interest in contributing to OpenVPM!
    cd openvpm
    nvm use # when using nvm; see .nvmrc
    cp .env.example .env
+   # set NEXTAUTH_SECRET in .env to the output of: openssl rand -base64 32
    pnpm install --frozen-lockfile
    ```
 3. **Start services**:
    ```bash
-   docker compose -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
+   docker compose --env-file .env -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
    pnpm db:migrate
    pnpm db:seed
    pnpm dev

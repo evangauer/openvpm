@@ -39,6 +39,12 @@ import {
 } from "@/lib/email-preferences";
 import { platformEmailIdentityConfigurationReady } from "@/lib/platform-email-preferences";
 import { hostedSmsCredentialIssueCount } from "@/lib/messaging/hosted-sms-readiness";
+import {
+  AUTH_SECRET_SETUP_COMMAND,
+  authSecretProblemMessage,
+  nextAuthSecretProblem,
+  nextAuthSecretRejected,
+} from "@/lib/auth-secret";
 
 export const dynamic = "force-dynamic";
 
@@ -541,6 +547,13 @@ export async function GET() {
     string,
     { ok: boolean; detail?: string; advisory?: boolean }
   > = {};
+
+  if (nextAuthSecretRejected()) {
+    checks.authSecret = {
+      ok: false,
+      detail: `${authSecretProblemMessage(nextAuthSecretProblem() ?? "missing")} Sign-in is disabled; set a new secret (${AUTH_SECRET_SETUP_COMMAND}).`,
+    };
+  }
 
   let databaseReachable = false;
   try {

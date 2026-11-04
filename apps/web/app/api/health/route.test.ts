@@ -243,6 +243,47 @@ afterEach(() => {
   });
 });
 
+describe("health route auth secret", () => {
+  it("fails readiness in production with the published compose secret without echoing it", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "docker-dev-secret-change-in-production");
+
+    const response = await GET();
+    const body = await response.text();
+    const json = JSON.parse(body);
+
+    expect(response.status).toBe(503);
+    expect(json.checks.authSecret.ok).toBe(false);
+    expect(json.checks.authSecret.detail).toContain("published placeholder");
+    expect(json.checks.authSecret.detail).toContain("openssl rand -base64 32");
+    expect(body).not.toContain("docker-dev-secret-change-in-production");
+  });
+
+  it("omits the check in production with a strong secret", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv(
+      "NEXTAUTH_SECRET",
+      "q3vV9rJcK0m8yTfLw2ZpXa7Ns4Hd6Bu1Ee5Gi0Ko9Rs=",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(json.checks.authSecret).toBeUndefined();
+  });
+
+  it("does not fail development health for a placeholder secret", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("NEXTAUTH_SECRET", "docker-dev-secret-change-in-production");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.authSecret).toBeUndefined();
+  });
+});
+
 describe("health route schema drift", () => {
   it("reports healthy when the database matches the deployed code", async () => {
     const response = await GET();

@@ -235,8 +235,10 @@ describe("middleware security headers", () => {
     const response = await middleware(request("/settings"));
 
     expect(mocks.getToken).not.toHaveBeenCalled();
-    expect(response.headers.get("location")).toBe(
-      "https://openvpm.test/login?next=%2Fsettings",
+    expect(response.status).toBe(503);
+    expect(response.headers.get("location")).toBeNull();
+    await expect(response.text()).resolves.toContain(
+      "NEXTAUTH_SECRET is not set.",
     );
     expectSecurityHeaders(response);
   });
@@ -314,5 +316,91 @@ describe("middleware security headers", () => {
     expect(nextConfigSource).toContain('require("./lib/security-headers.js")');
     expect(middlewareSource).not.toContain("const CONTENT_SECURITY_POLICY");
     expect(nextConfigSource).not.toContain("const contentSecurityPolicy");
+  });
+});
+
+describe("middleware NEXTAUTH_SECRET guard", () => {
+  const PUBLISHED_SECRET = "docker-dev-secret-change-in-production";
+
+  it("refuses sessions and shows setup instructions in production with the published compose secret", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", PUBLISHED_SECRET);
+    // A cookie forged with the public secret would decode successfully.
+    mocks.getToken.mockResolvedValue({ id: "user-1", role: "admin" });
+
+    const page = await middleware(request("/patients"));
+    const login = await middleware(request("/login"));
+    const portal = await middleware(request("/portal"));
+
+    expect(mocks.getToken).not.toHaveBeenCalled();
+    for (const response of [page, login, portal]) {
+      expect(response.status).toBe(503);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("Content-Type")).toContain("text/html");
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expectSecurityHeaders(response);
+    }
+    const html = await page.text();
+    expect(html).toContain("Set NEXTAUTH_SECRET");
+    expect(html).toContain("openssl rand -base64 32");
+    expect(html).not.toContain(PUBLISHED_SECRET);
+  });
+
+  it("returns 503 JSON for API routes, including sign-in, in production with a weak secret", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "short-secret");
+
+    for (const path of [
+      "/api/auth/callback/credentials",
+      "/api/auth/session",
+      "/api/trpc/patient.list",
+      "/api/v1/patients",
+    ]) {
+      const response = await middleware(request(path));
+      expect(response.status).toBe(503);
+      const body = await response.json();
+      expect(body.error).toBe(
+        "Authentication secret is not configured securely",
+      );
+      expect(body.detail).toContain("shorter than 32 characters");
+      expect(JSON.stringify(body)).not.toContain("short-secret");
+    }
+  });
+
+  it("keeps health checks and static assets reachable so operators can diagnose", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", PUBLISHED_SECRET);
+
+    const health = await middleware(request("/api/health"));
+    const favicon = await middleware(request("/favicon.ico"));
+
+    expect(health.status).toBe(200);
+    expect(favicon.status).toBe(200);
+  });
+
+  it("accepts sessions normally in production with a strong secret", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv(
+      "NEXTAUTH_SECRET",
+      "q3vV9rJcK0m8yTfLw2ZpXa7Ns4Hd6Bu1Ee5Gi0Ko9Rs=",
+    );
+    mocks.getToken.mockResolvedValue({ id: "user-1" });
+
+    const response = await middleware(request("/patients"));
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("keeps development usable with the published secret", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("NEXTAUTH_SECRET", PUBLISHED_SECRET);
+    mocks.getToken.mockResolvedValue({ id: "user-1" });
+
+    const response = await middleware(request("/patients"));
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(200);
   });
 });

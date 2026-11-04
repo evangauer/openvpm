@@ -2,8 +2,11 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Loopback only: host tools (pnpm db:migrate, pnpm dev) can connect, but the
+    # default credentials below are never reachable from the network. The web
+    # container reaches Postgres over the compose network.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: openpims
       POSTGRES_PASSWORD: openpims
@@ -19,9 +22,11 @@ services:
   minio:
     image: minio/minio:latest
     restart: unless-stopped
+    # Loopback only, like Postgres: files are served to browsers through the
+    # app's authenticated proxy, never directly from MinIO.
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: openpims
       MINIO_ROOT_PASSWORD: openpims123
@@ -64,7 +69,9 @@ services:
       - "3000:3000"
     environment:
       DATABASE_URL: "postgresql://openpims:openpims@postgres:5432/openpims"
-      NEXTAUTH_SECRET: "docker-dev-secret-change-in-production"
+      # Signs every staff session. There is deliberately no default: a value
+      # published in this repository would let anyone forge a sign-in.
+      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:?Set NEXTAUTH_SECRET in .env (openssl rand -base64 32) and pass --env-file .env}"
       NEXTAUTH_URL: "http://localhost:3000"
       # Only if you run a reverse proxy in front of OpenVPM: set to the number
       # of proxies in front of this container ("1" for nginx or Caddy; count a

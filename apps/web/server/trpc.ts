@@ -5,7 +5,7 @@ import superjson from "superjson";
 import { ZodError } from "zod";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { authOptions } from "@/lib/auth";
-import { hasBlankConfiguredNextAuthSecret } from "@/lib/auth-secret";
+import { nextAuthSecretRejected } from "@/lib/auth-secret";
 import { recordAuditLog } from "@/lib/audit";
 import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
@@ -166,7 +166,7 @@ export async function createTRPCContext(opts?: {
   req?: Request;
 }): Promise<TRPCContext> {
   await assertHostedRlsRoleOnce();
-  const rawSession = hasBlankConfiguredNextAuthSecret()
+  const rawSession = nextAuthSecretRejected()
     ? null
     : ((await getServerSession(authOptions)) as AppSession | null);
   const session = await activeSessionOrNull(db, rawSession);

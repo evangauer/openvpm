@@ -34,6 +34,12 @@ function shouldReportRequestError(key: string, now = Date.now()): boolean {
   return true;
 }
 
+export async function register(): Promise<void> {
+  if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  const { logNextAuthSecretProblemAtStartup } = await import("@/lib/auth-secret");
+  logNextAuthSecretProblemAtStartup();
+}
+
 export const onRequestError: Instrumentation.onRequestError = async (
   error,
   request,

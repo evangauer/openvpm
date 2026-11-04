@@ -1,4 +1,9 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
+import {
+  authSecretProblem,
+  authSecretStrengthEnforced,
+  nextAuthSecret,
+} from "@/lib/auth-secret";
 
 export const PORTAL_ACCESS_TOKEN_MAX_LENGTH = 64;
 export const PORTAL_ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
@@ -24,13 +29,18 @@ export function hashPortalSessionToken(token: string): string {
 }
 
 function portalMetadataSecret(): string {
-  const configured =
-    process.env.PORTAL_SESSION_SECRET?.trim() ||
-    process.env.NEXTAUTH_SECRET?.trim();
+  // nextAuthSecret() already withholds a published or short secret in
+  // production; a dedicated portal secret is held to the same rule.
+  const portalSecret = process.env.PORTAL_SESSION_SECRET?.trim();
+  const configured = portalSecret
+    ? authSecretStrengthEnforced() && authSecretProblem(portalSecret)
+      ? undefined
+      : portalSecret
+    : nextAuthSecret();
   if (configured) return configured;
   if (process.env.NODE_ENV === "production") {
     throw new Error(
-      "PORTAL_SESSION_SECRET or NEXTAUTH_SECRET is required in production",
+      "A strong PORTAL_SESSION_SECRET or NEXTAUTH_SECRET is required in production",
     );
   }
   return "openvpm-local-portal-metadata-secret";
