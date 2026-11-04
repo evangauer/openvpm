@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 config({ path: "../../.env" });
 import crypto from "crypto";
+import { eq } from "drizzle-orm";
 import { db } from "./client";
 import {
   practices,
@@ -32,6 +33,7 @@ import {
   treatmentTemplates,
   treatmentTemplateItems,
   careReminders,
+  visitCloseouts,
 } from "./schema/index";
 
 // Pre-hashed bcrypt value for "password123"
@@ -1099,6 +1101,19 @@ async function seed() {
     createdAt: Date;
   }[] = [];
 
+  // Line items come first so every invoice's subtotal, tax, and total add
+  // up to what's on it. Every seeded service is taxable at 8%.
+  type SeedInvoiceItem = {
+    description: string;
+    quantity: number;
+    unitPrice: string;
+    total: string;
+    taxable: boolean;
+    itemType: "service" | "product";
+  };
+  const itemsByInvoice: SeedInvoiceItem[][] = [];
+  let paidThisMonth = false;
+
   for (let i = 0; i < invoiceStatuses.length; i++) {
     const status = invoiceStatuses[i]!;
     const client = insertedClients[i % insertedClients.length]!;
@@ -1108,16 +1123,36 @@ async function seed() {
     const patient = patientIdx >= 0 ? insertedPatients[patientIdx]! : insertedPatients[0]!;
     const appt = i < insertedAppointments.length ? insertedAppointments[i]! : null;
 
-    const subtotal = (50 + Math.floor(Math.random() * 400)).toFixed(2);
-    const tax = (parseFloat(subtotal) * 0.08).toFixed(2);
-    const total = (parseFloat(subtotal) + parseFloat(tax)).toFixed(2);
-    const paidAmount = status === "paid" ? total : status === "overdue" ? "0.00" : "0.00";
+    const items = pickN(insertedServices, 1 + Math.floor(Math.random() * 4)).map((svc) => ({
+      description: svc.name,
+      quantity: 1,
+      unitPrice: svc.defaultPrice,
+      total: parseFloat(svc.defaultPrice).toFixed(2),
+      taxable: svc.taxable,
+      itemType: "service" as const,
+    }));
+    itemsByInvoice.push(items);
+    const subtotalCents = items.reduce((sum, item) => sum + Math.round(parseFloat(item.total) * 100), 0);
+    const taxableCents = items
+      .filter((item) => item.taxable)
+      .reduce((sum, item) => sum + Math.round(parseFloat(item.total) * 100), 0);
+    const taxCents = Math.round(taxableCents * 0.08);
+    const subtotal = (subtotalCents / 100).toFixed(2);
+    const tax = (taxCents / 100).toFixed(2);
+    const total = ((subtotalCents + taxCents) / 100).toFixed(2);
+    const paidAmount = status === "paid" ? total : "0.00";
 
     // Issue every invoice before its due date so no invoice reads as "due
     // before it was created" in the UI.
     let dueDate: string;
     let createdAt: Date;
-    if (status === "paid") {
+    if (status === "paid" && !paidThisMonth) {
+      // One visit paid today, so month-to-date revenue isn't empty early in
+      // the month.
+      paidThisMonth = true;
+      createdAt = daysAgo(0);
+      dueDate = dateStr(daysAgo(0));
+    } else if (status === "paid") {
       const dueDaysAgo = Math.floor(Math.random() * 30);
       createdAt = daysAgo(dueDaysAgo + 14);
       dueDate = dateStr(daysAgo(dueDaysAgo));
@@ -1152,38 +1187,9 @@ async function seed() {
   console.log(`Invoices: ${insertedInvoices.length} created`);
 
   // Invoice items
-  const invoiceItemValues: {
-    invoiceId: string;
-    description: string;
-    quantity: number;
-    unitPrice: string;
-    total: string;
-    taxable: boolean;
-    itemType: "service" | "product";
-  }[] = [];
-
-  for (const inv of insertedInvoices) {
-    const numItems = 1 + Math.floor(Math.random() * 4);
-    let runningTotal = 0;
-
-    for (let j = 0; j < numItems; j++) {
-      const svc = pickRandom(insertedServices);
-      const qty = 1;
-      const unitPrice = svc.defaultPrice;
-      const itemTotal = (parseFloat(unitPrice) * qty).toFixed(2);
-      runningTotal += parseFloat(itemTotal);
-
-      invoiceItemValues.push({
-        invoiceId: inv.id,
-        description: svc.name,
-        quantity: qty,
-        unitPrice,
-        total: itemTotal,
-        taxable: svc.taxable,
-        itemType: "service",
-      });
-    }
-  }
+  const invoiceItemValues = insertedInvoices.flatMap((inv, i) =>
+    itemsByInvoice[i]!.map((item) => ({ ...item, invoiceId: inv.id }))
+  );
 
   await db.insert(invoiceItems).values(invoiceItemValues);
   console.log(`Invoice items: ${invoiceItemValues.length} created`);
@@ -1283,7 +1289,7 @@ async function seed() {
     amount: inv.total,
     method: paymentMethods[i % paymentMethods.length]!,
     receivedBy: frontDeskUsers[i % frontDeskUsers.length]!.id,
-    receivedAt: daysAgo(Math.floor(Math.random() * 14)),
+    receivedAt: inv.createdAt >= setTime(daysAgo(0), 0, 0) ? inv.createdAt : daysAgo(Math.floor(Math.random() * 14)),
     notes: null,
   }));
   const insertedPayments = await db.insert(payments).values(paymentValues).returning();
@@ -1486,7 +1492,7 @@ async function seed() {
       witnessedBy: techUsers[0]!.id,
       lotNumber: "TR-2026-0318-A",
       notes: "Post-op pain management, dental extraction",
-      performedAt: daysAgo(2),
+      performedAt: setTime(daysAgo(2), 9, 15),
     },
     {
       practiceId,
@@ -1500,7 +1506,7 @@ async function seed() {
       witnessedBy: techUsers[0]!.id,
       lotNumber: "BUP-2026-Q1-7",
       notes: "Pre-surgical analgesia",
-      performedAt: daysAgo(4),
+      performedAt: setTime(daysAgo(4), 14, 40),
     },
     {
       practiceId,
@@ -1514,7 +1520,7 @@ async function seed() {
       witnessedBy: techUsers[1]!.id,
       lotNumber: "PB-2026-0201",
       notes: "30-day supply dispensed for seizure control",
-      performedAt: daysAgo(6),
+      performedAt: setTime(daysAgo(6), 11, 5),
     },
     {
       practiceId,
@@ -1528,7 +1534,7 @@ async function seed() {
       witnessedBy: techUsers[0]!.id,
       lotNumber: "KET-2026-0405",
       notes: "Induction for spay procedure",
-      performedAt: daysAgo(1),
+      performedAt: setTime(daysAgo(1), 16, 20),
     },
     {
       practiceId,
@@ -1542,7 +1548,7 @@ async function seed() {
       witnessedBy: vetUsers[1]!.id,
       lotNumber: "MOR-2026-0112",
       notes: "Partial vial waste after dose preparation — witnessed disposal",
-      performedAt: daysAgo(3),
+      performedAt: setTime(daysAgo(3), 8, 50),
     },
     {
       practiceId,
@@ -1556,7 +1562,7 @@ async function seed() {
       witnessedBy: techUsers[1]!.id,
       lotNumber: "GAB-2026-0227",
       notes: "30-day supply for chronic pain management",
-      performedAt: daysAgo(8),
+      performedAt: setTime(daysAgo(8), 13, 35),
     },
   ];
   const insertedCs = await db.insert(controlledSubstanceLog).values(csEntries).returning();
@@ -1719,6 +1725,59 @@ async function seed() {
   });
   await db.insert(careReminders).values(reminderValues);
   console.log(`Care reminders: ${reminderValues.length} created`);
+
+  // =========================================================================
+  // 22. One finished visit whose follow-up nobody has picked up yet, so the
+  //     dashboard's follow-up queue has work in it.
+  // =========================================================================
+  const invoicedAppointmentIds = new Set(insertedInvoices.map((inv) => inv.appointmentId));
+  const followUpVisit = insertedAppointments.find(
+    (a) => a.status === "checked_out" && a.startTime < daysAgo(2) && !invoicedAppointmentIds.has(a.id)
+  );
+  if (followUpVisit) {
+    const finalizer = insertedUsers.find((u) => u.id === followUpVisit.doctorId) ?? vets[0]!;
+    const assignee = techs[0]!;
+    const finishedAt = addMinutes(followUpVisit.endTime, 15);
+    await db.insert(visitCloseouts).values({
+      practiceId,
+      appointmentId: followUpVisit.id,
+      status: "completed",
+      diagnosisSummary: "Mild otitis externa, right ear.",
+      dischargeInstructions: "Clean the right ear once daily and apply the ear drops twice daily for 10 days.",
+      warningSigns: "Head tilt, loss of balance, or the ear becoming swollen or very painful.",
+      prescriptionDisposition: "not_needed",
+      medicationSnapshot: [],
+      followUpDisposition: "needed",
+      followUpNotes: "Call the owner to book an ear recheck in 2 weeks.",
+      followUpDueDate: dateStr(daysFromNow(2)),
+      followUpAssignedTo: assignee.id,
+      followUpAssigneeName: assignee.name,
+      clinicalFinalizedAt: finishedAt,
+      clinicalFinalizedBy: finalizer.id,
+      clinicalFinalizerName: finalizer.name,
+      chargeDisposition: "no_charge",
+      noChargeReason: "Recheck of a problem treated last month.",
+      handoffMethod: "verbal",
+      completedAt: finishedAt,
+      completedBy: frontDeskUsers[0]!.id,
+    });
+    console.log("Open visit follow-up: 1 created");
+  }
+
+  // =========================================================================
+  // 23. Help-site captures only: give one owner with an overdue pet a contact
+  //     the recall screen will accept, so the screenshots show a recall that
+  //     is ready to send. Capture servers have no email or text provider, so
+  //     nothing is delivered. Normal seeds keep every contact unreachable.
+  // =========================================================================
+  if (process.env.DOCS_CAPTURE === "1") {
+    const owner = insertedClients[patientsData[insertedPatients.indexOf(patientByName("Cooper", "canine"))]!.clientIdx]!;
+    await db
+      .update(clients)
+      .set({ email: "michael.rossi@openvpm.com" })
+      .where(eq(clients.id, owner.id));
+    console.log("Docs capture: one recall contact made sendable");
+  }
 
   // =========================================================================
   // Done!
