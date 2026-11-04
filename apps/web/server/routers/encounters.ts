@@ -280,6 +280,15 @@ const resolveNeededFollowUpInput = z
     }
   });
 
+// Waiving charges is a billing decision: only the roles that manage billing
+// may mark performed work or a whole visit as no charge.
+function canWaiveVisitCharges(role: string): boolean {
+  return role === "admin" || role === "front_desk";
+}
+
+const NO_CHARGE_FORBIDDEN_MESSAGE =
+  "Only an administrator or front desk teammate can mark visit work as no charge.";
+
 const resolveVisitWorkInput = z.object({
   appointmentId: z.string().guid(),
   workItemId: z.string().guid(),
@@ -1162,6 +1171,15 @@ export const encountersRouter = createRouter({
           code: "FORBIDDEN",
           message:
             "Only an administrator or veterinarian can void clinical work.",
+        });
+      }
+      if (
+        input.resolution.status === "no_charge" &&
+        !canWaiveVisitCharges(ctx.user.role)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: NO_CHARGE_FORBIDDEN_MESSAGE,
         });
       }
       return ctx.db.transaction(async (tx) => {
@@ -2274,8 +2292,17 @@ export const encountersRouter = createRouter({
   completeVisit: protectedProcedure
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(completeVisitInput)
-    .mutation(async ({ ctx, input }) =>
-      ctx.db.transaction(async (tx) => {
+    .mutation(async ({ ctx, input }) => {
+      if (
+        input.chargeDisposition === "no_charge" &&
+        !canWaiveVisitCharges(ctx.user.role)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: NO_CHARGE_FORBIDDEN_MESSAGE,
+        });
+      }
+      return ctx.db.transaction(async (tx) => {
         const txCtx: EncounterContext = { db: tx, practiceId: ctx.practiceId };
         const appointment = await lockAppointment(txCtx, input.appointmentId);
         const closeout = await getCloseoutRow(txCtx, input.appointmentId);
@@ -2523,6 +2550,6 @@ export const encountersRouter = createRouter({
           });
         }
         return { closeout: completed, appointment: checkedOut };
-      })
-    ),
+      });
+    }),
 });

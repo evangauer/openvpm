@@ -90,3 +90,15 @@ export function isInventoryOptionalExpirationDateInputValid(
   const trimmed = value.trim();
   return trimmed.length === 0 || isValidClinicalDateInput(trimmed);
 }
+
+// Selling price, cost, and tax status flow straight onto invoices, so only the
+// roles that manage billing may set them. Clinical roles keep stock, lot, and
+// expiry edits.
+export const PRODUCT_PRICING_FIELDS = ["unitPrice", "taxable", "costPrice"] as const;
+
+export function canManageProductPricing(role?: string | null): boolean {
+  return role === "admin" || role === "front_desk";
+}
+
+export const PRODUCT_PRICING_FORBIDDEN_MESSAGE =
+  "Only an administrator or front desk teammate can add products or change product prices and tax status.";

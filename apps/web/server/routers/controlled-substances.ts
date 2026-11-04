@@ -342,6 +342,7 @@ export const controlledSubstancesRouter = createRouter({
     }),
 
   list: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
     .input(listInput)
     .query(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -511,6 +512,7 @@ export const controlledSubstancesRouter = createRouter({
     }),
 
   summary: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
     .input(summaryInput)
     .query(async ({ ctx, input }) => {
       await assertActivePractice(ctx);

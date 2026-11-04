@@ -41,6 +41,8 @@ import {
   INVENTORY_SUPPLIER_NAME_MAX_LENGTH,
   INVENTORY_SUPPLIER_NOTES_MAX_LENGTH,
   INVENTORY_SUPPLIER_PHONE_MAX_LENGTH,
+  PRODUCT_PRICING_FORBIDDEN_MESSAGE,
+  canManageProductPricing,
   isInventoryCurrencyAmountInputValid,
   isInventoryNonnegativeIntegerInputValid,
   isInventoryOptionalCurrencyAmountInputValid,
@@ -313,6 +315,7 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
 
 function EditProductRow({
   product,
+  canManagePricing,
   onClose,
 }: {
   product: {
@@ -329,9 +332,11 @@ function EditProductRow({
     lotNumber: string | null;
     expirationDate: string | null;
   };
+  canManagePricing: boolean;
   onClose: () => void;
 }) {
   const utils = trpc.useUtils();
+  const formatCurrency = useCurrencyFormatter();
   const updateMutation = trpc.inventory.update.useMutation({
     onSuccess: () => {
       utils.inventory.list.invalidate();
@@ -368,8 +373,9 @@ function EditProductRow({
       form.category,
       INVENTORY_PRODUCT_CATEGORY_MAX_LENGTH
     ) &&
-    isInventoryCurrencyAmountInputValid(form.unitPrice) &&
-    isInventoryOptionalCurrencyAmountInputValid(form.costPrice) &&
+    (!canManagePricing ||
+      (isInventoryCurrencyAmountInputValid(form.unitPrice) &&
+        isInventoryOptionalCurrencyAmountInputValid(form.costPrice))) &&
     (!product.inventoryTracked ||
       (isInventoryNonnegativeIntegerInputValid(form.reorderPoint) &&
         isInventoryOptionalTextInputValid(
@@ -385,9 +391,13 @@ function EditProductRow({
       name: form.name.trim(),
       sku: trimmedOrUndefined(form.sku),
       category: trimmedOrUndefined(form.category),
-      unitPrice: form.unitPrice.trim(),
-      taxable: form.taxable,
-      costPrice: trimmedOrUndefined(form.costPrice),
+      ...(canManagePricing
+        ? {
+            unitPrice: form.unitPrice.trim(),
+            taxable: form.taxable,
+            costPrice: trimmedOrUndefined(form.costPrice),
+          }
+        : {}),
       ...(product.inventoryTracked
         ? {
             reorderPoint: form.reorderPoint,
@@ -434,41 +444,64 @@ function EditProductRow({
           ))}
         </select>
       </td>
-      <td className="px-4 py-2">
-        <Input
-          type="number"
-          min={INVENTORY_MONEY_AMOUNT_MIN}
-          max={INVENTORY_MONEY_AMOUNT_MAX}
-          step="0.01"
-          value={form.unitPrice}
-          onChange={(e) => setForm({ ...form, unitPrice: e.target.value })}
-          className="h-8 text-sm text-right"
-        />
-      </td>
-      <td className="px-4 py-2">
-        <label className="flex items-center justify-center gap-2 text-xs">
-          <input
-            type="checkbox"
-            checked={form.taxable}
-            onChange={(event) =>
-              setForm({ ...form, taxable: event.target.checked })
-            }
-          />
-          Taxable
-        </label>
-      </td>
-      <td className="px-4 py-2">
-        <Input
-          type="number"
-          min={INVENTORY_MONEY_AMOUNT_MIN}
-          max={INVENTORY_MONEY_AMOUNT_MAX}
-          step="0.01"
-          value={form.costPrice}
-          onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
-          className="h-8 text-sm text-right"
-        />
-        <MarkupInput cost={form.costPrice} onApply={(unitPrice) => setForm({ ...form, unitPrice })} />
-      </td>
+      {canManagePricing ? (
+        <>
+          <td className="px-4 py-2">
+            <Input
+              type="number"
+              min={INVENTORY_MONEY_AMOUNT_MIN}
+              max={INVENTORY_MONEY_AMOUNT_MAX}
+              step="0.01"
+              value={form.unitPrice}
+              onChange={(e) => setForm({ ...form, unitPrice: e.target.value })}
+              className="h-8 text-sm text-right"
+            />
+          </td>
+          <td className="px-4 py-2">
+            <label className="flex items-center justify-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={form.taxable}
+                onChange={(event) =>
+                  setForm({ ...form, taxable: event.target.checked })
+                }
+              />
+              Taxable
+            </label>
+          </td>
+          <td className="px-4 py-2">
+            <Input
+              type="number"
+              min={INVENTORY_MONEY_AMOUNT_MIN}
+              max={INVENTORY_MONEY_AMOUNT_MAX}
+              step="0.01"
+              value={form.costPrice}
+              onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
+              className="h-8 text-sm text-right"
+            />
+            <MarkupInput cost={form.costPrice} onApply={(unitPrice) => setForm({ ...form, unitPrice })} />
+          </td>
+        </>
+      ) : (
+        <>
+          <td
+            className="px-4 py-2 text-right tabular-nums"
+            title={PRODUCT_PRICING_FORBIDDEN_MESSAGE}
+          >
+            {formatCurrency(product.unitPrice)}
+          </td>
+          <td className="px-4 py-2 text-xs text-muted-foreground">
+            {product.taxable ? "Taxable" : "Not taxable"}
+          </td>
+          <td className="px-4 py-2 text-right text-xs text-muted-foreground">
+            {product.costPrice ? formatCurrency(product.costPrice) : "\u2014"}
+            <p className="mt-1 text-left">
+              Price and tax changes need an administrator or front desk
+              teammate.
+            </p>
+          </td>
+        </>
+      )}
       <td className="px-4 py-2 text-right tabular-nums">
         {product.inventoryTracked ? product.stockQuantity : "—"}
       </td>
@@ -1014,6 +1047,7 @@ export default function InventoryPage() {
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const searchFilter = search.trim();
   const canManageInventory = canManageInventoryRole(session?.user?.role);
+  const canManagePricing = canManageProductPricing(session?.user?.role);
 
   const productsQuery = trpc.inventory.list.useQuery(
     {
@@ -1121,7 +1155,7 @@ export default function InventoryPage() {
                 {productsQuery.data.total !== 1 ? "s" : ""}
               </p>
             )}
-            {canManageInventory && (
+            {canManagePricing && (
               <Button
                 size="sm"
                 onClick={() => setShowAddProduct(true)}
@@ -1132,7 +1166,7 @@ export default function InventoryPage() {
             )}
           </div>
 
-          {canManageInventory && showAddProduct && (
+          {canManagePricing && showAddProduct && (
             <AddProductForm onClose={() => setShowAddProduct(false)} />
           )}
 
@@ -1253,6 +1287,7 @@ export default function InventoryPage() {
                         <EditProductRow
                           key={product.id}
                           product={product}
+                          canManagePricing={canManagePricing}
                           onClose={() => setEditingId(null)}
                         />
                       );
@@ -1414,7 +1449,7 @@ export default function InventoryPage() {
                     : "Add medications, supplies, food, and other inventory before dispensing or invoicing stock-backed items."
               }
               action={
-                canManageInventory &&
+                canManagePricing &&
                 alertFilter === "all" &&
                 !search &&
                 !category

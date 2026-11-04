@@ -174,7 +174,11 @@ describe("inventory product form UX", () => {
       "const canManageInventory = canManageInventoryRole(session?.user?.role)"
     );
     expect(source).toContain("{canManageInventory && (");
-    expect(source).toContain("{canManageInventory && showAddProduct && (");
+    expect(source).toContain(
+      "const canManagePricing = canManageProductPricing(session?.user?.role)"
+    );
+    expect(source).toContain("{canManagePricing && showAddProduct && (");
+    expect(source).toContain("canManagePricing={canManagePricing}");
     expect(source).toContain("canManageInventory && editingId === product.id");
     expect(source).toContain("{canManageInventory ? (");
     expect(source).toContain("Read-only");
@@ -185,7 +189,7 @@ describe("inventory product form UX", () => {
     expect(routerSource).toContain(
       'requireRole("admin", "veterinarian", "technician", "front_desk")'
     );
-    expect(routerSource).toContain("create: inventoryManagerProcedure");
+    expect(routerSource).toContain("create: productPricingProcedure");
     expect(routerSource).toContain("update: inventoryManagerProcedure");
     expect(routerSource).toContain("adjustStock: inventoryManagerProcedure");
     expect(routerSource).toContain("createSupplier: inventoryManagerProcedure");

@@ -291,6 +291,63 @@ describe("visit work reconciliation", () => {
     );
   });
 
+  it.each(["veterinarian", "technician"])(
+    "keeps %s from marking performed work as no charge",
+    async (role) => {
+      const { db, select, updateSet } = createDb({
+        selectResults: [
+          [openAppointment],
+          [{ id: PATIENT_ID }],
+          [unresolvedWork],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db, role).resolveVisitWork({
+          appointmentId: APPOINTMENT_ID,
+          workItemId: WORK_ITEM_ID,
+          resolution: {
+            status: "no_charge",
+            reason: "Included in wellness plan",
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: "FORBIDDEN",
+        message: expect.stringContaining("front desk"),
+      });
+      expect(select).not.toHaveBeenCalled();
+      expect(updateSet).not.toHaveBeenCalled();
+    },
+  );
+
+  it("lets front desk record an attributable no-charge reason", async () => {
+    const resolved = {
+      ...unresolvedWork,
+      status: "no_charge",
+      noChargeReason: "Included in wellness plan",
+      resolvedBy: USER_ID,
+    };
+    const { db } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [unresolvedWork],
+      ],
+      updateResults: [[resolved]],
+    });
+
+    await expect(
+      callerWithDb(db, "front_desk").resolveVisitWork({
+        appointmentId: APPOINTMENT_ID,
+        workItemId: WORK_ITEM_ID,
+        resolution: {
+          status: "no_charge",
+          reason: "Included in wellness plan",
+        },
+      }),
+    ).resolves.toMatchObject({ status: "no_charge" });
+  });
+
   it("waives the exact pending dispense when medication work is no charge", async () => {
     const prescriptionWork = {
       ...unresolvedWork,
