@@ -141,8 +141,54 @@ export function unverifiedForwardedIp(req: unknown): string | null {
   );
 }
 
-export function isLoopbackIp(ip: string): boolean {
-  return ip === "::1" || /^127\./.test(ip);
+function ipv4Octets(ip: string): number[] | null {
+  if (!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip)) return null;
+  const octets = ip.split(".").map(Number);
+  return octets.every((o) => o <= 255) ? octets : null;
+}
+
+/** `::ffff:a.b.c.d` / `::ffff:aabb:ccdd` → `a.b.c.d`; anything else → null. */
+function embeddedIpv4(ip: string): string | null {
+  const mapped = /^(?:0{0,4}:){0,5}:?ffff:(.+)$/i.exec(ip);
+  if (!mapped) return null;
+  const rest = mapped[1]!;
+  if (ipv4Octets(rest)) return rest;
+  const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(rest);
+  if (!hex) return null;
+  const high = parseInt(hex[1]!, 16);
+  const low = parseInt(hex[2]!, 16);
+  return [high >> 8, high & 255, low >> 8, low & 255].join(".");
+}
+
+/**
+ * True for addresses that never identify an individual internet client:
+ * loopback, private (RFC 1918), carrier-grade NAT, link-local, unspecified,
+ * IPv6 unique-local and link-local, and IPv4-mapped forms of these. A
+ * request "from" one of these is usually a proxy, load balancer, or container
+ * gateway that every client shares. Unparseable input counts as non-public.
+ */
+export function isNonPublicIp(value: string): boolean {
+  const ip = normalizeIp(value);
+  if (!ip) return true;
+  const v4 = ipv4Octets(ip) ?? ipv4Octets(embeddedIpv4(ip) ?? "");
+  if (v4) {
+    const [a, b] = v4 as [number, number, number, number];
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168)
+    );
+  }
+  if (ip === "::" || ip === "::1") return true;
+  const first = /^([0-9a-f]{1,4}):/.exec(ip)?.[1];
+  if (!first) return false;
+  const group = parseInt(first, 16);
+  // fc00::/7 unique-local, fe80::/10 link-local.
+  return (group & 0xfe00) === 0xfc00 || (group & 0xffc0) === 0xfe80;
 }
 
 /**
@@ -150,8 +196,10 @@ export function isLoopbackIp(ip: string): boolean {
  * but `OPENVPM_TRUSTED_PROXY_HOPS` is unset, so client addresses can't be
  * verified. Next.js fills `X-Forwarded-For/-Proto/-Host` itself when they are
  * missing, so only signals it never produces count: proxy-only headers, a
- * multi-hop chain, HTTPS (the app server speaks plain HTTP), or a loopback
- * client address.
+ * multi-hop chain, HTTPS (the app server speaks plain HTTP), or a non-public
+ * client address (a local proxy or container gateway that isn't forwarding
+ * the client's address; a direct LAN client also looks like this, which is
+ * why the notice is worded conditionally).
  */
 export function proxyWithoutTrustedHops(
   req: unknown,
@@ -168,7 +216,23 @@ export function proxyWithoutTrustedHops(
   const proto = headerValue(headers, "x-forwarded-proto")?.split(",")[0]?.trim();
   if (proto?.toLowerCase() === "https") return true;
   const first = normalizeIp(entries[0]);
-  return first !== null && isLoopbackIp(first);
+  return first !== null && isNonPublicIp(first);
+}
+
+/**
+ * With `OPENVPM_TRUSTED_PROXY_HOPS` set, the address the proxy chain reports
+ * for this request when it is missing or non-public, which usually means the
+ * proxy isn't adding `X-Forwarded-For` and OpenVPM is seeing the proxy
+ * itself. Returns null when hops are unset or the address is public.
+ */
+export function trustedProxyNotForwarding(
+  req: unknown,
+  env: Env = process.env
+): { address: string | null } | null {
+  if (onVercel(env) || trustedProxyHops(env) === 0) return null;
+  const resolved = resolveClientIp(req, env);
+  if (resolved.ip && !isNonPublicIp(resolved.ip)) return null;
+  return { address: resolved.ip };
 }
 
 /**

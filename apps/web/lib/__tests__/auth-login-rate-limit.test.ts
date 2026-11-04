@@ -85,6 +85,38 @@ vi.mock("@/lib/rate-limit", async () => {
     clearRateLimit: vi.fn(async (key: string) => {
       mocks.buckets.delete(key);
     }),
+    clearRateLimitPrefix: vi.fn(async (prefix: string) => {
+      for (const key of [...mocks.buckets.keys()]) {
+        if (key.startsWith(prefix)) mocks.buckets.delete(key);
+      }
+    }),
+    rememberRateLimitKey: vi.fn(async (key: string, ttlMs: number, now = new Date()) => {
+      failIfDown();
+      mocks.buckets.set(key, {
+        count: 1,
+        resetAt: new Date(now.getTime() + ttlMs),
+        updatedAt: now,
+      });
+    }),
+    rateLimitKeyActive: vi.fn(async (key: string, now = new Date()) => {
+      failIfDown();
+      const bucket = mocks.buckets.get(key);
+      return Boolean(bucket && bucket.resetAt > now);
+    }),
+    recordBackoffAttempt: vi.fn(
+      async (options: { key: string; policy: { streakMs: number }; now?: Date }) => {
+        failIfDown();
+        const now = options.now ?? new Date();
+        const existing = mocks.buckets.get(options.key);
+        const count = existing && existing.resetAt > now ? existing.count + 1 : 1;
+        mocks.buckets.set(options.key, {
+          count,
+          resetAt: new Date(now.getTime() + options.policy.streakMs),
+          updatedAt: now,
+        });
+      }
+    ),
+    backoffLockMs: actual.backoffLockMs,
     consumeBackoffAttempt: vi.fn(
       async (options: {
         key: string;
@@ -462,6 +494,29 @@ describe("credentials sign-in throttling", () => {
     expect([...mocks.buckets.keys()].filter((key) => key.includes(":ip"))).toEqual([]);
   });
 
+  for (const hops of ["", "1"]) {
+    it(`can't be locked out through a proxy that isn't forwarding client addresses (hops=${hops || "unset"})`, async () => {
+      vi.stubEnv("VERCEL", "");
+      vi.stubEnv("OPENVPM_TRUSTED_PROXY_HOPS", hops);
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      mocks.selectLimit.mockResolvedValue([]);
+      // nginx on a Docker network without the X-Forwarded-For line: every
+      // request arrives with the gateway address Next.js filled in.
+      const viaGateway = { "x-forwarded-for": "172.18.0.1" };
+      for (let i = 0; i < 1000; i += 1) {
+        await expect(
+          signIn(`spray-${i}@example.com`, "Password1", viaGateway)
+        ).resolves.toBe("invalid");
+      }
+      expect([...mocks.buckets.keys()].filter((key) => key.includes(":ip"))).toEqual([]);
+
+      mocks.selectLimit.mockResolvedValue([mocks.activeUser]);
+      await expect(
+        signIn("admin@example.com", "correct-password", viaGateway)
+      ).resolves.toBe("ok");
+    });
+  }
+
   it("still locks an account by backoff when per-IP limits don't apply", async () => {
     vi.stubEnv("VERCEL", "");
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -475,6 +530,75 @@ describe("credentials sign-in throttling", () => {
         "x-forwarded-for": "198.18.1.1",
       })
     ).resolves.toBe("Too many sign-in attempts. Try again in 1 minute.");
+  });
+});
+
+describe("known sign-in networks", () => {
+  const home = vercelHeaders("203.0.113.10");
+
+  async function lockFromElsewhere(failures = 10) {
+    for (let i = 0; i < failures; i += 1) {
+      await signIn("admin@example.com", "wrong-password", vercelHeaders(`198.51.100.${i}`));
+    }
+  }
+
+  it("lets the owner in from a network they've used while someone else keeps the account locked", async () => {
+    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
+    await lockFromElsewhere();
+    const lock = mocks.buckets.get("login:account:admin@example.com");
+    expect(lock?.count).toBe(5);
+
+    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
+    // The owner's success doesn't reset the other side's backoff.
+    expect(mocks.buckets.get("login:account:admin@example.com")).toEqual(lock);
+    await expect(
+      signIn("admin@example.com", "wrong-password", vercelHeaders("198.51.100.99"))
+    ).resolves.toMatch(/^Too many sign-in attempts/);
+  });
+
+  it("still holds a correct password from a new network while the account is locked", async () => {
+    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
+    await lockFromElsewhere();
+    await expect(
+      signIn("admin@example.com", "correct-password", vercelHeaders("192.0.2.200"))
+    ).resolves.toBe("Too many sign-in attempts. Try again in 1 minute.");
+  });
+
+  it("throttles guessing from a known network with the same backoff, and counts it account-wide", async () => {
+    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
+    for (let i = 0; i < 5; i += 1) {
+      await expect(signIn("admin@example.com", "wrong-password", home)).resolves.toBe("invalid");
+    }
+    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe(
+      "Too many sign-in attempts. Try again in 1 minute."
+    );
+    expect(mocks.buckets.get("login:account:admin@example.com")?.count).toBe(5);
+    await expect(
+      signIn("admin@example.com", "correct-password", vercelHeaders("192.0.2.200"))
+    ).resolves.toBe("Too many sign-in attempts. Try again in 1 minute.");
+  });
+
+  it("doesn't remember a network from a failed sign-in, or a non-public address", async () => {
+    await signIn("admin@example.com", "wrong-password", home);
+    vi.stubEnv("VERCEL", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await expect(
+      signIn("admin@example.com", "correct-password", { "x-forwarded-for": "172.18.0.1" })
+    ).resolves.toBe("ok");
+    expect([...mocks.buckets.keys()].filter((key) => key.startsWith("login:known:"))).toEqual([]);
+  });
+
+  it("clears every lock on the account once the owner proves control of it", async () => {
+    const { clearLoginAccountLock } = await import("../login-throttle");
+    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
+    for (let i = 0; i < 6; i += 1) {
+      await signIn("admin@example.com", "wrong-password", home);
+    }
+    await clearLoginAccountLock("Admin@Example.com");
+    expect(
+      [...mocks.buckets.keys()].filter((key) => key.startsWith("login:account"))
+    ).toEqual([]);
+    await expect(signIn("admin@example.com", "correct-password", home)).resolves.toBe("ok");
   });
 });
 

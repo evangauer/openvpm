@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
     resetAt: new Date(),
   })),
   clearRateLimit: vi.fn(async () => undefined),
+  clearRateLimitPrefix: vi.fn(async () => undefined),
+  rateLimitKeyActive: vi.fn(async () => false),
   createAuthToken: vi.fn(async () => "token-123"),
   consumeAuthToken: vi.fn(),
   sendPasswordResetEmail: vi.fn(async () => ({ success: true })),
@@ -46,6 +48,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/rate-limit", () => ({
   rateLimit: mocks.rateLimit,
   clearRateLimit: mocks.clearRateLimit,
+  clearRateLimitPrefix: mocks.clearRateLimitPrefix,
+  rateLimitKeyActive: mocks.rateLimitKeyActive,
 }));
 
 vi.mock("@/lib/auth-tokens", () => ({
@@ -869,6 +873,30 @@ describe("auth router email normalization", () => {
     ).toBe(true);
   });
 
+  it("skips the per-address daily reset cap on a network the account has signed in from", async () => {
+    const { db } = createSelectDb([
+      [{ id: "user-1", email: "admin@example.com", name: "Admin" }],
+    ]);
+    mocks.rateLimitKeyActive.mockResolvedValueOnce(true);
+
+    await expect(
+      callerWithDb(db).requestPasswordReset({ email: "Admin@Example.COM" }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(mocks.rateLimitKeyActive).toHaveBeenCalledWith(
+      expect.stringMatching(/^login:known:[0-9a-f]{32}:198\.51\.100\.20$/),
+      expect.any(Date),
+    );
+    expect(mocks.rateLimit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "pwreset:admin@example.com:ip:198.51.100.20",
+      }),
+    );
+    expect(mocks.rateLimit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ key: "pwreset:admin@example.com:day" }),
+    );
+  });
+
   it("normalizes password-reset rate-limit keys and account lookups", async () => {
     const { db, selectWhere } = createSelectDb([
       [{ id: "user-1", email: "admin@example.com", name: "Admin" }],
@@ -1201,6 +1229,10 @@ describe("auth router token validation", () => {
     );
     expect(mocks.clearRateLimit).toHaveBeenCalledWith(
       "login:account:invitee@example.com",
+    );
+    expect(mocks.clearRateLimitPrefix).toHaveBeenCalledTimes(2);
+    expect(mocks.clearRateLimitPrefix).toHaveBeenCalledWith(
+      expect.stringMatching(/^login:account-net:[0-9a-f]{32}:$/),
     );
     expect(mocks.consumeAuthToken).toHaveBeenCalledWith(
       validToken,

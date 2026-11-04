@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clientIpFromRequest,
+  isNonPublicIp,
   normalizeIp,
   proxyWithoutTrustedHops,
   resolveClientIp,
   trustedProxyHops,
+  trustedProxyNotForwarding,
   unverifiedForwardedIp,
 } from "../request-ip";
 
@@ -160,6 +162,10 @@ describe("proxyWithoutTrustedHops", () => {
       { "x-forwarded-for": "203.0.113.10, 172.18.0.1" },
       { "x-forwarded-for": "203.0.113.10", "x-forwarded-proto": "https" },
       { "x-forwarded-for": "127.0.0.1", "x-forwarded-proto": "http" },
+      // nginx on a Docker network without the X-Forwarded-For line: Next.js
+      // fills the header with the gateway address.
+      { "x-forwarded-for": "172.18.0.1", "x-forwarded-proto": "http" },
+      { "x-forwarded-for": "::ffff:192.168.65.1" },
     ]) {
       expect(proxyWithoutTrustedHops(req(headers), SELF_HOST)).toBe(true);
     }
@@ -206,5 +212,91 @@ describe("unverifiedForwardedIp", () => {
     );
     expect(unverifiedForwardedIp({ headers: { "x-forwarded-for": "evil" } })).toBeNull();
     expect(unverifiedForwardedIp(null)).toBeNull();
+  });
+});
+
+describe("isNonPublicIp", () => {
+  it("covers loopback, private, CGNAT, link-local, and their mapped forms", () => {
+    for (const ip of [
+      "127.0.0.1",
+      "127.8.9.10",
+      "0.0.0.0",
+      "10.0.0.1",
+      "10.255.255.255",
+      "172.16.0.1",
+      "172.18.0.1",
+      "172.31.255.255",
+      "192.168.1.20",
+      "100.64.0.1",
+      "100.127.255.254",
+      "169.254.10.20",
+      "::1",
+      "::",
+      "fc00::1",
+      "fd12:3456:789a::1",
+      "fe80::1",
+      "febf::1",
+      "::ffff:10.0.0.1",
+      "::ffff:172.18.0.1",
+      "::ffff:ac12:1",
+      "0:0:0:0:0:ffff:c0a8:0114",
+      "[::1]:443",
+      "172.18.0.1:51234",
+      "not-an-ip",
+    ]) {
+      expect(isNonPublicIp(ip), ip).toBe(true);
+    }
+  });
+
+  it("leaves public addresses alone", () => {
+    for (const ip of [
+      "203.0.113.10",
+      "198.51.100.7",
+      "172.15.255.255",
+      "172.32.0.1",
+      "100.63.255.255",
+      "100.128.0.1",
+      "192.169.0.1",
+      "11.0.0.1",
+      "2001:db8::1",
+      "2606:4700::1111",
+      "fec0::1",
+      "::ffff:203.0.113.10",
+      "::ffff:cb00:710a",
+    ]) {
+      expect(isNonPublicIp(ip), ip).toBe(false);
+    }
+  });
+});
+
+describe("trustedProxyNotForwarding", () => {
+  const req = (headers: Record<string, string>) => ({ headers });
+
+  it("reports the proxy's own address when hops are set but nothing is forwarded", () => {
+    expect(
+      trustedProxyNotForwarding(req({ "x-forwarded-for": "172.18.0.1" }), ONE_PROXY)
+    ).toEqual({ address: "172.18.0.1" });
+    expect(trustedProxyNotForwarding(req({}), ONE_PROXY)).toEqual({ address: null });
+  });
+
+  it("stays quiet for a forwarded public client, without hops, and on Vercel", () => {
+    expect(
+      trustedProxyNotForwarding(
+        req({ "x-forwarded-for": "203.0.113.10, 172.18.0.1" }),
+        { OPENVPM_TRUSTED_PROXY_HOPS: "2" }
+      )
+    ).toBeNull();
+    expect(
+      trustedProxyNotForwarding(req({ "x-forwarded-for": "203.0.113.10" }), ONE_PROXY)
+    ).toBeNull();
+    expect(
+      trustedProxyNotForwarding(req({ "x-forwarded-for": "172.18.0.1" }), SELF_HOST)
+    ).toBeNull();
+    expect(
+      trustedProxyNotForwarding(req({ "x-forwarded-for": "172.18.0.1" }), {
+        VERCEL: "1",
+        OPENVPM_TRUSTED_PROXY_HOPS: "1",
+      })
+    ).toBeNull();
   });
 });

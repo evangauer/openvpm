@@ -14,6 +14,7 @@ import { assertHostedRlsRoleOnce } from "@/lib/rls-assertion";
 import {
   clientIpFromRequest,
   proxyWithoutTrustedHops,
+  trustedProxyNotForwarding,
 } from "@/lib/request-ip";
 import { externallyVisibleRequestOrigin } from "@/lib/request-origin";
 import { practices, users } from "@openpims/db";
@@ -63,6 +64,12 @@ export type TRPCContext = {
    * is unset so client addresses can't be verified. Shown to admins.
    */
   untrustedProxy?: boolean;
+  /**
+   * OPENVPM_TRUSTED_PROXY_HOPS is set, but the proxy chain reported a missing
+   * or non-public client address, so the proxy likely isn't forwarding
+   * client addresses. Shown to admins.
+   */
+  proxyNotForwarding?: { address: string | null } | null;
   /** Pre-resolved only by portalProcedure (or explicitly injected test callers). */
   portalClient?: PortalSessionClient;
   portalSessionId?: string;
@@ -166,6 +173,7 @@ export async function createTRPCContext(opts?: {
       ? externallyVisibleRequestOrigin(opts.req)
       : null,
     untrustedProxy: opts?.req ? proxyWithoutTrustedHops(opts.req) : false,
+    proxyNotForwarding: opts?.req ? trustedProxyNotForwarding(opts.req) : null,
   };
 }
 

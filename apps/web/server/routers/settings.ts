@@ -98,6 +98,10 @@ import {
 } from "@/lib/platform-email-preferences";
 import { assertOutboundEmailAllowed } from "@/lib/outbound-email-security";
 import {
+  clearLoginAccountLock,
+  loginAccountLocks,
+} from "@/lib/login-throttle";
+import {
   BODY_CONDITION_SCALES,
   MEASUREMENT_SYSTEMS,
 } from "@/lib/ambulatory-workspace";
@@ -629,6 +633,9 @@ export const settingsRouter = createRouter({
   /** Self-host configuration problems an admin should fix. */
   deploymentNotices: adminProcedure.query(({ ctx }) => ({
     trustedProxyHopsMissing: ctx.untrustedProxy === true,
+    proxyNotForwarding: ctx.proxyNotForwarding
+      ? { address: ctx.proxyNotForwarding.address }
+      : null,
   })),
 
   getMarketingEmailPreference: adminProcedure.query(async ({ ctx }) => {
@@ -2029,6 +2036,53 @@ export const settingsRouter = createRouter({
         ),
       );
   }),
+
+  /** Staff whose sign-in is currently locked after repeated failed attempts. */
+  staffSignInLocks: adminProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
+    const staff = await ctx.db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(
+        and(
+          eq(users.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(users.deletedAt),
+        ),
+      );
+    const locks = await loginAccountLocks(staff.map((user) => user.email));
+    return staff.flatMap((user) => {
+      const lockedUntil = locks.get(user.email);
+      return lockedUntil ? [{ userId: user.id, lockedUntil }] : [];
+    });
+  }),
+
+  /**
+   * Lifts a staff member's sign-in lock so they can try their password again
+   * right away. Recorded in the audit log like other admin mutations.
+   */
+  clearStaffSignInLock: adminProcedure
+    .input(z.object({ id: z.string().guid() }))
+    .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const [targetUser] = await ctx.db
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(
+          and(
+            eq(users.id, input.id),
+            eq(users.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(users.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!targetUser) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+      }
+      await clearLoginAccountLock(targetUser.email);
+      return { id: targetUser.id };
+    }),
 
   /** Weekly veterinarian hours by clinic location, in the practice timezone. */
   providerScheduleSetup: adminProcedure.query(async ({ ctx }) => {

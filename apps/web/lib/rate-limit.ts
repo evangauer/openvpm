@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, like, lt, sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import { rateLimitBuckets } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
@@ -210,6 +210,111 @@ export async function consumeBackoffAttempt(options: {
       .where(eq(rateLimitBuckets.key, key));
     return { success: true as const };
   });
+}
+
+/**
+ * Records one attempt against an exponential-backoff bucket even if it is
+ * locked, extending the lock. For failures that must count without the
+ * bucket having gated the attempt.
+ */
+export async function recordBackoffAttempt(options: {
+  key: string;
+  policy: BackoffPolicy;
+  now?: Date;
+}): Promise<void> {
+  const now = options.now ?? new Date();
+  const nowIso = now.toISOString();
+  const key = normalizeRateLimitKey(options.key);
+  const resetAt = new Date(now.getTime() + options.policy.streakMs);
+  await withSystem(db, (tx) =>
+    tx
+      .insert(rateLimitBuckets)
+      .values({ key, count: 1, resetAt, updatedAt: now })
+      .onConflictDoUpdate({
+        target: rateLimitBuckets.key,
+        set: {
+          count: sql<number>`case when ${rateLimitBuckets.resetAt} <= ${nowIso}::timestamptz then 1 else ${rateLimitBuckets.count} + 1 end`,
+          resetAt,
+          updatedAt: now,
+        },
+      })
+  );
+}
+
+/** Reads backoff buckets by key; expired rows are omitted. */
+export async function readBackoffBuckets(
+  keys: string[],
+  now: Date = new Date()
+): Promise<Map<string, BackoffBucketState>> {
+  const normalized = new Map(keys.map((key) => [normalizeRateLimitKey(key), key]));
+  if (normalized.size === 0) return new Map();
+  const rows = await withSystem(db, (tx) =>
+    tx
+      .select({
+        key: rateLimitBuckets.key,
+        count: rateLimitBuckets.count,
+        resetAt: rateLimitBuckets.resetAt,
+        updatedAt: rateLimitBuckets.updatedAt,
+      })
+      .from(rateLimitBuckets)
+      .where(
+        and(
+          inArray(rateLimitBuckets.key, [...normalized.keys()]),
+          gt(rateLimitBuckets.resetAt, now)
+        )
+      )
+  );
+  return new Map(
+    rows.map(({ key, ...state }) => [normalized.get(key) ?? key, state])
+  );
+}
+
+/** Stores a marker key that stays present for `ttlMs`, refreshing it if set. */
+export async function rememberRateLimitKey(
+  key: string,
+  ttlMs: number,
+  now: Date = new Date()
+): Promise<void> {
+  const normalizedKey = normalizeRateLimitKey(key);
+  const resetAt = new Date(now.getTime() + ttlMs);
+  await withSystem(db, (tx) =>
+    tx
+      .insert(rateLimitBuckets)
+      .values({ key: normalizedKey, count: 1, resetAt, updatedAt: now })
+      .onConflictDoUpdate({
+        target: rateLimitBuckets.key,
+        set: { count: 1, resetAt, updatedAt: now },
+      })
+  );
+}
+
+/** True while a key stored by `rememberRateLimitKey` hasn't expired. */
+export async function rateLimitKeyActive(
+  key: string,
+  now: Date = new Date()
+): Promise<boolean> {
+  const normalizedKey = normalizeRateLimitKey(key);
+  const [row] = await withSystem(db, (tx) =>
+    tx
+      .select({ key: rateLimitBuckets.key })
+      .from(rateLimitBuckets)
+      .where(
+        and(
+          eq(rateLimitBuckets.key, normalizedKey),
+          gt(rateLimitBuckets.resetAt, now)
+        )
+      )
+      .limit(1)
+  );
+  return Boolean(row);
+}
+
+/** Deletes every bucket whose key starts with `prefix`. */
+export async function clearRateLimitPrefix(prefix: string): Promise<void> {
+  const pattern = `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  await withSystem(db, (tx) =>
+    tx.delete(rateLimitBuckets).where(like(rateLimitBuckets.key, pattern))
+  );
 }
 
 export async function clearRateLimit(key: string): Promise<void> {

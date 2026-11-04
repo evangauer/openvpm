@@ -10,6 +10,8 @@ import {
   LOGIN_ACCOUNT_BACKOFF,
   ipPrefixBucket,
   loginIpBucket,
+  loginKnownNetworkKey,
+  loginNetworkBucket,
   loginThrottleKeys,
 } from "../login-throttle";
 
@@ -128,5 +130,31 @@ describe("login throttle keys", () => {
     expect(loginIpBucket(unverified, { headers: { "x-forwarded-for": "not-an-ip" } })).toBeNull();
     expect(loginIpBucket(unverified, { headers: {} })).toBeNull();
     expect(loginIpBucket({ ip: null, source: "trusted-proxy" }, { headers: {} })).toBeNull();
+  });
+
+  it("never keys per-IP limits on a non-public address, verified or not", () => {
+    const unverified = { ip: null, source: "unverified" } as const;
+    for (const ip of ["172.18.0.1", "10.1.2.3", "192.168.65.1", "100.64.1.1", "fd00::1", "::ffff:172.18.0.1"]) {
+      expect(loginIpBucket(unverified, { headers: { "x-forwarded-for": ip } }), ip).toBeNull();
+      expect(loginIpBucket({ ip, source: "trusted-proxy" }), ip).toBeNull();
+      expect(loginIpBucket({ ip, source: "socket" }), ip).toBeNull();
+      expect(loginNetworkBucket(ip), ip).toBeNull();
+    }
+  });
+
+  it("keys known networks by a hash of the account and the network bucket", () => {
+    const keys = loginThrottleKeys("Admin@Example.com", {
+      bucket: "203.0.113.10",
+      verified: true,
+    });
+    expect(keys.network).toEqual({
+      knownKey: loginKnownNetworkKey("admin@example.com", "203.0.113.10"),
+      accountKey: expect.stringMatching(/^login:account-net:[0-9a-f]{32}:203\.0\.113\.10$/),
+    });
+    expect(keys.network!.knownKey).toMatch(/^login:known:[0-9a-f]{32}:203\.0\.113\.10$/);
+    expect(loginThrottleKeys("a@example.com", null).network).toBeNull();
+    expect(loginNetworkBucket("2001:db8::5")).toBe("2001:db8:0:0::/64");
+    expect(loginNetworkBucket(" 203.0.113.10 ")).toBe("203.0.113.10");
+    expect(loginNetworkBucket(null)).toBeNull();
   });
 });

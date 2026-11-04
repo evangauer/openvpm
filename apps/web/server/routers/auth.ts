@@ -6,7 +6,10 @@ import { createRouter, publicProcedure, protectedProcedure } from "../trpc";
 import { users, practices, locations } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { rateLimit } from "@/lib/rate-limit";
-import { clearLoginAccountLock } from "@/lib/login-throttle";
+import {
+  clearLoginAccountLock,
+  isKnownLoginNetwork,
+} from "@/lib/login-throttle";
 import { seedPractice, seedDemoData } from "@/lib/onboarding/defaults";
 import {
   billingEnforced,
@@ -723,8 +726,10 @@ export const authRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       const email = normalizeAuthEmail(input.email);
       // Keyed per network first, so someone else spamming this address can't
-      // use up the owner's own requests; the per-address daily cap still
-      // bounds how many reset emails anyone can make us send.
+      // use up the owner's own requests. The per-address daily cap bounds how
+      // many reset emails anyone can make us send, but doesn't apply on a
+      // network the account has signed in from, so spam from elsewhere can't
+      // block the owner's own reset.
       await assertPreAuthRateLimit({
         key: `pwreset:${email}:ip:${ctx.ip ?? "unknown"}`,
         limit: PASSWORD_RESET_PER_NETWORK_LIMIT,
@@ -732,13 +737,21 @@ export const authRouter = createRouter({
         message: "Too many requests. Please try again later.",
         logContext: "requestPasswordReset",
       });
-      await assertPreAuthRateLimit({
-        key: `pwreset:${email}:day`,
-        limit: PASSWORD_RESET_PER_EMAIL_DAILY_LIMIT,
-        windowMs: 24 * 60 * 60 * 1000,
-        message: "Too many requests. Please try again later.",
-        logContext: "requestPasswordReset",
-      });
+      const knownNetwork = await isKnownLoginNetwork(email, ctx.ip).catch(
+        (err) => {
+          console.error("[auth.requestPasswordReset] known network check failed:", err);
+          return false;
+        },
+      );
+      if (!knownNetwork) {
+        await assertPreAuthRateLimit({
+          key: `pwreset:${email}:day`,
+          limit: PASSWORD_RESET_PER_EMAIL_DAILY_LIMIT,
+          windowMs: 24 * 60 * 60 * 1000,
+          message: "Too many requests. Please try again later.",
+          logContext: "requestPasswordReset",
+        });
+      }
 
       const [user] = await ctx.db
         .select({ id: users.id, email: users.email, name: users.name })

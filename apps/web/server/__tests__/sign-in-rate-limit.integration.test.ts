@@ -372,4 +372,183 @@ integration("Sign-in rate limiting PostgreSQL contract", () => {
     expect(accepted).toBe(20);
     expect(mocks.sendPasswordResetEmail).toHaveBeenCalledTimes(20);
   }, 60_000);
+
+  for (const hops of [undefined, "1"]) {
+    it(`can't be locked out through nginx that doesn't forward client addresses (hops=${hops ?? "unset"})`, async () => {
+      useSelfHost();
+      if (hops) process.env.OPENVPM_TRUSTED_PROXY_HOPS = hops;
+      await clearBuckets();
+      await addUsers([`gateway-${hops ?? "unset"}@example.invalid`]);
+      // Without `proxy_set_header X-Forwarded-For`, Next.js fills the header
+      // with the Docker gateway nginx connects from, for every client.
+      const viaGateway = { "x-forwarded-for": "172.18.0.1" };
+      for (let i = 0; i < 1000; i += 1) {
+        await expect(
+          signIn(`spray-${randomUUID()}@example.invalid`, "Password1", viaGateway),
+        ).resolves.toBe("invalid");
+      }
+      expect(await buckets("login:ip")).toEqual([]);
+      await expect(
+        signIn(`gateway-${hops ?? "unset"}@example.invalid`, PASSWORD, viaGateway),
+      ).resolves.toBe("ok");
+      expect(await buckets("login:known:")).toEqual([]);
+    }, 120_000);
+  }
+
+  it("lets the owner in from a known network while an attacker keeps the account locked", async () => {
+    process.env.VERCEL = "1";
+    await clearBuckets();
+    await addUsers(["known@example.invalid"]);
+    const home = { "x-vercel-forwarded-for": "203.0.113.20" };
+    const from = (ip: string) => ({ "x-vercel-forwarded-for": ip });
+
+    await expect(signIn("known@example.invalid", PASSWORD, home)).resolves.toBe("ok");
+    expect(await buckets("login:known:")).toHaveLength(1);
+
+    // An attacker rotates addresses and keeps the account-wide lock engaged.
+    for (let i = 0; i < 20; i += 1) {
+      await signIn("known@example.invalid", "wrong", from(`192.0.2.${i + 1}`));
+    }
+    await expect(
+      signIn("known@example.invalid", "wrong", from("192.0.2.100")),
+    ).resolves.toMatch(/^Too many sign-in attempts/);
+
+    // The owner still gets in from home, repeatedly, without resetting it.
+    for (let i = 0; i < 3; i += 1) {
+      await expect(signIn("known@example.invalid", PASSWORD, home)).resolves.toBe("ok");
+    }
+    expect(await bucketCount("login:account:known@example.invalid")).toBe(5);
+
+    // The correct password from a new network is still held by the lock.
+    await expect(
+      signIn("known@example.invalid", PASSWORD, from("198.51.100.200")),
+    ).resolves.toBe("Too many sign-in attempts. Try again in 1 minute.");
+
+    // Guessing from the known network has its own backoff.
+    for (let i = 0; i < 5; i += 1) {
+      await expect(signIn("known@example.invalid", "wrong", home)).resolves.toBe("invalid");
+    }
+    await expect(signIn("known@example.invalid", PASSWORD, home)).resolves.toMatch(
+      /^Too many sign-in attempts/,
+    );
+  }, 60_000);
+
+  it("lets the owner request a reset from a known network after the daily cap is spent", async () => {
+    useSelfHost();
+    await clearBuckets();
+    mocks.sendPasswordResetEmail.mockClear();
+    await addUsers(["known-reset@example.invalid"]);
+    await expect(
+      signIn("known-reset@example.invalid", PASSWORD, {
+        "x-forwarded-for": "203.0.113.30",
+      }),
+    ).resolves.toBe("ok");
+    const { authRouter } = await import("../routers/auth");
+    const { db } = await import("@openpims/db/client");
+    const caller = (ip: string) =>
+      authRouter.createCaller({ db, session: null, ip } as never);
+
+    for (let i = 0; i < 30; i += 1) {
+      await caller(`198.18.60.${i}`)
+        .requestPasswordReset({ email: "known-reset@example.invalid" })
+        .catch(() => undefined);
+    }
+    expect(mocks.sendPasswordResetEmail).toHaveBeenCalledTimes(20);
+    await expect(
+      caller("198.18.61.1").requestPasswordReset({
+        email: "known-reset@example.invalid",
+      }),
+    ).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+
+    await expect(
+      caller("203.0.113.30").requestPasswordReset({
+        email: "known-reset@example.invalid",
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(mocks.sendPasswordResetEmail).toHaveBeenCalledTimes(21);
+  }, 60_000);
+
+  it("lets an admin clear a staff member's sign-in lock, with an audit entry", async () => {
+    useSelfHost();
+    await clearBuckets();
+    const [adminUser] = await ownerDb
+      .insert(schema.users)
+      .values({
+        practiceId,
+        email: "unlock-admin@example.invalid",
+        passwordHash: await hash(PASSWORD, 4),
+        name: "Synthetic Admin",
+        role: "admin",
+      })
+      .returning();
+    await addUsers(["locked-out@example.invalid"]);
+    const [target] = await ownerDb
+      .select({ id: schema.users.id })
+      .from(schema.users)
+      .where(like(schema.users.email, "locked-out@example.invalid"));
+    for (let i = 0; i < 6; i += 1) {
+      await signIn("locked-out@example.invalid", "wrong", {
+        "x-forwarded-for": `192.0.2.${i + 1}`,
+      });
+    }
+    await expect(
+      signIn("locked-out@example.invalid", PASSWORD, {
+        "x-forwarded-for": "203.0.113.40",
+      }),
+    ).resolves.toMatch(/^Too many sign-in attempts/);
+
+    const { appRouter } = await import("../routers/_app");
+    const { db } = await import("@openpims/db/client");
+    const session = (role: string) => ({
+      user: {
+        id: adminUser!.id,
+        email: adminUser!.email,
+        name: adminUser!.name,
+        role,
+        practiceId,
+      },
+    });
+    const caller = (role: string) =>
+      appRouter.createCaller({ db, session: session(role), ip: "203.0.113.41" } as never)
+        .settings;
+
+    await expect(
+      caller("veterinarian").clearStaffSignInLock({ id: target!.id }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const locks = await caller("admin").staffSignInLocks();
+    expect(locks.map((lock) => lock.userId)).toEqual([target!.id]);
+    await expect(
+      caller("admin").clearStaffSignInLock({ id: target!.id }),
+    ).resolves.toEqual({ id: target!.id });
+    await expect(caller("admin").staffSignInLocks()).resolves.toEqual([]);
+    await expect(
+      signIn("locked-out@example.invalid", PASSWORD, {
+        "x-forwarded-for": "203.0.113.40",
+      }),
+    ).resolves.toBe("ok");
+
+    // The audit entry is written after the response; wait for it briefly.
+    let audit: { entityType: string; action: string; entityId: string | null; userId: string | null }[] = [];
+    for (let i = 0; i < 50 && audit.length === 0; i += 1) {
+      audit = await ownerDb
+        .select({
+          entityType: schema.auditLog.entityType,
+          action: schema.auditLog.action,
+          entityId: schema.auditLog.entityId,
+          userId: schema.auditLog.userId,
+        })
+        .from(schema.auditLog)
+        .where(like(schema.auditLog.action, "clearStaffSignInLock"));
+      if (audit.length === 0) await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(audit).toEqual([
+      {
+        entityType: "settings",
+        action: "clearStaffSignInLock",
+        entityId: target!.id,
+        userId: adminUser!.id,
+      },
+    ]);
+  }, 60_000);
 });

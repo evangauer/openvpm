@@ -11,6 +11,7 @@ import { resolveClientIp } from "@/lib/request-ip";
 import {
   loginIpBucket,
   loginThrottleKeys,
+  recordLoginFailure,
   releaseLoginAttempt,
   reserveLoginAttempt,
   warnUnverifiedLoginIpOnce,
@@ -130,11 +131,15 @@ export const authOptions: NextAuthOptions = {
 
         if (!user) {
           await compare(password, DUMMY_PASSWORD_HASH);
+          await recordLoginFailure(throttleKeys, gate);
           return null;
         }
 
         const isValid = await compare(password, user.passwordHash);
-        if (!isValid) return null;
+        if (!isValid) {
+          await recordLoginFailure(throttleKeys, gate);
+          return null;
+        }
 
         await releaseLoginAttempt(throttleKeys, gate);
 
