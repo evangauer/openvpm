@@ -10,6 +10,7 @@ import { Screenshot } from "@/components/screenshot";
 import { DEMO_URL, SUPPORT_EMAIL, areas } from "@/content/catalog";
 import { categoryTitle, getGuide, getTour, guides } from "@/lib/content";
 import { plainText } from "@/lib/inline";
+import { getShot } from "@/lib/shots";
 
 export function generateStaticParams() {
   return guides.map((g) => ({ slug: g.slug }));
@@ -18,11 +19,20 @@ export function generateStaticParams() {
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const guide = getGuide((await params).slug);
   if (!guide) return {};
+  const shot = guide.steps.find((s) => s.shot)?.shot;
+  const image = shot && getShot(shot.id);
   return {
     title: guide.title,
     description: guide.summary,
     alternates: { canonical: `/guides/${guide.slug}` },
-    openGraph: { title: guide.title, description: guide.summary },
+    openGraph: {
+      siteName: "OpenVPM Help",
+      type: "article",
+      url: `/guides/${guide.slug}`,
+      title: guide.title,
+      description: guide.summary,
+      ...(image && shot ? { images: [{ url: `/screens/${image.file}`, alt: shot.alt }] } : {}),
+    },
   };
 }
 

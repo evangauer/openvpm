@@ -9,7 +9,7 @@ export const checkout: Guide[] = [
     area: "billing",
     audience: "Front desk, admins",
     minutes: 4,
-    before: "The visit needs a client and a pet, and it must be [[In Exam]]. Before the exam starts, or after checkout, charges are read-only.",
+    before: "The visit needs a client and a pet, and it must be [[In Exam]]. Before the exam starts, or after checkout, charges are locked and the panel says why.",
     keywords: ["charges", "bill", "line items", "services", "products", "draft invoice", "charge capture"],
     steps: [
       {
@@ -34,7 +34,7 @@ export const checkout: Guide[] = [
       {
         id: "save",
         title: "Save the draft invoice",
-        body: ["Check the subtotal, tax, and total, then save. You can still change a draft until you present it to the client."],
+        body: ["Check the subtotal, tax, and total, then choose [[Create visit invoice]]. It saves a draft invoice linked to the visit. You can still change a draft until you present it to the client."],
       },
     ],
     next: "create-and-present-an-invoice",
@@ -68,13 +68,24 @@ export const checkout: Guide[] = [
       {
         id: "send",
         title: "Mark it as sent",
-        body: ["When the invoice is ready, choose [[Mark as Sent]]. A sent or overdue invoice with a balance can take payment."],
+        body: [
+          "When the invoice is ready, choose the paper-plane button ((1)) in its **Actions** column. Hover over it to see **Mark as Sent**.",
+          "A sent or overdue invoice with a balance can take payment.",
+        ],
+        shot: {
+          id: "billing",
+          focus: "list",
+          pad: 12,
+          callouts: ["mark-sent"],
+          alt: "The Billing invoice list with the Mark as Sent paper-plane button highlighted on a draft invoice",
+        },
       },
       {
         id: "deliver",
         title: "Give it to the client",
         body: [
-          "Choose [[Download PDF]] to print it or go over it together. Or choose [[Email Invoice]] ((1)) to send the client a secure payment link. Email needs a client email address and a configured email provider.",
+          "Choose [[Download PDF]] to print it or go over it together. Or choose [[Email Invoice]] ((1)) to email the client the amount due and the due date. Email needs a client email address and a configured email provider.",
+          "The email doesn't include a payment link. To let the client pay online, see [Take a payment](/guides/take-a-payment).",
         ],
         shot: {
           id: "invoice-sent",
@@ -127,7 +138,7 @@ export const checkout: Guide[] = [
     ],
     faq: [
       ["What payment methods can I record?", "Cash, credit card, debit card, check, online, and other. Use the note for a check number or terminal reference."],
-      ["Can the client pay from home?", "Yes, when card payments and email are set up. Email the invoice, or share their [client portal](/guides/give-client-portal-access) link."],
+      ["Can the client pay from home?", "Yes, once card payments are set up. Send them a fresh one-time [client portal](/guides/give-client-portal-access) link, and they can pay their invoices there. An emailed invoice shows what's due but has no payment link."],
       ["Why is Take Card greyed out?", "Make sure the invoice is sent or overdue and has a balance. Then check card payments in [[Settings]] → [[Plan & Billing]]. See [Set up card payments](/guides/set-up-client-card-payments)."],
     ],
     next: "place-a-balance-in-accounts-receivable",
@@ -155,7 +166,7 @@ export const checkout: Guide[] = [
       {
         id: "handoff",
         title: "Finish the owner handoff",
-        body: ["Record how the owner got their discharge instructions, then finish the visit. The balance stays in accounts receivable."],
+        body: ["Set **Owner handoff** to printed or downloaded, reviewed verbally, or owner declined. Then choose [[Complete visit]]. The balance stays in accounts receivable."],
         important: "Finishing a pay-later visit doesn't charge a card or email the client.",
       },
     ],
@@ -181,7 +192,7 @@ export const checkout: Guide[] = [
         id: "choose",
         title: "Choose a refund, credit, or write-off",
         body: [
-          "Refund a specific payment when money goes back to the client.",
+          "When money goes back to the client, an admin chooses [[Refund]] next to that payment in the invoice's payment history. A reason is required.",
           "When your clinic's policy calls for adjusting the balance instead, choose [[Credit / Write Off]] ((1)).",
         ],
         shot: {

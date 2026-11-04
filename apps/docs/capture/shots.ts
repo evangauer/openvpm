@@ -36,6 +36,10 @@ const card = (heading: string | RegExp): Target => ({
   closest: "section, [class*='rounded-xl'], [class*='rounded-lg']",
 });
 
+/** The file picker in the Add a patient document form (photo capture has its own). */
+const uploadInput = (page: Page) =>
+  page.getByRole("heading", { name: "Add a patient document" }).locator("xpath=ancestor::div[contains(@class,'rounded')][1]").locator("input[type=file]").first();
+
 async function settle(page: Page) {
   await page.waitForLoadState("networkidle");
   await page.waitForTimeout(600);
@@ -43,6 +47,10 @@ async function settle(page: Page) {
 
 /** Open a patient chart by name from the patient list. */
 async function openPatient(page: Page, name: string) {
+  // The list isn't in name order, so search rather than hoping the pet is on page one.
+  await page.getByPlaceholder(/Search patients/).fill(name);
+  await page.waitForTimeout(800);
+  await settle(page);
   const href = await page.getByRole("link", { name, exact: true }).first().getAttribute("href");
   if (!href) throw new Error(`No patient link for ${name}`);
   await page.goto(href);
@@ -92,6 +100,22 @@ async function openVisit(page: Page, action = "In Exam") {
   await page.goto(href);
   await settle(page);
 }
+
+/** Open the visit page of a pet who is already in the exam. */
+async function openExamVisit(page: Page) {
+  // A pet already in the exam: its popover links to the closeout instead.
+  await openAppointmentWhere(page, /^\s*In Exam/);
+  const href = await page.getByRole("link", { name: "Review closeout" }).getAttribute("href");
+  await page.goto(href!.split("#")[0]!);
+  await settle(page);
+}
+
+/** A link inside the visit's Clinical work card (the header has a SOAP link too). */
+const clinicalLink = (name: string | RegExp) => (page: Page) =>
+  page.locator("div.rounded-lg, section").filter({ has: page.getByRole("heading", { name: "Clinical work" }) }).last().getByRole("link", { name }).first();
+
+const column = (label: string) => (page: Page) =>
+  page.locator("div.rounded-lg.border").filter({ has: page.getByRole("heading", { name: label, exact: true }) }).first();
 
 async function expandInvoice(page: Page, status: string) {
   await page.locator("tbody tr").filter({ hasText: status }).first().locator("td").first().click();
@@ -151,7 +175,7 @@ export const shots: ShotDefinition[] = [
     },
     targets: {
       dialog: { find: (page) => page.getByRole("heading", { name: "New Appointment" }), closest: "div[class*='rounded']" },
-      patient: { find: (page) => page.getByPlaceholder("Search patients or owners...") },
+      patient: { find: (page) => page.getByPlaceholder("Search patients or owners..."), closest: "div:has(> label)" },
       type: { find: (page) => page.getByText("Appointment Type", { exact: true }), closest: "div" },
       doctor: { find: (page) => page.getByText("Doctor", { exact: true }), closest: "div" },
     },
@@ -171,7 +195,8 @@ export const shots: ShotDefinition[] = [
   {
     id: "schedule-check-in",
     path: "/schedule",
-    prepare: (page) => openAppointmentWith(page, "Check In"),
+    // Reminders can only go out for confirmed visits.
+    prepare: (page) => openAppointmentWhere(page, /^\s*Confirmed/),
     targets: {
       popover: { find: css("[role=dialog]") },
       "check-in": { find: (page) => page.getByRole("dialog").getByRole("button", { name: "Check In", exact: true }) },
@@ -191,14 +216,40 @@ export const shots: ShotDefinition[] = [
     },
   },
   {
+    id: "schedule-calendar-feed",
+    path: "/schedule",
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Add to your calendar" }).click();
+      const turnOn = page.getByRole("button", { name: "Turn on the calendar link" });
+      if (await turnOn.isVisible({ timeout: 3_000 }).catch(() => false)) await turnOn.click();
+      await page.getByRole("button", { name: "Copy link" }).waitFor();
+      // Keep the private token out of the picture.
+      await page.locator("[role=dialog] .font-mono").evaluate((el) => {
+        el.textContent = (el.textContent ?? "").replace(/calendar\/[^/.]+\.ics$/, "calendar/••••••••••••.ics");
+      });
+    },
+    targets: {
+      popover: { find: css("[role=dialog]") },
+      link: { find: css("[role=dialog] .font-mono") },
+      copy: { find: (page) => page.getByRole("dialog").getByRole("button", { name: "Copy link" }) },
+      "new-link": { find: (page) => page.getByRole("dialog").getByRole("button", { name: "Get a new link" }) },
+    },
+  },
+  {
     id: "whiteboard",
     path: "/whiteboard",
     targets: {
       "nav-whiteboard": nav("Whiteboard"),
       live: { find: text(/^Live$/) },
-      waiting: { find: text(/^Waiting$/), closest: "div[class*='rounded']" },
-      "in-progress": { find: text(/^In Progress$/), closest: "div[class*='rounded']" },
-      completed: { find: text(/^Completed$/), closest: "div[class*='rounded']" },
+      waiting: { find: column("Waiting") },
+      "in-progress": { find: column("In Progress") },
+      completed: { find: column("Completed") },
+      "waiting-head": { find: (page) => column("Waiting")(page).locator("> div").first() },
+      "in-progress-head": { find: (page) => column("In Progress")(page).locator("> div").first() },
+      "completed-head": { find: (page) => column("Completed")(page).locator("> div").first() },
+      "waiting-card": { find: (page) => column("Waiting")(page).locator("button").first() },
+      "in-progress-card": { find: (page) => column("In Progress")(page).locator("button").first() },
+      "completed-card": { find: (page) => column("Completed")(page).locator("button").first() },
     },
   },
   {
@@ -214,23 +265,24 @@ export const shots: ShotDefinition[] = [
   {
     id: "visit-work",
     path: "/schedule",
-    prepare: openVisit,
+    // Clinical work buttons only appear once the exam has started.
+    prepare: openExamVisit,
     scrollTo: "clinical-work",
     targets: {
       "clinical-work": card("Clinical work"),
-      "charge-capture": card("Charge capture"),
+      actions: { find: clinicalLink("Prescribe"), closest: "div.flex-wrap" },
+      soap: { find: clinicalLink(/^(Write SOAP note|Resume SOAP draft)$/) },
+      prescribe: { find: clinicalLink("Prescribe") },
+      vaccination: { find: clinicalLink("Vaccination") },
+      "lab-result": { find: clinicalLink("Lab result") },
+      procedure: { find: clinicalLink("Procedure") },
+      vitals: card("Visit vitals"),
     },
   },
   {
     id: "visit-exam",
     path: "/schedule",
-    prepare: async (page) => {
-      // A pet already in the exam: its popover links to the closeout instead.
-      await openAppointmentWhere(page, /^\s*In Exam/);
-      const href = await page.getByRole("link", { name: "Review closeout" }).getAttribute("href");
-      await page.goto(href!.split("#")[0]!);
-      await settle(page);
-    },
+    prepare: openExamVisit,
     scrollTo: "charge-capture",
     targets: {
       "charge-capture": card("Charge capture"),
@@ -261,7 +313,27 @@ export const shots: ShotDefinition[] = [
       owner: { find: role("button", "James Patterson") },
     },
   },
-  ...(["Medical Records", "Vitals", "Vaccinations", "Weight History", "Documents"] as const).map(
+  ...(["Vitals", "Vaccinations"] as const).map(
+    (tab): ShotDefinition => ({
+      // A pet without allergies, so the name, tabs, and form fit on one screen.
+      id: `patient-${tab.toLowerCase()}`,
+      path: "/patients",
+      prepare: async (page) => {
+        await openPatient(page, "Penny");
+        await page.getByRole("tab", { name: tab }).click();
+        await page.waitForTimeout(700);
+      },
+      targets: {
+        pet: { find: (page) => page.getByRole("heading", { name: "Penny" }), closest: "div[class*='rounded']" },
+        tab: { find: (page) => page.getByRole("tab", { name: tab }) },
+        panel: { find: css("[role=tabpanel]") },
+        ...(tab === "Vitals"
+          ? { record: { find: role("button", "Record vitals") } }
+          : { certificate: { find: role("button", "Download vaccination certificate") }, history: { find: css("[role=tabpanel] table") } }),
+      },
+    }),
+  ),
+  ...(["Medical Records", "Weight History", "Documents"] as const).map(
     (tab): ShotDefinition => ({
       id: `patient-${tab.toLowerCase().replace(/\s+/g, "-")}`,
       path: "/patients",
@@ -280,6 +352,32 @@ export const shots: ShotDefinition[] = [
     }),
   ),
   {
+    id: "patient-documents-upload",
+    path: "/patients",
+    prepare: async (page) => {
+      await openPatient(page, "Max");
+      await page.getByRole("tab", { name: "Documents" }).click();
+      await page.waitForTimeout(700);
+      await page.getByLabel("Document category").selectOption("lab-results");
+      await uploadInput(page).setInputFiles({
+        name: "outside-lab-cbc-chemistry.pdf",
+        mimeType: "application/pdf",
+        buffer: Buffer.from("%PDF-1.4\n%%EOF\n"),
+      });
+      await page.getByRole("heading", { name: "Add a patient document" }).scrollIntoViewIfNeeded();
+      await page.mouse.wheel(0, 200);
+      await page.waitForTimeout(400);
+    },
+    targets: {
+      form: { find: (page) => page.getByRole("heading", { name: "Add a patient document" }), closest: "div[class*='rounded']" },
+      category: { find: (page) => page.getByLabel("Document category"), closest: "label" },
+      file: { find: uploadInput, closest: "label" },
+      upload: { find: role("button", "Upload document") },
+      "lab-note": { find: text(/^The original report is saved in Documents/) },
+      tab: { find: (page) => page.getByRole("tab", { name: "Documents" }) },
+    },
+  },
+  {
     id: "clients",
     path: "/clients",
     targets: {
@@ -287,6 +385,42 @@ export const shots: ShotDefinition[] = [
       search: { find: (page) => page.getByPlaceholder(/Search clients/) },
       "new-client": { find: role("button", "New Client") },
       list: { find: css("main table") },
+    },
+  },
+  {
+    id: "client-new",
+    path: "/clients/new",
+    prepare: async (page) => {
+      await page.locator("#firstName").fill("Alex");
+      await page.locator("#lastName").fill("Morgan");
+      await page.locator("#email").fill("alex.morgan@example.com");
+      await page.locator("#phone").fill("(555) 010-2001");
+      await page.locator("#phone").blur();
+    },
+    targets: {
+      form: { find: (page) => page.getByRole("heading", { name: "New Client" }), closest: "div:has(> form)" },
+      names: { find: css("#firstName"), closest: "div.grid" },
+      contact: { find: css("#preferredContactMethod"), closest: "div[class*='rounded']" },
+      consent: { find: text("I confirm the client explicitly consented to SMS"), closest: "label" },
+      create: { find: role("button", "Create Client") },
+    },
+  },
+  {
+    id: "patient-new",
+    path: "/patients/new",
+    prepare: async (page) => {
+      await page.getByPlaceholder("Search clients by name or email...").fill("Patterson");
+      await page.getByRole("button", { name: /James Patterson/ }).first().click();
+      await page.locator("#name").fill("Biscuit");
+      await page.locator("#name").blur();
+      await page.waitForTimeout(300);
+    },
+    targets: {
+      form: { find: (page) => page.getByRole("heading", { name: "New Patient" }), closest: "div:has(> form)" },
+      owner: { find: text("Owner (Client) *"), closest: "div" },
+      name: { find: css("#name"), closest: "div:has(> label)" },
+      species: { find: css("#species"), closest: "div:has(> label)" },
+      create: { find: role("button", "Create Patient") },
     },
   },
   {
@@ -332,6 +466,7 @@ export const shots: ShotDefinition[] = [
       tabs: { find: role("button", "Draft"), closest: "div" },
       list: { find: css("main table") },
       "new-invoice": { find: (page) => page.locator("main").getByRole("link", { name: "New Invoice" }) },
+      "mark-sent": { find: css("main button[title='Mark as Sent']") },
     },
   },
   {
@@ -384,10 +519,23 @@ export const shots: ShotDefinition[] = [
   {
     id: "recalls",
     path: "/recalls",
+    prepare: async (page) => {
+      // Tick the one recall that's ready, so Send selected is live.
+      // "Ready" is case-sensitive, so "Already reminded" rows don't match.
+      const box = page.locator("main tbody tr").filter({ hasText: /Ready/ }).getByRole("checkbox").first();
+      await box.waitFor({ timeout: 10_000 });
+      await box.check();
+      await page.waitForTimeout(300);
+    },
     targets: {
       "nav-recalls": nav("Recalls"),
       stats: { find: text(/^Overdue patients$/), closest: "div.grid" },
       preview: card("Recipient preview"),
+      list: { find: css("main table") },
+      vaccines: { find: (page) => page.locator("main tbody tr").first().locator("td").nth(2) },
+      eligibility: { find: (page) => page.locator("main tbody td").filter({ hasText: /^(Ready|Blocked|Already reminded)/ }).first() },
+      "send-selected": { find: role("button", /^Send selected/) },
+      "ready-row": { find: (page) => page.locator("main tbody tr").filter({ hasText: /Ready/ }).first() },
     },
   },
   {
@@ -398,6 +546,10 @@ export const shots: ShotDefinition[] = [
       stats: { find: text(/^Due or overdue$/), closest: "div.grid" },
       queue: card("Patient follow-up queue"),
       add: { find: role("button", "Add reminder") },
+      filters: { find: (page) => page.locator("main").getByRole("button", { name: "Completed", exact: true }), closest: "div.flex" },
+      row: { find: (page) => page.locator("main tbody tr").first() },
+      complete: { find: role("button", "Complete") },
+      contact: { find: role("button", "Contact client") },
     },
   },
   {

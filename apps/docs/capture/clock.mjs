@@ -11,6 +11,12 @@
 import crypto from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
 
+// Repeatable randomness is only safe in a throwaway capture setup, so this
+// refuses to load unless asked for by name.
+if (process.env.DOCS_CAPTURE !== "1") {
+  throw new Error("capture/clock.mjs makes randomness predictable. Set DOCS_CAPTURE=1 to load it, and only for a screenshot capture.");
+}
+
 const RealDate = Date;
 const [hours, minutes] = (process.env.DOCS_CAPTURE_TIME ?? "10:20").split(":").map(Number);
 const pinned = new RealDate();

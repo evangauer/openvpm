@@ -51,4 +51,4 @@ If Checkout opens but payment remains unrecorded, inspect the completed event's 
 ## Related guides
 
 - [Self-hosted SMS](self-hosted-sms.md)
-- [A solo veterinarian's workflow](solo-vet-workflow.md)
+- [Run a solo practice](https://docs.openvpm.com/guides/run-a-solo-practice)

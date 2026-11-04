@@ -58,5 +58,5 @@ A complete acceptance check includes a received message, delivery status, a corr
 ## Related guides
 
 - [Self-hosted Stripe payments](self-hosted-payments.md)
-- [A solo veterinarian's workflow](solo-vet-workflow.md)
+- [Run a solo practice](https://docs.openvpm.com/guides/run-a-solo-practice)
 - [SMS concurrency and recovery drill](../sms-concurrency-drill.md)

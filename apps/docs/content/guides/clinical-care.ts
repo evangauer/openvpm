@@ -36,22 +36,26 @@ export const clinicalCare: Guide[] = [
         id: "record",
         title: "Record the work",
         body: [
-          "Use **Clinical work** ((1)) to record vitals, vaccines, prescriptions, lab results, procedures, and attachments. Each has its own place, so it stays searchable and shows up in reports.",
-          "Vets, techs, and admins can record vitals and most clinical work. Only vets and admins write and finalize SOAP notes and procedures.",
+          "Once the exam has started, **Clinical work** has a button for each kind of record ((1)): [[Write SOAP note]], [[Prescribe]], [[Vaccination]], [[Lab result]], and [[Procedure]]. Vitals go in the **Visit vitals** card below it. Each record has its own place, so it stays searchable and shows up in reports.",
+          "Vets, techs, and admins can record vitals, vaccinations, and lab results. Only vets and admins write SOAP notes, prescribe, and record procedures.",
         ],
+        important: "These buttons only appear while the pet is **In Exam** and before the clinical record is finalized.",
         shot: {
           id: "visit-work",
           focus: "clinical-work",
           pad: 12,
-          callouts: ["clinical-work"],
-          alt: "The Clinical work section of a visit, with buttons for the patient chart, photos, and signatures",
+          callouts: ["actions"],
+          alt: "The Clinical work section of a visit in the exam, with Write SOAP note, Prescribe, Vaccination, Lab result, and Procedure buttons",
         },
       },
       {
         id: "close",
         title: "Finish the clinical record",
-        body: ["Finish any draft SOAP note. Confirm the diagnosis, discharge instructions, warning signs, and follow-up. Then finalize the clinical part of the visit."],
-        important: "Finalized records can't be quietly changed. To correct one, add an amendment so the original stays on file.",
+        body: [
+          "Open the draft SOAP note and choose [[Finalize SOAP note]].",
+          "Then, in the visit's closeout, confirm the diagnosis, discharge instructions, warning signs, and follow-up, and choose [[Finalize clinical handoff]].",
+        ],
+        important: "Finalized notes can't be quietly changed. To add to one, choose [[Add addendum]] on it. The original stays on file.",
       },
     ],
     next: "record-vitals",
@@ -62,25 +66,30 @@ export const clinicalCare: Guide[] = [
     summary: "Save weight, temperature, and other measurements so trends are easy to spot.",
     category: "clinical-care",
     area: "patients",
-    audience: "Vets, techs",
+    audience: "Vets, techs, admins",
     minutes: 3,
     keywords: ["weight", "temperature", "temp", "heart rate", "pulse", "respiration", "pain score", "tpr"],
     steps: [
       {
         id: "patient",
         title: "Open the right pet and visit",
-        body: ["Open the current visit, or the pet's chart. Double-check it's the right pet before you enter anything."],
+        body: [
+          "During a visit, use the **Visit vitals** card on the visit page, so the vitals are linked to that visit. Otherwise, open the pet's chart.",
+          "Double-check it's the right pet before you enter anything.",
+        ],
       },
       {
         id: "enter",
         title: "Enter what you measured",
         body: [
-          "On the [[Vitals]] tab ((1)), enter weight, temperature, heart rate, respiration, pain score, and anything else you took. Use your clinic's usual units.",
-          "Leave a field empty if you didn't measure it.",
+          "On the chart's [[Vitals]] tab ((1)), enter temperature, heart rate, respiration, weight, body condition, pain score, and anything else you took. Then choose [[Record vitals]] ((2)).",
+          "Units are set for the whole clinic and shown in each label, like **Temp (C)** or **Weight (kg)**. Leave a field empty if you didn't measure it.",
         ],
         shot: {
           id: "patient-vitals",
-          callouts: ["tab"],
+          focus: ["pet", "tab", "record"],
+          pad: 12,
+          callouts: ["tab", "record"],
           alt: "The Vitals tab on a patient chart with fields for temperature, heart rate, respiration, weight, and more",
         },
       },
@@ -105,7 +114,10 @@ export const clinicalCare: Guide[] = [
       {
         id: "start",
         title: "Start the note",
-        body: ["Open SOAP from the visit. Use one of your clinic's templates if it fits, then fill in each section for the work you actually did."],
+        body: [
+          "Open the visit once the exam has started and choose [[Write SOAP note]] under **Clinical work**. Use one of your clinic's templates if it fits, then fill in each section for the work you actually did.",
+          "If you leave and come back, the button says [[Resume SOAP draft]].",
+        ],
       },
       {
         id: "linked",
@@ -116,8 +128,8 @@ export const clinicalCare: Guide[] = [
         id: "finalize",
         title: "Finalize it",
         body: [
-          "Fill any gaps, then finalize. Finalized notes appear on the pet's [[Medical Records]] tab ((1)).",
-          "To correct a finalized note, add an addendum. The original stays on file.",
+          "Fill any gaps, then choose [[Finalize SOAP note]]. Finalized notes appear on the pet's [[Medical Records]] tab ((1)).",
+          "To add to a finalized note, choose [[Add addendum]]. The original stays on file.",
         ],
         shot: {
           id: "patient-medical-records",
@@ -141,7 +153,10 @@ export const clinicalCare: Guide[] = [
       {
         id: "enter",
         title: "Enter the result",
-        body: ["Open [[Lab Inbox]], or the pet's labs. Pick the pending result and enter the values with the right units and reference range."],
+        body: [
+          "For a test that's waiting on values, open [[Lab Inbox]], pick the result, and choose [[Enter values and complete]]. Enter the values with the right units and reference range.",
+          "To record a new test from a visit, choose [[Lab result]] under **Clinical work** while the pet is in the exam. You can also add one from [[Records]] → the pet → [[Lab Results]].",
+        ],
       },
       {
         id: "review",
@@ -153,20 +168,27 @@ export const clinicalCare: Guide[] = [
           id: "lab-inbox",
           focus: ["filters", "result"],
           pad: 12,
-          callouts: ["mark-reviewed", "assign-follow-up"],
-          alt: "A lab result in the Lab Inbox with Mark reviewed and Assign follow-up buttons",
+          callouts: ["mark-reviewed"],
+          alt: "A lab result in the Lab Inbox with the Mark reviewed button highlighted",
         },
       },
       {
         id: "follow-up",
         title: "Assign the follow-up",
-        body: ["If the client or pet needs follow-up, choose [[Assign follow-up]] ((2)) and pick a named teammate. Record what happened when it's done."],
+        body: ["If the client or pet needs follow-up, choose [[Assign follow-up]] ((1)) and pick a named teammate. Record what happened when it's done."],
+        shot: {
+          id: "lab-inbox",
+          focus: "result",
+          pad: 12,
+          callouts: ["assign-follow-up"],
+          alt: "A lab result in the Lab Inbox with the Assign follow-up button highlighted",
+        },
       },
     ],
     faq: [
       [
         "I entered a result on the wrong pet",
-        "Mark it **entered in error** and create a linked replacement on the right pet. Don't overwrite the original.",
+        "A vet or admin opens [[Records]], finds the pet, and on the [[Lab Results]] tab chooses [[Mark entered in error]] with a reason. Then choose [[Create replacement]] and pick the right pet. The original stays in the chart history.",
       ],
     ],
     next: "create-a-prescription",
@@ -177,7 +199,7 @@ export const clinicalCare: Guide[] = [
     summary: "Write clear directions and, when it's from your stock, record what you dispensed.",
     category: "clinical-care",
     area: "patients",
-    audience: "Vets",
+    audience: "Vets, admins",
     minutes: 5,
     keywords: ["prescribe", "medication", "drug", "rx", "dispense", "refill", "dose"],
     steps: [
@@ -185,21 +207,24 @@ export const clinicalCare: Guide[] = [
         id: "medication",
         title: "Choose the medication",
         body: [
-          "Open Prescriptions from the pet's chart or the visit. Pick the product from inventory so stock is tracked, or type the details in yourself when it isn't stocked.",
+          "On the visit, while the pet is in the exam, choose [[Prescribe]] under **Clinical work**. Or open [[Records]], find the pet, and use the [[Prescriptions]] tab.",
+          "Pick the product in [[Inventory Item]] so stock is tracked, or just type the [[Medication]] when it isn't stocked.",
         ],
       },
       {
         id: "directions",
         title: "Enter complete directions",
         body: [
-          "Enter the dose, route, how often, how long, quantity, refills, and instructions for the client. Check your math against the pet's current weight.",
+          "Fill in [[Dosage]], [[Frequency]], [[Quantity]], [[Refills]], [[Start Date]], and [[Instructions]] for the client. Add an [[End Date]] if it has one.",
+          "There's no separate route field, so put the route in the dosage, like “75 mg by mouth.” Check your math against the pet's current weight.",
         ],
       },
       {
         id: "dispense",
         title: "Confirm what you dispensed",
         body: [
-          "When you dispense from stock, confirm the quantity and lot. The charge shows up for billing to review at checkout. It isn't added to the bill on its own.",
+          "With an inventory item picked, [[Quantity]] is the total you're dispensing, in the same units as stock. Choosing [[Save Prescription]] takes it out of stock. [[Refill]] dispenses another round later.",
+          "The charge shows up for billing to review at checkout. It isn't added to the bill on its own.",
         ],
         tip: "Dispenses that haven't been billed yet wait in **Unbilled medication dispenses** on the [[Billing]] screen, so nothing slips through.",
       },
@@ -212,36 +237,50 @@ export const clinicalCare: Guide[] = [
     summary: "Log each vaccine so certificates, reminders, and overdue reports are right.",
     category: "clinical-care",
     area: "patients",
-    audience: "Vets, techs",
+    audience: "Vets, techs, admins",
     minutes: 4,
     keywords: ["vaccination", "rabies", "dhpp", "booster", "shot", "certificate", "lot number", "due date"],
     steps: [
       {
         id: "open",
-        title: "Open Vaccinations",
-        body: ["Open the [[Vaccinations]] tab ((1)) on the pet's chart, or from the visit, and choose the vaccine."],
+        title: "Open the vaccine form",
+        body: [
+          "On the visit, while the pet is in the exam, choose [[Vaccination]] ((1)) under **Clinical work**. Or open [[Records]], find the pet, and use the [[Vaccinations]] tab.",
+        ],
         shot: {
-          id: "patient-vaccinations",
-          callouts: ["tab"],
-          alt: "The Vaccinations tab listing each vaccine with its date, next due date, lot, and the vet who gave it",
+          id: "visit-work",
+          focus: "clinical-work",
+          pad: 12,
+          callouts: ["vaccination"],
+          alt: "The Clinical work section of a visit with the Vaccination button highlighted",
         },
       },
       {
         id: "details",
         title: "Enter how it was given",
-        body: ["Enter the date, manufacturer and lot number when you have them, route or site, who gave it, and when the next one is due."],
+        body: [
+          "Enter the vaccine, then the product, manufacturer, lot number, product expiration, dose type (initial or booster), licensed duration, the supervising veterinarian, and the next due date. Add the tag number for rabies.",
+          "For rabies, everything except the tag number is required, so the certificate is complete.",
+        ],
       },
       {
         id: "verify",
         title: "Check the due date and certificate",
         body: [
           "Make sure the next due date matches your clinic's protocol. It drives the recall list.",
-          "If the client needs proof, choose [[Download vaccination certificate]].",
+          "Every vaccine shows on the [[Vaccinations]] tab ((1)) of the pet's chart. If the client needs proof, choose [[Download vaccination certificate]] ((2)).",
         ],
+        shot: {
+          id: "patient-vaccinations",
+          focus: ["pet", "tab", "certificate"],
+          pad: 12,
+          callouts: ["tab", "certificate"],
+          alt: "The Vaccinations tab on a patient chart with the Download vaccination certificate button",
+        },
       },
     ],
     faq: [
-      ["I recorded a vaccine by mistake", "Choose [[Mark entered in error]] on that row. The record stays in the history but stops counting."],
+      ["I recorded a vaccine by mistake", "A vet or admin chooses [[Mark entered in error]] on that vaccine and gives a reason. The record stays in the history but stops counting for reminders and certificates."],
     ],
     next: "complete-discharge-and-follow-up",
   },
@@ -272,9 +311,64 @@ export const clinicalCare: Guide[] = [
       {
         id: "handoff",
         title: "Record how the owner got them",
-        body: ["Note whether you printed or downloaded the instructions, went over them in person, or the owner declined. Then finish the visit."],
+        body: [
+          "In the visit's closeout, set **Owner handoff** to printed or downloaded, reviewed verbally, or owner declined. Then choose [[Complete visit]].",
+        ],
       },
     ],
     next: "capture-visit-charges",
+  },
+  {
+    slug: "upload-a-patient-document",
+    title: "Add an outside record or lab report",
+    summary: "Keep referral letters, scans, and outside lab PDFs on the pet's chart.",
+    category: "clinical-care",
+    area: "patients",
+    audience: "Vets, techs, front desk, admins",
+    minutes: 3,
+    keywords: ["upload", "attach", "pdf", "scan", "referral", "outside records", "external lab", "file", "document"],
+    steps: [
+      {
+        id: "open",
+        title: "Open the pet's Documents tab",
+        body: ["Go to [[Patients]], open the pet, and choose the [[Documents]] tab ((1))."],
+        shot: {
+          id: "patient-documents-upload",
+          focus: ["tab", "form"],
+          pad: 16,
+          callouts: ["tab"],
+          alt: "A patient chart open on the Documents tab with the Add a patient document form",
+        },
+      },
+      {
+        id: "upload",
+        title: "Pick the kind of file and upload it",
+        body: [
+          "Under **Add a patient document**, set [[Document category]] ((1)) to **External record** or **Lab report**. Choose the file ((2)), then [[Upload document]] ((3)).",
+          "PDF, JPG, PNG, and WebP files work, up to 4 MB each. Compress a large scan, or split a long record into smaller PDFs and upload each part.",
+        ],
+        shot: {
+          id: "patient-documents-upload",
+          focus: "form",
+          pad: 96,
+          callouts: ["category", "file", "upload"],
+          alt: "The Add a patient document form with Lab report chosen and a PDF selected",
+        },
+        tip: "Give files a useful name before you upload, like 2026-09-13-referral-part-1.pdf. The original file name shows in the list.",
+      },
+      {
+        id: "find",
+        title: "Find it again",
+        body: [
+          "The file appears in the list below the form. Use the **Lab reports** filter to see only outside lab files, and **View** or **Download** to open one.",
+        ],
+        important: "A lab report is saved as the original file. OpenVPM doesn't read the results out of it, so enter any values you need to track in [Lab results](/guides/record-lab-results).",
+      },
+    ],
+    faq: [
+      ["The upload stopped or I'm not sure it worked", "Choose [[Retry upload]] and keep the page open. OpenVPM checks and finishes the same upload, so you won't end up with two copies."],
+      ["Who can upload?", "Anyone on the team who can make changes. Viewer accounts can open and download documents but can't add them."],
+    ],
+    next: "record-lab-results",
   },
 ];

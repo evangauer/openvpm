@@ -22,18 +22,25 @@ export function TrainingChecklist({ id, sections }: { id: string; sections: { ti
 
   useEffect(() => {
     try {
-      setDone(JSON.parse(localStorage.getItem(key) ?? "[]"));
+      const saved: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
+      setDone(Array.isArray(saved) ? saved.filter((s): s is string => typeof s === "string") : []);
     } catch {
       setDone([]);
     }
   }, [key]);
 
+  // Browsers that block storage still get a working checklist; it just
+  // won't be remembered.
+  function save(next: string[]) {
+    setDone(next);
+    try {
+      if (next.length) localStorage.setItem(key, JSON.stringify(next));
+      else localStorage.removeItem(key);
+    } catch {}
+  }
+
   function toggle(slug: string) {
-    setDone((current) => {
-      const next = current.includes(slug) ? current.filter((s) => s !== slug) : [...current, slug];
-      localStorage.setItem(key, JSON.stringify(next));
-      return next;
-    });
+    save(done.includes(slug) ? done.filter((s) => s !== slug) : [...done, slug]);
   }
 
   const count = all.filter((s) => done.includes(s)).length;
@@ -61,10 +68,7 @@ export function TrainingChecklist({ id, sections }: { id: string; sections: { ti
             <button
               type="button"
               className="btn-ghost"
-              onClick={() => {
-                localStorage.removeItem(key);
-                setDone([]);
-              }}
+              onClick={() => save([])}
             >
               <RotateCcw className="icon" aria-hidden="true" /> Start over
             </button>

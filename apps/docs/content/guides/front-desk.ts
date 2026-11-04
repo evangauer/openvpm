@@ -2,6 +2,74 @@ import type { Guide } from "../types";
 
 export const frontDesk: Guide[] = [
   {
+    slug: "add-a-new-client-and-pet",
+    title: "Add a new client and pet",
+    summary: "Set up a new household and their pet so you can book the first visit.",
+    category: "front-desk",
+    area: "clients",
+    audience: "Front desk, vets, techs, admins",
+    minutes: 3,
+    before: "Search first with **⌘K**, by the owner's last name or phone, so you don't create a duplicate.",
+    keywords: ["new client", "new patient", "add pet", "add owner", "register", "new household", "sign up", "first visit", "intake"],
+    steps: [
+      {
+        id: "client",
+        title: "Add the client",
+        body: [
+          "Go to [[Clients]] and choose [[New Client]]. Enter the first and last name ((1)). They're the only required fields, but add an email and phone so the clinic can reach them.",
+          "Choose how they'd like reminders in [[Preferred contact for reminders]] ((2)).",
+        ],
+        shot: {
+          id: "client-new",
+          focus: "form",
+          pad: 12,
+          callouts: ["names", "contact"],
+          alt: "The New Client form with name, email, and phone filled in, and the reminder preference",
+        },
+      },
+      {
+        id: "consent",
+        title: "Record text consent only if they gave it",
+        body: [
+          "Tick the consent box ((1)) only after the client has read the text message disclosure, or you've read it to them. It needs a valid mobile number.",
+          "Then choose [[Create Client]] ((2)). The client's page opens.",
+        ],
+        shot: {
+          id: "client-new",
+          focus: "form",
+          pad: 12,
+          callouts: ["consent", "create"],
+          alt: "The New Client form with the SMS consent box and Create Client button",
+        },
+      },
+      {
+        id: "pet",
+        title: "Add their pet",
+        body: [
+          "On the new client's page, choose [[Add patient]] under **Patients**. The owner ((1)) is already filled in.",
+          "Enter the [[Patient Name]] ((2)) and [[Species]] ((3)). Add the breed, sex, date of birth, color, and microchip number if you have them. Then choose [[Create Patient]] ((4)).",
+        ],
+        tip: "Adding another pet for a client who's already here? Go to [[Patients]] → [[New Patient]] and search for the owner.",
+        shot: {
+          id: "patient-new",
+          focus: "form",
+          pad: 12,
+          callouts: ["owner", "name", "species", "create"],
+          alt: "The New Patient form with the owner chosen and the pet's name filled in",
+        },
+      },
+      {
+        id: "book",
+        title: "Book the visit",
+        body: ["The pet's chart opens. Now [book the appointment](/guides/book-an-appointment)."],
+      },
+    ],
+    faq: [
+      ["I added someone twice", "Open [[Patients]] and choose [[Review duplicates]] to find pets that were added twice and merge them."],
+    ],
+    next: "book-an-appointment",
+  },
+  {
     slug: "book-an-appointment",
     title: "Book an appointment",
     summary: "Put a visit on the schedule in under a minute so the whole team sees it.",
@@ -9,7 +77,7 @@ export const frontDesk: Guide[] = [
     area: "schedule",
     audience: "Front desk, admins",
     minutes: 4,
-    before: "The client and pet should already be in OpenVPM. Search for them first with **⌘K**.",
+    before: "The client and pet should already be in OpenVPM. Search for them first with **⌘K**. New to the clinic? [Add the client and pet](/guides/add-a-new-client-and-pet) first.",
     keywords: ["schedule", "booking", "new appointment", "visit", "recurring", "repeat"],
     steps: [
       {
@@ -63,9 +131,9 @@ export const frontDesk: Guide[] = [
     ],
     statusFlow: true,
     faq: [
-      ["The pet doesn't come up when I search", "Check the spelling, or search by the owner's last name. If they're new, add the client and pet first."],
-      ["Can I book without choosing a doctor?", "Yes, if your clinic books with any available provider. Assign the doctor before the visit starts."],
-      ["How do I set up a repeating visit?", "Turn on [[Repeat appointment]], then choose weekly, monthly, or yearly, and how many visits to book."],
+      ["The pet doesn't come up when I search", "Check the spelling, or search by the owner's last name. If they're new, [add the client and pet](/guides/add-a-new-client-and-pet) first."],
+      ["Can I book without choosing a doctor?", "Yes. But if the visit type needs a doctor, [[Confirm]] and [[Check In]] stay greyed out until you assign one with [[Edit appointment]]."],
+      ["How do I set up a repeating visit?", "Turn on [[Repeat appointment]]. Choose **Weekly**, **Monthly**, or **Annual**, how often in [[Every]], and how many visits in [[Occurrences]]. To stop the rest of a series later, open one of its visits and choose [[Cancel Future Series]]."],
     ],
     next: "check-in-a-patient",
   },
@@ -134,7 +202,7 @@ export const frontDesk: Guide[] = [
       {
         id: "check-in",
         title: "Choose Check In",
-        body: ["Choose [[Check In]] ((1)). The visit is now **Checked in** and shows on the [[Whiteboard]]."],
+        body: ["Choose [[Check In]] ((1)). The visit is now **Checked in** and moves to **In Progress** on the [[Whiteboard]]."],
         shot: {
           id: "schedule-check-in",
           focus: "popover",
@@ -147,7 +215,8 @@ export const frontDesk: Guide[] = [
         id: "handoff",
         title: "Hand off to the clinical team",
         body: [
-          "Add a room or a short note if the team needs it. The vet or tech moves the pet into the exam from the schedule or the whiteboard by choosing [[In Exam]].",
+          "Set the room before you check the pet in. Rooms are changed with [[Edit appointment]], which is only there while the visit is **Scheduled** or **Confirmed**.",
+          "When clinical work starts, the vet or tech chooses [[In Exam]] on the schedule, or [[Start Exam]] on the whiteboard.",
         ],
       },
     ],
@@ -169,7 +238,8 @@ export const frontDesk: Guide[] = [
         title: "Open the whiteboard",
         body: [
           "Choose [[Whiteboard]] in the sidebar. It updates on its own, so it works well on a screen in the treatment area.",
-          "Pets who are checked in wait in **Waiting** ((1)). Pets in an exam show in **In Progress** ((2)). Finished visits move to **Completed** ((3)).",
+          "**Waiting** ((1)) lists today's confirmed visits that haven't arrived yet. **In Progress** ((2)) shows pets who are checked in or in an exam. Checked-out visits move to **Completed** ((3)).",
+          "Visits that are still **Scheduled**, not confirmed, don't show on the board.",
         ],
         shot: {
           id: "whiteboard",
@@ -180,7 +250,7 @@ export const frontDesk: Guide[] = [
       {
         id: "move",
         title: "Move each visit along",
-        body: ["Choose [[Check In]] when the pet arrives and [[In Exam]] when clinical work starts. Finishing checkout moves the visit to **Completed**."],
+        body: ["Click a card to move it along. Choose [[Check In]] when a confirmed pet arrives, and [[Start Exam]] when clinical work starts. Completing the visit's checkout moves it to **Completed**."],
       },
       {
         id: "current",
@@ -196,7 +266,7 @@ export const frontDesk: Guide[] = [
     summary: "Email or text the client before the visit to cut down on no-shows.",
     category: "front-desk",
     area: "schedule",
-    audience: "Front desk, admins",
+    audience: "Front desk, vets, admins",
     minutes: 4,
     keywords: ["remind", "reminder", "text", "sms", "email", "no-show", "notification"],
     steps: [
@@ -208,7 +278,11 @@ export const frontDesk: Guide[] = [
       {
         id: "send",
         title: "Send it from the visit",
-        body: ["Click the visit on [[Schedule]] and choose [[Send Reminder]] ((1)). Check who it's going to and what it says before you send."],
+        body: [
+          "Reminders go out for **Confirmed** visits only, so [[Send Reminder]] ((1)) shows up once the visit is confirmed. Click the visit on [[Schedule]] and choose it.",
+          "It sends right away, with no preview, by the client's preferred contact method.",
+        ],
+        tip: "Technicians can't send reminders. Ask the front desk, a vet, or an admin.",
         shot: {
           id: "schedule-check-in",
           focus: "popover",
@@ -227,5 +301,59 @@ export const frontDesk: Guide[] = [
       ["Why can't I text this client?", "Texting needs to be set up for your clinic and location, and the client needs to have agreed to receive texts. Email still works if it's configured."],
     ],
     next: "capture-visit-charges",
+  },
+  {
+    slug: "see-the-schedule-in-your-calendar",
+    title: "See the schedule in your own calendar",
+    summary: "Subscribe once and the clinic's visits show up in Google, Apple, or Outlook.",
+    category: "front-desk",
+    area: "schedule",
+    audience: "Everyone (admins can replace the link)",
+    minutes: 3,
+    keywords: ["calendar", "google calendar", "apple calendar", "ical", "ics", "outlook", "subscribe", "sync", "phone", "feed"],
+    steps: [
+      {
+        id: "link",
+        title: "Get the clinic's calendar link",
+        body: [
+          "Open [[Schedule]] and choose [[Add to your calendar]]. The first time, choose [[Turn on the calendar link]].",
+          "Choose [[Copy link]] ((1)) to copy the private link ((2)).",
+        ],
+        shot: {
+          id: "schedule-calendar-feed",
+          focus: "popover",
+          pad: 16,
+          callouts: ["copy", "link"],
+          alt: "The Add to your calendar panel on the schedule with the private calendar link and a Copy link button",
+        },
+        important: "The link shows patient names and visit types. Share it with your team only, never with clients.",
+      },
+      {
+        id: "google",
+        title: "Add it to Google Calendar",
+        body: ["On a computer, open Google Calendar. Next to **Other calendars**, choose the plus sign, then **From URL**. Paste the link and choose **Add calendar**."],
+      },
+      {
+        id: "apple",
+        title: "Or Apple Calendar or Outlook",
+        body: [
+          "**Apple Calendar** on a Mac: choose **File → New Calendar Subscription**, paste the link, and choose **Subscribe**.",
+          "**Outlook**: in the calendar, choose **Add calendar → Subscribe from web**, paste the link, and give it a name.",
+        ],
+      },
+      {
+        id: "updates",
+        title: "Let it update on its own",
+        body: [
+          "Book or change a visit in OpenVPM and your calendar picks it up. Calendar apps check on their own schedule, so a change can take a while to appear.",
+          "The calendar shows the last week and the next 60 days. Cancelled visits and no-shows are left out.",
+        ],
+      },
+    ],
+    faq: [
+      ["Someone who shouldn't have the link has it", "An admin can choose [[Get a new link]] in the same panel. The old link stops working for everyone, so the team will need to subscribe again with the new one."],
+      ["Can I change visits from my calendar?", "No. The calendar is read-only. Make changes on the [[Schedule]] in OpenVPM."],
+    ],
+    next: "check-in-a-patient",
   },
 ];

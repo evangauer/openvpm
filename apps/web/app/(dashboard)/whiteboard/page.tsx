@@ -19,6 +19,7 @@ import { PATIENT_SPECIES_EMOJI } from "@/lib/patients/species";
 import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { providerDisplayName } from "@/lib/provider-display-name";
 
 // --- Types ---
 
@@ -271,10 +272,10 @@ function WhiteboardCard({
 
       {/* Details row */}
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        {appointment.doctorName && (
+        {appointment.doctorName?.trim() && (
           <span className="inline-flex items-center gap-1">
             <User className="h-3 w-3" />
-            Dr. {appointment.doctorName}
+            {providerDisplayName(appointment.doctorName)}
           </span>
         )}
         {(appointment.locationName || appointment.roomName) && (
@@ -485,10 +486,10 @@ function AppointmentDetailModal({
                 ({getTimeAgo(appointment.startTime)})
               </span>
             </div>
-            {appointment.doctorName && (
+            {appointment.doctorName?.trim() && (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <User className="h-3.5 w-3.5" />
-                <span>Dr. {appointment.doctorName}</span>
+                <span>{providerDisplayName(appointment.doctorName)}</span>
               </div>
             )}
             {appointment.typeName && (

@@ -17,6 +17,12 @@ export function SiteHeader({ appUrl }: { appUrl: string }) {
   const pathname = usePathname();
   const [menu, setMenu] = useState(false);
   useEffect(() => setMenu(false), [pathname]);
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setMenu(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
   const current = (href: string) => (pathname === href || pathname.startsWith(href + "/") ? "page" : undefined);
 
   return (
@@ -48,7 +54,7 @@ export function SiteHeader({ appUrl }: { appUrl: string }) {
         </button>
       </div>
       {menu && (
-        <nav id="mobile-menu" className="border-t border-border bg-white px-5 py-3 lg:hidden" aria-label="Main">
+        <nav id="mobile-menu" className="border-t border-border bg-white px-5 py-3 lg:hidden" aria-label="Mobile">
           {links.map((l) => (
             <Link key={l.href} href={l.href} aria-current={current(l.href)} className="block rounded-lg px-2 py-2.5 font-medium text-[color:var(--ink)]">
               {l.label}
