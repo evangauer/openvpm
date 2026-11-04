@@ -68,6 +68,30 @@ describe("known-device cookie", () => {
     expect(knownDeviceForAccount(cookie.value, "a@example.com", now)).toBeNull();
   });
 
+  it.each([
+    ["a published placeholder", "docker-dev-secret-change-in-production"],
+    ["a short secret", "short-but-private"],
+  ])("is off in production with %s, so a forged cookie can't bypass the lock", (_label, secret) => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", secret);
+    expect(issueKnownDeviceCookie(null, "a@example.com", now)).toBeNull();
+
+    // A cookie an attacker signs with the published value is never honored.
+    vi.stubEnv("NODE_ENV", "development");
+    const forged = issueKnownDeviceCookie(null, "a@example.com", now)!;
+    vi.stubEnv("NODE_ENV", "production");
+    expect(knownDeviceForAccount(forged.value, "a@example.com", now)).toBeNull();
+    expect(knownDeviceCookieFromHeader(`openvpm-device=${forged.value}`)).toBeNull();
+  });
+
+  it("works on a short secret only while OPENVPM_ALLOW_SHORT_AUTH_SECRET is set", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "short-but-private");
+    vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
+    const cookie = issueKnownDeviceCookie(null, "a@example.com", now)!;
+    expect(knownDeviceForAccount(cookie.value, "a@example.com", now)).not.toBeNull();
+  });
+
   it("reads only validly signed device cookies from a Cookie header", () => {
     const cookie = issueKnownDeviceCookie(null, "a@example.com", now)!;
     expect(knownDeviceCookieFromHeader(`a=1; openvpm-device=${cookie.value}; b=2`)).toBe(

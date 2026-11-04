@@ -14,6 +14,7 @@ const SESSION_OR_SECRET_MODULES = [
   "lib/auth.ts",
   "lib/auth-secret.ts",
   "lib/demo-access.ts",
+  "lib/known-device.ts",
   "lib/billing/invoice-payment-tokens.ts",
   "lib/portal/tokens.ts",
   "server/trpc.ts",
