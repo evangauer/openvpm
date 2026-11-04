@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
+import { downloadCsv, rowsToCsv } from "@/lib/csv/serialize";
 
 function ReportChartChunkLoading() {
   return (
@@ -142,25 +143,8 @@ function reportFilename(
   return `${tab}-report-${suffix}.${extension}`;
 }
 
-function csvCell(value: unknown): string {
-  const text = value == null ? "" : String(value);
-  if (/[",\n\r]/.test(text)) {
-    return `"${text.replace(/"/g, '""')}"`;
-  }
-  return text;
-}
-
-function downloadCsv(filename: string, rows: unknown[][]) {
-  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+function downloadReportCsv(filename: string, rows: unknown[][]) {
+  downloadCsv(filename, rowsToCsv(rows));
 }
 
 async function downloadReportPdf({
@@ -375,7 +359,7 @@ function RevenueTab({ dateRange }: { dateRange: DateRange }) {
     ...data.daily.map((row) => ["daily_revenue", row.date, row.amount]),
   ];
   const exportRevenue = () =>
-    downloadCsv(reportFilename("revenue", data.range), [
+    downloadReportCsv(reportFilename("revenue", data.range), [
       ["metric", "period", "amount"],
       ...revenueRows,
     ]);
@@ -468,7 +452,7 @@ function AppointmentsTab({ dateRange }: { dateRange: DateRange }) {
     ]),
   ];
   const exportAppointments = () =>
-    downloadCsv(reportFilename("appointments", data.range), [
+    downloadReportCsv(reportFilename("appointments", data.range), [
       ["section", "doctor", "total", "completed", "no_shows", "cancelled", "fill_rate"],
       ...appointmentRows,
     ]);
@@ -597,7 +581,7 @@ function ServicesTab({ dateRange }: { dateRange: DateRange }) {
     svc.revenue,
   ]);
   const exportServices = () =>
-    downloadCsv(reportFilename("services", data.range), [
+    downloadReportCsv(reportFilename("services", data.range), [
       ["service", "count", "revenue"],
       ...serviceRows,
     ]);
@@ -716,7 +700,7 @@ function InventoryTab() {
     ]),
   ];
   const exportInventory = () =>
-    downloadCsv(reportFilename("inventory"), [
+    downloadReportCsv(reportFilename("inventory"), [
       ["section", "product", "sku", "stock", "reorder_point", "expiration_date"],
       ...inventoryRows,
     ]);
