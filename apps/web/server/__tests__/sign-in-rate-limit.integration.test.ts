@@ -21,14 +21,17 @@ vi.mock("next/headers", () => ({
 
 // The cost-12 dummy hash checked for unknown accounts takes ~250ms per call in
 // pure JS. These scenarios exercise the rate-limit store, not bcrypt, so skip
-// that one comparison; real hashes still go through bcrypt.
+// that one comparison (lib/auth.ts DUMMY_PASSWORD_HASH); real hashes, such as
+// one set by a password reset, still go through bcrypt.
 vi.mock("bcryptjs", async (importOriginal) => {
   const imported = await importOriginal<
     typeof import("bcryptjs") & { default?: typeof import("bcryptjs") }
   >();
   const actual = imported.default ?? imported;
+  const dummyHash =
+    "$2a$12$952CXRCtzm0M4qmcFoZkteQvA5Tdh.CIhvCabrgb5qUbk.VcE35va";
   const compare = async (password: string, passwordHash: string) =>
-    passwordHash.startsWith("$2a$12$")
+    passwordHash === dummyHash
       ? false
       : actual.compare(password, passwordHash);
   return {
@@ -657,6 +660,45 @@ integration("Sign-in rate limiting PostgreSQL contract", () => {
       ).resolves.toBe("ok");
     }, 120_000);
   }
+
+  it("makes the browser that completes a password reset a known device", async () => {
+    process.env.VERCEL = "1";
+    await clearBuckets();
+    mocks.sendPasswordResetEmail.mockClear();
+    mocks.setCookie.mockClear();
+    await addUsers(["reset-device@example.invalid"]);
+    const from = (ip: string) => ({ "x-vercel-forwarded-for": ip });
+    const lockFromElsewhere = async () => {
+      for (let i = 0; i < 20; i += 1) {
+        await signIn("reset-device@example.invalid", "wrong", from(`192.0.2.${i + 1}`));
+      }
+    };
+    await lockFromElsewhere();
+
+    // The owner resets from a browser that has never signed in.
+    await (await resetCaller({ ip: "203.0.113.40", verified: true }))
+      .requestPasswordReset({ email: "reset-device@example.invalid" });
+    const [[{ resetUrl }]] = mocks.sendPasswordResetEmail.mock.calls as unknown as [
+      [{ resetUrl: string }],
+    ];
+    const token = new URL(resetUrl).searchParams.get("token")!;
+    await (await resetCaller({ ip: "203.0.113.40", verified: true })).resetPassword({
+      token,
+      password: PASSWORD,
+    });
+    const [name, value] = mocks.setCookie.mock.calls.at(-1) as [string, string];
+    const owner: Browser = { cookie: `${name}=${value}` };
+
+    // Guessing resumes and locks the account again; the owner's browser is
+    // let through, another new browser isn't.
+    await lockFromElsewhere();
+    await expect(
+      signIn("reset-device@example.invalid", PASSWORD, from("203.0.113.40"), newBrowser()),
+    ).resolves.toBe(LOCKED_1M);
+    await expect(
+      signIn("reset-device@example.invalid", PASSWORD, from("203.0.113.40"), owner),
+    ).resolves.toBe("ok");
+  }, 60_000);
 
   it("prunes expired limit records without a scheduler", async () => {
     useSelfHost();

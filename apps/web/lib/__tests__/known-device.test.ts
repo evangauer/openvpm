@@ -68,10 +68,41 @@ describe("known-device cookie", () => {
     expect(knownDeviceForAccount(cookie.value, "a@example.com", now)).toBeNull();
   });
 
-  it("reads only its own cookie from a Cookie header", () => {
-    expect(knownDeviceCookieFromHeader("a=1; openvpm-device=abc.def; b=2")).toBe("abc.def");
-    expect(knownDeviceCookieFromHeader("__Host-openvpm-device=abc.def")).toBeNull();
+  it("reads only validly signed device cookies from a Cookie header", () => {
+    const cookie = issueKnownDeviceCookie(null, "a@example.com", now)!;
+    expect(knownDeviceCookieFromHeader(`a=1; openvpm-device=${cookie.value}; b=2`)).toBe(
+      cookie.value
+    );
+    expect(knownDeviceCookieFromHeader(`__Host-openvpm-device=${cookie.value}`)).toBe(
+      cookie.value
+    );
+    expect(knownDeviceCookieFromHeader(`other=${cookie.value}`)).toBeNull();
+    expect(knownDeviceCookieFromHeader("openvpm-device=abc.def")).toBeNull();
     expect(knownDeviceCookieFromHeader(null)).toBeNull();
     expect(knownDeviceCookieFromHeader(`openvpm-device=${"x".repeat(2000)}`)).toBeNull();
+  });
+
+  it("isn't shadowed by a junk or oversized duplicate ahead of the real cookie", () => {
+    const cookie = issueKnownDeviceCookie(null, "a@example.com", now)!;
+    const forged = `${cookie.value.split(".")[0]}.${"A".repeat(43)}`;
+    const header = [
+      "openvpm-device=junk",
+      `openvpm-device=${"x".repeat(2000)}`,
+      `__Host-openvpm-device=${forged}`,
+      `openvpm-device=${cookie.value}`,
+    ].join("; ");
+    expect(knownDeviceCookieFromHeader(header)).toBe(cookie.value);
+    expect(
+      knownDeviceForAccount(knownDeviceCookieFromHeader(header), "a@example.com", now)
+    ).not.toBeNull();
+    // Merging on the next sign-in keeps the real device id and entries.
+    const merged = issueKnownDeviceCookie(
+      knownDeviceCookieFromHeader(header),
+      "b@example.com",
+      now
+    )!;
+    expect(knownDeviceForAccount(merged.value, "a@example.com", now)?.deviceId).toBe(
+      knownDeviceForAccount(cookie.value, "a@example.com", now)?.deviceId
+    );
   });
 });

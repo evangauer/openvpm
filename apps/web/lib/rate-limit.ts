@@ -284,19 +284,39 @@ export async function clearRateLimit(key: string): Promise<void> {
   );
 }
 
+const CLEANUP_BATCH_SIZE = 5_000;
+
+/**
+ * Deletes expired buckets in bounded batches, so a large backlog never holds
+ * one long transaction, and counts rows without returning their keys.
+ */
 export async function cleanupExpiredRateLimitBuckets(options: {
   now?: Date;
+  batchSize?: number;
 } = {}): Promise<{ deleted: number; cutoff: Date }> {
   const cutoff = options.now ?? new Date();
-  const deleted = await withSystem(db, (tx) =>
-    tx
-      .delete(rateLimitBuckets)
-      .where(lt(rateLimitBuckets.resetAt, cutoff))
-      .returning({ key: rateLimitBuckets.key })
-  );
+  const batchSize = options.batchSize ?? CLEANUP_BATCH_SIZE;
+  let deleted = 0;
+  for (;;) {
+    const result = await withSystem(db, (tx) =>
+      tx.delete(rateLimitBuckets).where(
+        inArray(
+          rateLimitBuckets.key,
+          tx
+            .select({ key: rateLimitBuckets.key })
+            .from(rateLimitBuckets)
+            .where(lt(rateLimitBuckets.resetAt, cutoff))
+            .limit(batchSize)
+        )
+      )
+    );
+    const count = result.count;
+    deleted += count;
+    if (count < batchSize) break;
+  }
 
   return {
-    deleted: deleted.length,
+    deleted,
     cutoff,
   };
 }

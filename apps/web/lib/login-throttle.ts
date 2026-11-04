@@ -300,10 +300,12 @@ let lastCleanupAt = 0;
 /**
  * Deletes expired rate-limit rows at most once an hour per server process,
  * so the table stays bounded on deployments that don't run the
- * `/api/cron/rate-limit-cleanup` job (self-hosts have no scheduler). Runs in
- * the background; never delays or fails the sign-in.
+ * `/api/cron/rate-limit-cleanup` job (self-hosts have no scheduler). Skipped
+ * on Vercel, where that cron runs. Runs in the background; never delays or
+ * fails the sign-in.
  */
 export function cleanupRateLimitsOccasionally(now: Date = new Date()): void {
+  if (process.env.VERCEL === "1") return;
   if (now.getTime() - lastCleanupAt < CLEANUP_INTERVAL_MS) return;
   lastCleanupAt = now.getTime();
   void cleanupExpiredRateLimitBuckets({ now }).catch((err) => {

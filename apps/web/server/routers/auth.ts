@@ -10,7 +10,7 @@ import {
   clearLoginAccountLock,
   loginNetworkBucket,
 } from "@/lib/login-throttle";
-import { knownDeviceForAccount } from "@/lib/known-device";
+import { knownDeviceForAccount, rememberKnownDevice } from "@/lib/known-device";
 import { seedPractice, seedDemoData } from "@/lib/onboarding/defaults";
 import {
   billingEnforced,
@@ -815,6 +815,9 @@ export const authRouter = createRouter({
       await clearLoginAccountLock(updated.email).catch((err) => {
         console.error("[resetPassword] login lock reset failed:", err);
       });
+      // Mailbox control is as strong as a correct password, so this browser
+      // becomes a known device for the account, as after a sign-in.
+      await rememberKnownDevice(ctx.knownDeviceCookie, updated.email);
       return { ok: true };
     }),
 
@@ -853,6 +856,7 @@ export const authRouter = createRouter({
       await clearLoginAccountLock(updated.email).catch((err) => {
         console.error("[acceptInvite] login lock reset failed:", err);
       });
+      await rememberKnownDevice(ctx.knownDeviceCookie, updated.email);
       return { ok: true };
     }),
 

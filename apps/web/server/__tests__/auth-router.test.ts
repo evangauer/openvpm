@@ -42,6 +42,11 @@ const mocks = vi.hoisted(() => ({
   billingEnforced: vi.fn(() => false),
   noCardTrialEnabled: vi.fn(() => false),
   recordAuditLog: vi.fn(async () => undefined),
+  setCookie: vi.fn(),
+}));
+
+vi.mock("next/headers", () => ({
+  cookies: async () => ({ set: mocks.setCookie }),
 }));
 
 vi.mock("@/lib/rate-limit", () => ({
@@ -1273,6 +1278,61 @@ describe("auth router token validation", () => {
     for (const call of updateWhere.mock.calls) {
       expect(sqlIncludesValue(call[0], users.deletedAt)).toBe(true);
     }
+  });
+
+  it("makes the browser a known device after a reset or accepted invite", async () => {
+    vi.stubEnv("NEXTAUTH_SECRET", "test-secret-at-least-32-characters-long");
+    const { issueKnownDeviceCookie, knownDeviceForAccount } = await import(
+      "@/lib/known-device"
+    );
+    const existing = issueKnownDeviceCookie(null, "front-desk@example.com")!;
+    const { db } = createAuthUpdateDb({
+      returningRows: [
+        [{ id: "user-1", email: "Owner@Example.com" }],
+        [{ id: "user-2", email: "invitee@example.com" }],
+      ],
+    });
+    mocks.consumeAuthToken.mockResolvedValue({
+      userId: "user-1",
+      email: "owner@example.com",
+    });
+    const caller = callerWithDb(db, { knownDeviceCookie: existing.value });
+
+    await caller.resetPassword({ token: validToken, password: "password123" });
+    await caller.acceptInvite({ token: validToken, password: "password123" });
+
+    expect(mocks.setCookie).toHaveBeenCalledTimes(2);
+    const [reset, invite] = mocks.setCookie.mock.calls as [
+      string,
+      string,
+      Record<string, unknown>,
+    ][];
+    expect(reset![0]).toBe(existing.name);
+    expect(reset![2]).toEqual(existing.options);
+    expect(knownDeviceForAccount(reset![1], "owner@example.com")).not.toBeNull();
+    expect(knownDeviceForAccount(invite![1], "invitee@example.com")).not.toBeNull();
+    // Merged into the browser's existing device, keeping its other accounts.
+    expect(
+      knownDeviceForAccount(reset![1], "front-desk@example.com")?.deviceId,
+    ).toBe(knownDeviceForAccount(existing.value, "front-desk@example.com")?.deviceId);
+  });
+
+  it("doesn't issue a known-device cookie when the reset or invite fails", async () => {
+    const { db } = createAuthUpdateDb({ returningRows: [[], []] });
+    mocks.consumeAuthToken.mockResolvedValueOnce(null);
+    mocks.consumeAuthToken.mockResolvedValue({
+      userId: "user-1",
+      email: "owner@example.com",
+    });
+    const caller = callerWithDb(db);
+
+    await expect(
+      caller.resetPassword({ token: validToken, password: "password123" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      caller.acceptInvite({ token: validToken, password: "password123" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(mocks.setCookie).not.toHaveBeenCalled();
   });
 
   it("rejects issued auth tokens when the target user is deleted", async () => {

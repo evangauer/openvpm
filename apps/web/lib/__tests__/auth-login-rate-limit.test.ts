@@ -146,7 +146,7 @@ const { loginErrorMessage } = await import("../login-error-message");
 const { LOGIN_IP_FAILURE_LIMIT, LOGIN_IP_REQUEST_LIMIT } = await import(
   "../login-throttle"
 );
-const { issueKnownDeviceCookie } = await import("../known-device");
+const { issueKnownDeviceCookie, knownDeviceForAccount } = await import("../known-device");
 
 type CredentialsProviderWithAuthorize = {
   options: {
@@ -663,6 +663,41 @@ describe("known devices", () => {
         cookie: `${valid.name}=${valid.value}`,
       })
     ).resolves.toBe("ok");
+  });
+
+  it("prunes expired limits in-process on self-hosts but leaves it to the cron on Vercel", async () => {
+    const { cleanupExpiredRateLimitBuckets } = await import("../rate-limit");
+    advanceMinutes(24 * 60);
+    await signIn("admin@example.com", "correct-password", vercelHeaders("203.0.113.10"));
+    expect(cleanupExpiredRateLimitBuckets).not.toHaveBeenCalled();
+    vi.stubEnv("VERCEL", "");
+    await signIn("admin@example.com", "correct-password", office);
+    expect(cleanupExpiredRateLimitBuckets).toHaveBeenCalledTimes(1);
+  });
+
+  it("isn't shadowed by a junk duplicate cookie sent ahead of the real one", async () => {
+    await lockFromElsewhere();
+    const valid = issueKnownDeviceCookie(null, "admin@example.com")!;
+    await expect(
+      signIn("admin@example.com", "correct-password", office, {
+        cookie: `openvpm-device=garbage; ${valid.name}=${"x".repeat(2000)}; ${valid.name}=${valid.value}`,
+      })
+    ).resolves.toBe("ok");
+
+    // A different account signing in on that browser merges into the real
+    // cookie, keeping its device id and the first account's entry.
+    mocks.selectLimit.mockResolvedValue([
+      { ...mocks.activeUser, id: "user-2", email: "tech@example.com" },
+    ]);
+    const browser = {
+      cookie: `openvpm-device=garbage; ${valid.name}=${valid.value}`,
+    };
+    await signIn("tech@example.com", "correct-password", office, browser);
+    const merged = browser.cookie.split("=").slice(1).join("=");
+    expect(knownDeviceForAccount(merged, "admin@example.com")?.deviceId).toBe(
+      knownDeviceForAccount(valid.value, "admin@example.com")?.deviceId
+    );
+    expect(knownDeviceForAccount(merged, "tech@example.com")).not.toBeNull();
   });
 
   it("keeps several accounts on one shared browser", async () => {

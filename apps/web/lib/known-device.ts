@@ -81,19 +81,27 @@ function mac(key: Buffer, body: string): Buffer {
   return createHmac("sha256", key).update(`cookie:${body}`).digest();
 }
 
-/** Raw cookie value from a `Cookie` header, or null. */
+const COOKIE_NAMES = new Set(["__Host-openvpm-device", "openvpm-device"]);
+
+/**
+ * The first validly signed known-device cookie value in a `Cookie` header, or
+ * null. A browser can send several values (both cookie names, or a stale
+ * copy set on another path or by a sibling subdomain), so every value is
+ * checked in order: a junk or oversized copy ahead of the real one can't
+ * shadow it.
+ */
 export function knownDeviceCookieFromHeader(
   cookieHeader: string | null | undefined,
-  env: Env = process.env,
 ): string | null {
   if (!cookieHeader) return null;
-  const expectedName = knownDeviceCookieName(env);
+  const key = signingKey();
+  if (!key) return null;
   for (const part of cookieHeader.split(";")) {
     const separator = part.indexOf("=");
     if (separator < 0) continue;
-    if (part.slice(0, separator).trim() !== expectedName) continue;
+    if (!COOKIE_NAMES.has(part.slice(0, separator).trim())) continue;
     const value = part.slice(separator + 1).trim();
-    return value && value.length <= MAX_COOKIE_LENGTH ? value : null;
+    if (verify(key, value)) return value;
   }
   return null;
 }
@@ -198,8 +206,9 @@ export function issueKnownDeviceCookie(
 
 /**
  * Sets the known-device cookie on the current route handler's response
- * (NextAuth's credentials callback). Next.js merges cookies set through
- * `cookies()` into the response the handler returns.
+ * (NextAuth's credentials callback, or a password reset or invite acceptance
+ * through `/api/trpc`). Next.js merges cookies set through `cookies()` into
+ * the response the handler returns.
  */
 export async function rememberKnownDevice(
   existing: string | null | undefined,
