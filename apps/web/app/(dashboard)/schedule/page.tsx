@@ -704,9 +704,10 @@ function PhoneAgenda({
                 ]
                   .filter(Boolean)
                   .join(" ");
-                const careTeam = appointment.doctorName
-                  ? providerDisplayName(appointment.doctorName)
-                  : "Team";
+                const careTeam = providerDisplayName(
+                  appointment.doctorName,
+                  "Team",
+                );
                 const place = [
                   appointment.locationName,
                   appointment.roomName,

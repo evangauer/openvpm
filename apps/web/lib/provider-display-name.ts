@@ -1,4 +1,4 @@
-const DOCTOR_PREFIX_PATTERN = /^(dr\.?|doctor)\s/i;
+const DOCTOR_PREFIX_PATTERN = /^(dr\.|dr\s|doctor\s)/i;
 
 /**
  * Formats a provider name for display with a single "Dr." prefix.

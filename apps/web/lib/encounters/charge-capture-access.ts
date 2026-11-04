@@ -33,8 +33,9 @@ export function getChargeCaptureLock(input: {
     };
   }
   if (input.appointmentStatus !== "in_exam") {
-    const statusLabel =
-      input.appointmentStatusLabel ?? input.appointmentStatus.replace(/_/g, " ");
+    const statusLabel = (
+      input.appointmentStatusLabel ?? input.appointmentStatus.replace(/_/g, " ")
+    ).toLowerCase();
     return {
       reason: "not_in_exam",
       message: PRE_EXAM_STATUSES.has(input.appointmentStatus)

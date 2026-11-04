@@ -23,6 +23,10 @@ describe("providerDisplayName", () => {
     expect(providerDisplayName("Doctorow Lee")).toBe("Dr. Doctorow Lee");
   });
 
+  it("recognizes a title with no space after the period", () => {
+    expect(providerDisplayName("Dr.Sarah Chen")).toBe("Dr.Sarah Chen");
+  });
+
   it("returns the fallback for missing names", () => {
     expect(providerDisplayName(null)).toBe("Unassigned provider");
     expect(providerDisplayName(undefined)).toBe("Unassigned provider");

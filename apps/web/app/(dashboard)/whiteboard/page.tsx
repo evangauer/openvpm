@@ -272,7 +272,7 @@ function WhiteboardCard({
 
       {/* Details row */}
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        {appointment.doctorName && (
+        {appointment.doctorName?.trim() && (
           <span className="inline-flex items-center gap-1">
             <User className="h-3 w-3" />
             {providerDisplayName(appointment.doctorName)}
@@ -486,7 +486,7 @@ function AppointmentDetailModal({
                 ({getTimeAgo(appointment.startTime)})
               </span>
             </div>
-            {appointment.doctorName && (
+            {appointment.doctorName?.trim() && (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <User className="h-3.5 w-3.5" />
                 <span>{providerDisplayName(appointment.doctorName)}</span>

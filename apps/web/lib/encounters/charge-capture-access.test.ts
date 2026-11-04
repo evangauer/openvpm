@@ -34,7 +34,7 @@ describe("getChargeCaptureLock", () => {
     expect(lock).toEqual({
       reason: "not_in_exam",
       message:
-        "Charges open once the visit is in exam. This visit is currently Checked in.",
+        "Charges open once the visit is in exam. This visit is currently checked in.",
     });
     expect(lock?.message).not.toMatch(/role/);
   });
@@ -47,7 +47,7 @@ describe("getChargeCaptureLock", () => {
     });
     expect(lock?.reason).toBe("not_in_exam");
     expect(lock?.message).toBe(
-      "Charges can only be added while the visit is in exam. This visit is currently Checked out.",
+      "Charges can only be added while the visit is in exam. This visit is currently checked out.",
     );
   });
 
@@ -70,8 +70,16 @@ describe("getChargeCaptureLock", () => {
 
   it("matches the original editability rule", () => {
     for (const roleCanManageBilling of [true, false]) {
-      for (const appointmentStatus of ["checked_in", "in_exam", "checked_out"]) {
-        for (const closeoutStatus of [null, "draft", "completed"]) {
+      for (const appointmentStatus of [
+        "scheduled",
+        "confirmed",
+        "checked_in",
+        "in_exam",
+        "checked_out",
+        "cancelled",
+        "no_show",
+      ]) {
+        for (const closeoutStatus of [undefined, null, "draft", "completed"]) {
           const expected =
             roleCanManageBilling &&
             appointmentStatus === "in_exam" &&

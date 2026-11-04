@@ -132,7 +132,7 @@ export function buildPracticeCalendarIcs(input: CalendarFeedInput): string {
     if (appt.updatedAt) {
       lines.push(`LAST-MODIFIED:${formatIcsUtc(appt.updatedAt)}`);
     }
-    if (appt.doctorName) {
+    if (appt.doctorName?.trim()) {
       lines.push(`DESCRIPTION:${escapeIcsText(`With ${providerDisplayName(appt.doctorName)}`)}`);
     }
     lines.push("END:VEVENT");
