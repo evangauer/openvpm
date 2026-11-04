@@ -262,6 +262,15 @@ jobs:
           SIGN_IN_RATE_LIMIT_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/sign-in-rate-limit.integration.test.ts
 
+      # Staff sessions are signed cookies. Prove as openpims_app that a role
+      # change takes effect on the next request, and that password resets,
+      # role changes, and deactivation revoke every outstanding session while
+      # sessions issued before versioning keep working until a bump.
+      - name: Execute staff session revocation contract
+        env:
+          SESSION_REVOCATION_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/session-revocation.integration.test.ts
+
       # Template catalog selection is a clinic-facing data boundary. Exercise
       # the real router as the least-privilege app role and prove literal,
       # bounded, deterministic, active-only, tenant-isolated search behavior.

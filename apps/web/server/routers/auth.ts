@@ -22,6 +22,7 @@ import {
 } from "@/lib/billing/plans";
 import { createAuthToken, consumeAuthToken } from "@/lib/auth-tokens";
 import { PASSWORD_HASH_COST } from "@/lib/auth-hashing";
+import { bumpSessionVersion } from "@/lib/session-version";
 import { authPasswordInput } from "@/lib/auth-password";
 import {
   sendPasswordResetEmail,
@@ -801,7 +802,9 @@ export const authRouter = createRouter({
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
       const [updated] = await ctx.db
         .update(users)
-        .set({ passwordHash })
+        // A reset signs the account out everywhere, including any session a
+        // person who knew the old password may still hold.
+        .set({ passwordHash, sessionVersion: bumpSessionVersion() })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
         .returning({ id: users.id, email: users.email });
       if (!updated) {
@@ -842,7 +845,11 @@ export const authRouter = createRouter({
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
       const [updated] = await ctx.db
         .update(users)
-        .set({ passwordHash, emailVerifiedAt: new Date() })
+        .set({
+          passwordHash,
+          emailVerifiedAt: new Date(),
+          sessionVersion: bumpSessionVersion(),
+        })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
         .returning({ id: users.id, email: users.email });
       if (!updated) {

@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
   const activeAccount = (overrides: Record<string, unknown> = {}) => ({
     userId,
     role: "admin",
+    sessionVersion: 1,
     tier: "free",
     billingStatus: "trialing",
     trialEndsAt: new Date("2026-08-20T00:00:00Z"),
@@ -242,6 +243,12 @@ describe("managed dashboard upload route", () => {
 
     mocks.selectResults.push([mocks.activeAccount({ role: "viewer" })]);
     expect((await POST(uploadRequest())).status).toBe(403);
+    expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
+  });
+
+  it("rejects sessions revoked by a version bump", async () => {
+    mocks.selectResults.push([mocks.activeAccount({ sessionVersion: 2 })]);
+    expect((await POST(uploadRequest())).status).toBe(401);
     expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
   });
 

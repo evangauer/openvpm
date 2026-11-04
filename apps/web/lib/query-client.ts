@@ -1,4 +1,4 @@
-import { QueryClient } from "@tanstack/react-query";
+import { MutationCache, QueryCache, QueryClient } from "@tanstack/react-query";
 
 export const QUERY_STALE_TIME_MS = 30 * 1000;
 export const QUERY_GC_TIME_MS = 5 * 60 * 1000;
@@ -54,8 +54,47 @@ export function shouldRetryQuery(failureCount: number, error: unknown) {
   return true;
 }
 
-export function createAppQueryClient() {
+function trpcErrorCode(error: unknown): string | undefined {
+  const err = asRecord(error);
+  return (
+    stringField(asRecord(err?.data), "code") ??
+    stringField(asRecord(asRecord(err?.shape)?.data), "code")
+  );
+}
+
+/**
+ * True when a staff procedure rejected the browser's session: the account was
+ * deactivated, or its sessions were revoked by a password reset or role
+ * change. Client-portal procedures have their own session and are excluded.
+ */
+export function isRevokedStaffSessionError(
+  error: unknown,
+  key: readonly unknown[] | undefined,
+): boolean {
+  if (trpcErrorCode(error) !== "UNAUTHORIZED") return false;
+  const path = Array.isArray(key?.[0]) ? (key[0] as unknown[]) : [];
+  return path.length > 0 && path[0] !== "portal";
+}
+
+export function createAppQueryClient(
+  options: { onSessionRevoked?: () => void } = {},
+) {
+  const { onSessionRevoked } = options;
   return new QueryClient({
+    queryCache: new QueryCache({
+      onError: (error, query) => {
+        if (isRevokedStaffSessionError(error, query.queryKey)) {
+          onSessionRevoked?.();
+        }
+      },
+    }),
+    mutationCache: new MutationCache({
+      onError: (error, _variables, _context, mutation) => {
+        if (isRevokedStaffSessionError(error, mutation.options.mutationKey)) {
+          onSessionRevoked?.();
+        }
+      },
+    }),
     defaultOptions: {
       queries: {
         staleTime: QUERY_STALE_TIME_MS,

@@ -51,6 +51,11 @@ import {
 } from "@/lib/onboarding/demo-data-lifecycle";
 import { createAuthToken } from "@/lib/auth-tokens";
 import { PASSWORD_HASH_COST } from "@/lib/auth-hashing";
+import {
+  bumpSessionVersion,
+  bumpSessionVersionOnRestore,
+  bumpSessionVersionOnRoleChange,
+} from "@/lib/session-version";
 import { authPasswordInput } from "@/lib/auth-password";
 import {
   ACCOUNT_DELETION_REASON_MAX_LENGTH,
@@ -607,6 +612,21 @@ interface PracticeSettings {
   } | null;
   [k: string]: unknown;
 }
+
+// Columns safe to send to an admin's browser about a staff member. Never the
+// password hash or session version.
+const STAFF_USER_COLUMNS = {
+  id: users.id,
+  name: users.name,
+  email: users.email,
+  role: users.role,
+  isVeterinarian: users.isVeterinarian,
+  locationId: users.locationId,
+  phone: users.phone,
+  licenseNumber: users.licenseNumber,
+  createdAt: users.createdAt,
+  deletedAt: users.deletedAt,
+};
 
 export const settingsRouter = createRouter({
   // ── Practice ──────────────────────────────────────────────
@@ -2632,6 +2652,10 @@ export const settingsRouter = createRouter({
           ? { isVeterinarian: true }
           : {}),
       };
+      // A role change signs the staff member out everywhere so every open tab
+      // reloads with the new permissions.
+      const sessionVersion = bumpSessionVersionOnRoleChange(data.role);
+      const updateSet = sessionVersion ? { ...data, sessionVersion } : data;
       if (
         (data.role !== undefined && data.role !== "admin") ||
         data.isVeterinarian === false
@@ -2704,7 +2728,7 @@ export const settingsRouter = createRouter({
 
           const [updated] = await tx
             .update(users)
-            .set(data)
+            .set(updateSet)
             .where(
               and(
                 eq(users.id, id),
@@ -2714,7 +2738,7 @@ export const settingsRouter = createRouter({
                 isNull(users.deletedAt),
               ),
             )
-            .returning();
+            .returning(STAFF_USER_COLUMNS);
 
           if (!updated) {
             throw new TRPCError({
@@ -2729,7 +2753,7 @@ export const settingsRouter = createRouter({
 
       const [updated] = await ctx.db
         .update(users)
-        .set(data)
+        .set(updateSet)
         .where(
           and(
             eq(users.id, id),
@@ -2738,7 +2762,7 @@ export const settingsRouter = createRouter({
             isNull(users.deletedAt),
           ),
         )
-        .returning();
+        .returning(STAFF_USER_COLUMNS);
       if (!updated) {
         throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
       }
@@ -2847,7 +2871,7 @@ export const settingsRouter = createRouter({
 
         const [updated] = await tx
           .update(users)
-          .set({ deletedAt: new Date() })
+          .set({ deletedAt: new Date(), sessionVersion: bumpSessionVersion() })
           .where(
             and(
               eq(users.id, input.id),
@@ -2879,7 +2903,9 @@ export const settingsRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       const [updated] = await ctx.db
         .update(users)
-        .set({ deletedAt: null })
+        // Restoring an account never revives sessions issued before it was
+        // deactivated; the staff member signs in again.
+        .set({ deletedAt: null, sessionVersion: bumpSessionVersionOnRestore() })
         .where(
           and(
             eq(users.id, input.id),

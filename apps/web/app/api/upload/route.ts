@@ -6,6 +6,7 @@ import { patients, practices, users } from "@openpims/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { withSystem, withTenant } from "@/lib/tenant-db";
 import { nextAuthSecretRejected } from "@/lib/auth-secret";
+import { sessionVersionIsCurrent } from "@/lib/session-version";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
 import {
   ALLOWED_UPLOAD_MIME_TYPES,
@@ -108,6 +109,7 @@ export async function POST(req: NextRequest) {
       .select({
         userId: users.id,
         role: users.role,
+        sessionVersion: users.sessionVersion,
         tier: practices.subscriptionTier,
         billingStatus: practices.billingStatus,
         trialEndsAt: practices.trialEndsAt,
@@ -126,7 +128,13 @@ export async function POST(req: NextRequest) {
       )
       .limit(1),
   );
-  if (!activeAccount) {
+  if (
+    !activeAccount ||
+    !sessionVersionIsCurrent(
+      session.user.sessionVersion,
+      activeAccount.sessionVersion,
+    )
+  ) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (activeAccount.role === "viewer") {

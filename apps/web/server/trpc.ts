@@ -18,6 +18,7 @@ import {
   trustedProxyNotForwarding,
 } from "@/lib/request-ip";
 import { knownDeviceCookieFromHeader } from "@/lib/known-device";
+import { sessionVersionIsCurrent } from "@/lib/session-version";
 import { externallyVisibleRequestOrigin } from "@/lib/request-origin";
 import { practices, users } from "@openpims/db";
 import {
@@ -48,6 +49,7 @@ interface AppSession extends Session {
     name: string;
     role: UserRole;
     practiceId: string;
+    sessionVersion?: number;
     recoveryHold?: boolean;
     emailVerifiedAt?: Date | string | null;
     practiceCreatedAt?: Date | string | null;
@@ -130,6 +132,8 @@ async function activeSessionOrNull(
       tx
         .select({
           id: users.id,
+          role: users.role,
+          sessionVersion: users.sessionVersion,
           emailVerifiedAt: users.emailVerifiedAt,
           practiceCreatedAt: practices.createdAt,
           recoveryHold: practices.recoveryHold,
@@ -149,17 +153,30 @@ async function activeSessionOrNull(
         .limit(1),
   );
 
-  return activeUser
-    ? {
-        ...session,
-        user: {
-          ...session.user,
-          emailVerifiedAt: activeUser.emailVerifiedAt,
-          practiceCreatedAt: activeUser.practiceCreatedAt,
-          recoveryHold: activeUser.recoveryHold,
-        },
-      }
-    : null;
+  // A password reset, role change, or deactivation bumps the version and
+  // revokes every session issued before it.
+  if (
+    !activeUser ||
+    !sessionVersionIsCurrent(
+      session.user.sessionVersion,
+      activeUser.sessionVersion,
+    )
+  ) {
+    return null;
+  }
+
+  // The JWT role is a sign-in snapshot. Authorization (requireRole, the
+  // viewer write block) must see the role as it is now.
+  return {
+    ...session,
+    user: {
+      ...session.user,
+      role: activeUser.role,
+      emailVerifiedAt: activeUser.emailVerifiedAt,
+      practiceCreatedAt: activeUser.practiceCreatedAt,
+      recoveryHold: activeUser.recoveryHold,
+    },
+  };
 }
 
 export async function createTRPCContext(opts?: {
