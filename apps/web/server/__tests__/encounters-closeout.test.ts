@@ -1267,11 +1267,29 @@ describe("encounter closeout safety", () => {
       assignedTo: ASSIGNEE_ID,
       assigneeName: "Alex Coordinator",
     };
-    const { db } = createDb({ selectResults: [[pending]] });
+    const { db } = createDb({
+      selectResults: [
+        [
+          {
+            ...pending,
+            linkedAppointmentId: null,
+            linkedAppointmentStatus: null,
+            linkedAppointmentStartTime: null,
+          },
+        ],
+      ],
+    });
 
     await expect(
       callerWithDb(db, "front_desk").listPendingFollowUps()
-    ).resolves.toEqual([pending]);
+    ).resolves.toEqual([
+      {
+        ...pending,
+        recoveryReason: null,
+        missedAppointmentId: null,
+        missedAppointmentAt: null,
+      },
+    ]);
   });
 
   it("resolves a needed follow-up operationally without rewriting the signed disposition", async () => {
@@ -1337,6 +1355,715 @@ describe("encounter closeout safety", () => {
     expect(values).not.toHaveProperty("followUpDisposition");
     expect(values).not.toHaveProperty("followUpDueDate");
     expect(values).not.toHaveProperty("clinicalFinalizedAt");
+  });
+
+  describe("follow-up recovery after a cancelled or missed follow-up appointment", () => {
+    const ORIGINAL_FOLLOW_UP_ID = "00000000-0000-0000-0000-000000000009";
+    const REPLACEMENT_ID = "00000000-0000-0000-0000-000000000010";
+    const originalStart = new Date("2099-01-02T17:00:00.000Z");
+    const replacementStart = new Date("2099-01-09T17:00:00.000Z");
+    const checkedOut = { ...openAppointment, status: "checked_out" };
+    const completedBase = {
+      ...clinicalFinalized,
+      status: "completed",
+      chargeDisposition: "no_charge",
+      noChargeReason: "Complimentary recheck",
+      handoffMethod: "print",
+      completedAt: new Date("2026-08-08T18:30:00.000Z"),
+      completedBy: USER_ID,
+    };
+    const signedScheduled = {
+      ...completedBase,
+      revision: 4,
+      followUpDisposition: "scheduled",
+      followUpAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+      followUpScheduledAt: originalStart,
+    };
+    const replacement = { id: REPLACEMENT_ID, startTime: replacementStart };
+
+    it("lets the clinic team relink a signed scheduled follow-up whose appointment was cancelled", async () => {
+      const resolved = {
+        ...signedScheduled,
+        revision: 5,
+        followUpResolution: "scheduled",
+        followUpResolutionAppointmentId: REPLACEMENT_ID,
+        followUpResolutionScheduledAt: replacementStart,
+        followUpResolvedAt: expect.any(Date),
+        followUpResolvedBy: USER_ID,
+        followUpResolverName: "Clinic User",
+      };
+      const { db, updateSet, insertValues } = createDb({
+        selectResults: [
+          [checkedOut],
+          [{ id: PATIENT_ID }],
+          [signedScheduled],
+          [
+            {
+              id: ORIGINAL_FOLLOW_UP_ID,
+              status: "cancelled",
+              startTime: originalStart,
+              deletedAt: null,
+            },
+          ],
+          [replacement],
+        ],
+        updateResults: [[resolved]],
+      });
+
+      await expect(
+        callerWithDb(db, "front_desk").resolveNeededFollowUp({
+          appointmentId: APPOINTMENT_ID,
+          expectedRevision: 4,
+          resolution: "scheduled",
+          resolutionAppointmentId: REPLACEMENT_ID,
+          notes: null,
+        }),
+      ).resolves.toEqual(resolved);
+
+      expect(updateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          followUpResolution: "scheduled",
+          followUpResolutionAppointmentId: REPLACEMENT_ID,
+          followUpResolutionScheduledAt: replacementStart,
+          followUpResolvedBy: USER_ID,
+          revision: 5,
+        }),
+      );
+      // The signed clinical handoff stays exactly as the clinician signed it.
+      const values = updateSet.mock.calls[0]![0] as Record<string, unknown>;
+      for (const signedField of [
+        "followUpDisposition",
+        "followUpAppointmentId",
+        "followUpScheduledAt",
+        "followUpDueDate",
+        "followUpAssignedTo",
+        "followUpAssigneeName",
+        "clinicalFinalizedAt",
+        "clinicalFinalizedBy",
+      ]) {
+        expect(values).not.toHaveProperty(signedField);
+      }
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          practiceId: PRACTICE_ID,
+          userId: USER_ID,
+          entityType: "visit_closeout",
+          entityId: CLOSEOUT_ID,
+          changes: expect.objectContaining({
+            before: expect.objectContaining({
+              followUpResolution: null,
+              followUpResolutionAppointmentId: null,
+            }),
+            after: expect.objectContaining({
+              followUpResolution: "scheduled",
+              followUpResolutionAppointmentId: REPLACEMENT_ID,
+            }),
+          }),
+        }),
+      );
+    });
+
+    it("lets the clinic team re-resolve a needed follow-up whose scheduled appointment was a no-show", async () => {
+      const resolvedAt = new Date("2026-08-09T17:00:00.000Z");
+      const neededScheduled = {
+        ...completedBase,
+        revision: 5,
+        followUpDisposition: "needed",
+        followUpDueDate: "2099-01-01",
+        followUpAssignedTo: ASSIGNEE_ID,
+        followUpAssigneeName: "Alex Coordinator",
+        followUpResolution: "scheduled",
+        followUpResolutionAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+        followUpResolutionScheduledAt: originalStart,
+        followUpResolvedAt: resolvedAt,
+        followUpResolvedBy: ASSIGNEE_ID,
+        followUpResolverName: "Alex Coordinator",
+      };
+      const reresolved = {
+        ...neededScheduled,
+        revision: 6,
+        followUpResolutionAppointmentId: REPLACEMENT_ID,
+        followUpResolutionScheduledAt: replacementStart,
+        followUpResolvedAt: expect.any(Date),
+        followUpResolvedBy: USER_ID,
+        followUpResolverName: "Clinic User",
+      };
+      const { db, updateSet, insertValues } = createDb({
+        selectResults: [
+          [checkedOut],
+          [{ id: PATIENT_ID }],
+          [neededScheduled],
+          [
+            {
+              id: ORIGINAL_FOLLOW_UP_ID,
+              status: "no_show",
+              startTime: originalStart,
+              deletedAt: null,
+            },
+          ],
+          [replacement],
+        ],
+        updateResults: [[reresolved]],
+      });
+
+      await expect(
+        callerWithDb(db, "front_desk").resolveNeededFollowUp({
+          appointmentId: APPOINTMENT_ID,
+          expectedRevision: 5,
+          resolution: "scheduled",
+          resolutionAppointmentId: REPLACEMENT_ID,
+          notes: null,
+        }),
+      ).resolves.toEqual(reresolved);
+
+      expect(updateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          followUpResolutionAppointmentId: REPLACEMENT_ID,
+          followUpResolutionScheduledAt: replacementStart,
+          followUpResolvedBy: USER_ID,
+          revision: 6,
+        }),
+      );
+      const values = updateSet.mock.calls[0]![0] as Record<string, unknown>;
+      expect(values).not.toHaveProperty("followUpDisposition");
+      expect(values).not.toHaveProperty("followUpDueDate");
+      expect(values).not.toHaveProperty("followUpAssignedTo");
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          entityType: "visit_closeout",
+          entityId: CLOSEOUT_ID,
+          changes: expect.objectContaining({
+            before: expect.objectContaining({
+              followUpResolutionAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+              followUpResolvedBy: ASSIGNEE_ID,
+            }),
+            after: expect.objectContaining({
+              followUpResolutionAppointmentId: REPLACEMENT_ID,
+              followUpResolvedBy: USER_ID,
+            }),
+          }),
+        }),
+      );
+    });
+
+    it("keeps a signed scheduled follow-up closed while its appointment is still booked", async () => {
+      const { db, updateSet } = createDb({
+        selectResults: [
+          [checkedOut],
+          [{ id: PATIENT_ID }],
+          [signedScheduled],
+          [
+            {
+              id: ORIGINAL_FOLLOW_UP_ID,
+              status: "scheduled",
+              startTime: originalStart,
+              deletedAt: null,
+            },
+          ],
+          [replacement],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db, "front_desk").resolveNeededFollowUp({
+          appointmentId: APPOINTMENT_ID,
+          expectedRevision: 4,
+          resolution: "scheduled",
+          resolutionAppointmentId: REPLACEMENT_ID,
+          notes: null,
+        }),
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      expect(updateSet).not.toHaveBeenCalled();
+    });
+
+    it("keeps a terminal completed resolution final even if a linked appointment later changes", async () => {
+      const terminal = {
+        ...signedScheduled,
+        revision: 5,
+        followUpResolution: "completed",
+        followUpResolutionNotes: "Seen at partner clinic",
+        followUpResolvedAt: new Date("2026-08-10T17:00:00.000Z"),
+        followUpResolvedBy: USER_ID,
+        followUpResolverName: "Clinic User",
+      };
+      const { db, updateSet } = createDb({
+        selectResults: [
+          [checkedOut],
+          [{ id: PATIENT_ID }],
+          [terminal],
+          [
+            {
+              id: ORIGINAL_FOLLOW_UP_ID,
+              status: "cancelled",
+              startTime: originalStart,
+              deletedAt: null,
+            },
+          ],
+          [replacement],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db, "front_desk").resolveNeededFollowUp({
+          appointmentId: APPOINTMENT_ID,
+          expectedRevision: 5,
+          resolution: "scheduled",
+          resolutionAppointmentId: REPLACEMENT_ID,
+          notes: null,
+        }),
+      ).rejects.toMatchObject({
+        code: expect.stringMatching(/^(CONFLICT|PRECONDITION_FAILED)$/),
+      });
+      expect(updateSet).not.toHaveBeenCalled();
+    });
+
+    it("labels cancelled scheduled follow-ups as clinic-team recovery items with the missed appointment date", async () => {
+      const recoveryRow = {
+        closeoutId: CLOSEOUT_ID,
+        appointmentId: APPOINTMENT_ID,
+        closeoutStatus: "completed",
+        revision: 4,
+        followUpDisposition: "scheduled",
+        dueDate: null,
+        assignedTo: null,
+        assigneeName: null,
+        followUpNotes: null,
+        resolution: null,
+        resolutionAppointmentId: null,
+        resolutionScheduledAt: null,
+        resolutionNotes: null,
+        resolvedAt: null,
+        resolvedBy: null,
+        resolverName: null,
+        linkedAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+        linkedAppointmentStatus: "cancelled",
+        linkedAppointmentStartTime: originalStart,
+        patientId: PATIENT_ID,
+        patientName: "Biscuit",
+        clientId: CLIENT_ID,
+        clientFirstName: "Sam",
+        clientLastName: "Rivera",
+        visitStartedAt: openAppointment.startTime,
+      };
+      const { db } = createDb({ selectResults: [[recoveryRow]] });
+
+      const [item] = await callerWithDb(db, "front_desk").listPendingFollowUps();
+      expect(item).toMatchObject({
+        closeoutId: CLOSEOUT_ID,
+        recoveryReason: "cancelled",
+        missedAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+        missedAppointmentAt: originalStart,
+        dueDate: null,
+        assignedTo: null,
+        assigneeName: null,
+      });
+    });
+
+    it("keeps the named owner and due date on a needed follow-up whose booking was missed", async () => {
+      const { db } = createDb({
+        selectResults: [
+          [
+            {
+              closeoutId: CLOSEOUT_ID,
+              appointmentId: APPOINTMENT_ID,
+              followUpDisposition: "needed",
+              dueDate: "2099-01-01",
+              assignedTo: ASSIGNEE_ID,
+              assigneeName: "Alex Coordinator",
+              resolution: "scheduled",
+              resolutionAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+              linkedAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+              linkedAppointmentStatus: "no_show",
+              linkedAppointmentStartTime: originalStart,
+            },
+          ],
+        ],
+      });
+
+      const [item] = await callerWithDb(db, "front_desk").listPendingFollowUps();
+      expect(item).toMatchObject({
+        recoveryReason: "no_show",
+        missedAppointmentAt: originalStart,
+        dueDate: "2099-01-01",
+        assignedTo: ASSIGNEE_ID,
+        assigneeName: "Alex Coordinator",
+      });
+      expect(item).not.toHaveProperty("linkedAppointmentStatus");
+    });
+
+    it("does not label a still-booked link as recovery work", async () => {
+      const { db } = createDb({
+        selectResults: [
+          [
+            {
+              closeoutId: CLOSEOUT_ID,
+              linkedAppointmentId: REPLACEMENT_ID,
+              linkedAppointmentStatus: "confirmed",
+              linkedAppointmentStartTime: replacementStart,
+            },
+          ],
+        ],
+      });
+
+      const [item] = await callerWithDb(db, "front_desk").listPendingFollowUps();
+      expect(item).toMatchObject({
+        recoveryReason: null,
+        missedAppointmentId: null,
+        missedAppointmentAt: null,
+      });
+    });
+
+    it("takes the practice scheduling lock before locking appointment rows", async () => {
+      const { db, select, execute } = createDb({
+        selectResults: [
+          [checkedOut],
+          [{ id: PATIENT_ID }],
+          [signedScheduled],
+          [{ id: ORIGINAL_FOLLOW_UP_ID, status: "cancelled", startTime: originalStart }],
+          [replacement],
+        ],
+        updateResults: [[{ ...signedScheduled, revision: 5 }]],
+      });
+
+      await callerWithDb(db, "front_desk").resolveNeededFollowUp({
+        appointmentId: APPOINTMENT_ID,
+        expectedRevision: 4,
+        resolution: "scheduled",
+        resolutionAppointmentId: REPLACEMENT_ID,
+        notes: null,
+      });
+      const lockCall = (execute.mock.calls as unknown[][]).findIndex(
+        ([query]) => JSON.stringify(query).includes("pg_advisory_xact_lock"),
+      );
+      expect(lockCall).toBeGreaterThanOrEqual(0);
+      expect(execute.mock.invocationCallOrder[lockCall]!).toBeLessThan(
+        select.mock.invocationCallOrder[0]!,
+      );
+    });
+
+    it("rejects a stale revision before touching the replacement or writing audit", async () => {
+      const { db, select, updateSet, insertValues } = createDb({
+        selectResults: [
+          [checkedOut],
+          [{ id: PATIENT_ID }],
+          [signedScheduled],
+          [{ id: ORIGINAL_FOLLOW_UP_ID, status: "cancelled", startTime: originalStart }],
+          [replacement],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db, "front_desk").resolveNeededFollowUp({
+          appointmentId: APPOINTMENT_ID,
+          expectedRevision: 3,
+          resolution: "scheduled",
+          resolutionAppointmentId: REPLACEMENT_ID,
+          notes: null,
+        }),
+      ).rejects.toMatchObject({ code: "CONFLICT" });
+      expect(select).toHaveBeenCalledTimes(4);
+      expect(updateSet).not.toHaveBeenCalled();
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it("rejects a replacement that is no longer bookable", async () => {
+      const { db, updateSet, insertValues } = createDb({
+        selectResults: [
+          [checkedOut],
+          [{ id: PATIENT_ID }],
+          [signedScheduled],
+          [{ id: ORIGINAL_FOLLOW_UP_ID, status: "cancelled", startTime: originalStart }],
+          [],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db, "front_desk").resolveNeededFollowUp({
+          appointmentId: APPOINTMENT_ID,
+          expectedRevision: 4,
+          resolution: "scheduled",
+          resolutionAppointmentId: REPLACEMENT_ID,
+          notes: null,
+        }),
+      ).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+        message: "The selected follow-up appointment is no longer available.",
+      });
+      expect(updateSet).not.toHaveBeenCalled();
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it("lets the clinic team close a cancelled follow-up as no longer needed", async () => {
+      const closed = {
+        ...signedScheduled,
+        revision: 5,
+        followUpResolution: "not_needed",
+        followUpResolutionNotes: "Owner reports full recovery",
+      };
+      const { db, updateSet, insertValues } = createDb({
+        selectResults: [
+          [checkedOut],
+          [{ id: PATIENT_ID }],
+          [signedScheduled],
+          [{ id: ORIGINAL_FOLLOW_UP_ID, status: "cancelled", startTime: originalStart }],
+        ],
+        updateResults: [[closed]],
+      });
+
+      await expect(
+        callerWithDb(db, "front_desk").resolveNeededFollowUp({
+          appointmentId: APPOINTMENT_ID,
+          expectedRevision: 4,
+          resolution: "not_needed",
+          notes: "Owner reports full recovery",
+        }),
+      ).resolves.toEqual(closed);
+      expect(updateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          followUpResolution: "not_needed",
+          followUpResolutionAppointmentId: null,
+          followUpResolutionScheduledAt: null,
+          followUpResolutionNotes: "Owner reports full recovery",
+        }),
+      );
+      expect(insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "follow_up_recovered",
+          changes: expect.objectContaining({
+            recovery: {
+              reason: "cancelled",
+              missedAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+              missedAppointmentAt: originalStart.toISOString(),
+            },
+          }),
+        }),
+      );
+    });
+
+    it("returns the stored result for an exact retry after the replacement is linked", async () => {
+      const relinked = {
+        ...signedScheduled,
+        revision: 5,
+        followUpResolution: "scheduled",
+        followUpResolutionAppointmentId: REPLACEMENT_ID,
+        followUpResolutionScheduledAt: replacementStart,
+        followUpResolutionNotes: null,
+        followUpResolvedAt: new Date("2026-08-10T17:00:00.000Z"),
+        followUpResolvedBy: USER_ID,
+        followUpResolverName: "Clinic User",
+      };
+      const { db, updateSet, insertValues } = createDb({
+        selectResults: [
+          [checkedOut],
+          [{ id: PATIENT_ID }],
+          [relinked],
+          [{ id: REPLACEMENT_ID, status: "scheduled", startTime: replacementStart }],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db, "front_desk").resolveNeededFollowUp({
+          appointmentId: APPOINTMENT_ID,
+          expectedRevision: 4,
+          resolution: "scheduled",
+          resolutionAppointmentId: REPLACEMENT_ID,
+          notes: null,
+        }),
+      ).resolves.toEqual(relinked);
+      expect(updateSet).not.toHaveBeenCalled();
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it("exposes the cancelled booking on the visit closeout for the recovery form", async () => {
+      const { db } = createDb({
+        selectResults: [
+          [
+            {
+              id: APPOINTMENT_ID,
+              patientId: null,
+              clientId: null,
+              practiceName: "Clinic",
+              practicePhone: null,
+              practiceTimezone: "America/Denver",
+            },
+          ],
+          [signedScheduled],
+          [],
+          [],
+          [],
+          [],
+          [],
+          [{ id: ORIGINAL_FOLLOW_UP_ID, status: "cancelled", startTime: originalStart }],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db, "front_desk").getCloseout({
+          appointmentId: APPOINTMENT_ID,
+        }),
+      ).resolves.toMatchObject({
+        closeout: { followUpDisposition: "scheduled" },
+        followUpRecovery: {
+          reason: "cancelled",
+          appointmentId: ORIGINAL_FOLLOW_UP_ID,
+          appointmentAt: originalStart,
+        },
+      });
+    });
+
+    it("keeps the signed booking and its recovery when an amendment leaves the follow-up unchanged", async () => {
+      const recovered = {
+        ...signedScheduled,
+        revision: 6,
+        followUpResolution: "scheduled",
+        followUpResolutionAppointmentId: REPLACEMENT_ID,
+        followUpResolutionScheduledAt: replacementStart,
+        followUpResolvedAt: new Date("2026-08-10T17:00:00.000Z"),
+        followUpResolvedBy: USER_ID,
+        followUpResolverName: "Clinic User",
+        amendmentDraft: {
+          ...activeAmendmentDraft,
+          baseRevision: 5,
+          followUpDisposition: "scheduled" as const,
+          followUpAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+        },
+      };
+      const finalized = { ...recovered, revision: 7, amendmentDraft: null };
+      const { db, select, updateSet } = createDb({
+        selectResults: [
+          [checkedOut],
+          [{ id: PATIENT_ID }],
+          [recovered],
+          [],
+          [],
+          [],
+        ],
+        updateResults: [[finalized]],
+      });
+
+      await expect(
+        callerWithDb(db, "veterinarian").finalizeClinical({
+          ...clinicalInput,
+          expectedRevision: 6,
+          dischargeInstructions: "Updated activity instructions.",
+          followUpDisposition: "scheduled",
+          followUpAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+        }),
+      ).resolves.toEqual(finalized);
+      // The cancelled original is not re-validated as a bookable slot.
+      expect(select).toHaveBeenCalledTimes(6);
+      expect(updateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          followUpDisposition: "scheduled",
+          followUpAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+          followUpScheduledAt: originalStart,
+          followUpResolution: "scheduled",
+          followUpResolutionAppointmentId: REPLACEMENT_ID,
+          followUpResolutionScheduledAt: replacementStart,
+          followUpResolvedBy: USER_ID,
+        }),
+      );
+    });
+
+    it("takes the scheduling lock before the visit row when finalizing a booked follow-up", async () => {
+      // Cross-linked visits: this visit links to a booking whose own recovery
+      // may be locking this visit. Both paths must start with the same lock.
+      const { db, select, execute } = createDb({
+        selectResults: [
+          [openAppointment],
+          [{ id: PATIENT_ID }],
+          [],
+          [],
+          [],
+          [],
+          [{ id: ORIGINAL_FOLLOW_UP_ID, startTime: originalStart }],
+        ],
+        insertResults: [[{ ...clinicalFinalized, revision: 1 }]],
+      });
+
+      await callerWithDb(db, "veterinarian").finalizeClinical({
+        ...clinicalInput,
+        followUpDisposition: "scheduled",
+        followUpAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+      });
+      const lockCall = (execute.mock.calls as unknown[][]).findIndex(
+        ([query]) => JSON.stringify(query).includes("pg_advisory_xact_lock"),
+      );
+      expect(lockCall).toBeGreaterThanOrEqual(0);
+      expect(execute.mock.invocationCallOrder[lockCall]!).toBeLessThan(
+        select.mock.invocationCallOrder[0]!,
+      );
+    });
+
+    it("does not take the scheduling lock when no booking is linked", async () => {
+      const { db, execute } = createDb({
+        selectResults: [[openAppointment], [{ id: PATIENT_ID }], [], []],
+        insertResults: [[{ ...clinicalFinalized, revision: 1 }]],
+      });
+
+      await callerWithDb(db, "veterinarian").finalizeClinical(clinicalInput);
+      expect(
+        (execute.mock.calls as unknown[][]).some(([query]) =>
+          JSON.stringify(query).includes("pg_advisory_xact_lock"),
+        ),
+      ).toBe(false);
+    });
+
+    it("starts fresh when an amendment books a different follow-up", async () => {
+      const NEW_BOOKING_ID = "00000000-0000-0000-0000-000000000011";
+      const newStart = new Date("2099-02-01T17:00:00.000Z");
+      const recovered = {
+        ...signedScheduled,
+        revision: 6,
+        followUpResolution: "scheduled",
+        followUpResolutionAppointmentId: REPLACEMENT_ID,
+        followUpResolutionScheduledAt: replacementStart,
+        followUpResolvedAt: new Date("2026-08-10T17:00:00.000Z"),
+        followUpResolvedBy: USER_ID,
+        followUpResolverName: "Clinic User",
+        amendmentDraft: {
+          ...activeAmendmentDraft,
+          baseRevision: 5,
+          followUpDisposition: "scheduled" as const,
+          followUpAppointmentId: NEW_BOOKING_ID,
+        },
+      };
+      const finalized = { ...recovered, revision: 7, amendmentDraft: null };
+      const { db, updateSet } = createDb({
+        selectResults: [
+          [checkedOut],
+          [{ id: PATIENT_ID }],
+          [recovered],
+          [],
+          [],
+          [],
+          [{ id: NEW_BOOKING_ID, startTime: newStart }],
+        ],
+        updateResults: [[finalized]],
+      });
+
+      await callerWithDb(db, "veterinarian").finalizeClinical({
+        ...clinicalInput,
+        expectedRevision: 6,
+        followUpDisposition: "scheduled",
+        followUpAppointmentId: NEW_BOOKING_ID,
+      });
+      expect(updateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          followUpAppointmentId: NEW_BOOKING_ID,
+          followUpScheduledAt: newStart,
+          followUpResolution: null,
+          followUpResolutionAppointmentId: null,
+          followUpResolvedAt: null,
+          amendmentHistory: [
+            expect.objectContaining({
+              followUpAppointmentId: ORIGINAL_FOLLOW_UP_ID,
+              followUpResolutionAppointmentId: REPLACEMENT_ID,
+            }),
+          ],
+        }),
+      );
+    });
   });
 
   it("keeps technicians from finalizing doctor-required visits", async () => {
