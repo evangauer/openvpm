@@ -2,8 +2,6 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LOGIN_EMAIL_MAX_LENGTH,
-  clientIpFromAuthRequest,
-  loginRateLimitKeys,
   parseLoginCredentials,
 } from "../auth";
 import { AUTH_PASSWORD_MAX_LENGTH } from "../auth-password";
@@ -41,32 +39,6 @@ describe("nextAuthSecret", () => {
       if (previous === undefined) delete process.env.NEXTAUTH_SECRET;
       else process.env.NEXTAUTH_SECRET = previous;
     }
-  });
-});
-
-describe("loginRateLimitKeys", () => {
-  it("normalizes email and scopes by email plus IP", () => {
-    expect(loginRateLimitKeys(" Admin@Example.COM ", "203.0.113.10")).toEqual({
-      emailKey: "login:email:admin@example.com",
-      ipKey: "login:ip:203.0.113.10",
-    });
-  });
-});
-
-describe("clientIpFromAuthRequest", () => {
-  it("prefers the first forwarded IP", () => {
-    expect(
-      clientIpFromAuthRequest({
-        headers: { "x-forwarded-for": "203.0.113.10, 198.51.100.5" },
-      })
-    ).toBe("203.0.113.10");
-  });
-
-  it("falls back to x-real-ip and then unknown", () => {
-    expect(clientIpFromAuthRequest({ headers: { "x-real-ip": "198.51.100.5" } })).toBe(
-      "198.51.100.5"
-    );
-    expect(clientIpFromAuthRequest({ headers: {} })).toBe("unknown");
   });
 });
 
@@ -114,7 +86,7 @@ describe("credentials auth active-user lookup", () => {
     const source = readFileSync("lib/auth.ts", "utf8");
 
     expect(source.indexOf("parseLoginCredentials(credentials)")).toBeLessThan(
-      source.indexOf("rateLimit({")
+      source.indexOf("reserveLoginAttempt(throttleKeys)")
     );
     expect(source.indexOf("parseLoginCredentials(credentials)")).toBeLessThan(
       source.indexOf("withSystem(db")

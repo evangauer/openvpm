@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
     remaining: 4,
     resetAt: new Date(),
   })),
+  clearRateLimit: vi.fn(async () => undefined),
   createAuthToken: vi.fn(async () => "token-123"),
   consumeAuthToken: vi.fn(),
   sendPasswordResetEmail: vi.fn(async () => ({ success: true })),
@@ -44,6 +45,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/rate-limit", () => ({
   rateLimit: mocks.rateLimit,
+  clearRateLimit: mocks.clearRateLimit,
 }));
 
 vi.mock("@/lib/auth-tokens", () => ({
@@ -1166,7 +1168,7 @@ describe("auth router token validation", () => {
     const { db, updateWhere } = createAuthUpdateDb({
       returningRows: [
         [{ id: "user-1" }],
-        [{ id: "user-1" }],
+        [{ id: "user-1", email: "Owner@Example.com" }],
         [{ id: "user-1" }],
       ],
     });
@@ -1186,6 +1188,11 @@ describe("auth router token validation", () => {
       caller.acceptInvite({ token: validToken, password: "password123" }),
     ).resolves.toEqual({ ok: true });
 
+    // A completed reset lifts any sign-in lock on the account.
+    expect(mocks.clearRateLimit).toHaveBeenCalledTimes(1);
+    expect(mocks.clearRateLimit).toHaveBeenCalledWith(
+      "login:account:owner@example.com",
+    );
     expect(mocks.consumeAuthToken).toHaveBeenCalledWith(
       validToken,
       "email_verify",

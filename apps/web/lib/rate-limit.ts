@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { eq, lt, sql } from "drizzle-orm";
+import { and, eq, lt, sql } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import { rateLimitBuckets } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
@@ -87,6 +87,129 @@ export async function rateLimit(options: {
     remaining: Math.max(options.limit - count, 0),
     resetAt: bucketResetAt,
   };
+}
+
+/**
+ * Gives back one unit reserved by `rateLimit`, used when a guarded action
+ * turned out not to count (for example a successful sign-in). Matching on
+ * `resetAt` keeps a late refund from leaking into the next window.
+ */
+export async function refundRateLimit(key: string, resetAt: Date): Promise<void> {
+  const normalizedKey = normalizeRateLimitKey(key);
+  await withSystem(db, (tx) =>
+    tx
+      .update(rateLimitBuckets)
+      .set({
+        count: sql<number>`greatest(${rateLimitBuckets.count} - 1, 0)`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(rateLimitBuckets.key, normalizedKey),
+          eq(rateLimitBuckets.resetAt, resetAt)
+        )
+      )
+  );
+}
+
+export interface BackoffPolicy {
+  /** Attempts allowed before the first lock. */
+  freeAttempts: number;
+  /** Lock after the last free attempt; doubles with each further attempt. */
+  baseLockMs: number;
+  maxLockMs: number;
+  /** The streak is forgotten this long after its last counted attempt. */
+  streakMs: number;
+}
+
+export interface BackoffBucketState {
+  count: number;
+  resetAt: Date;
+  updatedAt: Date;
+}
+
+export type BackoffDecision =
+  | { success: true; next: BackoffBucketState }
+  | { success: false; retryAt: Date };
+
+export function backoffLockMs(policy: BackoffPolicy, attempts: number): number {
+  if (attempts < policy.freeAttempts) return 0;
+  const doublings = Math.min(attempts - policy.freeAttempts, 30);
+  return Math.min(policy.maxLockMs, policy.baseLockMs * 2 ** doublings);
+}
+
+/**
+ * Pure decision for one attempt against an exponential-backoff bucket. A
+ * locked bucket is left untouched, so retrying while locked neither extends
+ * nor shortens the lock.
+ */
+export function backoffDecision(
+  policy: BackoffPolicy,
+  state: BackoffBucketState | null | undefined,
+  now: Date
+): BackoffDecision {
+  const active = state && state.resetAt.getTime() > now.getTime() ? state : null;
+  const attempts = active?.count ?? 0;
+  if (active) {
+    const lockMs = backoffLockMs(policy, attempts);
+    const retryAt = new Date(active.updatedAt.getTime() + lockMs);
+    if (lockMs > 0 && retryAt.getTime() > now.getTime()) {
+      return { success: false, retryAt };
+    }
+  }
+  return {
+    success: true,
+    next: {
+      count: attempts + 1,
+      resetAt: new Date(now.getTime() + policy.streakMs),
+      updatedAt: now,
+    },
+  };
+}
+
+/**
+ * Counts one attempt against an exponential-backoff bucket, or reports when
+ * the bucket unlocks. The row is locked for the decision so concurrent
+ * attempts cannot all slip past the same check. Callers clear the bucket
+ * (`clearRateLimit`) when the attempt succeeds.
+ */
+export async function consumeBackoffAttempt(options: {
+  key: string;
+  policy: BackoffPolicy;
+  now?: Date;
+}): Promise<{ success: true } | { success: false; retryAt: Date }> {
+  const now = options.now ?? new Date();
+  const key = normalizeRateLimitKey(options.key);
+
+  return withSystem(db, async (tx) => {
+    await tx
+      .insert(rateLimitBuckets)
+      .values({
+        key,
+        count: 0,
+        resetAt: new Date(now.getTime() + options.policy.streakMs),
+        updatedAt: now,
+      })
+      .onConflictDoNothing({ target: rateLimitBuckets.key });
+    const [state] = await tx
+      .select({
+        count: rateLimitBuckets.count,
+        resetAt: rateLimitBuckets.resetAt,
+        updatedAt: rateLimitBuckets.updatedAt,
+      })
+      .from(rateLimitBuckets)
+      .where(eq(rateLimitBuckets.key, key))
+      .for("update");
+
+    const decision = backoffDecision(options.policy, state, now);
+    if (!decision.success) return decision;
+
+    await tx
+      .update(rateLimitBuckets)
+      .set(decision.next)
+      .where(eq(rateLimitBuckets.key, key));
+    return { success: true as const };
+  });
 }
 
 export async function clearRateLimit(key: string): Promise<void> {

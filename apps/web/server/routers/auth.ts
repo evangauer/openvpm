@@ -6,6 +6,7 @@ import { createRouter, publicProcedure, protectedProcedure } from "../trpc";
 import { users, practices, locations } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { rateLimit } from "@/lib/rate-limit";
+import { clearLoginAccountLock } from "@/lib/login-throttle";
 import { seedPractice, seedDemoData } from "@/lib/onboarding/defaults";
 import {
   billingEnforced,
@@ -776,13 +777,18 @@ export const authRouter = createRouter({
         .update(users)
         .set({ passwordHash })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
-        .returning({ id: users.id });
+        .returning({ id: users.id, email: users.email });
       if (!updated) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "This reset link is invalid or has expired.",
         });
       }
+      // The owner just proved control of the account; a sign-in lock left by
+      // someone else's guesses shouldn't keep them out with the new password.
+      await clearLoginAccountLock(updated.email).catch((err) => {
+        console.error("[resetPassword] login lock reset failed:", err);
+      });
       return { ok: true };
     }),
 

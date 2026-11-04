@@ -19,6 +19,7 @@ import {
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import { getFunnelVisitorId, useFunnelVisitorId } from "@/lib/funnel-visitor";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
+import { loginErrorMessage } from "@/lib/login-error-message";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
@@ -75,7 +76,7 @@ function LoginPageInner() {
     setLoading(false);
 
     if (result?.error) {
-      setError("Invalid email or password");
+      setError(loginErrorMessage(result.error));
     } else {
       router.push(nextPath);
       router.refresh();

@@ -6,8 +6,17 @@ import { db } from "@openpims/db/client";
 import { practices, users } from "@openpims/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { withSystem } from "@/lib/tenant-db";
-import { clearRateLimit, rateLimit } from "@/lib/rate-limit";
-import { clientIpFromRequest } from "@/lib/request-ip";
+import { rateLimitRetryAfterSeconds } from "@/lib/rate-limit";
+import { resolveClientIp } from "@/lib/request-ip";
+import {
+  loginIpBucket,
+  loginThrottleKeys,
+  releaseLoginAttempt,
+  reserveLoginAttempt,
+  warnUnverifiedLoginIpOnce,
+  type LoginAttemptGate,
+} from "@/lib/login-throttle";
+import { loginRateLimitedErrorCode } from "@/lib/login-error-message";
 import { AUTH_PASSWORD_MAX_LENGTH } from "@/lib/auth-password";
 import { AUTH_EMAIL_MAX_LENGTH } from "@/lib/auth-input-policy";
 import { nextAuthSecret } from "@/lib/auth-secret";
@@ -18,9 +27,6 @@ import {
   verifiedDemoAccessFromRequest,
 } from "@/lib/demo-access";
 
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_EMAIL_LIMIT = 8;
-const LOGIN_IP_LIMIT = 40;
 export const LOGIN_EMAIL_MAX_LENGTH = AUTH_EMAIL_MAX_LENGTH;
 const DUMMY_PASSWORD_HASH =
   "$2a$12$952CXRCtzm0M4qmcFoZkteQvA5Tdh.CIhvCabrgb5qUbk.VcE35va";
@@ -43,17 +49,6 @@ export function parseLoginCredentials(
   return parsed.success ? parsed.data : null;
 }
 
-export const clientIpFromAuthRequest = clientIpFromRequest;
-
-export function loginRateLimitKeys(email: string, ip: string): {
-  emailKey: string;
-  ipKey: string;
-} {
-  return {
-    emailKey: `login:email:${email.trim().toLowerCase()}`,
-    ipKey: `login:ip:${ip || "unknown"}`,
-  };
-}
 
 declare module "next-auth" {
   interface Session {
@@ -102,31 +97,26 @@ export const authOptions: NextAuthOptions = {
           return null;
         }
         const { email, password } = parsedCredentials;
-        const ip = clientIpFromAuthRequest(req);
-        const { emailKey, ipKey } = loginRateLimitKeys(email, ip);
+        const client = resolveClientIp(req);
+        warnUnverifiedLoginIpOnce(client);
+        const throttleKeys = loginThrottleKeys(email, loginIpBucket(client));
 
-        let emailLimit: Awaited<ReturnType<typeof rateLimit>>;
-        let ipLimit: Awaited<ReturnType<typeof rateLimit>>;
+        // Budget is reserved before the password check and given back on
+        // success, so only failed attempts count.
+        let gate: LoginAttemptGate;
         try {
-          [emailLimit, ipLimit] = await Promise.all([
-            rateLimit({
-              key: emailKey,
-              limit: LOGIN_EMAIL_LIMIT,
-              windowMs: LOGIN_WINDOW_MS,
-            }),
-            rateLimit({
-              key: ipKey,
-              limit: LOGIN_IP_LIMIT,
-              windowMs: LOGIN_WINDOW_MS,
-            }),
-          ]);
+          gate = await reserveLoginAttempt(throttleKeys);
         } catch (err) {
           console.error("[auth] login rate limit failed:", err);
           return null;
         }
 
-        if (!emailLimit.success || !ipLimit.success) {
-          return null;
+        if (!gate.allowed) {
+          // Same response whether or not the account exists. NextAuth hands
+          // the message to signIn() as `error`; the login page renders it.
+          throw new Error(
+            loginRateLimitedErrorCode(rateLimitRetryAfterSeconds(gate.retryAt))
+          );
         }
 
         // Login looks up by email with no tenant context yet → system context.
@@ -146,7 +136,7 @@ export const authOptions: NextAuthOptions = {
         const isValid = await compare(password, user.passwordHash);
         if (!isValid) return null;
 
-        await clearRateLimit(emailKey).catch(() => undefined);
+        await releaseLoginAttempt(throttleKeys, gate);
 
         // Email verification is a SOFT requirement on hosted: new users sign in
         // immediately after signup (so the trial + onboarding aren't blocked by

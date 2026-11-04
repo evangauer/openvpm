@@ -249,6 +249,12 @@ docker compose -f docker/docker-compose.yml up -d
 
 The Docker setup includes PostgreSQL 16 with health checks, MinIO for S3-compatible file storage, automatic MinIO bucket bootstrap, and a multi-stage production build of the web application. For production, run `pnpm db:migrate`, then `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls`, verify with `OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test`, and point the app at the generated least-privilege `openpims_app` database role before serving traffic.
 
+#### Reverse proxies and sign-in limits
+
+Sign-in limits failed attempts per account and per client IP. OpenVPM only believes a forwarded client IP when you say which proxies write it, because anyone can send an `X-Forwarded-For` header. If the app sits behind a reverse proxy (nginx, Caddy, Traefik, a load balancer), set `OPENVPM_TRUSTED_PROXY_HOPS` to the number of proxies in front of it. Each proxy must append the connecting address to `X-Forwarded-For` (the default for nginx `$proxy_add_x_forwarded_for`, Caddy, and Traefik). Make sure the app port is reachable only through those proxies.
+
+If you leave it unset, OpenVPM can't tell clients apart. Failed sign-ins from every client then share one limit (50 per 15 minutes), and the server logs a warning. Per-account limits still apply as normal. On Vercel, the platform-provided client address is used automatically.
+
 ## API
 
 OpenVPM is **API-first**: dashboard workflows use typed tRPC procedures, while third-party integrations use scoped `/api/v1` REST endpoints and signed webhooks for supported read/write workflows.
