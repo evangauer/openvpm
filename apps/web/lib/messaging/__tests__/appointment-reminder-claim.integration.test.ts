@@ -9,11 +9,15 @@ import type { Database } from "@openpims/db/client";
 import * as schema from "@openpims/db";
 import { withTenant } from "@/lib/tenant-db";
 import {
+  type AppointmentReminderClaim,
   EMAIL_REMINDER_KEY_REUSE_WINDOW_MS,
+  STALE_EMAIL_REMINDER_CLAIM_MS,
   appointmentReminderDedupeKey,
   appointmentReminderEmailIdempotencyKey,
+  appointmentReminderSmsIdempotencyKey,
   claimAppointmentReminderCommunication,
   recordAppointmentReminderOutcome,
+  sendClaimedAppointmentReminderEmail,
 } from "@/lib/messaging/appointment-reminder";
 
 const integration =
@@ -428,7 +432,7 @@ async function unknownEmailLifecycle(
     await withTenant(appDb, practiceId, (tx) =>
       recordAppointmentReminderOutcome(tx, {
         practiceId,
-        communicationId: claim.id,
+        claim,
         channel: "email",
         result: "unknown",
         source: "staff",
@@ -457,7 +461,7 @@ async function unknownEmailLifecycle(
   await withTenant(appDb, practiceId, (tx) =>
     recordAppointmentReminderOutcome(tx, {
       practiceId,
-      communicationId: claim.id,
+      claim,
       channel: "email",
       result: "unknown",
       source: "staff",
@@ -493,6 +497,507 @@ async function unknownEmailLifecycle(
   });
   return `unknown email lifecycle: ${failures} unconfirmed sends retried under one key; none after the key window`;
 }
+
+type ReminderFixture = {
+  ownerDb: Db;
+  appDb: Database;
+  practiceId: string;
+  clientId: string;
+};
+type Appointment = { id: string; startTime: Date };
+
+function newAppointment(hour: number): Appointment {
+  return { id: randomUUID(), startTime: new Date(Date.UTC(2030, 0, 3, hour)) };
+}
+
+function claimAll(f: ReminderFixture, appointment: Appointment, claimers: Claimer[]) {
+  return concurrentClaims(f.appDb, {
+    practiceId: f.practiceId,
+    clientId: f.clientId,
+    appointmentId: appointment.id,
+    startTime: appointment.startTime,
+    claimers,
+  });
+}
+
+async function claimOnce(f: ReminderFixture, appointment: Appointment, claimer: Claimer) {
+  const [claim] = await claimAll(f, appointment, [claimer]);
+  return claim ?? null;
+}
+
+async function reminderRow(f: ReminderFixture, appointment: Appointment) {
+  const [row] = await f.ownerDb
+    .select({
+      status: schema.communications.status,
+      reminderAttempt: schema.communications.reminderAttempt,
+      reminderOutcome: schema.communications.reminderOutcome,
+    })
+    .from(schema.communications)
+    .where(
+      eq(schema.communications.dedupeKey, appointmentReminderDedupeKey(appointment)),
+    );
+  return row;
+}
+
+function record(
+  f: ReminderFixture,
+  claim: AppointmentReminderClaim,
+  result: "sent" | "failed" | "unknown",
+  source: "staff" | "automated",
+  options: { channel?: "sms" | "email"; providerMessageId?: string } = {},
+) {
+  return withTenant(f.appDb, f.practiceId, (tx) =>
+    recordAppointmentReminderOutcome(tx, {
+      practiceId: f.practiceId,
+      claim,
+      channel: options.channel ?? "email",
+      result,
+      source,
+      content: `Appointment reminder ${result}`,
+      providerMessageId: options.providerMessageId,
+    }),
+  );
+}
+
+/** Real email client and Resend SDK behind a scripted fetch. */
+async function scriptedEmailProvider(
+  responses: Array<() => Response | Promise<Response>>,
+) {
+  const seenKeys: string[] = [];
+  vi.stubEnv("RESEND_API_KEY", "re_integration_test");
+  vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "false");
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: unknown, init?: RequestInit) => {
+      seenKeys.push(new Headers(init?.headers).get("Idempotency-Key") ?? "");
+      const next = responses.shift();
+      if (!next) throw new Error("unexpected provider call");
+      return next();
+    }),
+  );
+  vi.resetModules();
+  const { sendAppointmentReminder } = await import("@/lib/email");
+  return { seenKeys, sendAppointmentReminder };
+}
+
+type SendReminderEmail = (typeof import("@/lib/email"))["sendAppointmentReminder"];
+
+function fencedSend(
+  f: ReminderFixture,
+  claim: AppointmentReminderClaim,
+  sendAppointmentReminder: SendReminderEmail,
+  appointment: Appointment,
+) {
+  return sendClaimedAppointmentReminderEmail(
+    (fn) => withTenant(f.appDb, f.practiceId, fn),
+    { practiceId: f.practiceId, claim },
+    () =>
+      sendAppointmentReminder({
+        to: "client@example.com",
+        clientName: "Synthetic Client",
+        patientName: "Miso",
+        appointmentDate: "Thursday, January 3, 2030",
+        appointmentTime: "3:00 PM",
+        practiceName: "Synthetic Reminder Clinic",
+        idempotencyKey: appointmentReminderEmailIdempotencyKey(
+          appointment,
+          claim.attempt,
+        ),
+      }),
+  );
+}
+
+const acceptedEmail = (id: string) => () =>
+  new Response(JSON.stringify({ id }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+const rateLimited = () =>
+  new Response(
+    JSON.stringify({
+      statusCode: 429,
+      name: "rate_limit_exceeded",
+      message: "Too many requests",
+    }),
+    { status: 429, headers: { "content-type": "application/json" } },
+  );
+
+/**
+ * After an unconfirmed email, a redispatch stopped by something that says
+ * nothing about the first send (the hourly sending quota, a recovery pause, a
+ * recipient that is no longer eligible) must stay "Delivery unknown" under
+ * the same attempt. Recording a failure would let the next claim start
+ * attempt 2 under a new key and email the client twice.
+ */
+async function redispatchFailuresNeverAdvanceTheAttempt(f: ReminderFixture) {
+  const appointment = newAppointment(15);
+  const { seenKeys, sendAppointmentReminder } = await scriptedEmailProvider([
+    () => {
+      throw new TypeError("fetch failed");
+    },
+    acceptedEmail("email-finally-confirmed"),
+  ]);
+  const first = (await claimOnce(f, appointment, { channel: "email", source: "staff" }))!;
+  expect(first).toMatchObject({ attempt: 1, redispatch: false });
+  await expect(
+    fencedSend(f, first, sendAppointmentReminder, appointment),
+  ).resolves.toMatchObject({
+    status: "called",
+    result: { outcome: "outcome_unknown" },
+  });
+  await record(f, first, "unknown", "staff");
+
+  // Each caller records these stops as "failed" before any provider call.
+  const stops: Array<"staff" | "automated"> = ["staff", "automated", "staff", "automated"];
+  for (const [i, source] of stops.entries()) {
+    const winners = await claimAll(f, appointment, MIXED);
+    expect(winners, `redispatch ${i + 1}`).toHaveLength(1);
+    expect(winners[0]).toMatchObject({ attempt: 1, redispatch: true });
+    await record(f, winners[0]!, "failed", source);
+    expect(await reminderRow(f, appointment), `after stop ${i + 1}`).toEqual({
+      status: "pending",
+      reminderAttempt: 1,
+      reminderOutcome: "outcome_unknown",
+    });
+  }
+
+  const [last] = await claimAll(f, appointment, MIXED);
+  await expect(
+    fencedSend(f, last!, sendAppointmentReminder, appointment),
+  ).resolves.toMatchObject({ status: "called", result: { success: true } });
+  await record(f, last!, "sent", "staff", {
+    providerMessageId: "email-finally-confirmed",
+  });
+  expect(await reminderRow(f, appointment)).toEqual({
+    status: "sent",
+    reminderAttempt: 1,
+    reminderOutcome: null,
+  });
+  expect(seenKeys).toEqual(
+    Array(2).fill(appointmentReminderEmailIdempotencyKey(appointment, 1)),
+  );
+  return `redispatch stops: ${stops.length} non-provider stops after an unknown kept attempt 1; no attempt-2 key`;
+}
+
+/** A 429 is never a definite failure: every retry reuses the first key. */
+async function rateLimitedEmailRetriesUnderOneKey(f: ReminderFixture) {
+  const appointment = newAppointment(16);
+  const { seenKeys, sendAppointmentReminder } = await scriptedEmailProvider([
+    rateLimited,
+    rateLimited,
+    rateLimited,
+    acceptedEmail("email-after-429"),
+  ]);
+  let claim = (await claimOnce(f, appointment, {
+    channel: "email",
+    source: "automated",
+  }))!;
+  for (let i = 0; i < 3; i++) {
+    await expect(
+      fencedSend(f, claim, sendAppointmentReminder, appointment),
+      `429 ${i + 1}`,
+    ).resolves.toMatchObject({
+      status: "called",
+      result: { success: false, outcome: "outcome_unknown" },
+    });
+    await record(f, claim, "unknown", "automated");
+    const winners = await claimAll(f, appointment, MIXED);
+    expect(winners, `retry after 429 ${i + 1}`).toHaveLength(1);
+    expect(winners[0]!.attempt).toBe(1);
+    claim = winners[0]!;
+  }
+  await expect(
+    fencedSend(f, claim, sendAppointmentReminder, appointment),
+  ).resolves.toMatchObject({ status: "called", result: { success: true } });
+  await record(f, claim, "sent", "automated", {
+    providerMessageId: "email-after-429",
+  });
+  expect(seenKeys).toEqual(
+    Array(4).fill(appointmentReminderEmailIdempotencyKey(appointment, 1)),
+  );
+  expect((await reminderRow(f, appointment))?.status).toBe("sent");
+  return "429 chain: 3 rate-limited sends retried under one key, then confirmed";
+}
+
+/**
+ * The provider accepts the email, then the connection holding the send
+ * transaction dies before COMMIT. That is an unknown outcome, retried only
+ * under the same key.
+ */
+async function commitFailureAfterAcceptanceIsUnknown(f: ReminderFixture) {
+  const appointment = newAppointment(17);
+  const { seenKeys, sendAppointmentReminder } = await scriptedEmailProvider([
+    async () => {
+      // Kill the backend holding the reminder row lock mid-send.
+      const killed = await f.ownerDb.execute<{ killed: boolean }>(sql`
+        select pg_terminate_backend(l.pid) as killed
+        from pg_locks l
+        join pg_class c on c.oid = l.relation
+        where c.relname = 'communications'
+          and l.mode = 'RowShareLock'
+          and l.pid <> pg_backend_pid()
+      `);
+      expect(killed.length).toBe(1);
+      return acceptedEmail("email-accepted-before-commit")();
+    },
+  ]);
+  const claim = (await claimOnce(f, appointment, {
+    channel: "email",
+    source: "automated",
+  }))!;
+  await expect(
+    fencedSend(f, claim, sendAppointmentReminder, appointment),
+  ).resolves.toMatchObject({
+    status: "called",
+    result: { success: false, outcome: "outcome_unknown" },
+  });
+  await record(f, claim, "unknown", "automated");
+  expect(await reminderRow(f, appointment)).toEqual({
+    status: "pending",
+    reminderAttempt: 1,
+    reminderOutcome: "outcome_unknown",
+  });
+  const winners = await claimAll(f, appointment, MIXED);
+  expect(winners).toHaveLength(1);
+  expect(winners[0]).toMatchObject({ attempt: 1, redispatch: true });
+  expect(seenKeys).toEqual([appointmentReminderEmailIdempotencyKey(appointment, 1)]);
+  return "commit failure after acceptance: recorded unknown; the retry keeps attempt 1";
+}
+
+/**
+ * A claimant that stalled past the abandoned-claim window (for example,
+ * waiting on the practice recovery lock) must not send once another sender
+ * reclaimed the reminder, whether that sender is mid-send or done.
+ */
+async function stalledEmailClaimantNeverSends(f: ReminderFixture) {
+  const appointment = newAppointment(18);
+  let releaseProvider!: () => void;
+  const providerHeld = new Promise<void>((done) => (releaseProvider = done));
+  let providerEntered!: () => void;
+  const providerReached = new Promise<void>((done) => (providerEntered = done));
+  const { seenKeys, sendAppointmentReminder } = await scriptedEmailProvider([
+    async () => {
+      providerEntered();
+      await providerHeld;
+      return acceptedEmail("email-from-reclaimer")();
+    },
+  ]);
+  const stalled = (await claimOnce(f, appointment, {
+    channel: "email",
+    source: "staff",
+  }))!;
+  await f.ownerDb
+    .update(schema.communications)
+    .set({
+      updatedAt: sql`now() - make_interval(secs => ${STALE_EMAIL_REMINDER_CLAIM_MS / 1000 + 60})`,
+    })
+    .where(
+      eq(schema.communications.dedupeKey, appointmentReminderDedupeKey(appointment)),
+    );
+  const reclaimer = (await claimOnce(f, appointment, {
+    channel: "email",
+    source: "automated",
+  }))!;
+  expect(reclaimer).toMatchObject({ id: stalled.id, attempt: stalled.attempt });
+  expect(reclaimer.claimToken).not.toBe(stalled.claimToken);
+
+  // The reclaimer is mid-send, holding the row lock, when the stalled
+  // claimant wakes up and tries to send.
+  const reclaimerSend = fencedSend(f, reclaimer, sendAppointmentReminder, appointment);
+  await providerReached;
+  const stalledSend = fencedSend(f, stalled, sendAppointmentReminder, appointment);
+  releaseProvider();
+  await expect(reclaimerSend).resolves.toMatchObject({
+    status: "called",
+    result: { success: true },
+  });
+  await expect(stalledSend).resolves.toEqual({ status: "superseded" });
+  // A late outcome from the stalled claimant can't overwrite the reclaimer.
+  await record(f, stalled, "failed", "staff");
+  expect(await reminderRow(f, appointment)).toMatchObject({
+    status: "pending",
+    reminderOutcome: null,
+  });
+  await record(f, reclaimer, "sent", "automated", {
+    providerMessageId: "email-from-reclaimer",
+  });
+  await expect(
+    fencedSend(f, stalled, sendAppointmentReminder, appointment),
+  ).resolves.toEqual({ status: "superseded" });
+  expect(seenKeys).toHaveLength(1);
+  expect((await reminderRow(f, appointment))?.status).toBe("sent");
+  return "stalled email claimant: blocked mid-send and after; one provider call";
+}
+
+type CachedDbGlobal = {
+  __openpimsDb?: { client: { end: (o: { timeout: number }) => Promise<void> } };
+};
+
+/** Run app modules that use the shared database client against this DB. */
+async function withLiveDatabase<T>(databaseUrl: string, fn: () => Promise<T>) {
+  vi.stubEnv("DATABASE_URL", databaseUrl);
+  vi.resetModules();
+  try {
+    return await fn();
+  } finally {
+    const cache = globalThis as CachedDbGlobal;
+    await cache.__openpimsDb?.client.end({ timeout: 5 });
+    cache.__openpimsDb = undefined;
+  }
+}
+
+async function attemptOutcomes(f: ReminderFixture, communicationId: string) {
+  const events = await f.ownerDb
+    .select({ outcome: schema.smsSendAttemptEvents.outcome })
+    .from(schema.smsSendAttemptEvents)
+    .innerJoin(
+      schema.smsSendAttempts,
+      eq(schema.smsSendAttempts.id, schema.smsSendAttemptEvents.attemptId),
+    )
+    .where(eq(schema.smsSendAttempts.communicationId, communicationId))
+    .orderBy(schema.smsSendAttemptEvents.createdAt);
+  return events.map((event) => event.outcome);
+}
+
+/** The same fence through the real SMS dispatcher and console provider. */
+async function stalledSmsClaimantNeverSends(f: ReminderFixture, databaseUrl: string) {
+  const appointment = newAppointment(19);
+  vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+  vi.stubEnv("HOSTED_BILLING_ENABLED", "false");
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  return withLiveDatabase(databaseUrl, async () => {
+    const { sendAppointmentReminderSms } = await import("@/lib/sms");
+    const send = (claim: AppointmentReminderClaim) =>
+      sendAppointmentReminderSms({
+        to: "+15555550123",
+        patientName: "Miso",
+        appointmentDate: "Thursday, January 3, 2030",
+        appointmentTime: "7:00 PM",
+        practiceName: "Synthetic Reminder Clinic",
+        practiceId: f.practiceId,
+        clientId: f.clientId,
+        communicationId: claim.id,
+        source: "appointment_reminder",
+        sourceId: appointmentReminderDedupeKey(appointment),
+        idempotencyKey: appointmentReminderSmsIdempotencyKey(appointment, claim.attempt),
+        reminderClaimToken: claim.claimToken,
+      });
+    const stalled = (await claimOnce(f, appointment, {
+      channel: "sms",
+      source: "staff",
+    }))!;
+    await f.ownerDb
+      .update(schema.communications)
+      .set({ updatedAt: sql`now() - interval '20 minutes'` })
+      .where(
+        eq(schema.communications.dedupeKey, appointmentReminderDedupeKey(appointment)),
+      );
+    // No attempt was reserved yet, so another sender recovers the claim.
+    const reclaimer = (await claimOnce(f, appointment, {
+      channel: "sms",
+      source: "automated",
+    }))!;
+    expect(reclaimer).toMatchObject({ id: stalled.id, attempt: 1 });
+
+    // The stalled claimant wakes up first and reserves the attempt, then is
+    // stopped by the fence before the provider.
+    await expect(send(stalled)).resolves.toMatchObject({
+      success: false,
+      outcome: "definite_failure",
+      error: expect.stringContaining("Another send took over"),
+    });
+    expect(await attemptOutcomes(f, stalled.id)).toEqual(["definite_failure"]);
+    // The reclaimer shares the key, so it replays that blocked attempt; its
+    // recorded failure is a definite one and retries once, as attempt 2.
+    await expect(send(reclaimer)).resolves.toMatchObject({
+      success: false,
+      replayed: true,
+    });
+    await record(f, reclaimer, "failed", "automated", { channel: "sms" });
+    const retry = (await claimOnce(f, appointment, { channel: "sms", source: "staff" }))!;
+    expect(retry.attempt).toBe(2);
+    await expect(send(retry)).resolves.toMatchObject({ success: true });
+    expect(await attemptOutcomes(f, stalled.id)).toEqual([
+      "definite_failure",
+      "accepted",
+    ]);
+    expect((await reminderRow(f, appointment))?.status).toBe("sent");
+    return "stalled SMS claimant: stopped at the dispatcher fence; exactly one accepted send";
+  });
+}
+
+/**
+ * An SMS left "Delivery unknown" that an operator reconciles as a definite
+ * failure must become retryable exactly once, not stay blocked forever.
+ */
+async function reconciledSmsFailureIsRetryableOnce(
+  f: ReminderFixture,
+  databaseUrl: string,
+) {
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  return withLiveDatabase(databaseUrl, async () => {
+    const { reconcileSmsSendAttempt } = await import("@/lib/sms-dispatch");
+    const results: string[] = [];
+    for (const [i, source] of (["staff", "automated"] as const).entries()) {
+      const appointment = newAppointment(21 + i);
+      const claim = (await claimOnce(f, appointment, { channel: "sms", source }))!;
+      const dedupeKey = appointmentReminderDedupeKey(appointment);
+      const body = "Reminder: synthetic appointment.";
+      const [attempt] = await f.ownerDb
+        .insert(schema.smsSendAttempts)
+        .values({
+          practiceId: f.practiceId,
+          clientId: f.clientId,
+          communicationId: claim.id,
+          source: "appointment_reminder",
+          sourceId: dedupeKey,
+          idempotencyKey: appointmentReminderSmsIdempotencyKey(appointment, 1),
+          destinationE164: "+15555550100",
+          registeredDisplayName: "Synthetic Reminder Clinic",
+          body,
+          bodySha256: createHash("sha256").update(body).digest("hex"),
+          provider: "console",
+          createdAt: sql`now() - interval '1 hour'`,
+        })
+        .returning({ id: schema.smsSendAttempts.id });
+      await record(f, claim, "unknown", source, { channel: "sms" });
+      expect(await claimAll(f, appointment, MIXED)).toHaveLength(0);
+
+      await expect(
+        reconcileSmsSendAttempt({
+          practiceId: f.practiceId,
+          attemptId: attempt!.id,
+          outcome: "definite_failure",
+          detail: "Provider confirmed the message was never sent.",
+          actorUserId: "platform-operator",
+          actorType: "platform_operator",
+          actorIdentity: "operator@example.com",
+          actorName: "Platform Operator",
+          reconciliationKey: `reconcile:${attempt!.id}`,
+        }),
+      ).resolves.toMatchObject({ outcome: "definite_failure" });
+      expect(await reminderRow(f, appointment)).toEqual({
+        status: "failed",
+        reminderAttempt: 1,
+        reminderOutcome: source === "staff" ? "staff_failure" : "automated_failure",
+      });
+      // The sweep waits out its retry delay before retrying its own failure.
+      await f.ownerDb
+        .update(schema.communications)
+        .set({ updatedAt: sql`now() - interval '2 hours'` })
+        .where(eq(schema.communications.dedupeKey, dedupeKey));
+      const claimers = source === "staff" ? MIXED : AUTOMATED_ONLY;
+      const winners = await claimAll(f, appointment, claimers);
+      expect(winners, `${source} reconciled failure`).toHaveLength(1);
+      expect(winners[0]!.attempt).toBe(2);
+      results.push(`${source}: 1 of ${claimers.length} reclaimed it as attempt 2`);
+    }
+    return `reconciled SMS failure retryable once (${results.join("; ")})`;
+  });
+}
+
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -675,6 +1180,17 @@ integration("appointment reminder claim under PostgreSQL concurrency", () => {
         }
         results.push(
           await unknownEmailLifecycle(ownerDb, appDb, practiceId, clientId),
+        );
+        const fixture: ReminderFixture = { ownerDb, appDb, practiceId, clientId };
+        results.push(await redispatchFailuresNeverAdvanceTheAttempt(fixture));
+        results.push(await rateLimitedEmailRetriesUnderOneKey(fixture));
+        results.push(await commitFailureAfterAcceptanceIsUnknown(fixture));
+        results.push(await stalledEmailClaimantNeverSends(fixture));
+        results.push(
+          await stalledSmsClaimantNeverSends(fixture, databaseUrl.toString()),
+        );
+        results.push(
+          await reconciledSmsFailureIsRetryableOnce(fixture, databaseUrl.toString()),
         );
         console.log(results.join("\n"));
       } finally {

@@ -604,9 +604,25 @@ describe("appointment reminder email outcomes through the Resend SDK", () => {
     ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
   });
 
+  it("reports a 429 as an unknown outcome so a retry reuses the same key", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response(
+            JSON.stringify({
+              statusCode: 429,
+              name: "rate_limit_exceeded",
+              message: "Too many requests",
+            }),
+            { status: 429, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
   it.each([
     [422, "validation_error"],
-    [429, "rate_limit_exceeded"],
+    [403, "invalid_from_address"],
   ])("reports a %s %s answer as a definite failure", async (status, name) => {
     await expect(
       sendThroughRealSdk(

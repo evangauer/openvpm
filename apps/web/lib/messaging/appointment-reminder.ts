@@ -10,6 +10,7 @@ import {
 import { and, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { recoverStaleUnreservedSmsCommunication } from "@/lib/messaging/durable-sms-communication";
+import { lockPracticeForExternalSideEffects } from "@/lib/recovery-hold";
 
 export function appointmentReminderDedupeKey(appointment: {
   id: string;
@@ -128,6 +129,7 @@ export async function currentAppointmentReminderEmailRecipient(
   clientLastName: string;
   patientName: string | null;
   practiceName: string;
+  practicePhone: string | null;
 } | null> {
   const [recipient] = await db
     .select({
@@ -137,6 +139,7 @@ export async function currentAppointmentReminderEmailRecipient(
       clientLastName: clients.lastName,
       patientName: patients.name,
       practiceName: practices.name,
+      practicePhone: practices.phone,
     })
     .from(appointments)
     .innerJoin(
@@ -190,6 +193,82 @@ export async function currentAppointmentReminderEmailRecipient(
     .limit(1);
 
   return recipient ?? null;
+}
+
+const DEFAULT_REMINDER_PRACTICE_NAME = "your clinic";
+
+function formatInTimeZone(
+  date: Date,
+  timeZone: string | null | undefined,
+  format: (date: Date, timeZone: string) => string,
+): string {
+  try {
+    return format(date, timeZone?.trim() || "UTC");
+  } catch {
+    // An invalid saved timezone falls back to UTC.
+    return format(date, "UTC");
+  }
+}
+
+/**
+ * The one formatter for appointment reminder content. Staff sends and the
+ * hourly sweep reuse the same provider idempotency key for an attempt, so
+ * they must build identical messages from identical data: a resend under the
+ * same key with a different body is rejected by the provider and could never
+ * confirm the original send.
+ */
+export function appointmentReminderMessageFields(options: {
+  startTime: Date | string;
+  timeZone?: string | null;
+  patientName: string | null;
+  practiceName: string | null;
+  practicePhone: string | null;
+}): {
+  appointmentDate: string;
+  appointmentTime: string;
+  patientName: string;
+  practiceName: string;
+  practicePhone?: string;
+} {
+  const startTime = new Date(options.startTime);
+  const practicePhone = options.practicePhone?.trim();
+  return {
+    appointmentDate: formatInTimeZone(startTime, options.timeZone, (d, tz) =>
+      d.toLocaleDateString("en-US", {
+        timeZone: tz,
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      }),
+    ),
+    appointmentTime: formatInTimeZone(startTime, options.timeZone, (d, tz) =>
+      d.toLocaleTimeString("en-US", {
+        timeZone: tz,
+        hour: "numeric",
+        minute: "2-digit",
+      }),
+    ),
+    patientName: options.patientName ?? "Unknown",
+    practiceName: options.practiceName?.trim() || DEFAULT_REMINDER_PRACTICE_NAME,
+    ...(practicePhone ? { practicePhone } : {}),
+  };
+}
+
+/** Email reminder fields; see appointmentReminderMessageFields. */
+export function appointmentReminderEmailFields(options: {
+  startTime: Date | string;
+  timeZone?: string | null;
+  clientFirstName: string | null;
+  clientLastName: string | null;
+  patientName: string | null;
+  practiceName: string | null;
+  practicePhone: string | null;
+}) {
+  return {
+    ...appointmentReminderMessageFields(options),
+    clientName: `${options.clientFirstName ?? ""} ${options.clientLastName ?? ""}`.trim(),
+  };
 }
 
 export const APPOINTMENT_REMINDER_SUBJECT = "Appointment Reminder";
@@ -284,6 +363,20 @@ export type AppointmentReminderClaim = {
   id: string;
   /** Send attempt; scopes provider idempotency keys. */
   attempt: number;
+  /**
+   * Fencing value written by this claim. Every send re-checks it under a row
+   * lock right before calling a provider, and every outcome write requires
+   * it, so a claimant that was overtaken can neither send nor overwrite.
+   */
+  claimToken: string;
+  /**
+   * True when this claim resumed an email attempt that may already have
+   * reached the provider (an abandoned or unconfirmed send). Nothing that
+   * happens on a redispatch proves the earlier send failed, so anything short
+   * of a confirmed send is recorded as "Delivery unknown", never as a
+   * retryable failure that would start a new attempt under a new key.
+   */
+  redispatch: boolean;
 };
 
 /**
@@ -308,8 +401,8 @@ export type AppointmentReminderClaim = {
  *   reserved (see recoverStaleUnreservedSmsCommunication). An SMS whose
  *   provider outcome is unknown is never reclaimed.
  *
- * The reclaim is a single conditional UPDATE that also clears the outcome and
- * sets `updated_at` to the database clock. A concurrent claimer blocks on the
+ * The reclaim is a single conditional UPDATE that also clears the outcome,
+ * writes a new claim token, and sets `updated_at` to the database clock. A concurrent claimer blocks on the
  * row lock, re-evaluates against the now-pending, freshly updated row, and
  * gets nothing.
  */
@@ -349,10 +442,16 @@ export async function claimAppointmentReminderCommunication(
       reminderAutomatedAttempts: automated ? 1 : 0,
       reminderOutcome: null,
       reminderAttemptStartedAt: sql`now()`,
+      reminderClaimToken: sql`gen_random_uuid()`,
     })
     .onConflictDoNothing({ target: communications.dedupeKey })
-    .returning({ id: communications.id });
-  if (row) return { id: row.id, attempt: 1 };
+    .returning({
+      id: communications.id,
+      claimToken: communications.reminderClaimToken,
+    });
+  if (row) {
+    return { id: row.id, attempt: 1, claimToken: row.claimToken!, redispatch: false };
+  }
 
   const staleEmailClaim = sql`${communications.updatedAt} <= now() - make_interval(secs => ${STALE_EMAIL_REMINDER_CLAIM_MS / 1000})`;
   const emailKeyStillHonored = sql`${communications.reminderAttemptStartedAt} > now() - make_interval(secs => ${EMAIL_REMINDER_KEY_REUSE_WINDOW_MS / 1000})`;
@@ -401,6 +500,7 @@ export async function claimAppointmentReminderCommunication(
         automated
           ? sql`case when ${communications.status} = 'failed' then ${communications.reminderAutomatedAttempts} + 1 else ${communications.reminderAutomatedAttempts} end`
           : sql`${communications.reminderAutomatedAttempts}`,
+      reminderClaimToken: sql`gen_random_uuid()`,
       updatedAt: sql`now()`,
     })
     .where(
@@ -425,8 +525,20 @@ export async function claimAppointmentReminderCommunication(
     .returning({
       id: communications.id,
       attempt: communications.reminderAttempt,
+      claimToken: communications.reminderClaimToken,
+      // RETURNING sees the new row. A retried failure restarts the attempt
+      // clock at this transaction's now(); a resumed email keeps the earlier
+      // start, so an older start means this claim resumed an attempt.
+      redispatch: sql<boolean>`${communications.reminderAttemptStartedAt} < now()`,
     });
-  if (reclaimed) return { id: reclaimed.id, attempt: reclaimed.attempt ?? 1 };
+  if (reclaimed) {
+    return {
+      id: reclaimed.id,
+      attempt: reclaimed.attempt ?? 1,
+      claimToken: reclaimed.claimToken!,
+      redispatch: Boolean(reclaimed.redispatch),
+    };
+  }
 
   // An abandoned email claim whose key may no longer be honored can't be
   // resent safely. Surface it as "Delivery unknown" rather than "Pending".
@@ -461,15 +573,169 @@ export async function claimAppointmentReminderCommunication(
   // (a dispatch that threw before reserving) no longer applies.
   const [recovered] = await db
     .update(communications)
-    .set({ reminderOutcome: null, updatedAt: sql`now()` })
+    .set({
+      reminderOutcome: null,
+      reminderClaimToken: sql`gen_random_uuid()`,
+      updatedAt: sql`now()`,
+    })
     .where(
       and(
         eq(communications.id, recoveredId),
         eq(communications.practiceId, options.practiceId),
       ),
     )
-    .returning({ attempt: communications.reminderAttempt });
-  return { id: recoveredId, attempt: recovered?.attempt ?? 1 };
+    .returning({
+      attempt: communications.reminderAttempt,
+      claimToken: communications.reminderClaimToken,
+    });
+  if (!recovered?.claimToken) return null;
+  return {
+    id: recoveredId,
+    attempt: recovered.attempt ?? 1,
+    claimToken: recovered.claimToken,
+    redispatch: false,
+  };
+}
+
+/**
+ * Fence a provider call. Run inside the transaction that calls the provider,
+ * immediately before the call: locks the reminder row and confirms this claim
+ * still owns it (pending, no outcome, same claim token, expected channel). A
+ * claimant that stalled while another sender reclaimed or advanced the row
+ * gets false and must not send. The lock is held through the provider call,
+ * so no other claimer can take the row over mid-send.
+ */
+export async function lockAppointmentReminderClaimForSend(
+  db: Pick<Database, "select">,
+  options: {
+    practiceId: string;
+    claim: Pick<AppointmentReminderClaim, "id" | "claimToken">;
+    channel: "sms" | "email";
+  },
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: communications.id })
+    .from(communications)
+    .where(
+      and(
+        eq(communications.id, options.claim.id),
+        eq(communications.practiceId, options.practiceId),
+        eq(communications.status, "pending"),
+        eq(communications.channel, options.channel),
+        isNull(communications.reminderOutcome),
+        eq(communications.reminderClaimToken, options.claim.claimToken),
+        isNull(communications.deletedAt),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  return Boolean(row);
+}
+
+type ReminderEmailProviderResult = {
+  success: boolean;
+  id?: string;
+  error?: string;
+  outcome: "accepted" | "definite_failure" | "outcome_unknown";
+};
+
+/**
+ * Send a claimed reminder email from its own transaction (opened by
+ * `transaction`, which must commit on its own), fenced by the claim
+ * (see lockAppointmentReminderClaimForSend). With `holdForRecovery`, the
+ * practice's shared recovery lock is held through the provider request too,
+ * so a restore drains an in-flight email and a committed hold blocks it.
+ *
+ * Once the provider has been called, nothing that goes wrong afterwards (a
+ * thrown send, a failed commit, a dropped connection) is a definite failure:
+ * the provider may have accepted the email, so the result is
+ * `outcome_unknown` and any retry reuses the same idempotency key.
+ */
+export async function sendClaimedAppointmentReminderEmail(
+  transaction: <T>(fn: (tx: Database) => Promise<T>) => Promise<T>,
+  options: {
+    practiceId: string;
+    claim: AppointmentReminderClaim;
+    holdForRecovery?: boolean;
+  },
+  send: () => Promise<ReminderEmailProviderResult>,
+): Promise<
+  | { status: "held" }
+  | { status: "superseded" }
+  | { status: "called"; result: ReminderEmailProviderResult }
+> {
+  let providerCalled = false;
+  try {
+    return await transaction(async (tx) => {
+      if (
+        options.holdForRecovery &&
+        !(await lockPracticeForExternalSideEffects(tx, options.practiceId))
+      ) {
+        return { status: "held" as const };
+      }
+      if (
+        !(await lockAppointmentReminderClaimForSend(tx, {
+          practiceId: options.practiceId,
+          claim: options.claim,
+          channel: "email",
+        }))
+      ) {
+        return { status: "superseded" as const };
+      }
+      providerCalled = true;
+      try {
+        return { status: "called" as const, result: await send() };
+      } catch (error) {
+        console.error("[appointment-reminder] email send threw:", error);
+        return {
+          status: "called" as const,
+          result: {
+            success: false,
+            outcome: "outcome_unknown" as const,
+            error: "The email send ended without a provider answer.",
+          },
+        };
+      }
+    });
+  } catch (error) {
+    if (!providerCalled) throw error;
+    console.error(
+      "[appointment-reminder] email transaction failed after the provider call:",
+      error,
+    );
+    return {
+      status: "called",
+      result: {
+        success: false,
+        outcome: "outcome_unknown",
+        error: "The email transaction did not commit after the provider call.",
+      },
+    };
+  }
+}
+
+/**
+ * The outcome a claim may record. On a redispatch nothing short of a
+ * confirmed send proves the earlier provider request failed.
+ */
+export function appointmentReminderResultForClaim(
+  claim: Pick<AppointmentReminderClaim, "redispatch">,
+  result: "sent" | "failed" | "unknown",
+): "sent" | "failed" | "unknown" {
+  return result === "failed" && claim.redispatch ? "unknown" : result;
+}
+
+/**
+ * The definite-failure marker for a reminder whose SMS the provider (or an
+ * operator reconciliation) confirmed failed, so it can be retried once. Null
+ * for communications that are not retry-tracked reminders.
+ */
+export function definiteReminderFailureOutcomeSql() {
+  return sql`case
+    when ${communications.reminderAttempt} is null then null
+    when ${communications.subject} = ${AUTOMATED_APPOINTMENT_REMINDER_SUBJECT} then 'automated_failure'
+    else 'staff_failure'
+  end`;
 }
 
 /**
@@ -480,29 +746,36 @@ export async function claimAppointmentReminderCommunication(
  */
 export async function switchAppointmentReminderClaimToEmail(
   db: Pick<Database, "update">,
-  options: { practiceId: string; communicationId: string },
-) {
-  return db
+  options: { practiceId: string; claim: AppointmentReminderClaim },
+): Promise<boolean> {
+  const [row] = await db
     .update(communications)
     .set({ channel: "email", updatedAt: sql`now()` })
     .where(
       and(
-        eq(communications.id, options.communicationId),
+        eq(communications.id, options.claim.id),
         eq(communications.practiceId, options.practiceId),
         eq(communications.status, "pending"),
         isNull(communications.reminderOutcome),
+        eq(communications.reminderClaimToken, options.claim.claimToken),
         isNull(communications.deletedAt),
       ),
-    );
+    )
+    .returning({ id: communications.id });
+  return Boolean(row);
 }
 
 /**
- * Record how a claimed reminder ended. Only a pending claim (or the same
- * accepted provider message) is updated, so a late or duplicate projection can
- * never turn a sent reminder into a failed one.
+ * Record how a claimed reminder ended. Only this claim's pending row (or the
+ * same accepted provider message) is updated, so a late or duplicate
+ * projection can never turn a sent reminder into a failed one, and a claimant
+ * that was overtaken can't overwrite the claim that replaced it.
  *
  * - `sent`: the provider accepted the message.
- * - `failed`: a definite failure; the reminder may be retried.
+ * - `failed`: a definite failure; the reminder may be retried. On a
+ *   redispatch this is recorded as `unknown` instead (see
+ *   AppointmentReminderClaim.redispatch); callers should build their content
+ *   from appointmentReminderResultForClaim.
  * - `unknown`: the provider may have delivered it. The row stays pending with
  *   `reminder_outcome = 'outcome_unknown'` and shows as "Delivery unknown". An
  *   email may be resent under the same key while it is honored; nothing is
@@ -512,7 +785,7 @@ export async function recordAppointmentReminderOutcome(
   db: Pick<Database, "update">,
   options: {
     practiceId: string;
-    communicationId: string;
+    claim: AppointmentReminderClaim;
     channel: "sms" | "email";
     result: "sent" | "failed" | "unknown";
     source: "staff" | "automated";
@@ -520,8 +793,12 @@ export async function recordAppointmentReminderOutcome(
     providerMessageId?: string;
   },
 ) {
+  const result = appointmentReminderResultForClaim(
+    options.claim,
+    options.result,
+  );
   const sentRowMatches =
-    options.result === "sent" && options.providerMessageId
+    result === "sent" && options.providerMessageId
       ? and(
           eq(communications.status, "sent"),
           eq(communications.providerMessageId, options.providerMessageId),
@@ -533,16 +810,16 @@ export async function recordAppointmentReminderOutcome(
       channel: options.channel,
       content: options.content,
       status:
-        options.result === "sent"
+        result === "sent"
           ? "sent"
-          : options.result === "failed"
+          : result === "failed"
             ? "failed"
             : "pending",
       providerMessageId: options.providerMessageId ?? null,
       reminderOutcome:
-        options.result === "sent"
+        result === "sent"
           ? null
-          : options.result === "unknown"
+          : result === "unknown"
             ? "outcome_unknown"
             : options.source === "automated"
               ? "automated_failure"
@@ -551,12 +828,16 @@ export async function recordAppointmentReminderOutcome(
     })
     .where(
       and(
-        eq(communications.id, options.communicationId),
+        eq(communications.id, options.claim.id),
         eq(communications.practiceId, options.practiceId),
         isNull(communications.deletedAt),
-        sentRowMatches
-          ? or(eq(communications.status, "pending"), sentRowMatches)
-          : eq(communications.status, "pending"),
+        or(
+          and(
+            eq(communications.status, "pending"),
+            eq(communications.reminderClaimToken, options.claim.claimToken),
+          ),
+          sentRowMatches,
+        ),
       ),
     );
 }

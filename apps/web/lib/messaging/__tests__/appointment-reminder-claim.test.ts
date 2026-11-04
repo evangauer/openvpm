@@ -18,9 +18,12 @@ const {
   MAX_AUTOMATED_REMINDER_ATTEMPTS,
   EMAIL_REMINDER_KEY_REUSE_WINDOW_MS,
   STALE_EMAIL_REMINDER_CLAIM_MS,
+  appointmentReminderEmailFields,
   appointmentReminderEmailIdempotencyKey,
+  appointmentReminderMessageFields,
   appointmentReminderSmsIdempotencyKey,
   claimAppointmentReminderCommunication,
+  definiteReminderFailureOutcomeSql,
   emailReminderFailureReason,
   recordAppointmentReminderOutcome,
   reminderFailureReason,
@@ -102,9 +105,20 @@ function render(fragment: unknown) {
 
 describe("appointment reminder claim", () => {
   it("claims a new reminder as the first send attempt", async () => {
-    const { db, state } = claimDb({ inserted: [{ id: "new" }], reclaimed: [] });
+    const { db, state } = claimDb({
+      inserted: [{ id: "new", claimToken: "token-1" }],
+      reclaimed: [],
+    });
 
-    await expect(claim(db)).resolves.toEqual({ id: "new", attempt: 1 });
+    await expect(claim(db)).resolves.toEqual({
+      id: "new",
+      attempt: 1,
+      claimToken: "token-1",
+      redispatch: false,
+    });
+    expect(render(state.insertValues!.reminderClaimToken).sql).toBe(
+      "gen_random_uuid()",
+    );
 
     expect(state.insertValues).toMatchObject({
       status: "pending",
@@ -131,10 +145,21 @@ describe("appointment reminder claim", () => {
   it("lets staff retry a recorded failure as a new send attempt", async () => {
     const { db, state } = claimDb({
       inserted: [],
-      reclaimed: [{ id: "failed-row", attempt: 2 }],
+      reclaimed: [
+        { id: "failed-row", attempt: 2, claimToken: "token-2", redispatch: false },
+      ],
     });
 
-    await expect(claim(db)).resolves.toEqual({ id: "failed-row", attempt: 2 });
+    await expect(claim(db)).resolves.toEqual({
+      id: "failed-row",
+      attempt: 2,
+      claimToken: "token-2",
+      redispatch: false,
+    });
+    // Every reclaim writes a new fencing token.
+    expect(render(state.updateSet!.reminderClaimToken).sql).toBe(
+      "gen_random_uuid()",
+    );
 
     expect(state.updateSet).toMatchObject({
       status: "pending",
@@ -274,12 +299,15 @@ describe("appointment reminder claim", () => {
     const { db } = claimDb({
       inserted: [],
       reclaimed: [],
-      recovered: [{ attempt: 3 }],
+      recovered: [{ attempt: 3, claimToken: "token-3" }],
     });
 
     await expect(claim(db, { channel: "sms" })).resolves.toEqual({
       id: "stale-sms",
       attempt: 3,
+      claimToken: "token-3",
+      // No provider attempt was ever reserved, so nothing may have gone out.
+      redispatch: false,
     });
     expect(mocks.recoverStaleUnreservedSmsCommunication).toHaveBeenCalledWith(
       db,
@@ -335,7 +363,7 @@ describe("recordAppointmentReminderOutcome", () => {
   }
   const base = {
     practiceId: PRACTICE_ID,
-    communicationId: "row",
+    claim: { id: "row", attempt: 1, claimToken: "token-1", redispatch: false },
     channel: "email" as const,
     content: "x",
   };
@@ -357,12 +385,95 @@ describe("recordAppointmentReminderOutcome", () => {
       });
       expect(state.set).toMatchObject({ status, reminderOutcome });
       expect(render(state.set!.updatedAt).sql).toBe("now()");
-      // Only a pending claim (or the same accepted message) is updated.
-      expect(render(state.where).sql).toContain(
-        '"communications"."status" = $',
-      );
+      // Only this claim's pending row (or the same accepted message) is
+      // updated.
+      const where = render(state.where);
+      expect(where.sql).toContain('"communications"."status" = $');
+      expect(where.sql).toContain('"communications"."reminder_claim_token" = $');
+      expect(where.params).toContain("token-1");
     },
   );
+
+  it.each([
+    ["staff", "failed", "pending", "outcome_unknown"],
+    ["automated", "failed", "pending", "outcome_unknown"],
+    ["staff", "unknown", "pending", "outcome_unknown"],
+    ["automated", "sent", "sent", null],
+  ] as const)(
+    "on a redispatch records %s %s as status %s with outcome %s",
+    async (source, result, status, reminderOutcome) => {
+      const { db, state } = outcomeDb();
+      await recordAppointmentReminderOutcome(db as never, {
+        ...base,
+        claim: { ...base.claim, redispatch: true },
+        result,
+        source,
+        providerMessageId: result === "sent" ? "msg-1" : undefined,
+      });
+      // Nothing short of a confirmed send proves the earlier send failed.
+      expect(state.set).toMatchObject({ status, reminderOutcome });
+    },
+  );
+});
+
+describe("appointment reminder message formatting", () => {
+  it("builds identical email content from identical data on every path", () => {
+    const fields = appointmentReminderEmailFields({
+      startTime: START,
+      timeZone: " America/New_York ",
+      clientFirstName: "Ada",
+      clientLastName: "Lovelace",
+      patientName: "Miso",
+      practiceName: "  Neighborhood Veterinary ",
+      practicePhone: " 555-0100 ",
+    });
+    expect(fields).toEqual({
+      clientName: "Ada Lovelace",
+      patientName: "Miso",
+      appointmentDate: "Thursday, July 2, 2026",
+      appointmentTime: "10:00 AM",
+      practiceName: "Neighborhood Veterinary",
+      practicePhone: "555-0100",
+    });
+    expect(
+      appointmentReminderEmailFields({
+        startTime: START.toISOString(),
+        timeZone: "America/New_York",
+        clientFirstName: "Ada",
+        clientLastName: "Lovelace",
+        patientName: "Miso",
+        practiceName: "Neighborhood Veterinary",
+        practicePhone: "555-0100",
+      }),
+    ).toEqual(fields);
+  });
+
+  it("falls back to UTC and generic names for missing data", () => {
+    expect(
+      appointmentReminderMessageFields({
+        startTime: START,
+        timeZone: "Not/AZone",
+        patientName: null,
+        practiceName: "  ",
+        practicePhone: null,
+      }),
+    ).toEqual({
+      appointmentDate: "Thursday, July 2, 2026",
+      appointmentTime: "2:00 PM",
+      patientName: "Unknown",
+      practiceName: "your clinic",
+    });
+  });
+});
+
+describe("definiteReminderFailureOutcomeSql", () => {
+  it("makes a confirmed SMS failure retryable by the source that claimed it", () => {
+    const rendered = render(definiteReminderFailureOutcomeSql());
+    expect(rendered.sql).toContain('"communications"."reminder_attempt" is null then null');
+    expect(rendered.sql).toContain("then 'automated_failure'");
+    expect(rendered.sql).toContain("else 'staff_failure'");
+    expect(rendered.params).toEqual([AUTOMATED_APPOINTMENT_REMINDER_SUBJECT]);
+  });
 });
 
 describe("staff-facing failure reasons", () => {

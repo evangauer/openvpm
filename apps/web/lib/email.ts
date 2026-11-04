@@ -62,6 +62,8 @@ export interface EmailProviderEvidence {
     | "provider_exception"
     | "missing_provider_id"
     | "idempotency_conflict";
+  /** HTTP status of a provider error answer, when there was one. */
+  providerStatus?: number;
 }
 
 function emailSendTimeoutMessage(): string {
@@ -246,6 +248,7 @@ async function dispatchEmail(
       return {
         success: false,
         provider,
+        ...(typeof statusCode === "number" ? { providerStatus: statusCode } : {}),
         error: timedOut ? emailSendTimeoutMessage() : error.message,
         outcome:
           timedOut || idempotencyConflict || noDefiniteAnswer
@@ -379,7 +382,13 @@ export async function sendAppointmentReminder(data: {
     success: result.success,
     id: result.id,
     error: result.error,
-    outcome: result.outcome,
+    // A 429 rejects this request only. It says nothing about an earlier
+    // request under the same key, so calling it a failure would invite a
+    // retry under a new key; a retry under this same key is safe.
+    outcome:
+      result.outcome === "definite_failure" && result.providerStatus === 429
+        ? "outcome_unknown"
+        : result.outcome,
   };
 }
 

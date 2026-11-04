@@ -71,12 +71,17 @@ export const communications = pgTable(
     // - reminderAttemptStartedAt: when the current attempt was first claimed
     //   (database clock). An email attempt may be resent under its own
     //   provider idempotency key only while that key is still honored.
+    // - reminderClaimToken: fencing value rewritten by every claim and
+    //   reclaim. A sender re-checks it, under a row lock, immediately before
+    //   calling a provider, so a claimant that stalled after another sender
+    //   took over can never send.
     reminderAttempt: integer("reminder_attempt"),
     reminderAutomatedAttempts: integer("reminder_automated_attempts"),
     reminderOutcome: varchar("reminder_outcome", { length: 32 }),
     reminderAttemptStartedAt: timestamp("reminder_attempt_started_at", {
       withTimezone: true,
     }),
+    reminderClaimToken: uuid("reminder_claim_token"),
   },
   (table) => ({
     tenantIdUq: uniqueIndex("communications_practice_id_uq").on(

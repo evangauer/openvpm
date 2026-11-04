@@ -116,7 +116,10 @@ function createDb(opts?: {
   practiceRows?: unknown[];
   claimResults?: unknown[][];
   reclaimResults?: unknown[][];
+  /** Pre-provider claim fence results; default: the claim still owns it. */
+  fenceResults?: unknown[][];
 }) {
+  const fenceResults = [...(opts?.fenceResults ?? [])];
   const selectResults = [
     opts?.practiceRows ?? [{ id: PRACTICE_ID }],
     ...(opts?.selectResults ?? []),
@@ -124,7 +127,16 @@ function createDb(opts?: {
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
     const afterWhere = {
-      limit: vi.fn(async () => result),
+      limit: vi.fn(() =>
+        Object.assign(Promise.resolve(result), {
+          // The claim fence (select ... for update) isn't one of the queued
+          // reads: hand the queued result back and answer from fenceResults.
+          for: vi.fn(async () => {
+            selectResults.unshift(result);
+            return fenceResults.shift() ?? [{ id: COMMUNICATION_ID }];
+          }),
+        }),
+      ),
       orderBy: vi.fn(async () => result),
       then: (
         resolve: (value: unknown[]) => unknown,
@@ -156,7 +168,14 @@ function createDb(opts?: {
     ) => Promise.resolve(undefined).then(resolve, reject),
   }));
   const insert = vi.fn(() => ({ values: insertValues }));
-  const updateReturning = vi.fn(async () => reclaimResults.shift() ?? []);
+  let lastSet: Record<string, unknown> = {};
+  // The SMS-to-email switch succeeds by default; other updates read from
+  // reclaimResults.
+  const updateReturning = vi.fn(async () =>
+    Object.keys(lastSet).sort().join(",") === "channel,updatedAt"
+      ? [{ id: COMMUNICATION_ID }]
+      : (reclaimResults.shift() ?? []),
+  );
   const updateWhere = vi.fn(() => ({
     returning: updateReturning,
     then: (
@@ -164,7 +183,10 @@ function createDb(opts?: {
       reject?: (error: unknown) => unknown,
     ) => Promise.resolve(undefined).then(resolve, reject),
   }));
-  const updateSet = vi.fn(() => ({ where: updateWhere }));
+  const updateSet = vi.fn((values: Record<string, unknown>) => {
+    lastSet = values;
+    return { where: updateWhere };
+  });
   const update = vi.fn(() => ({ set: updateSet }));
 
   const db: Record<string, unknown> = {
@@ -1669,7 +1691,8 @@ describe("appointment reminder state transitions", () => {
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
   });
 
-  it("records a failed email when the provider call throws", async () => {
+  it("records delivery unknown when the provider call throws", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
     mocks.sendAppointmentReminder.mockRejectedValueOnce(
       new Error("Email provider timed out"),
     );
@@ -1681,17 +1704,73 @@ describe("appointment reminder state transitions", () => {
       callerWithDb(db).sendAppointmentReminder({
         appointmentId: APPOINTMENT_ID,
       }),
-    ).rejects.toThrow("Email provider timed out");
+    ).rejects.toThrow("did not confirm");
 
-    // Raw error text is logged server-side, not shown in the timeline.
-    expect(updateSet).toHaveBeenCalledWith(
+    // The request may have reached the provider: never a retryable failure.
+    expect(updateSet).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        status: "failed",
-        content: expect.stringContaining(
-          ": An unexpected error stopped the reminder.",
-        ),
+        status: "pending",
+        reminderOutcome: "outcome_unknown",
       }),
     );
+    // Raw error text is logged server-side, not shown in the timeline.
+    expect(updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Email provider timed out"),
+      }),
+    );
+  });
+
+  it("records delivery unknown when the send transaction fails after the provider call", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: true,
+      id: "email-accepted-before-commit",
+    });
+    const { db, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+    });
+    const caller = callerWithDb(db);
+    const passthrough = (_practiceId: string, fn: (tx: unknown) => unknown) =>
+      fn(mocks.durableDb);
+    mocks.withDurableSmsCommunication
+      .mockImplementationOnce(passthrough) // claim
+      .mockImplementationOnce(async (_practiceId, fn) => {
+        await fn(mocks.durableDb);
+        throw new Error("Connection terminated during COMMIT");
+      });
+
+    await expect(
+      caller.sendAppointmentReminder({ appointmentId: APPOINTMENT_ID }),
+    ).rejects.toThrow("did not confirm");
+
+    expect(mocks.sendAppointmentReminder).toHaveBeenCalledOnce();
+    expect(updateSet).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "pending",
+        reminderOutcome: "outcome_unknown",
+      }),
+    );
+    expect(updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "failed" }),
+    );
+  });
+
+  it("never sends when another claim took the reminder over", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+      fenceResults: [[]],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+    // The overtaken claim writes nothing over the claim that replaced it.
+    expect(updateSet).not.toHaveBeenCalled();
   });
 
   it("checks the sender gate before claiming so a blocked send leaves no row", async () => {
@@ -1745,9 +1824,10 @@ describe("appointment reminder state transitions", () => {
       }),
     );
     expect(mocks.assertOutboundEmailAllowed).toHaveBeenCalledOnce();
-    // The email claim and its "sent" outcome commit outside the request
-    // transaction, so a rolled-back request can't erase an accepted send.
-    expect(mocks.withDurableSmsCommunication).toHaveBeenCalledTimes(2);
+    // The email claim, the fenced provider call, and its "sent" outcome each
+    // commit outside the request transaction, so a rolled-back request can't
+    // erase an accepted send.
+    expect(mocks.withDurableSmsCommunication).toHaveBeenCalledTimes(3);
   });
 
   it("still rejects a send while another reminder for the visit is in flight or sent", async () => {
@@ -1976,6 +2056,65 @@ describe("appointment reminder state transitions", () => {
       expect.objectContaining({ status: "sent" }),
     );
   });
+
+  it.each([
+    [
+      "the hourly sending quota",
+      () =>
+        mocks.assertOutboundEmailAllowed.mockRejectedValueOnce(
+          new TRPCError({
+            code: "TOO_MANY_REQUESTS",
+            message: "Hourly email limit reached.",
+          }),
+        ),
+    ],
+    [
+      "a provider rejection",
+      () =>
+        mocks.sendAppointmentReminder.mockResolvedValueOnce({
+          success: false,
+          outcome: "definite_failure",
+          error: "Rejected",
+        }),
+    ],
+  ])(
+    "keeps a bulk redispatch of an unconfirmed email unknown when %s stops it",
+    async (_label, stop) => {
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      stop();
+      const { db, updateSet } = createDb({
+        selectResults: [[reminderAppointment()]],
+        claimResults: [[]],
+        reclaimResults: [
+          [
+            {
+              id: COMMUNICATION_ID,
+              attempt: 1,
+              claimToken: "token-2",
+              redispatch: true,
+            },
+          ],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] }),
+      ).resolves.toEqual({ sent: 0, failed: 1 });
+
+      // The first send may have gone out. Recording a failure would let the
+      // next claim start attempt 2 under a new key and email the client twice.
+      expect(updateSet).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          status: "pending",
+          reminderOutcome: "outcome_unknown",
+          content: expect.stringContaining("delivery unknown"),
+        }),
+      );
+      expect(updateSet).not.toHaveBeenCalledWith(
+        expect.objectContaining({ status: "failed" }),
+      );
+    },
+  );
 });
 
 describe("notification query scoping", () => {
@@ -2140,30 +2279,21 @@ describe("notification query scoping", () => {
     expect(source).not.toContain('new Date().toISOString().split("T")[0]');
   });
 
-  it("formats manual appointment reminder labels in the practice timezone", () => {
-    expect(source).toContain(
-      "function formatDate(d: Date | string, timeZone?: string | null)",
-    );
-    expect(source).toContain(
-      "function formatTime(d: Date | string, timeZone?: string | null)",
-    );
+  it("formats appointment reminders in the practice timezone with the sweep's formatter", () => {
+    // Same idempotency key, same message: a staff resend of a sweep email
+    // (or the reverse) must be byte-identical or the provider rejects it.
     expect(source).toContain("practiceTimezone: practices.timezone");
-    expect(source).toContain(
-      "formatDate(appt.startTime, appt.practiceTimezone)",
-    );
-    expect(source).toContain(
-      "formatTime(appt.startTime, appt.practiceTimezone)",
-    );
-    expect(source).not.toContain("formatDate(appt.startTime)");
-    expect(source).not.toContain("formatTime(appt.startTime)");
+    expect(source).toContain("appointmentReminderMessageFields({");
+    expect(source).toContain("appointmentReminderEmailFields({");
+    expect(source.match(/timeZone: appt\.practiceTimezone/g)?.length).toBe(4);
+    expect(source).not.toContain("function formatDate(");
+    expect(source).not.toContain("function formatTime(");
   });
 
   it("keeps customer notification emails branded with a practice display name", () => {
     expect(source).toContain("function practiceDisplayName");
     expect(source).toContain("async function practiceNotificationSettings");
-    expect(source).toContain(
-      "practiceName: practiceDisplayName(appt.practiceName)",
-    );
+    expect(source).toContain("practiceName: appt.practiceName");
     expect(source).toContain("name: practiceDisplayName(practice.name)");
     expect(source).not.toContain("practice?.name");
     expect(source).not.toContain("practice?.phone");

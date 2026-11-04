@@ -5,8 +5,16 @@ const mocks = vi.hoisted(() => {
   const selectResults: unknown[][] = [];
   const eligibilityResults: unknown[][] = [];
   const recipientResults: unknown[][] = [];
+  // Results for the pre-provider claim fence (select id ... for update).
+  // Default: the claim still owns the reminder.
+  const fenceResults: unknown[][] = [];
   const select = vi.fn((fields?: Record<string, unknown>) => {
-    const result = Object.prototype.hasOwnProperty.call(
+    const isFence =
+      Object.keys(fields ?? {}).length === 1 &&
+      Object.prototype.hasOwnProperty.call(fields ?? {}, "id");
+    const result = isFence
+      ? (fenceResults.shift() ?? [{ id: "comm-1" }])
+      : Object.prototype.hasOwnProperty.call(
       fields ?? {},
       "dispatchEligible",
     )
@@ -20,6 +28,7 @@ const mocks = vi.hoisted(() => {
               clientLastName: "Lovelace",
               patientName: "Miso",
               practiceName: "Neighborhood Veterinary",
+              practicePhone: "555-0100",
             },
           ])
         : (selectResults.shift() ?? []);
@@ -32,7 +41,11 @@ const mocks = vi.hoisted(() => {
         reject?: (error: unknown) => unknown,
       ) => Promise<unknown>;
     } = {
-      limit: vi.fn(async () => result),
+      limit: vi.fn(() =>
+        Object.assign(Promise.resolve(result), {
+          for: vi.fn(async () => result),
+        }),
+      ),
       orderBy: vi.fn(async () => result),
       for: vi.fn(() => afterWhere),
       then: (
@@ -61,7 +74,14 @@ const mocks = vi.hoisted(() => {
   // Results for the claim's reclaim UPDATE ... RETURNING (failed or stale
   // pending rows). Default: nothing reclaimable.
   const reclaimResults: unknown[][] = [];
-  const updateReturning = vi.fn(async () => reclaimResults.shift() ?? []);
+  let lastSet: Record<string, unknown> = {};
+  // The SMS-to-email switch succeeds by default; other updates read from
+  // reclaimResults.
+  const updateReturning = vi.fn(async () =>
+    Object.keys(lastSet).sort().join(",") === "channel,updatedAt"
+      ? [{ id: "comm-1" }]
+      : (reclaimResults.shift() ?? []),
+  );
   const updateWhere = vi.fn(() => {
     const done = Promise.resolve(undefined);
     return {
@@ -72,7 +92,10 @@ const mocks = vi.hoisted(() => {
       ) => done.then(resolve, reject),
     };
   });
-  const updateSet = vi.fn(() => ({ where: updateWhere }));
+  const updateSet = vi.fn((values: Record<string, unknown>) => {
+    lastSet = values;
+    return { where: updateWhere };
+  });
   const update = vi.fn(() => ({ set: updateSet }));
   const deleteResults: unknown[][] = [];
   const deleteReturning = vi.fn(
@@ -87,6 +110,7 @@ const mocks = vi.hoisted(() => {
     selectResults,
     eligibilityResults,
     recipientResults,
+    fenceResults,
     claimResults,
     reclaimResults,
     updateReturning,
@@ -193,6 +217,7 @@ afterEach(() => {
   mocks.selectResults.length = 0;
   mocks.eligibilityResults.length = 0;
   mocks.recipientResults.length = 0;
+  mocks.fenceResults.length = 0;
   mocks.claimResults.length = 0;
   mocks.reclaimResults.length = 0;
   mocks.deleteResults.length = 0;
@@ -794,6 +819,115 @@ describe("appointment reminder cron", () => {
     );
   });
 
+  it("records a failed redispatch of an unconfirmed email as delivery unknown", async () => {
+    mocks.selectResults.push([appointment({ preferredContactMethod: "email" })]);
+    mocks.claimResults.push([]);
+    mocks.reclaimResults.push([
+      { id: "comm-unknown", attempt: 1, claimToken: "token-2", redispatch: true },
+    ]);
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: false,
+      outcome: "definite_failure",
+      error: "Rejected",
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({ failed: 1 });
+    // The first send may have gone out; a failure now proves nothing, so the
+    // reminder must never move to a new attempt (and a new key).
+    expect(mocks.updateSet).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "pending",
+        reminderOutcome: "outcome_unknown",
+        content: expect.stringContaining("delivery unknown"),
+      }),
+    );
+    expect(mocks.updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "failed" }),
+    );
+  });
+
+  it("records a recovery pause on a redispatch as delivery unknown", async () => {
+    mocks.selectResults.push([appointment({ preferredContactMethod: "email" })]);
+    mocks.claimResults.push([]);
+    mocks.reclaimResults.push([
+      { id: "comm-unknown", attempt: 1, claimToken: "token-2", redispatch: true },
+    ]);
+    mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({ failed: 1 });
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+    expect(mocks.updateSet).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "pending",
+        reminderOutcome: "outcome_unknown",
+      }),
+    );
+  });
+
+  it("never sends when another claim took the reminder over", async () => {
+    mocks.selectResults.push([appointment({ preferredContactMethod: "email" })]);
+    mocks.fenceResults.push([]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      sent: 0,
+      failed: 0,
+      deduped: 1,
+    });
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
+    // The overtaken claim writes nothing over the claim that replaced it.
+    expect(mocks.updateSet).not.toHaveBeenCalled();
+  });
+
+  it("records delivery unknown when the send transaction fails after the provider accepted", async () => {
+    mocks.selectResults.push([appointment({ preferredContactMethod: "email" })]);
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: true,
+      id: "email-accepted-before-commit",
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const passthrough = async (
+      _db: unknown,
+      _practiceId: string,
+      fn: (tx: unknown) => unknown,
+    ) => fn(mocks.db);
+    mocks.withTenant
+      .mockImplementationOnce(passthrough) // claim
+      .mockImplementationOnce(passthrough) // current recipient
+      .mockImplementationOnce(async (_db, _practiceId, fn) => {
+        await fn(mocks.db);
+        throw new Error("Connection terminated during COMMIT");
+      });
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({ sent: 0, failed: 1 });
+    expect(mocks.sendAppointmentReminder).toHaveBeenCalledOnce();
+    expect(mocks.updateSet).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "pending",
+        reminderOutcome: "outcome_unknown",
+      }),
+    );
+    expect(mocks.updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "failed" }),
+    );
+  });
+
   it("records the SMS reason when SMS fails and the client has no email", async () => {
     mocks.selectResults.push([
       appointment({ clientEmail: null, locationId: null }),
@@ -1021,14 +1155,14 @@ describe("appointment reminder cron query scoping", () => {
     expect(source).toContain("'demoData' -> 'appointmentIds'");
   });
 
-  it("formats reminder appointment times in the practice timezone", () => {
-    expect(source).toContain("function formatAppointmentReminderDateTime");
-    expect(source).toContain("const normalizedTimeZone = timeZone?.trim()");
-    expect(source).toContain("timeZone: normalizedTimeZone");
-    expect(source).toContain(
-      "formatAppointmentReminderDateTime(startDate, appt.practiceTimezone)",
-    );
-    expect(source).not.toContain('startDate.toLocaleTimeString("en-US", {');
+  it("formats reminders with the formatter staff sends use", () => {
+    // Same idempotency key, same message: a sweep resend of a staff email
+    // must be byte-identical or the provider rejects it.
+    expect(source).toContain("appointmentReminderEmailFields({");
+    expect(source).toContain("appointmentReminderMessageFields({");
+    expect(source).toContain("timeZone: appt.practiceTimezone");
+    expect(source).not.toContain("toLocaleTimeString");
+    expect(source).not.toContain("toLocaleDateString");
   });
 
   it("never auto-reclaims failed or pending reminder claims", () => {
