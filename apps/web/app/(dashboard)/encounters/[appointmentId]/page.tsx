@@ -1,5 +1,7 @@
 "use client";
 
+import { browserUuid } from "@/lib/browser-uuid";
+
 import { ReconciliationReasonActions } from "@/components/records/reconciliation-reason-actions";
 
 import { isValidSettingsTaxRate } from "@/lib/settings-policy";
@@ -4048,7 +4050,7 @@ function ChargeCapture({
     setItems((current) => [
       ...current,
       {
-        key: crypto.randomUUID(),
+        key: browserUuid(),
         description: entry.name,
         quantity: itemQuantity,
         unitPrice: entry.defaultPrice,
