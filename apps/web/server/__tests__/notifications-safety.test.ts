@@ -1,12 +1,16 @@
+import { TRPCError } from "@trpc/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
 const mocks = vi.hoisted(() => ({
-  sendAppointmentReminder: vi.fn(async () => ({
-    success: true,
-    id: undefined as string | undefined,
-    error: undefined as string | undefined,
-  })),
+  sendAppointmentReminder: vi.fn(
+    async (): Promise<{
+      success: boolean;
+      id?: string;
+      error?: string;
+      outcome?: "accepted" | "definite_failure" | "outcome_unknown";
+    }> => ({ success: true }),
+  ),
   sendInvoiceEmail: vi.fn(async () => ({
     success: true,
     id: undefined as string | undefined,
@@ -1593,16 +1597,76 @@ describe("appointment reminder state transitions", () => {
       callerWithDb(db).sendAppointmentReminder({
         appointmentId: APPOINTMENT_ID,
       }),
-    ).rejects.toMatchObject({ message: "Mailbox unavailable" });
+    ).rejects.toMatchObject({
+      message: "The email provider rejected the reminder.",
+    });
 
     expect(updateSet).toHaveBeenCalledOnce();
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: "email",
         status: "failed",
-        content: expect.stringContaining(": Mailbox unavailable"),
+        reminderOutcome: "staff_failure",
+        content: expect.stringContaining(
+          ": The email provider rejected the reminder.",
+        ),
       }),
     );
+    expect(mocks.sendAppointmentReminder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^email:reminder:appointment:.*:attempt-1$/,
+        ),
+      }),
+    );
+  });
+
+  it("marks an email with an unknown provider outcome as delivery unknown", async () => {
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: false,
+      id: undefined,
+      outcome: "outcome_unknown",
+      error: "Email send timed out after 10000ms",
+    });
+    const { db, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).rejects.toThrow(/did not confirm the send/);
+
+    expect(updateSet).toHaveBeenCalledOnce();
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "pending",
+        reminderOutcome: "outcome_unknown",
+        content: expect.stringContaining("delivery unknown"),
+      }),
+    );
+  });
+
+  it("explains a conflict on a reminder whose delivery is unknown", async () => {
+    const { db } = createDb({
+      selectResults: [
+        [reminderAppointment()],
+        [{ status: "pending", reminderOutcome: "outcome_unknown" }],
+      ],
+      claimResults: [[]],
+      reclaimResults: [[]],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: expect.stringContaining("may have been delivered"),
+    });
+    expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
   });
 
   it("records a failed email when the provider call throws", async () => {
@@ -1619,10 +1683,13 @@ describe("appointment reminder state transitions", () => {
       }),
     ).rejects.toThrow("Email provider timed out");
 
+    // Raw error text is logged server-side, not shown in the timeline.
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "failed",
-        content: expect.stringContaining(": Email provider timed out"),
+        content: expect.stringContaining(
+          ": An unexpected error stopped the reminder.",
+        ),
       }),
     );
   });
@@ -1698,6 +1765,45 @@ describe("appointment reminder state transitions", () => {
     expect(updateSet).toHaveBeenCalledOnce();
   });
 
+  it("sends a staff SMS retry of a definite failure under a new attempt key", async () => {
+    mocks.sendAppointmentReminderSms.mockResolvedValueOnce({
+      success: true,
+      outcome: "accepted",
+      sid: "SM-retry",
+      attemptId: "attempt-2",
+      replayed: false,
+    } as never);
+    const { db } = createDb({
+      selectResults: [
+        [
+          reminderAppointment({
+            clientPhone: "(555) 555-0100",
+            preferredContactMethod: "sms",
+            smsConsent: true,
+          }),
+        ],
+        [{ locationId: LOCATION_ID }],
+      ],
+      claimResults: [[]],
+      reclaimResults: [[{ id: COMMUNICATION_ID, attempt: 2 }]],
+    });
+
+    await expect(
+      callerWithDb(db).sendAppointmentReminder({
+        appointmentId: APPOINTMENT_ID,
+      }),
+    ).resolves.toEqual({ success: true, channel: "sms" });
+
+    // A new key is a new provider send rather than a replay of the failure.
+    expect(mocks.sendAppointmentReminderSms).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(
+          /^sms:reminder:appointment:.*:attempt-2$/,
+        ),
+      }),
+    );
+  });
+
   it("keeps an SMS with an unknown provider outcome pending", async () => {
     mocks.sendAppointmentReminderSms.mockRejectedValueOnce(
       new Error("Provider unavailable"),
@@ -1729,10 +1835,13 @@ describe("appointment reminder state transitions", () => {
     mocks.sendAppointmentReminderSms.mockResolvedValueOnce({
       success: false,
       outcome: "definite_failure",
-      error: "Recipient opted out",
+      error: "Recipient has opted out of SMS (STOP).",
     } as never);
     mocks.assertOutboundEmailAllowed.mockRejectedValueOnce(
-      new Error("Email sending is temporarily unavailable."),
+      new TRPCError({
+        code: "SERVICE_UNAVAILABLE",
+        message: "Email sending is temporarily unavailable.",
+      }),
     );
     const { db, updateSet } = createDb({
       selectResults: [
@@ -1757,8 +1866,9 @@ describe("appointment reminder state transitions", () => {
       expect.objectContaining({
         channel: "email",
         status: "failed",
+        // Both reasons survive the fallback.
         content: expect.stringContaining(
-          ": Email sending is temporarily unavailable.",
+          ": Text message: The client has opted out of text messages. Email fallback: Email sending is temporarily unavailable.",
         ),
       }),
     );
@@ -1782,7 +1892,57 @@ describe("appointment reminder state transitions", () => {
       expect.objectContaining({
         channel: "email",
         status: "failed",
-        content: expect.stringContaining(": Mailbox unavailable"),
+        reminderOutcome: "staff_failure",
+        content: expect.stringContaining(
+          ": The email provider rejected the reminder.",
+        ),
+      }),
+    );
+  });
+
+  it("never marks an accepted bulk email as failed when recording it throws", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: true,
+      id: "email-accepted-1",
+      error: undefined,
+    });
+    const { db, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+    });
+    updateSet.mockImplementationOnce(() => {
+      throw new Error("projection unavailable");
+    });
+
+    await expect(
+      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] }),
+    ).resolves.toEqual({ sent: 1, failed: 0 });
+
+    expect(updateSet).toHaveBeenCalledOnce();
+    expect(updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "failed" }),
+    );
+  });
+
+  it("records a bulk email with an unknown provider outcome as delivery unknown", async () => {
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: false,
+      id: undefined,
+      outcome: "outcome_unknown",
+      error: "Email send timed out after 10000ms",
+    });
+    const { db, updateSet } = createDb({
+      selectResults: [[reminderAppointment()]],
+    });
+
+    await expect(
+      callerWithDb(db).sendBulkReminders({ appointmentIds: [APPOINTMENT_ID] }),
+    ).resolves.toEqual({ sent: 0, failed: 1 });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "pending",
+        reminderOutcome: "outcome_unknown",
       }),
     );
   });

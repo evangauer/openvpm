@@ -21,6 +21,8 @@ export function computeOccurrenceDate(
   n: number,
   timeZone?: string | null,
 ): Date {
+  // The first visit is exactly what staff booked, even in a repeated hour.
+  if (n === 0) return new Date(baseDate.getTime());
   const resolvedTimeZone = resolveRecurrenceTimeZone(timeZone);
   const base = recurrenceBaseParts(baseDate, resolvedTimeZone);
   const occurrenceDate = recurrenceDateInput(
@@ -30,15 +32,80 @@ export function computeOccurrenceDate(
     n,
   );
 
-  return dateInputTimeUtcInstant(
+  return wallClockInstant(
     occurrenceDate,
-    {
-      hour: base.hour,
-      minute: base.minute,
-      second: base.second,
-    },
+    { hour: base.hour, minute: base.minute, second: base.second },
     resolvedTimeZone,
   );
+}
+
+/**
+ * Resolve a practice wall-clock time to an instant with fixed DST rules,
+ * independent of which side of UTC the zone is on:
+ * - a time skipped by spring-forward moves later by the gap (2:30 → 3:30);
+ * - a time repeated at fall-back uses its first occurrence.
+ * Both candidates come from the zone's offsets a day before and after.
+ */
+function wallClockInstant(
+  dateInput: string,
+  time: { hour: number; minute: number; second: number },
+  timeZone: string,
+): Date {
+  const [year, month, day] = dateInput.split("-").map(Number) as [
+    number,
+    number,
+    number,
+  ];
+  const wallMs = Date.UTC(
+    year,
+    month - 1,
+    day,
+    time.hour,
+    time.minute,
+    time.second,
+  );
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const offsetBefore = timeZoneOffsetMs(new Date(wallMs - DAY_MS), timeZone);
+  const offsetAfter = timeZoneOffsetMs(new Date(wallMs + DAY_MS), timeZone);
+  if (offsetBefore === null || offsetAfter === null) {
+    return dateInputTimeUtcInstant(dateInput, time, timeZone);
+  }
+
+  const valid = [wallMs - offsetBefore, wallMs - offsetAfter]
+    .filter(
+      (instant) =>
+        timeZoneOffsetMs(new Date(instant), timeZone) === wallMs - instant,
+    )
+    .sort((a, b) => a - b);
+  // Repeated time: the earliest instant. Skipped time: read it with the
+  // offset in effect before the change, which lands after the gap.
+  return new Date(valid[0] ?? wallMs - offsetBefore);
+}
+
+function timeZoneOffsetMs(instant: Date, timeZone: string): number | null {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(instant);
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value);
+  const local = Date.UTC(
+    value("year"),
+    value("month") - 1,
+    value("day"),
+    value("hour"),
+    value("minute"),
+    value("second"),
+  );
+  if (Number.isNaN(local)) return null;
+  // Intl reports whole seconds; drop the instant's milliseconds to match.
+  return local - Math.floor(instant.getTime() / 1000) * 1000;
 }
 
 export function resolveRecurrenceTimeZone(timeZone?: string | null): string {

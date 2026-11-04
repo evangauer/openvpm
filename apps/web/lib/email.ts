@@ -59,7 +59,8 @@ export interface EmailProviderEvidence {
     | "provider_rejected"
     | "send_timeout"
     | "provider_exception"
-    | "missing_provider_id";
+    | "missing_provider_id"
+    | "idempotency_conflict";
 }
 
 function emailSendTimeoutMessage(): string {
@@ -229,12 +230,24 @@ async function dispatchEmail(
           : error,
       );
       const timedOut = controller.signal.aborted;
+      // An idempotency conflict means an earlier request with this key exists
+      // (or is still running), so the email may already have been sent.
+      const idempotencyConflict =
+        error.name === "invalid_idempotent_request" ||
+        error.name === "concurrent_idempotent_requests";
       return {
         success: false,
         provider,
         error: timedOut ? emailSendTimeoutMessage() : error.message,
-        outcome: timedOut ? "outcome_unknown" : "definite_failure",
-        failureCode: timedOut ? "send_timeout" : "provider_rejected",
+        outcome:
+          timedOut || idempotencyConflict
+            ? "outcome_unknown"
+            : "definite_failure",
+        failureCode: timedOut
+          ? "send_timeout"
+          : idempotencyConflict
+            ? "idempotency_conflict"
+            : "provider_rejected",
       };
     }
 
@@ -310,7 +323,14 @@ export async function sendAppointmentReminder(data: {
   practiceName: string;
   practicePhone?: string;
   practiceAddress?: string;
-}): Promise<{ success: boolean; id?: string; error?: string }> {
+  /** Stable per send attempt, so a replayed request never emails twice. */
+  idempotencyKey: string;
+}): Promise<{
+  success: boolean;
+  id?: string;
+  error?: string;
+  outcome: EmailProviderOutcome;
+}> {
   const body = `
     <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${data.clientName},</p>
     <p style="margin:0 0 24px;color:#111827;font-size:15px;line-height:1.6;">This is a friendly reminder about an upcoming appointment for <strong>${data.patientName}</strong>.</p>
@@ -336,13 +356,21 @@ export async function sendAppointmentReminder(data: {
 
   const html = emailLayout(data.practiceName, body, footer);
 
-  const result = await sendEmail({
+  // Callers must know when the provider may have accepted the email, so the
+  // reminder is never retried after a timeout or idempotency conflict.
+  const result = await dispatchEmail({
     to: data.to,
     subject: `Appointment Reminder for ${data.patientName} – ${data.appointmentDate}`,
     html,
+    idempotencyKey: data.idempotencyKey,
   });
 
-  return { success: result.success, id: result.id, error: result.error };
+  return {
+    success: result.success,
+    id: result.id,
+    error: result.error,
+    outcome: result.outcome,
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -320,6 +320,15 @@ jobs:
           REMINDER_POLICY_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run lib/messaging/__tests__/appointment-reminder-eligibility.integration.test.ts
 
+      # A reminder row is claimed by one conditional UPDATE. Race 16 SMS and
+      # email claimers per row state (new, pending, stale, failed, retried,
+      # sent, unknown outcome) on a disposable database and prove at most one
+      # claim wins, so a client is never sent a duplicate reminder.
+      - name: Execute appointment reminder claim concurrency contract
+        env:
+          APPOINTMENT_REMINDER_CLAIM_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run lib/messaging/__tests__/appointment-reminder-claim.integration.test.ts
+
       - name: Prove tenant/RLS pool-reuse isolation
         run: pnpm --filter @openpims/db db:rls:test
 

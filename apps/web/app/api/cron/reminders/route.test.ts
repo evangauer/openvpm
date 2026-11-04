@@ -603,12 +603,19 @@ describe("appointment reminder cron", () => {
     });
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
-    // Only the conditional reclaim ran; no outcome was projected.
-    expect(mocks.updateSet).toHaveBeenCalledOnce();
-    expect(mocks.updateSet).toHaveBeenCalledWith(
+    // Only the conditional reclaim and the stale unreserved SMS recovery ran;
+    // no outcome was projected.
+    expect(mocks.updateSet).toHaveBeenCalledTimes(2);
+    expect(mocks.updateSet).toHaveBeenNthCalledWith(
+      1,
       expect.objectContaining({ status: "pending" }),
     );
-    expect(mocks.updateReturning).toHaveBeenCalledOnce();
+    expect(mocks.updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "failed" }),
+    );
+    expect(mocks.updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "sent" }),
+    );
   });
 
   it("keeps fresh pending scheduled reminder claims deduped", async () => {
@@ -721,7 +728,89 @@ describe("appointment reminder cron", () => {
     expect(mocks.updateSet).toHaveBeenLastCalledWith(
       expect.objectContaining({
         status: "failed",
-        content: expect.stringContaining(": Mailbox unavailable"),
+        reminderOutcome: "automated_failure",
+        content: expect.stringContaining(
+          ": The email provider rejected the reminder.",
+        ),
+      }),
+    );
+    // Raw provider text stays in server logs, not the client timeline.
+    expect(mocks.updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Mailbox unavailable"),
+      }),
+    );
+    expect(mocks.sendAppointmentReminder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: expect.stringMatching(/^email:reminder:appointment:.*:attempt-1$/),
+      }),
+    );
+  });
+
+  it("never marks an accepted email as failed when recording it throws", async () => {
+    mocks.selectResults.push([appointment({ preferredContactMethod: "email" })]);
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: true,
+      id: "email-accepted-1",
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.updateSet.mockImplementationOnce(() => {
+      throw new Error("projection unavailable");
+    });
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({ failed: 1 });
+    expect(mocks.updateSet).toHaveBeenCalledOnce();
+    expect(mocks.updateSet).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "failed" }),
+    );
+  });
+
+  it("marks an email whose provider outcome is unknown as never retryable", async () => {
+    mocks.selectResults.push([appointment({ preferredContactMethod: "email" })]);
+    mocks.sendAppointmentReminder.mockResolvedValueOnce({
+      success: false,
+      outcome: "outcome_unknown",
+      error: "Email send timed out after 10000ms",
+    });
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      sent: 0,
+      failed: 1,
+    });
+    expect(mocks.updateSet).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "pending",
+        reminderOutcome: "outcome_unknown",
+        content: expect.stringContaining("delivery unknown"),
+      }),
+    );
+  });
+
+  it("records the SMS reason when SMS fails and the client has no email", async () => {
+    mocks.selectResults.push([
+      appointment({ clientEmail: null, locationId: null }),
+    ]);
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/cron/reminders"),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({ failed: 1 });
+    expect(mocks.updateSet).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        channel: "sms",
+        status: "failed",
+        content: expect.stringContaining(
+          "No active texting number is set up for this location.",
+        ),
       }),
     );
   });

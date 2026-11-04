@@ -208,8 +208,20 @@ describe("sendEmail", () => {
         appointmentDate: "July 2",
         appointmentTime: "9:00 AM",
         practiceName: "Neighborhood Veterinary",
+        idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
       }),
-    ).resolves.toMatchObject({ success: true, id: "email-appt-1" });
+    ).resolves.toMatchObject({
+      success: true,
+      id: "email-appt-1",
+      outcome: "accepted",
+    });
+    expect(mocks.resendSend).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
+      }),
+    );
 
     await expect(
       sendVaccinationReminder({
@@ -439,6 +451,75 @@ describe("sendEmail", () => {
       "[Email] Resend error:",
       expect.objectContaining({ name: "application_error" }),
     );
+  });
+});
+
+describe("appointment reminder email outcomes", () => {
+  const reminder = {
+    to: "client@example.com",
+    clientName: "Ada Lovelace",
+    patientName: "Miso",
+    appointmentDate: "July 2",
+    appointmentTime: "9:00 AM",
+    practiceName: "Neighborhood Veterinary",
+    idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
+  };
+
+  it("reports a timed-out reminder as an unknown outcome", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.resendSend.mockImplementation(
+      (_payload: unknown, options?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () =>
+            reject(new Error("aborted")),
+          );
+        }),
+    );
+    const { EMAIL_SEND_TIMEOUT_MS, sendAppointmentReminder } =
+      await loadEmail();
+
+    const result = sendAppointmentReminder(reminder);
+    await vi.advanceTimersByTimeAsync(EMAIL_SEND_TIMEOUT_MS);
+
+    await expect(result).resolves.toMatchObject({
+      success: false,
+      outcome: "outcome_unknown",
+    });
+  });
+
+  it.each(["invalid_idempotent_request", "concurrent_idempotent_requests"])(
+    "reports a %s conflict as an unknown outcome",
+    async (name) => {
+      vi.stubEnv("RESEND_API_KEY", "re_test");
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      mocks.resendSend.mockResolvedValueOnce({
+        data: null,
+        error: { message: "conflict", statusCode: 409, name },
+      });
+      const { sendAppointmentReminder } = await loadEmail();
+
+      await expect(sendAppointmentReminder(reminder)).resolves.toMatchObject({
+        success: false,
+        outcome: "outcome_unknown",
+      });
+    },
+  );
+
+  it("reports a provider rejection as a definite failure", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.resendSend.mockResolvedValueOnce({
+      data: null,
+      error: { message: "bad from", statusCode: 422, name: "validation_error" },
+    });
+    const { sendAppointmentReminder } = await loadEmail();
+
+    await expect(sendAppointmentReminder(reminder)).resolves.toMatchObject({
+      success: false,
+      outcome: "definite_failure",
+    });
   });
 });
 

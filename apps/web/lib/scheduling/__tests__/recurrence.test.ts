@@ -174,6 +174,84 @@ describe("computeOccurrenceDate", () => {
     ).toBe("2026-11-01T05:30:00.000Z"); // 1:30 AM EDT, not EST
   });
 
+  it("moves a monthly visit that lands in the spring-forward gap later by the gap", () => {
+    // Monthly on the 8th at 2:30 AM; Mar 8, 2026 has no 2:30 AM in New York.
+    const base = new Date("2026-02-08T07:30:00Z"); // 2:30 AM EST
+    const occurrences = [0, 1, 2].map((n) =>
+      computeOccurrenceDate(base, "monthly", 1, n, NY),
+    );
+
+    expect(occurrences.map((d) => localWallClock(d, NY))).toEqual([
+      "2026-02-08 02:30",
+      "2026-03-08 03:30",
+      "2026-04-08 02:30",
+    ]);
+    expect(occurrences[1]!.toISOString()).toBe("2026-03-08T07:30:00.000Z");
+  });
+
+  it("uses the first repeated time for a monthly visit that lands in the fall-back overlap", () => {
+    // Monthly on the 1st at 1:30 AM; 1:30 AM happens twice on Nov 1, 2026.
+    const base = new Date("2026-10-01T05:30:00Z"); // 1:30 AM EDT
+    const occurrences = [1, 2].map((n) =>
+      computeOccurrenceDate(base, "monthly", 1, n, NY),
+    );
+
+    expect(occurrences.map((d) => d.toISOString())).toEqual([
+      "2026-11-01T05:30:00.000Z", // 1:30 AM EDT (first)
+      "2026-12-01T06:30:00.000Z", // 1:30 AM EST
+    ]);
+  });
+
+  it("keeps the local time of a series that starts in the second repeated hour", () => {
+    // 1:30 AM EST, the second 1:30 AM on Nov 1, 2026.
+    const base = new Date("2026-11-01T06:30:00Z");
+    const occurrences = [0, 1, 2].map((n) =>
+      computeOccurrenceDate(base, "weekly", 1, n, NY),
+    );
+
+    // The booked first visit is kept exactly, not moved to the first 1:30 AM.
+    expect(occurrences[0]!.toISOString()).toBe("2026-11-01T06:30:00.000Z");
+    expect(occurrences.map((d) => localWallClock(d, NY))).toEqual([
+      "2026-11-01 01:30",
+      "2026-11-08 01:30",
+      "2026-11-15 01:30",
+    ]);
+  });
+
+  it("handles southern-hemisphere DST gaps and overlaps", () => {
+    const sydney = "Australia/Sydney";
+    // Oct 4, 2026: 2:00 AM jumps to 3:00 AM.
+    const gapBase = new Date("2026-09-26T16:30:00Z"); // Sep 27 2:30 AM AEST
+    expect(
+      [0, 1, 2].map((n) =>
+        localWallClock(
+          computeOccurrenceDate(gapBase, "weekly", 1, n, sydney),
+          sydney,
+        ),
+      ),
+    ).toEqual(["2026-09-27 02:30", "2026-10-04 03:30", "2026-10-11 02:30"]);
+
+    // Apr 5, 2026: 3:00 AM falls back to 2:00 AM, so 2:30 AM happens twice.
+    const overlapBase = new Date("2026-03-28T15:30:00Z"); // Mar 29 2:30 AM AEDT
+    expect(
+      computeOccurrenceDate(overlapBase, "weekly", 1, 1, sydney).toISOString(),
+    ).toBe("2026-04-04T15:30:00.000Z"); // 2:30 AM AEDT (first)
+  });
+
+  it("shifts by a half-hour DST gap", () => {
+    const lordHowe = "Australia/Lord_Howe";
+    // Oct 4, 2026: 2:00 AM jumps to 2:30 AM.
+    const base = new Date("2026-09-26T15:45:00Z"); // Sep 27 2:15 AM (+10:30)
+    expect(
+      [0, 1].map((n) =>
+        localWallClock(
+          computeOccurrenceDate(base, "weekly", 1, n, lordHowe),
+          lordHowe,
+        ),
+      ),
+    ).toEqual(["2026-09-27 02:15", "2026-10-04 02:45"]);
+  });
+
   it("clamps month ends on the practice's local calendar, not UTC", () => {
     // 8:00 PM EST on Dec 31, 2026 is already Jan 1 in UTC.
     const base = new Date("2027-01-01T01:00:00Z");

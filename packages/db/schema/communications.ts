@@ -5,12 +5,14 @@ import {
   varchar,
   text,
   boolean,
+  integer,
   jsonb,
   timestamp,
   index,
+  check,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { baseColumns } from "./common";
 import { practices } from "./practices";
 import { users } from "./users";
@@ -54,6 +56,21 @@ export const communications = pgTable(
     // treats NULLs as distinct, so the unique index only constrains real keys
     // and makes "send exactly once" race-safe under webhook/cron retries.
     dedupeKey: varchar("dedupe_key", { length: 160 }),
+    // Appointment reminder retry bookkeeping. Null on every other
+    // communication and on reminder rows written before retries existed;
+    // those are never reclaimed automatically.
+    // - reminderAttempt: send generation, bumped when a definite failure is
+    //   retried. It scopes provider idempotency keys, so a retry is a new
+    //   send while a reclaimed abandoned claim reuses the old key.
+    // - reminderAutomatedAttempts: how many times the hourly sweep claimed
+    //   this reminder; bounds automatic retries.
+    // - reminderOutcome: why the row is not sent. "staff_failure" and
+    //   "automated_failure" are definite failures that may be retried;
+    //   "outcome_unknown" means the provider may have delivered it and the
+    //   row must never be retried automatically.
+    reminderAttempt: integer("reminder_attempt"),
+    reminderAutomatedAttempts: integer("reminder_automated_attempts"),
+    reminderOutcome: varchar("reminder_outcome", { length: 32 }),
   },
   (table) => ({
     tenantIdUq: uniqueIndex("communications_practice_id_uq").on(
@@ -90,6 +107,10 @@ export const communications = pgTable(
       table.providerMessageId,
       table.channel,
       table.direction,
+    ),
+    reminderOutcomeCheck: check(
+      "communications_reminder_outcome_check",
+      sql`${table.reminderOutcome} is null or ${table.reminderOutcome} in ('staff_failure', 'automated_failure', 'outcome_unknown')`,
     ),
   }),
 );
