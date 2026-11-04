@@ -145,6 +145,37 @@ function controlledSubstanceLedgerLockKey(input: {
   return `controlled-substance:${input.practiceId}:${input.drugName}:${input.unit}`;
 }
 
+function isSameControlledSubstanceSubmission(
+  existing: typeof controlledSubstanceLog.$inferSelect,
+  input: {
+    drugName: string;
+    deaSchedule: string;
+    action: string;
+    quantity: string;
+    unit: string;
+    patientId?: string | null;
+    witnessedBy?: string | null;
+    lotNumber?: string | null;
+    notes?: string | null;
+    performedAt?: string;
+  }
+) {
+  return (
+    existing.drugName === input.drugName &&
+    existing.deaSchedule === input.deaSchedule &&
+    existing.action === input.action &&
+    controlledSubstanceQuantityMillis(existing.quantity) ===
+      controlledSubstanceQuantityMillis(input.quantity) &&
+    existing.unit === input.unit &&
+    (existing.patientId ?? null) === (input.patientId ?? null) &&
+    (existing.witnessedBy ?? null) === (input.witnessedBy ?? null) &&
+    (existing.lotNumber ?? null) === (input.lotNumber ?? null) &&
+    (existing.notes ?? null) === (input.notes ?? null) &&
+    (input.performedAt === undefined ||
+      existing.performedAt.getTime() === new Date(input.performedAt).getTime())
+  );
+}
+
 function activePracticeWhere(practiceId: string) {
   return and(eq(practices.id, practiceId), isNull(practices.deletedAt));
 }
@@ -454,6 +485,9 @@ export const controlledSubstancesRouter = createRouter({
           CONTROLLED_SUBSTANCE_NOTES_MAX_LENGTH
         ),
         performedAt: performedAtInput.optional(),
+        // One id per form submission. Repeats of the same submission replay
+        // the original entry instead of writing a second regulated record.
+        operationId: z.string().guid(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -477,6 +511,32 @@ export const controlledSubstancesRouter = createRouter({
       return ctx.db.transaction(async (tx) => {
         const txCtx = { db: tx, practiceId: ctx.practiceId };
         await assertActivePractice(txCtx);
+
+        const operationKey = `controlled-substance-entry:${ctx.practiceId}:${input.operationId}`;
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${operationKey}, 0))`
+        );
+        const [existing] = await tx
+          .select()
+          .from(controlledSubstanceLog)
+          .where(
+            and(
+              eq(controlledSubstanceLog.practiceId, ctx.practiceId),
+              eq(controlledSubstanceLog.operationId, input.operationId)
+            )
+          )
+          .limit(1);
+        if (existing) {
+          if (!isSameControlledSubstanceSubmission(existing, input)) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This log entry submission was already recorded with different details. Refresh and review the log before adding another entry.",
+            });
+          }
+          return existing;
+        }
+
         if (input.patientId) {
           await assertPatientBelongsToPractice(txCtx, input.patientId);
         }
@@ -504,6 +564,7 @@ export const controlledSubstancesRouter = createRouter({
             performedAt: input.performedAt
               ? new Date(input.performedAt)
               : new Date(),
+            operationId: input.operationId,
           })
           .returning();
 

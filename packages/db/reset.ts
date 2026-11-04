@@ -68,6 +68,7 @@ const TABLES = [
   "patient_allergies",
   "patients",
   "clients",
+  "inventory_stock_adjustments",
   "products",
   "services",
   "users",

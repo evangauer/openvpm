@@ -18,6 +18,7 @@ export * from "./dispense-charge-queue";
 export * from "./communications";
 export * from "./auth";
 export * from "./controlled-substances";
+export * from "./inventory-stock-adjustments";
 export * from "./files";
 export * from "./consents";
 export * from "./templates";
