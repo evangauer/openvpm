@@ -36,6 +36,7 @@ import {
   recordAppointmentReminderOutcome,
   reminderFailureReason,
   smsReminderFailureReason,
+  switchAppointmentReminderClaimToEmail,
 } from "@/lib/messaging/appointment-reminder";
 import { lockPracticeForExternalSideEffects } from "@/lib/recovery-hold";
 
@@ -607,6 +608,12 @@ export async function GET(request: Request) {
             } else {
               // SMS blocked (e.g. opted out) — fall back to email.
               claimedChannel = "email";
+              await withTenant(db, appt.practiceId, (tx) =>
+                switchAppointmentReminderClaimToEmail(tx, {
+                  practiceId: appt.practiceId,
+                  communicationId,
+                }),
+              );
               const email = await emailReminder(communicationId, attempt);
               if (email.result === "sent") {
                 sent++;
@@ -614,7 +621,7 @@ export async function GET(request: Request) {
                 await recordReminderOutcome({
                   practiceId: appt.practiceId,
                   communicationId,
-                  channel: email.result === "unknown" ? "email" : "sms",
+                  channel: "email",
                   content: reminderContent(
                     email.result,
                     `Text message: ${smsReason} Email fallback: ${email.reason}`,

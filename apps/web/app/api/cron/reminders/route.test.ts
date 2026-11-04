@@ -603,9 +603,9 @@ describe("appointment reminder cron", () => {
     });
     expect(mocks.sendAppointmentReminderSms).not.toHaveBeenCalled();
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
-    // Only the conditional reclaim and the stale unreserved SMS recovery ran;
-    // no outcome was projected.
-    expect(mocks.updateSet).toHaveBeenCalledTimes(2);
+    // Only the conditional reclaim, the expired email claim check, and the
+    // stale unreserved SMS recovery ran; no outcome was projected.
+    expect(mocks.updateSet).toHaveBeenCalledTimes(3);
     expect(mocks.updateSet).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({ status: "pending" }),

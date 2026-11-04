@@ -57,6 +57,7 @@ export interface EmailProviderEvidence {
   failureCode?:
     | "provider_not_configured"
     | "provider_rejected"
+    | "provider_unavailable"
     | "send_timeout"
     | "provider_exception"
     | "missing_provider_id"
@@ -235,19 +236,28 @@ async function dispatchEmail(
       const idempotencyConflict =
         error.name === "invalid_idempotent_request" ||
         error.name === "concurrent_idempotent_requests";
+      // The SDK turns network errors, unreadable success bodies, and gateway
+      // failures into an error result instead of throwing. Without a 4xx
+      // answer the request may have been accepted, so only a 4xx (including
+      // 429, which Resend rejects before sending) is a definite failure.
+      const statusCode = (error as { statusCode?: number | null }).statusCode;
+      const noDefiniteAnswer =
+        typeof statusCode !== "number" || statusCode >= 500 || statusCode < 400;
       return {
         success: false,
         provider,
         error: timedOut ? emailSendTimeoutMessage() : error.message,
         outcome:
-          timedOut || idempotencyConflict
+          timedOut || idempotencyConflict || noDefiniteAnswer
             ? "outcome_unknown"
             : "definite_failure",
         failureCode: timedOut
           ? "send_timeout"
           : idempotencyConflict
             ? "idempotency_conflict"
-            : "provider_rejected",
+            : noDefiniteAnswer
+              ? "provider_unavailable"
+              : "provider_rejected",
       };
     }
 

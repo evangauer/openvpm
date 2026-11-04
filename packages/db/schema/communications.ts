@@ -67,10 +67,16 @@ export const communications = pgTable(
     // - reminderOutcome: why the row is not sent. "staff_failure" and
     //   "automated_failure" are definite failures that may be retried;
     //   "outcome_unknown" means the provider may have delivered it and the
-    //   row must never be retried automatically.
+    //   row must never be retried under a new attempt.
+    // - reminderAttemptStartedAt: when the current attempt was first claimed
+    //   (database clock). An email attempt may be resent under its own
+    //   provider idempotency key only while that key is still honored.
     reminderAttempt: integer("reminder_attempt"),
     reminderAutomatedAttempts: integer("reminder_automated_attempts"),
     reminderOutcome: varchar("reminder_outcome", { length: 32 }),
+    reminderAttemptStartedAt: timestamp("reminder_attempt_started_at", {
+      withTimezone: true,
+    }),
   },
   (table) => ({
     tenantIdUq: uniqueIndex("communications_practice_id_uq").on(

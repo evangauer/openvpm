@@ -523,6 +523,123 @@ describe("appointment reminder email outcomes", () => {
   });
 });
 
+describe("appointment reminder email outcomes through the Resend SDK", () => {
+  const reminder = {
+    to: "client@example.com",
+    clientName: "Ada Lovelace",
+    patientName: "Miso",
+    appointmentDate: "July 2",
+    appointmentTime: "9:00 AM",
+    practiceName: "Neighborhood Veterinary",
+    idempotencyKey: "email:reminder:appointment:appt-1:attempt-1",
+  };
+
+  // Drive the real SDK against a stubbed fetch, so these cases cover how the
+  // SDK itself reports transport and gateway failures.
+  async function sendThroughRealSdk(fetchImpl: typeof fetch) {
+    const actual = await vi.importActual<typeof import("resend")>("resend");
+    mocks.Resend.mockImplementation(
+      (key?: string) => new actual.Resend(key) as never,
+    );
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubGlobal("fetch", vi.fn(fetchImpl));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { sendAppointmentReminder } = await loadEmail();
+    return sendAppointmentReminder(reminder);
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reports a connection reset as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(async () => {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("socket hang up"), {
+            code: "ECONNRESET",
+          }),
+        });
+      }),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it("reports a 502 HTML gateway page as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response("<html><body>502 Bad Gateway</body></html>", {
+            status: 502,
+            headers: { "content-type": "text/html" },
+          }),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it("reports a 500 provider error as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response(
+            JSON.stringify({
+              statusCode: 500,
+              name: "internal_server_error",
+              message: "An unexpected error occurred.",
+            }),
+            { status: 500, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it("reports a 200 with a truncated body as an unknown outcome", async () => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response('{"id":"4ef9a417-02e9', {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "outcome_unknown" });
+  });
+
+  it.each([
+    [422, "validation_error"],
+    [429, "rate_limit_exceeded"],
+  ])("reports a %s %s answer as a definite failure", async (status, name) => {
+    await expect(
+      sendThroughRealSdk(
+        async () =>
+          new Response(
+            JSON.stringify({ statusCode: status, name, message: "Rejected" }),
+            { status, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    ).resolves.toMatchObject({ success: false, outcome: "definite_failure" });
+  });
+
+  it("accepts a 200 with a message id", async () => {
+    const fetchCalls: RequestInit[] = [];
+    await expect(
+      sendThroughRealSdk(async (_url, init) => {
+        fetchCalls.push(init ?? {});
+        return new Response(JSON.stringify({ id: "email-123" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      id: "email-123",
+      outcome: "accepted",
+    });
+    expect(new Headers(fetchCalls[0]?.headers).get("Idempotency-Key")).toBe(
+      reminder.idempotencyKey,
+    );
+  });
+});
+
 describe("openvpmBrand", () => {
   it("trims configured email brand env values", async () => {
     vi.stubEnv("EMAIL_COMPANY_NAME", " Open Vet Ops ");

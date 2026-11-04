@@ -47,6 +47,7 @@ import {
   recordAppointmentReminderOutcome,
   reminderFailureReason,
   smsReminderFailureReason,
+  switchAppointmentReminderClaimToEmail,
 } from "@/lib/messaging/appointment-reminder";
 import { withDurableSmsCommunication } from "@/lib/messaging/durable-sms-communication";
 import { alertOps } from "@/lib/alerts";
@@ -390,7 +391,6 @@ export const notificationsRouter = createRouter({
       // Manual send: respect the client's preferred channel + SMS consent.
       // Quiet hours don't apply — this is a deliberate staff action.
       let reminderClaim: AppointmentReminderClaim | null = null;
-      let durableSmsCommunication = false;
       let failureChannel: "sms" | "email" = "email";
       const reminderDate = formatDate(appt.startTime, appt.practiceTimezone);
       const logReminder = async (
@@ -414,12 +414,11 @@ export const notificationsRouter = createRouter({
             content: `Appointment reminder ${label} for ${appt.patientName} on ${reminderDate}${result !== "sent" && detail.reason ? `: ${detail.reason}` : ""}`,
             providerMessageId: detail.providerMessageId,
           });
-        if (!durableSmsCommunication) return project(ctx.db);
         try {
           return await withDurableSmsCommunication(ctx.practiceId, project);
         } catch (error) {
           await alertOps(
-            "SMS appointment reminder projection failed",
+            "Appointment reminder projection failed",
             `practice=${ctx.practiceId} communication=${reminderClaim?.id ?? "unknown"} source=appointment_reminder status=${result}`,
           ).catch(() => undefined);
           throw error;
@@ -550,12 +549,12 @@ export const notificationsRouter = createRouter({
         patientName: appt.patientName,
         startTime: new Date(appt.startTime),
       };
-      durableSmsCommunication = channel === "sms";
-      reminderClaim = durableSmsCommunication
-        ? await withDurableSmsCommunication(ctx.practiceId, (tx) =>
-            claimAppointmentReminderCommunication(tx, claimOptions),
-          )
-        : await claimAppointmentReminderCommunication(ctx.db, claimOptions);
+      // The claim and every outcome commit on their own, outside the request
+      // transaction: once a provider may have sent the reminder, a rolled-back
+      // request must not erase the claim and invite a duplicate.
+      reminderClaim = await withDurableSmsCommunication(ctx.practiceId, (tx) =>
+        claimAppointmentReminderCommunication(tx, claimOptions),
+      );
       if (!reminderClaim) {
         throw new TRPCError({
           code: "CONFLICT",
@@ -610,6 +609,13 @@ export const notificationsRouter = createRouter({
           smsFailureReason = reason;
           // SMS blocked (e.g. opted out) — fall back to email if we can.
           if (normalizeEmailSuppressionAddress(appt.clientEmail)) {
+            failureChannel = "email";
+            await withDurableSmsCommunication(ctx.practiceId, (tx) =>
+              switchAppointmentReminderClaimToEmail(tx, {
+                practiceId: ctx.practiceId,
+                communicationId: reminderClaim!.id,
+              }),
+            );
             await sendEmail();
             return { success: true, channel: "email" as const };
           }
@@ -979,7 +985,6 @@ export const notificationsRouter = createRouter({
         );
 
         let reminderClaim: AppointmentReminderClaim | null = null;
-        let durableSmsCommunication = false;
         const logReminder = async (
           channel: "sms" | "email",
           result: "sent" | "failed" | "unknown",
@@ -1001,12 +1006,11 @@ export const notificationsRouter = createRouter({
               content: `Reminder ${label} for ${appt.patientName} on ${appointmentDate}${result !== "sent" && detail.reason ? `: ${detail.reason}` : ""}`,
               providerMessageId: detail.providerMessageId,
             });
-          if (!durableSmsCommunication) return project(ctx.db);
           try {
             return await withDurableSmsCommunication(ctx.practiceId, project);
           } catch (error) {
             await alertOps(
-              "SMS appointment reminder projection failed",
+              "Appointment reminder projection failed",
               `practice=${ctx.practiceId} communication=${reminderClaim?.id ?? "unknown"} source=appointment_reminder status=${result}`,
             ).catch(() => undefined);
             throw error;
@@ -1122,12 +1126,11 @@ export const notificationsRouter = createRouter({
           patientName: appt.patientName,
           startTime: new Date(appt.startTime),
         };
-        durableSmsCommunication = channel === "sms";
-        reminderClaim = durableSmsCommunication
-          ? await withDurableSmsCommunication(ctx.practiceId, (tx) =>
-              claimAppointmentReminderCommunication(tx, claimOptions),
-            )
-          : await claimAppointmentReminderCommunication(ctx.db, claimOptions);
+        // Committed outside the request transaction (see sendAppointmentReminder).
+        reminderClaim = await withDurableSmsCommunication(
+          ctx.practiceId,
+          (tx) => claimAppointmentReminderCommunication(tx, claimOptions),
+        );
         if (!reminderClaim) {
           failed++;
           continue;
@@ -1189,13 +1192,24 @@ export const notificationsRouter = createRouter({
           }
 
           // SMS blocked (e.g. opted out) — fall back to email if we can.
+          if (!normalizeEmailSuppressionAddress(appt.clientEmail)) {
+            await logReminder("sms", "failed", { reason: smsReason });
+            failed++;
+            continue;
+          }
+          await withDurableSmsCommunication(ctx.practiceId, (tx) =>
+            switchAppointmentReminderClaimToEmail(tx, {
+              practiceId: ctx.practiceId,
+              communicationId: reminderClaim!.id,
+            }),
+          );
           const email = await sendEmail();
           if (email.result === "sent") {
             sent++;
             continue;
           }
 
-          await logReminder(email.result === "unknown" ? "email" : "sms", email.result, {
+          await logReminder("email", email.result, {
             reason: `Text message: ${smsReason} Email fallback: ${email.reason}`,
           });
 

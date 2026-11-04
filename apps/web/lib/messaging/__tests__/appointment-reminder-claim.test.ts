@@ -16,6 +16,7 @@ const {
   AUTOMATED_APPOINTMENT_REMINDER_SUBJECT,
   AUTOMATED_REMINDER_RETRY_DELAY_MS,
   MAX_AUTOMATED_REMINDER_ATTEMPTS,
+  EMAIL_REMINDER_KEY_REUSE_WINDOW_MS,
   STALE_EMAIL_REMINDER_CLAIM_MS,
   appointmentReminderEmailIdempotencyKey,
   appointmentReminderSmsIdempotencyKey,
@@ -42,8 +43,11 @@ function claimDb(opts: {
     insertValues?: Record<string, unknown>;
     updateSet?: Record<string, unknown>;
     updateWhere?: SQL;
-  } = {};
-  const updateResults = [opts.reclaimed, opts.recovered ?? []];
+    updateSets: Record<string, unknown>[];
+    updateWheres: SQL[];
+  } = { updateSets: [], updateWheres: [] };
+  // Reclaim, then the expired email claim check, then SMS recovery.
+  const updateResults = [opts.reclaimed, [], opts.recovered ?? []];
   const db = {
     insert: vi.fn(() => ({
       values: vi.fn((values: Record<string, unknown>) => {
@@ -58,9 +62,11 @@ function claimDb(opts: {
     update: vi.fn(() => ({
       set: vi.fn((values: Record<string, unknown>) => {
         state.updateSet ??= values;
+        state.updateSets.push(values);
         return {
           where: vi.fn((where: SQL) => {
             state.updateWhere ??= where;
+            state.updateWheres.push(where);
             const result = updateResults.shift() ?? [];
             return { returning: vi.fn(async () => result) };
           }),
@@ -160,22 +166,66 @@ describe("appointment reminder claim", () => {
         "automated_failure",
       ]),
     );
-    // An unknown outcome is never a retryable failure.
-    expect(params).not.toContain("outcome_unknown");
+    // An unknown outcome is never a retryable failure (a new attempt).
+    const inList = sql.match(
+      /"communications"\."reminder_outcome" in \(\$(\d+), \$(\d+)\)/,
+    );
+    expect(inList).not.toBeNull();
+    expect([
+      params[Number(inList![1]) - 1],
+      params[Number(inList![2]) - 1],
+    ]).toEqual(["staff_failure", "automated_failure"]);
+    // Neither the attempt clock nor the attempt moves for a same-key reclaim.
+    expect(render(state.updateSet!.reminderAttemptStartedAt).sql).toBe(
+      `case when "communications"."status" = 'failed' then now() else "communications"."reminder_attempt_started_at" end`,
+    );
     expect(mocks.recoverStaleUnreservedSmsCommunication).not.toHaveBeenCalled();
   });
 
-  it("only reclaims unmarked pending email rows once stale on the database clock", async () => {
+  it("reclaims a stale or unconfirmed pending email only while its key is honored", async () => {
     const { db, state } = claimDb({ inserted: [], reclaimed: [] });
 
     await expect(claim(db)).resolves.toBeNull();
 
     const { sql, params } = render(state.updateWhere);
     expect(sql).toMatch(
-      /"communications"\."status" = \$\d+ and "communications"\."channel" = \$\d+ and "communications"\."reminder_outcome" is null and "communications"\."updated_at" <= now\(\) - make_interval\(secs => \$\d+\)/,
+      /"communications"\."status" = \$\d+ and "communications"\."channel" = \$\d+ and "communications"\."reminder_attempt_started_at" > now\(\) - make_interval\(secs => \$\d+\) and \(\("communications"\."reminder_outcome" is null and "communications"\."updated_at" <= now\(\) - make_interval\(secs => \$\d+\)\) or "communications"\."reminder_outcome" = \$\d+\)/,
     );
     expect(params).toEqual(
-      expect.arrayContaining(["email", STALE_EMAIL_REMINDER_CLAIM_MS / 1000]),
+      expect.arrayContaining([
+        "email",
+        EMAIL_REMINDER_KEY_REUSE_WINDOW_MS / 1000,
+        STALE_EMAIL_REMINDER_CLAIM_MS / 1000,
+        "outcome_unknown",
+      ]),
+    );
+    expect(EMAIL_REMINDER_KEY_REUSE_WINDOW_MS).toBeLessThan(
+      24 * 60 * 60 * 1000,
+    );
+  });
+
+  it("marks an abandoned email claim past the key window as delivery unknown", async () => {
+    const { db, state } = claimDb({ inserted: [], reclaimed: [] });
+
+    await expect(claim(db)).resolves.toBeNull();
+
+    expect(state.updateSets[1]).toMatchObject({
+      reminderOutcome: "outcome_unknown",
+    });
+    expect(state.updateSets[1]).not.toHaveProperty("status");
+    expect(state.updateSets[1]).not.toHaveProperty("reminderAttempt");
+    const { sql, params } = render(state.updateWheres[1]);
+    expect(sql).toContain('"communications"."reminder_outcome" is null');
+    expect(sql).toContain(
+      '("communications"."reminder_attempt_started_at" is null or not ("communications"."reminder_attempt_started_at" > now() - make_interval(secs => $',
+    );
+    expect(params).toEqual(
+      expect.arrayContaining([
+        "pending",
+        "email",
+        STALE_EMAIL_REMINDER_CLAIM_MS / 1000,
+        EMAIL_REMINDER_KEY_REUSE_WINDOW_MS / 1000,
+      ]),
     );
   });
 
@@ -189,7 +239,7 @@ describe("appointment reminder claim", () => {
     expect(sql).not.toContain("make_interval(secs => $");
   });
 
-  it("bounds the sweep's retries and waits an hour before retrying its own failure", async () => {
+  it("bounds the sweep's retries and waits before retrying its own failure", async () => {
     const { db, state } = claimDb({ inserted: [], reclaimed: [] });
 
     await expect(claim(db, { source: "automated" })).resolves.toBeNull();
@@ -197,9 +247,12 @@ describe("appointment reminder claim", () => {
     expect(state.updateSet).toMatchObject({
       subject: AUTOMATED_APPOINTMENT_REMINDER_SUBJECT,
     });
+    // Only retrying a definite failure counts against the sweep's budget.
     expect(render(state.updateSet!.reminderAutomatedAttempts).sql).toBe(
-      '"communications"."reminder_automated_attempts" + 1',
+      `case when "communications"."status" = 'failed' then "communications"."reminder_automated_attempts" + 1 else "communications"."reminder_automated_attempts" end`,
     );
+    // Shorter than the hourly cadence, so cron jitter can't skip a run.
+    expect(AUTOMATED_REMINDER_RETRY_DELAY_MS).toBeLessThan(60 * 60 * 1000);
     const { sql, params } = render(state.updateWhere);
     expect(sql).toMatch(
       /"communications"\."reminder_automated_attempts" < \$\d+ and \("communications"\."reminder_outcome" = \$\d+ or \("communications"\."reminder_outcome" = \$\d+ and "communications"\."updated_at" <= now\(\) - make_interval\(secs => \$\d+\)\)\)/,

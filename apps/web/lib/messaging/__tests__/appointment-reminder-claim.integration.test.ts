@@ -4,13 +4,16 @@ import { resolve } from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Database } from "@openpims/db/client";
 import * as schema from "@openpims/db";
 import { withTenant } from "@/lib/tenant-db";
 import {
+  EMAIL_REMINDER_KEY_REUSE_WINDOW_MS,
   appointmentReminderDedupeKey,
+  appointmentReminderEmailIdempotencyKey,
   claimAppointmentReminderCommunication,
+  recordAppointmentReminderOutcome,
 } from "@/lib/messaging/appointment-reminder";
 
 const integration =
@@ -20,6 +23,7 @@ const integration =
 
 const CLAIMERS = 16;
 const ROUNDS = 3;
+const KEY_WINDOW_MINUTES = EMAIL_REMINDER_KEY_REUSE_WINDOW_MS / 60_000;
 
 type Claimer = { channel: "sms" | "email"; source: "staff" | "automated" };
 
@@ -41,6 +45,8 @@ type ExistingRow = {
   reminderAutomatedAttempts?: number | null;
   reminderOutcome?: "staff_failure" | "automated_failure" | "outcome_unknown";
   reservedSmsAttempt?: boolean;
+  /** When the attempt was first claimed; defaults to ageMinutes. */
+  attemptStartedMinutesAgo?: number | null;
 };
 
 type Scenario = {
@@ -52,6 +58,12 @@ type Scenario = {
   winnerChannel?: "sms" | "email";
   winnerSource?: "staff" | "automated";
   attemptAfterClaim?: number;
+  /** Row state expected when nobody wins. */
+  rowAfterNoWinner?: {
+    status: "pending" | "sent" | "failed";
+    reminderAttempt: number | null;
+    reminderOutcome: string | null;
+  };
 };
 
 const SCENARIOS: Scenario[] = [
@@ -185,13 +197,80 @@ const SCENARIOS: Scenario[] = [
     winners: 0,
   },
   {
-    name: "email outcome unknown",
+    name: "stale pending email past the key window",
     existing: {
       channel: "email",
       status: "pending",
-      ageMinutes: 180,
+      ageMinutes: KEY_WINDOW_MINUTES + 5,
+      reminderAttempt: 1,
+    },
+    claimers: MIXED,
+    winners: 0,
+    // The key may have expired: shown as "Delivery unknown", never resent.
+    rowAfterNoWinner: {
+      status: "pending",
       reminderAttempt: 1,
       reminderOutcome: "outcome_unknown",
+    },
+  },
+  {
+    name: "email outcome unknown within the key window",
+    existing: {
+      channel: "email",
+      status: "pending",
+      ageMinutes: 1,
+      reminderAttempt: 1,
+      reminderOutcome: "outcome_unknown",
+      attemptStartedMinutesAgo: KEY_WINDOW_MINUTES - 5,
+    },
+    claimers: MIXED,
+    winners: 1,
+    // Resent only as email, under the same attempt (and idempotency key).
+    winnerChannel: "email",
+    attemptAfterClaim: 1,
+  },
+  {
+    name: "email outcome unknown on a retried attempt",
+    existing: {
+      channel: "email",
+      status: "pending",
+      ageMinutes: 30,
+      reminderAttempt: 2,
+      reminderAutomatedAttempts: 2,
+      reminderOutcome: "outcome_unknown",
+    },
+    claimers: AUTOMATED_ONLY,
+    winners: 1,
+    winnerChannel: "email",
+    attemptAfterClaim: 2,
+  },
+  {
+    name: "email outcome unknown past the key window",
+    existing: {
+      channel: "email",
+      status: "pending",
+      ageMinutes: 60,
+      reminderAttempt: 1,
+      reminderOutcome: "outcome_unknown",
+      attemptStartedMinutesAgo: KEY_WINDOW_MINUTES + 5,
+    },
+    claimers: MIXED,
+    winners: 0,
+    rowAfterNoWinner: {
+      status: "pending",
+      reminderAttempt: 1,
+      reminderOutcome: "outcome_unknown",
+    },
+  },
+  {
+    name: "email outcome unknown with no attempt clock",
+    existing: {
+      channel: "email",
+      status: "pending",
+      ageMinutes: 60,
+      reminderAttempt: 1,
+      reminderOutcome: "outcome_unknown",
+      attemptStartedMinutesAgo: null,
     },
     claimers: MIXED,
     winners: 0,
@@ -222,6 +301,204 @@ const SCENARIOS: Scenario[] = [
     winners: 0,
   },
 ];
+
+type Db = ReturnType<typeof drizzle<typeof schema>>;
+
+/** Start every claimer's transaction, then release all claims at once. */
+async function concurrentClaims(
+  appDb: Database,
+  options: {
+    practiceId: string;
+    appointmentId: string;
+    clientId: string;
+    startTime: Date;
+    claimers: Claimer[];
+  },
+) {
+  let release!: () => void;
+  const barrier = new Promise<void>((done) => (release = done));
+  let entered = 0;
+  const claims = options.claimers.map((claimer) =>
+    withTenant(appDb, options.practiceId, async (tx) => {
+      if (++entered === options.claimers.length) release();
+      await barrier;
+      const claim = await claimAppointmentReminderCommunication(tx, {
+        practiceId: options.practiceId,
+        appointmentId: options.appointmentId,
+        clientId: options.clientId,
+        channel: claimer.channel,
+        patientName: "Miso",
+        startTime: options.startTime,
+        source: claimer.source,
+      });
+      return claim ? { ...claim, claimer } : null;
+    }),
+  );
+  return (await Promise.all(claims)).filter((claim) => claim !== null);
+}
+
+/**
+ * Drive the real email client (and the real Resend SDK) against provider
+ * failures that leave the send unconfirmed, and check that each one is
+ * retried under the same idempotency key by exactly one claimer, never under
+ * a new attempt key, and not at all once the key may have expired.
+ */
+async function unknownEmailLifecycle(
+  ownerDb: Db,
+  appDb: Database,
+  practiceId: string,
+  clientId: string,
+) {
+  const appointment = {
+    id: randomUUID(),
+    startTime: new Date(Date.UTC(2030, 0, 2, 15)),
+  };
+  const dedupeKey = appointmentReminderDedupeKey(appointment);
+  const seenKeys: string[] = [];
+  const responses: Array<() => Response> = [
+    () => {
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error("socket hang up"), {
+          code: "ECONNRESET",
+        }),
+      });
+    },
+    () =>
+      new Response("<html><body>502 Bad Gateway</body></html>", {
+        status: 502,
+        headers: { "content-type": "text/html" },
+      }),
+    () =>
+      new Response(
+        JSON.stringify({
+          statusCode: 500,
+          name: "internal_server_error",
+          message: "An unexpected error occurred.",
+        }),
+        { status: 500, headers: { "content-type": "application/json" } },
+      ),
+    () =>
+      new Response('{"id":"4ef9a417-02e9', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+  ];
+  vi.stubEnv("RESEND_API_KEY", "re_integration_test");
+  vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "false");
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: unknown, init?: RequestInit) => {
+      seenKeys.push(new Headers(init?.headers).get("Idempotency-Key") ?? "");
+      const next = responses.shift();
+      if (!next) throw new Error("unexpected provider call");
+      return next();
+    }),
+  );
+  vi.resetModules();
+  const { sendAppointmentReminder } = await import("@/lib/email");
+
+  const [first] = await concurrentClaims(appDb, {
+    practiceId,
+    clientId,
+    appointmentId: appointment.id,
+    startTime: appointment.startTime,
+    claimers: [{ channel: "email", source: "staff" }],
+  });
+  expect(first?.attempt).toBe(1);
+  let claim = first!;
+  const failures = responses.length;
+  for (let i = 0; i < failures; i++) {
+    const result = await sendAppointmentReminder({
+      to: "client@example.com",
+      clientName: "Synthetic Client",
+      patientName: "Miso",
+      appointmentDate: "January 2",
+      appointmentTime: "3:00 PM",
+      practiceName: "Synthetic Reminder Clinic",
+      idempotencyKey: appointmentReminderEmailIdempotencyKey(
+        appointment,
+        claim.attempt,
+      ),
+    });
+    expect(result, `provider failure ${i + 1}`).toMatchObject({
+      success: false,
+      outcome: "outcome_unknown",
+    });
+    await withTenant(appDb, practiceId, (tx) =>
+      recordAppointmentReminderOutcome(tx, {
+        practiceId,
+        communicationId: claim.id,
+        channel: "email",
+        result: "unknown",
+        source: "staff",
+        content: "Appointment reminder delivery unknown",
+      }),
+    );
+
+    const winners = await concurrentClaims(appDb, {
+      practiceId,
+      clientId,
+      appointmentId: appointment.id,
+      startTime: appointment.startTime,
+      claimers: MIXED,
+    });
+    expect(winners, `retry after failure ${i + 1}`).toHaveLength(1);
+    expect(winners[0]!.claimer.channel).toBe("email");
+    expect(winners[0]!.attempt).toBe(1);
+    claim = winners[0]!;
+  }
+  // Every provider call reused the first attempt's key.
+  expect(seenKeys).toEqual(
+    Array(failures).fill(appointmentReminderEmailIdempotencyKey(appointment, 1)),
+  );
+
+  // Unconfirmed again, and now past the window in which the key is honored.
+  await withTenant(appDb, practiceId, (tx) =>
+    recordAppointmentReminderOutcome(tx, {
+      practiceId,
+      communicationId: claim.id,
+      channel: "email",
+      result: "unknown",
+      source: "staff",
+      content: "Appointment reminder delivery unknown",
+    }),
+  );
+  await ownerDb
+    .update(schema.communications)
+    .set({
+      reminderAttemptStartedAt: sql`now() - make_interval(mins => ${KEY_WINDOW_MINUTES + 1})`,
+    })
+    .where(eq(schema.communications.dedupeKey, dedupeKey));
+  const lateWinners = await concurrentClaims(appDb, {
+    practiceId,
+    clientId,
+    appointmentId: appointment.id,
+    startTime: appointment.startTime,
+    claimers: MIXED,
+  });
+  expect(lateWinners).toHaveLength(0);
+  const [row] = await ownerDb
+    .select({
+      status: schema.communications.status,
+      reminderAttempt: schema.communications.reminderAttempt,
+      reminderOutcome: schema.communications.reminderOutcome,
+    })
+    .from(schema.communications)
+    .where(eq(schema.communications.dedupeKey, dedupeKey));
+  expect(row).toEqual({
+    status: "pending",
+    reminderAttempt: 1,
+    reminderOutcome: "outcome_unknown",
+  });
+  return `unknown email lifecycle: ${failures} unconfirmed sends retried under one key; none after the key window`;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
 
 integration("appointment reminder claim under PostgreSQL concurrency", () => {
   it(
@@ -287,6 +564,10 @@ integration("appointment reminder claim under PostgreSQL concurrency", () => {
             if (scenario.existing) {
               const existing = scenario.existing;
               const age = sql`now() - make_interval(mins => ${existing.ageMinutes})`;
+              const startedMinutesAgo =
+                existing.attemptStartedMinutesAgo === undefined
+                  ? existing.ageMinutes
+                  : existing.attemptStartedMinutesAgo;
               const [row] = await ownerDb
                 .insert(schema.communications)
                 .values({
@@ -304,6 +585,11 @@ integration("appointment reminder claim under PostgreSQL concurrency", () => {
                       ? null
                       : (existing.reminderAutomatedAttempts ?? 0),
                   reminderOutcome: existing.reminderOutcome ?? null,
+                  reminderAttemptStartedAt:
+                    existing.reminderAttempt === null ||
+                    startedMinutesAgo === null
+                      ? null
+                      : sql`now() - make_interval(mins => ${startedMinutesAgo})`,
                   createdAt: age,
                   updatedAt: age,
                 })
@@ -328,28 +614,13 @@ integration("appointment reminder claim under PostgreSQL concurrency", () => {
 
             // Open every claimer's transaction first, then release them
             // together so all claims contend for the same row at once.
-            let release!: () => void;
-            const barrier = new Promise<void>((done) => (release = done));
-            let entered = 0;
-            const claims = scenario.claimers.map((claimer) =>
-              withTenant(appDb, practiceId, async (tx) => {
-                if (++entered === scenario.claimers.length) release();
-                await barrier;
-                const claim = await claimAppointmentReminderCommunication(tx, {
-                  practiceId,
-                  appointmentId,
-                  clientId,
-                  channel: claimer.channel,
-                  patientName: "Miso",
-                  startTime,
-                  source: claimer.source,
-                });
-                return claim ? { ...claim, claimer } : null;
-              }),
-            );
-            const winners = (await Promise.all(claims)).filter(
-              (claim) => claim !== null,
-            );
+            const winners = await concurrentClaims(appDb, {
+              practiceId,
+              appointmentId,
+              clientId,
+              startTime,
+              claimers: scenario.claimers,
+            });
 
             const label = `${scenario.name} (round ${round + 1})`;
             expect(winners.length, label).toBeLessThanOrEqual(1);
@@ -369,6 +640,7 @@ integration("appointment reminder claim under PostgreSQL concurrency", () => {
                   reminderAttempt: schema.communications.reminderAttempt,
                   reminderOutcome: schema.communications.reminderOutcome,
                   fresh: sql<boolean>`${schema.communications.updatedAt} > now() - interval '1 minute'`,
+                  attemptClockFresh: sql<boolean>`${schema.communications.reminderAttemptStartedAt} > now() - interval '1 minute'`,
                 })
                 .from(schema.communications)
                 .where(eq(schema.communications.dedupeKey, dedupeKey));
@@ -380,12 +652,30 @@ integration("appointment reminder claim under PostgreSQL concurrency", () => {
                 fresh: true,
               });
               expect(winner.attempt, label).toBe(scenario.attemptAfterClaim);
+              // Only a new attempt restarts the attempt clock.
+              expect(row!.attemptClockFresh, label).toBe(
+                !scenario.existing ||
+                  scenario.existing.reminderAttempt !== scenario.attemptAfterClaim,
+              );
+            } else if (scenario.rowAfterNoWinner) {
+              const [row] = await ownerDb
+                .select({
+                  status: schema.communications.status,
+                  reminderAttempt: schema.communications.reminderAttempt,
+                  reminderOutcome: schema.communications.reminderOutcome,
+                })
+                .from(schema.communications)
+                .where(eq(schema.communications.dedupeKey, dedupeKey));
+              expect(row, label).toEqual(scenario.rowAfterNoWinner);
             }
             results.push(
               `${label}: ${winners.length} of ${scenario.claimers.length} claimed`,
             );
           }
         }
+        results.push(
+          await unknownEmailLifecycle(ownerDb, appDb, practiceId, clientId),
+        );
         console.log(results.join("\n"));
       } finally {
         await app?.end({ timeout: 5 });

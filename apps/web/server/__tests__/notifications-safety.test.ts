@@ -1745,6 +1745,9 @@ describe("appointment reminder state transitions", () => {
       }),
     );
     expect(mocks.assertOutboundEmailAllowed).toHaveBeenCalledOnce();
+    // The email claim and its "sent" outcome commit outside the request
+    // transaction, so a rolled-back request can't erase an accepted send.
+    expect(mocks.withDurableSmsCommunication).toHaveBeenCalledTimes(2);
   });
 
   it("still rejects a send while another reminder for the visit is in flight or sent", async () => {
@@ -1761,8 +1764,13 @@ describe("appointment reminder state transitions", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(mocks.sendAppointmentReminder).not.toHaveBeenCalled();
-    // Only the (unsuccessful) reclaim ran; no outcome was written.
-    expect(updateSet).toHaveBeenCalledOnce();
+    // Only the (unsuccessful) reclaim and the expired-claim check ran; no
+    // outcome was written.
+    expect(updateSet).toHaveBeenCalledTimes(2);
+    expect(updateSet).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ reminderOutcome: "outcome_unknown" }),
+    );
   });
 
   it("sends a staff SMS retry of a definite failure under a new attempt key", async () => {
@@ -1862,6 +1870,12 @@ describe("appointment reminder state transitions", () => {
       }),
     ).rejects.toThrow("Email sending is temporarily unavailable.");
 
+    // The claim moves to email before the fallback runs, so an interrupted
+    // fallback never leaves an SMS row stuck as "Pending".
+    expect(updateSet).toHaveBeenCalledWith({
+      channel: "email",
+      updatedAt: expect.anything(),
+    });
     expect(updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: "email",

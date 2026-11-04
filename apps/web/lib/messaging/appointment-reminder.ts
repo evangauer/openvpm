@@ -22,9 +22,10 @@ export function appointmentReminderDedupeKey(appointment: {
 
 /**
  * Provider idempotency keys are scoped to the reminder's send attempt. A
- * reclaimed abandoned claim keeps its attempt (and key), so the provider
- * replays an earlier send instead of delivering twice. Only an explicit retry
- * of a definite failure starts a new attempt and therefore a new send.
+ * reclaimed abandoned or unconfirmed email keeps its attempt (and key), so the
+ * provider replays an earlier send instead of delivering twice. Only an
+ * explicit retry of a definite failure starts a new attempt and therefore a
+ * new send.
  */
 export function appointmentReminderSmsIdempotencyKey(
   appointment: { id: string; startTime: Date | string },
@@ -202,8 +203,20 @@ export const AUTOMATED_APPOINTMENT_REMINDER_SUBJECT =
  */
 export const STALE_EMAIL_REMINDER_CLAIM_MS = 15 * 60 * 1000;
 
-/** The hourly sweep waits this long before retrying its own failure. */
-export const AUTOMATED_REMINDER_RETRY_DELAY_MS = 60 * 60 * 1000;
+/**
+ * An email attempt may be resent under its own idempotency key only while the
+ * provider still honors that key. Resend keeps keys for 24 hours; the margin
+ * covers the time between claiming and the provider first seeing the key.
+ * Measured from the attempt's first claim on the database clock.
+ */
+export const EMAIL_REMINDER_KEY_REUSE_WINDOW_MS = 23 * 60 * 60 * 1000;
+
+/**
+ * The hourly sweep waits this long before retrying its own failure. Shorter
+ * than an hour so normal cron start-time jitter can't push the retry back a
+ * whole extra run.
+ */
+export const AUTOMATED_REMINDER_RETRY_DELAY_MS = 50 * 60 * 1000;
 
 /** Total sweep claims per reminder: the first send plus one retry. */
 export const MAX_AUTOMATED_REMINDER_ATTEMPTS = 2;
@@ -279,21 +292,26 @@ export type AppointmentReminderClaim = {
  *
  * Reclaim rules when the row already exists. Only rows this code wrote
  * (`reminder_attempt` set) are ever reclaimed; older rows keep blocking.
- * - A definite failure is reclaimable and starts a new send attempt. Staff
- *   sends (manual and bulk) can always retry it. The automated sweep retries
- *   a staff failure, and its own failure only after an hour, and claims a
- *   reminder at most twice in total.
- * - A pending email claim is reclaimable by another email send once stale
- *   (the sender died before recording an outcome). It keeps its send
- *   attempt, so the provider idempotency key replays any earlier send. It is
- *   never switched to SMS, which could text a client who was already emailed.
+ * - A definite failure is reclaimable and starts a new send attempt (and
+ *   restarts the attempt clock). Staff sends (manual and bulk) can always
+ *   retry it. The automated sweep retries a staff failure, and its own
+ *   failure only after a delay, and retries a definite failure at most once.
+ * - A pending email is reclaimable by another email send, keeping its send
+ *   attempt so the provider idempotency key replays any earlier send, while
+ *   that key is still honored (EMAIL_REMINDER_KEY_REUSE_WINDOW_MS). That
+ *   covers an abandoned claim (no outcome recorded for 15 minutes) and an
+ *   email whose provider outcome is unknown. Past the window an abandoned
+ *   claim is marked "Delivery unknown" instead; an unconfirmed email is never
+ *   resent under a new key and never switched to SMS, either of which could
+ *   reach a client who was already emailed.
  * - A pending SMS claim is only recovered when no provider attempt was ever
- *   reserved (see recoverStaleUnreservedSmsCommunication).
- * - A send whose provider outcome is unknown is never reclaimed.
+ *   reserved (see recoverStaleUnreservedSmsCommunication). An SMS whose
+ *   provider outcome is unknown is never reclaimed.
  *
- * The reclaim is a single conditional UPDATE that also sets `updated_at` to
- * the database clock. A concurrent claimer blocks on the row lock,
- * re-evaluates against the now-pending, freshly updated row, and gets nothing.
+ * The reclaim is a single conditional UPDATE that also clears the outcome and
+ * sets `updated_at` to the database clock. A concurrent claimer blocks on the
+ * row lock, re-evaluates against the now-pending, freshly updated row, and
+ * gets nothing.
  */
 export async function claimAppointmentReminderCommunication(
   db: Pick<Database, "insert" | "update">,
@@ -330,12 +348,21 @@ export async function claimAppointmentReminderCommunication(
       reminderAttempt: 1,
       reminderAutomatedAttempts: automated ? 1 : 0,
       reminderOutcome: null,
+      reminderAttemptStartedAt: sql`now()`,
     })
     .onConflictDoNothing({ target: communications.dedupeKey })
     .returning({ id: communications.id });
   if (row) return { id: row.id, attempt: 1 };
 
   const staleEmailClaim = sql`${communications.updatedAt} <= now() - make_interval(secs => ${STALE_EMAIL_REMINDER_CLAIM_MS / 1000})`;
+  const emailKeyStillHonored = sql`${communications.reminderAttemptStartedAt} > now() - make_interval(secs => ${EMAIL_REMINDER_KEY_REUSE_WINDOW_MS / 1000})`;
+  const sameRow = and(
+    eq(communications.practiceId, options.practiceId),
+    eq(communications.dedupeKey, dedupeKey),
+    eq(communications.direction, "outbound"),
+    isNull(communications.deletedAt),
+    isNotNull(communications.reminderAttempt),
+  );
   const retryableFailure = automated
     ? and(
         eq(communications.status, "failed"),
@@ -367,28 +394,29 @@ export async function claimAppointmentReminderCommunication(
       status: "pending",
       providerMessageId: null,
       reminderOutcome: null,
-      // A retried failure is a new send; a reclaimed abandoned claim is not.
+      // A retried failure is a new send; a reclaimed pending email is not.
       reminderAttempt: sql`case when ${communications.status} = 'failed' then ${communications.reminderAttempt} + 1 else ${communications.reminderAttempt} end`,
-      reminderAutomatedAttempts: automated
-        ? sql`${communications.reminderAutomatedAttempts} + 1`
-        : sql`${communications.reminderAutomatedAttempts}`,
+      reminderAttemptStartedAt: sql`case when ${communications.status} = 'failed' then now() else ${communications.reminderAttemptStartedAt} end`,
+      reminderAutomatedAttempts:
+        automated
+          ? sql`case when ${communications.status} = 'failed' then ${communications.reminderAutomatedAttempts} + 1 else ${communications.reminderAutomatedAttempts} end`
+          : sql`${communications.reminderAutomatedAttempts}`,
       updatedAt: sql`now()`,
     })
     .where(
       and(
-        eq(communications.practiceId, options.practiceId),
-        eq(communications.dedupeKey, dedupeKey),
-        eq(communications.direction, "outbound"),
-        isNull(communications.deletedAt),
-        isNotNull(communications.reminderAttempt),
+        sameRow,
         options.channel === "email"
           ? or(
               retryableFailure,
               and(
                 eq(communications.status, "pending"),
                 eq(communications.channel, "email"),
-                isNull(communications.reminderOutcome),
-                staleEmailClaim,
+                emailKeyStillHonored,
+                or(
+                  and(isNull(communications.reminderOutcome), staleEmailClaim),
+                  eq(communications.reminderOutcome, "outcome_unknown"),
+                ),
               ),
             )
           : retryableFailure,
@@ -399,6 +427,29 @@ export async function claimAppointmentReminderCommunication(
       attempt: communications.reminderAttempt,
     });
   if (reclaimed) return { id: reclaimed.id, attempt: reclaimed.attempt ?? 1 };
+
+  // An abandoned email claim whose key may no longer be honored can't be
+  // resent safely. Surface it as "Delivery unknown" rather than "Pending".
+  await db
+    .update(communications)
+    .set({
+      content: `Appointment reminder delivery unknown for ${options.patientName ?? "Unknown"} on ${options.startTime.toISOString()}: The email was interrupted before the provider confirmed it. It may have been delivered.`,
+      reminderOutcome: "outcome_unknown",
+      updatedAt: sql`now()`,
+    })
+    .where(
+      and(
+        sameRow,
+        eq(communications.status, "pending"),
+        eq(communications.channel, "email"),
+        isNull(communications.reminderOutcome),
+        staleEmailClaim,
+        or(
+          isNull(communications.reminderAttemptStartedAt),
+          sql`not (${emailKeyStillHonored})`,
+        ),
+      ),
+    );
   if (options.channel !== "sms") return null;
 
   const recoveredId = await recoverStaleUnreservedSmsCommunication(db, {
@@ -422,6 +473,30 @@ export async function claimAppointmentReminderCommunication(
 }
 
 /**
+ * Move a claimed SMS reminder to its email fallback before the email provider
+ * is called. If the process dies mid-send, the row is then an abandoned email
+ * claim (reclaimed under the same email key, or shown as "Delivery unknown")
+ * rather than an SMS row stuck as "Pending".
+ */
+export async function switchAppointmentReminderClaimToEmail(
+  db: Pick<Database, "update">,
+  options: { practiceId: string; communicationId: string },
+) {
+  return db
+    .update(communications)
+    .set({ channel: "email", updatedAt: sql`now()` })
+    .where(
+      and(
+        eq(communications.id, options.communicationId),
+        eq(communications.practiceId, options.practiceId),
+        eq(communications.status, "pending"),
+        isNull(communications.reminderOutcome),
+        isNull(communications.deletedAt),
+      ),
+    );
+}
+
+/**
  * Record how a claimed reminder ended. Only a pending claim (or the same
  * accepted provider message) is updated, so a late or duplicate projection can
  * never turn a sent reminder into a failed one.
@@ -429,8 +504,9 @@ export async function claimAppointmentReminderCommunication(
  * - `sent`: the provider accepted the message.
  * - `failed`: a definite failure; the reminder may be retried.
  * - `unknown`: the provider may have delivered it. The row stays pending with
- *   `reminder_outcome = 'outcome_unknown'`, shows as "Delivery unknown", and is
- *   never reclaimed.
+ *   `reminder_outcome = 'outcome_unknown'` and shows as "Delivery unknown". An
+ *   email may be resent under the same key while it is honored; nothing is
+ *   ever resent under a new key.
  */
 export async function recordAppointmentReminderOutcome(
   db: Pick<Database, "update">,
@@ -510,7 +586,10 @@ export async function appointmentReminderConflictMessage(
       ),
     )
     .limit(1);
-  if (row?.reminderOutcome === "outcome_unknown") {
+  if (row?.status === "sent" || row?.status === "delivered" || row?.status === "read") {
+    return "A reminder for this appointment was already sent.";
+  }
+  if (row?.status === "pending" && row.reminderOutcome === "outcome_unknown") {
     return "The last reminder for this appointment may have been delivered, but the provider never confirmed it. To avoid a duplicate, it can't be sent again. Contact the client directly if needed.";
   }
   if (row?.status === "failed") {

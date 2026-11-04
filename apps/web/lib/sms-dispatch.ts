@@ -562,7 +562,12 @@ async function appendProviderResult(
   if (normalized.status === "accepted" && attempt.communicationId) {
     const [projected] = await tx
       .update(communications)
-      .set({ status: "sent", providerMessageId: normalized.id })
+      // A confirmed send supersedes any earlier "delivery unknown" marker.
+      .set({
+        status: "sent",
+        providerMessageId: normalized.id,
+        reminderOutcome: null,
+      })
       .where(
         and(
           eq(communications.practiceId, attempt.practiceId),
@@ -1383,6 +1388,7 @@ export async function reconcileSmsSendAttempt(options: {
                 ? {
                     status: "sent",
                     providerMessageId: prior.providerMessageId,
+                    reminderOutcome: null,
                   }
                 : { status: "failed" },
             )
@@ -1462,7 +1468,7 @@ export async function reconcileSmsSendAttempt(options: {
           .update(communications)
           .set(
             options.outcome === "accepted"
-              ? { status: "sent", providerMessageId }
+              ? { status: "sent", providerMessageId, reminderOutcome: null }
               : { status: "failed" },
           )
           .where(
