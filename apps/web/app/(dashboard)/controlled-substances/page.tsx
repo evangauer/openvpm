@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
@@ -97,8 +97,17 @@ function InlineLookupError({ message }: { message: string }) {
 
 function LogEntryForm({ onClose }: { onClose: () => void }) {
   const utils = trpc.useUtils();
+  // A regulated entry must be written once. The ref blocks a second click
+  // before React re-renders the disabled button, and the operation id lets
+  // the server replay a retried submission instead of recording it twice.
+  const submittingRef = useRef(false);
+  const operationIdRef = useRef<string | null>(null);
   const createMutation = trpc.controlledSubstances.create.useMutation({
+    onSettled: () => {
+      submittingRef.current = false;
+    },
     onSuccess: () => {
+      operationIdRef.current = null;
       toast.success("Log entry recorded");
       utils.controlledSubstances.list.invalidate();
       utils.controlledSubstances.summary.invalidate();
@@ -200,7 +209,11 @@ function LogEntryForm({ onClose }: { onClose: () => void }) {
       toast.error("Witness is required for wasted entries");
       return;
     }
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    operationIdRef.current ??= crypto.randomUUID();
     createMutation.mutate({
+      operationId: operationIdRef.current,
       drugName: form.drugName.trim(),
       deaSchedule: form.deaSchedule as "II" | "III" | "IV" | "V",
       action: form.action as "received" | "administered" | "wasted" | "returned",

@@ -3,7 +3,13 @@ import { z } from "zod";
 import { eq, and, isNull, ilike, sql, type SQL } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
-import { practices, products, suppliers } from "@openpims/db";
+import { randomUUID } from "node:crypto";
+import {
+  inventoryStockAdjustments,
+  practices,
+  products,
+  suppliers,
+} from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import {
@@ -443,80 +449,147 @@ export const inventoryRouter = createRouter({
           "Reason",
           INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH
         ),
+        // One id per form submission. Repeats of the same submission replay
+        // the original adjustment instead of moving stock twice. Optional so
+        // existing API callers keep working; they get no replay protection.
+        operationId: z.string().guid().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const [current] = await ctx.db
-        .select({
-          id: products.id,
-          inventoryTracked: products.inventoryTracked,
-          stockQuantity: products.stockQuantity,
-        })
-        .from(products)
-        .where(
-          and(
-            eq(products.id, input.id),
-            eq(products.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(products.deletedAt)
+      const operationId = input.operationId ?? randomUUID();
+      return ctx.db.transaction(async (tx) => {
+        const operationKey = `inventory-stock-adjustment:${ctx.practiceId}:${operationId}`;
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${operationKey}, 0))`
+        );
+        const [existing] = await tx
+          .select({
+            productId: inventoryStockAdjustments.productId,
+            adjustment: inventoryStockAdjustments.adjustment,
+            reason: inventoryStockAdjustments.reason,
+          })
+          .from(inventoryStockAdjustments)
+          .where(
+            and(
+              eq(inventoryStockAdjustments.practiceId, ctx.practiceId),
+              eq(inventoryStockAdjustments.operationId, operationId)
+            )
           )
-        )
-        .limit(1);
+          .limit(1);
+        if (existing) {
+          if (
+            existing.productId !== input.id ||
+            existing.adjustment !== input.adjustment ||
+            existing.reason !== input.reason
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This stock adjustment was already recorded with different details. Refresh and review stock before adjusting again.",
+            });
+          }
+          const [product] = await tx
+            .select()
+            .from(products)
+            .where(
+              and(
+                eq(products.id, input.id),
+                eq(products.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(products.deletedAt)
+              )
+            )
+            .limit(1);
+          if (!product) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Product not found",
+            });
+          }
+          return product;
+        }
 
-      if (!current) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Product not found",
-        });
-      }
-
-      if (current.inventoryTracked === false) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "Start stock tracking with a reviewed opening quantity before recording adjustments.",
-        });
-      }
-
-      if (current.stockQuantity + input.adjustment < 0) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Stock adjustment would make quantity negative.",
-        });
-      }
-      if (current.stockQuantity + input.adjustment > POSTGRES_INTEGER_MAX) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Stock adjustment would exceed the maximum stock quantity.",
-        });
-      }
-
-      const [product] = await ctx.db
-        .update(products)
-        .set({
-          stockQuantity: sql`${products.stockQuantity} + ${input.adjustment}`,
-        })
-        .where(
-          and(
-            eq(products.id, input.id),
-            eq(products.practiceId, ctx.practiceId),
-            eq(products.inventoryTracked, true),
-            activePracticePredicate(ctx.practiceId),
-            isNull(products.deletedAt),
-            sql`${products.stockQuantity} + ${input.adjustment} >= 0`,
-            sql`${products.stockQuantity} + ${input.adjustment} <= ${POSTGRES_INTEGER_MAX}`
+        const [current] = await tx
+          .select({
+            id: products.id,
+            inventoryTracked: products.inventoryTracked,
+            stockQuantity: products.stockQuantity,
+          })
+          .from(products)
+          .where(
+            and(
+              eq(products.id, input.id),
+              eq(products.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(products.deletedAt)
+            )
           )
-        )
-        .returning();
+          .limit(1);
 
-      if (!product) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            "Stock adjustment would move quantity outside the allowed stock range.",
+        if (!current) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Product not found",
+          });
+        }
+
+        if (current.inventoryTracked === false) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Start stock tracking with a reviewed opening quantity before recording adjustments.",
+          });
+        }
+
+        if (current.stockQuantity + input.adjustment < 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Stock adjustment would make quantity negative.",
+          });
+        }
+        if (current.stockQuantity + input.adjustment > POSTGRES_INTEGER_MAX) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Stock adjustment would exceed the maximum stock quantity.",
+          });
+        }
+
+        const [product] = await tx
+          .update(products)
+          .set({
+            stockQuantity: sql`${products.stockQuantity} + ${input.adjustment}`,
+          })
+          .where(
+            and(
+              eq(products.id, input.id),
+              eq(products.practiceId, ctx.practiceId),
+              eq(products.inventoryTracked, true),
+              activePracticePredicate(ctx.practiceId),
+              isNull(products.deletedAt),
+              sql`${products.stockQuantity} + ${input.adjustment} >= 0`,
+              sql`${products.stockQuantity} + ${input.adjustment} <= ${POSTGRES_INTEGER_MAX}`
+            )
+          )
+          .returning();
+
+        if (!product) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Stock adjustment would move quantity outside the allowed stock range.",
+          });
+        }
+        await tx.insert(inventoryStockAdjustments).values({
+          practiceId: ctx.practiceId,
+          productId: product.id,
+          operationId,
+          adjustment: input.adjustment,
+          quantityAfter: product.stockQuantity,
+          reason: input.reason,
+          adjustedBy: ctx.user.id,
         });
-      }
-      return product;
+        return product;
+      });
     }),
 
   // --- Suppliers ---

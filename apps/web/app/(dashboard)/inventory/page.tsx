@@ -2,7 +2,7 @@
 
 import { MarkupInput } from "@/components/inventory/markup-input";
 
-import { useState, useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import {
   Search,
@@ -666,8 +666,17 @@ function StockAdjustPopover({
   onClose: () => void;
 }) {
   const utils = trpc.useUtils();
+  // The ref blocks a second click before React re-renders the disabled
+  // buttons, and the operation id lets the server replay a retried
+  // submission instead of moving stock twice.
+  const submittingRef = useRef(false);
+  const operationIdRef = useRef<string | null>(null);
   const adjustMutation = trpc.inventory.adjustStock.useMutation({
+    onSettled: () => {
+      submittingRef.current = false;
+    },
     onSuccess: () => {
+      operationIdRef.current = null;
       utils.inventory.list.invalidate();
       onClose();
       toast.success("Stock adjusted");
@@ -701,7 +710,11 @@ function StockAdjustPopover({
 
   const handleAdjust = (direction: 1 | -1) => {
     if (direction === 1 ? !canAddStock : !canRemoveStock) return;
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    operationIdRef.current ??= crypto.randomUUID();
     adjustMutation.mutate({
+      operationId: operationIdRef.current,
       id: productId,
       adjustment: qty * direction,
       reason: reason.trim(),

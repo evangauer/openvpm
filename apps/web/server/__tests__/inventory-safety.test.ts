@@ -734,7 +734,7 @@ describe("inventory mutation safety", () => {
   });
 
   it("requires a tenant-owned product before adjusting stock", async () => {
-    const { db, updateSet } = createDb({ selectResults: [[]] });
+    const { db, updateSet } = createDb({ selectResults: [[], []] });
 
     await expect(
       callerWithDb(db).adjustStock({
@@ -781,6 +781,7 @@ describe("inventory mutation safety", () => {
   it("blocks adjustments until imported catalog stock is reviewed", async () => {
     const { db, updateSet } = createDb({
       selectResults: [
+        [],
         [{ id: PRODUCT_ID, inventoryTracked: false, stockQuantity: 0 }],
       ],
     });
@@ -820,7 +821,7 @@ describe("inventory mutation safety", () => {
 
   it("rejects stock adjustments that would make quantity negative", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [[{ id: PRODUCT_ID, stockQuantity: 2 }]],
+      selectResults: [[], [{ id: PRODUCT_ID, stockQuantity: 2 }]],
     });
 
     await expect(
@@ -836,7 +837,7 @@ describe("inventory mutation safety", () => {
 
   it("rejects stock adjustments that would exceed integer storage", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [[{ id: PRODUCT_ID, stockQuantity: POSTGRES_INTEGER_MAX }]],
+      selectResults: [[], [{ id: PRODUCT_ID, stockQuantity: POSTGRES_INTEGER_MAX }]],
     });
 
     await expect(
@@ -852,7 +853,7 @@ describe("inventory mutation safety", () => {
 
   it("rejects stock adjustments that lose the race to another writer", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [[{ id: PRODUCT_ID, stockQuantity: 2 }]],
+      selectResults: [[], [{ id: PRODUCT_ID, stockQuantity: 2 }]],
       updatedRows: [],
     });
 
@@ -873,7 +874,7 @@ describe("inventory mutation safety", () => {
 
   it("adjusts stock for a tenant-owned product", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [[{ id: PRODUCT_ID, stockQuantity: 10 }]],
+      selectResults: [[], [{ id: PRODUCT_ID, stockQuantity: 10 }]],
       updatedRows: [{ id: PRODUCT_ID, stockQuantity: 7 }],
     });
 
@@ -891,11 +892,73 @@ describe("inventory mutation safety", () => {
       })
     );
   });
+  it("replays a repeated stock adjustment instead of moving stock twice", async () => {
+    const operationId = "00000000-0000-4000-8000-000000000004";
+    const recorded = {
+      productId: PRODUCT_ID,
+      adjustment: 3,
+      reason: "Received order",
+    };
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [recorded],
+        [{ id: PRODUCT_ID, stockQuantity: 8 }],
+        [recorded],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).adjustStock({
+        id: PRODUCT_ID,
+        adjustment: 3,
+        reason: "Received order",
+        operationId,
+      })
+    ).resolves.toMatchObject({ id: PRODUCT_ID, stockQuantity: 8 });
+    await expect(
+      callerWithDb(db).adjustStock({
+        id: PRODUCT_ID,
+        adjustment: -3,
+        reason: "Received order",
+        operationId,
+      })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("records each applied stock adjustment against its operation id", async () => {
+    const operationId = "00000000-0000-4000-8000-000000000005";
+    const { db, insertValues } = createDb({
+      selectResults: [[], [{ id: PRODUCT_ID, stockQuantity: 5 }]],
+      updatedRows: [{ id: PRODUCT_ID, stockQuantity: 8 }],
+    });
+
+    await callerWithDb(db).adjustStock({
+      id: PRODUCT_ID,
+      adjustment: 3,
+      reason: "Received order",
+      operationId,
+    });
+
+    expect(insertValues).toHaveBeenCalledWith({
+      practiceId: PRACTICE_ID,
+      productId: PRODUCT_ID,
+      operationId,
+      adjustment: 3,
+      quantityAfter: 8,
+      reason: "Received order",
+      adjustedBy: USER_ID,
+    });
+  });
+
   it.each([0.001, 0.125, 1.5, -0.125])(
     "accepts precise stock adjustment %s",
     async (adjustment) => {
       const { db } = createDb({
         selectResults: [
+        [],
           [{ id: PRODUCT_ID, inventoryTracked: true, stockQuantity: 2 }],
         ],
         updatedRows: [{ id: PRODUCT_ID, stockQuantity: 2 + adjustment }],

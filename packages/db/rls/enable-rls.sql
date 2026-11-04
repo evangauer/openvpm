@@ -65,7 +65,7 @@ DECLARE
   tbls text[] := array[
     'api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
     'capture_sessions','care_reminders','cases','client_contacts','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_receipt_capabilities','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
-    'external_lab_observations','external_lab_reports','external_prescription_fills','external_prescriptions','files','financial_closes','historical_appointments','historical_documents','insurance_claims','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','legacy_financial_allocations','legacy_financial_documents','legacy_financial_line_items','legacy_financial_payments','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
+    'external_lab_observations','external_lab_reports','external_prescription_fills','external_prescriptions','files','financial_closes','historical_appointments','historical_documents','insurance_claims','inventory_stock_adjustments','insurance_policies','invoices','lab_result_events','lab_result_replacements','lab_results','legacy_financial_allocations','legacy_financial_documents','legacy_financial_line_items','legacy_financial_payments','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
     'locations','patient_merge_events','patients','payment_disputes','payment_processor_payouts','payment_processor_refunds','payment_processor_settlements','portal_sessions','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',
     'recent_clinical_items','recurring_series','rooms','services','sms_consent_events','sms_send_attempt_events','sms_send_attempts','sms_suppressions','soap_note_addenda','soap_note_replacements','soap_notes','staff_schedules','suppliers',
     'treatment_plans','treatment_templates','usage_records','users','vaccination_records',
@@ -203,6 +203,11 @@ $$;
 -- service, but even the application role cannot rewrite or remove history.
 REVOKE ALL ON prescription_events FROM openpims_app;
 GRANT SELECT, INSERT ON prescription_events TO openpims_app;
+
+-- Manual stock adjustments are an append-only movement record whose
+-- operation id makes repeated submits replay instead of moving stock twice.
+REVOKE ALL ON inventory_stock_adjustments FROM openpims_app;
+GRANT SELECT, INSERT ON inventory_stock_adjustments TO openpims_app;
 
 -- Lab result lifecycle events are immutable clinical safety evidence. The app
 -- may append completion, review, and follow-up events but never rewrite them.
