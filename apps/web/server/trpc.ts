@@ -11,7 +11,10 @@ import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
 import { withTenant, withSystem } from "@/lib/tenant-db";
 import { assertHostedRlsRoleOnce } from "@/lib/rls-assertion";
-import { clientIpFromRequest } from "@/lib/request-ip";
+import {
+  clientIpFromRequest,
+  proxyWithoutTrustedHops,
+} from "@/lib/request-ip";
 import { externallyVisibleRequestOrigin } from "@/lib/request-origin";
 import { practices, users } from "@openpims/db";
 import {
@@ -55,6 +58,11 @@ export type TRPCContext = {
   portalSessionToken?: string | null;
   requestOrigin?: string | null;
   requestUrlOrigin?: string | null;
+  /**
+   * The request came through a reverse proxy, but OPENVPM_TRUSTED_PROXY_HOPS
+   * is unset so client addresses can't be verified. Shown to admins.
+   */
+  untrustedProxy?: boolean;
   /** Pre-resolved only by portalProcedure (or explicitly injected test callers). */
   portalClient?: PortalSessionClient;
   portalSessionId?: string;
@@ -157,6 +165,7 @@ export async function createTRPCContext(opts?: {
     requestUrlOrigin: opts?.req
       ? externallyVisibleRequestOrigin(opts.req)
       : null,
+    untrustedProxy: opts?.req ? proxyWithoutTrustedHops(opts.req) : false,
   };
 }
 

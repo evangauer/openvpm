@@ -626,6 +626,11 @@ export const settingsRouter = createRouter({
     };
   }),
 
+  /** Self-host configuration problems an admin should fix. */
+  deploymentNotices: adminProcedure.query(({ ctx }) => ({
+    trustedProxyHopsMissing: ctx.untrustedProxy === true,
+  })),
+
   getMarketingEmailPreference: adminProcedure.query(async ({ ctx }) => {
     const [practice] = await ctx.db
       .select({ email: practices.email })

@@ -67,6 +67,9 @@ function normalizeAuthEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+export const PASSWORD_RESET_PER_NETWORK_LIMIT = 5;
+export const PASSWORD_RESET_PER_EMAIL_DAILY_LIMIT = 20;
+
 async function assertPreAuthRateLimit(input: {
   key: string;
   limit: number;
@@ -719,10 +722,20 @@ export const authRouter = createRouter({
     .input(z.object({ email: authEmailInput }))
     .mutation(async ({ ctx, input }) => {
       const email = normalizeAuthEmail(input.email);
+      // Keyed per network first, so someone else spamming this address can't
+      // use up the owner's own requests; the per-address daily cap still
+      // bounds how many reset emails anyone can make us send.
       await assertPreAuthRateLimit({
-        key: `pwreset:${email}`,
-        limit: 5,
-        windowMs: 3600000,
+        key: `pwreset:${email}:ip:${ctx.ip ?? "unknown"}`,
+        limit: PASSWORD_RESET_PER_NETWORK_LIMIT,
+        windowMs: 60 * 60 * 1000,
+        message: "Too many requests. Please try again later.",
+        logContext: "requestPasswordReset",
+      });
+      await assertPreAuthRateLimit({
+        key: `pwreset:${email}:day`,
+        limit: PASSWORD_RESET_PER_EMAIL_DAILY_LIMIT,
+        windowMs: 24 * 60 * 60 * 1000,
         message: "Too many requests. Please try again later.",
         logContext: "requestPasswordReset",
       });
@@ -815,13 +828,18 @@ export const authRouter = createRouter({
         .update(users)
         .set({ passwordHash, emailVerifiedAt: new Date() })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
-        .returning({ id: users.id });
+        .returning({ id: users.id, email: users.email });
       if (!updated) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "This invite link is invalid or has expired.",
         });
       }
+      // As with a password reset: the invitee proved control of the mailbox,
+      // so earlier failed guesses shouldn't keep them out.
+      await clearLoginAccountLock(updated.email).catch((err) => {
+        console.error("[acceptInvite] login lock reset failed:", err);
+      });
       return { ok: true };
     }),
 

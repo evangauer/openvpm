@@ -878,10 +878,16 @@ describe("auth router email normalization", () => {
       callerWithDb(db).requestPasswordReset({ email: "Admin@Example.COM" }),
     ).resolves.toEqual({ ok: true });
 
+    // Per address and network, plus a daily per-address cap on reset emails.
     expect(mocks.rateLimit).toHaveBeenCalledWith({
-      key: "pwreset:admin@example.com",
+      key: "pwreset:admin@example.com:ip:198.51.100.20",
       limit: 5,
       windowMs: 3600000,
+    });
+    expect(mocks.rateLimit).toHaveBeenCalledWith({
+      key: "pwreset:admin@example.com:day",
+      limit: 20,
+      windowMs: 24 * 3600000,
     });
     expect(
       sqlIncludesValue(selectWhere.mock.calls[0]?.[0], "admin@example.com"),
@@ -1169,7 +1175,7 @@ describe("auth router token validation", () => {
       returningRows: [
         [{ id: "user-1" }],
         [{ id: "user-1", email: "Owner@Example.com" }],
-        [{ id: "user-1" }],
+        [{ id: "user-1", email: "invitee@example.com" }],
       ],
     });
     mocks.consumeAuthToken.mockResolvedValue({
@@ -1188,10 +1194,13 @@ describe("auth router token validation", () => {
       caller.acceptInvite({ token: validToken, password: "password123" }),
     ).resolves.toEqual({ ok: true });
 
-    // A completed reset lifts any sign-in lock on the account.
-    expect(mocks.clearRateLimit).toHaveBeenCalledTimes(1);
+    // A completed reset or accepted invite lifts any sign-in lock.
+    expect(mocks.clearRateLimit).toHaveBeenCalledTimes(2);
     expect(mocks.clearRateLimit).toHaveBeenCalledWith(
       "login:account:owner@example.com",
+    );
+    expect(mocks.clearRateLimit).toHaveBeenCalledWith(
+      "login:account:invitee@example.com",
     );
     expect(mocks.consumeAuthToken).toHaveBeenCalledWith(
       validToken,

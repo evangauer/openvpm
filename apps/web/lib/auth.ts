@@ -99,7 +99,7 @@ export const authOptions: NextAuthOptions = {
         const { email, password } = parsedCredentials;
         const client = resolveClientIp(req);
         warnUnverifiedLoginIpOnce(client);
-        const throttleKeys = loginThrottleKeys(email, loginIpBucket(client));
+        const throttleKeys = loginThrottleKeys(email, loginIpBucket(client, req));
 
         // Budget is reserved before the password check and given back on
         // success, so only failed attempts count.

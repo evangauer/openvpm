@@ -251,6 +251,15 @@ jobs:
           DUPLICATE_SUBMIT_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/duplicate-submit-idempotency.integration.test.ts
 
+      # Sign-in limits live in PostgreSQL. Prove as openpims_app that random-
+      # account spraying can't lock a self-hosted clinic out, per-account
+      # backoff holds, a NAT'd clinic gets through, successes are refunded,
+      # and reset requests stay available to the account owner.
+      - name: Execute sign-in rate limit contract
+        env:
+          SIGN_IN_RATE_LIMIT_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/sign-in-rate-limit.integration.test.ts
+
       # Template catalog selection is a clinic-facing data boundary. Exercise
       # the real router as the least-privilege app role and prove literal,
       # bounded, deterministic, active-only, tenant-isolated search behavior.

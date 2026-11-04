@@ -251,6 +251,107 @@ The Docker setup includes PostgreSQL 16 with health checks, MinIO for S3-compati
 
 #### Reverse proxies and sign-in limits
 
+Sign-in limits failed attempts per account (5 free failures, then a lock that doubles from 1 minute up to 1 hour) and per client IP. Anyone can send an `X-Forwarded-For` header, so OpenVPM only trusts a forwarded client IP when you tell it how many proxies write that header. On Vercel the platform's client address is used automatically; nothing to configure.
+
+If the app sits behind a reverse proxy, set `OPENVPM_TRUSTED_PROXY_HOPS` to the number of proxies in front of it (`1` for a single nginx, Caddy, or Traefik). Two things must also be true, or a client can choose its own IP:
+
+1. **Each proxy writes `X-Forwarded-For`.** The client is read from the entry `OPENVPM_TRUSTED_PROXY_HOPS` places from the right.
+   - **nginx** doesn't send it by default. Add it to every `location` that proxies to OpenVPM:
+
+     ```nginx
+     proxy_set_header Host              $host;
+     proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+     proxy_set_header X-Forwarded-Proto $scheme;
+     ```
+
+     Without the `X-Forwarded-For` line, the app sees nginx's own address or whatever the client sent.
+   - **Caddy** (`reverse_proxy`) sends it by default. It replaces any client-supplied value unless the client is listed in the global `servers { trusted_proxies ... }` option, in which case it appends. Leave `trusted_proxies` unset when Caddy faces the internet directly. If Caddy sits behind a load balancer or CDN, list that hop's addresses in `trusted_proxies` and count both hops (`2`).
+   - **Traefik** sends it by default and drops client-supplied forwarded headers unless the entry point's `forwardedHeaders.trustedIPs` includes the client. Same rule as Caddy: leave it unset when Traefik faces the internet, or list the upstream hop and count it.
+2. **The app port is reachable only through the proxy.** Otherwise a client can skip the proxy and forge the header. In `docker/docker-compose.yml`, publish the app on loopback (`"127.0.0.1:3000:3000"`) when the proxy runs on the same host, or drop the `ports:` entry and put the proxy on the same Docker network. Docker-published ports bypass host firewalls such as `ufw`.
+
+If `OPENVPM_TRUSTED_PROXY_HOPS` is unset, per-IP limits fall back to the address each request claims. That keeps one client's failures from locking out everyone else, but a determined attacker can sidestep it, leaving per-account limits as the main defense. When OpenVPM sees proxy headers without the setting, administrators get a notice in Settings and the server logs a warning.
+
+## API Coverage
+
+Dashboard tRPC routers cover the product's clinic workflows, including patients, clients, appointments, encounters, records, billing, inventory, communications, reporting, portal access, settings, and administration. Dashboard procedures include Zod validation and role-based access control through tRPC. External integrations use the smaller, scoped, API-key authenticated `/api/v1` REST surface documented below; dashboard router coverage does not imply equivalent public REST coverage.
+
+### Security
+
+- **Multi-tenancy:** Tenant-scoped application queries plus database row-level security for clinic-owned data
+- **RBAC:** Admin, Veterinarian, Technician, Front Desk, and read-only Viewer roles enforced at the API layer
+- **Auth:** NextAuth.js with bcrypt password hashing, database sessions, optional TOTP MFA, recovery codes, and privileged-action confirmation
+- **Headers:** CSP, HSTS, Permissions-Policy, X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy
+- **Audit:** Audit records for security-sensitive and high-risk clinical and financial workflows; coverage is expanded as workflows mature
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 24.22.1 or a newer Node.js 24 patch (`nvm use`)
+- pnpm 9+
+- Docker (for PostgreSQL and MinIO)
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/evangauer/openvpm.git
+cd openvpm
+
+# Copy environment config
+cp .env.example .env
+
+# Start the local PostgreSQL and MinIO dependencies
+docker compose -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
+
+# Install dependencies
+pnpm install --frozen-lockfile
+
+# Verify this clone contains only public release material
+pnpm verify:oss-release
+
+# Apply the committed database migrations
+pnpm db:migrate
+
+# Apply and verify row-level security policies
+OPENPIMS_APP_DB_PASSWORD='local-openpims-app' pnpm db:rls
+OPENPIMS_APP_DB_PASSWORD='local-openpims-app' pnpm db:rls:test
+
+# Seed with realistic demo data
+pnpm db:seed
+
+# Start the development server
+pnpm dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) and sign in with the demo credentials:
+
+| Role         | Email                                     | Password    |
+| ------------ | ----------------------------------------- | ----------- |
+| Admin        | admin@neighborhoodvet.example.com         | password123 |
+| Veterinarian | sarah.chen@neighborhoodvet.example.com    | password123 |
+| Technician   | jamie.torres@neighborhoodvet.example.com  | password123 |
+| Front Desk   | morgan.bailey@neighborhoodvet.example.com | password123 |
+
+The seed data creates a complete demo practice — "Neighborhood Veterinary" — with 8 staff, 25 clients, 40 patients, 2 weeks of appointments, SOAP notes, vaccination records, invoices, and 50 inventory products.
+
+The Docker Compose stack includes a one-shot MinIO bootstrap container that creates the `openpims` bucket used by `S3_BUCKET`. When using an external S3-compatible store, create that bucket yourself and grant the app credentials read/write/delete/head access before uploads, backups, or file previews run.
+
+Before using a self-hosted installation with real clinic data, complete the
+[open-source release checklist](docs/open-source-release-checklist.md) and the
+[clinic pilot readiness guide](docs/clinic-pilot-readiness.md). A successful
+local build is not, by itself, a production-readiness assessment.
+
+### Deploy with Docker
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+The Docker setup includes PostgreSQL 16 with health checks, MinIO for S3-compatible file storage, automatic MinIO bucket bootstrap, and a multi-stage production build of the web application. For production, run `pnpm db:migrate`, then `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls`, verify with `OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test`, and point the app at the generated least-privilege `openpims_app` database role before serving traffic.
+
+#### Reverse proxies and sign-in limits
+
 Sign-in limits failed attempts per account and per client IP. OpenVPM only believes a forwarded client IP when you say which proxies write it, because anyone can send an `X-Forwarded-For` header. If the app sits behind a reverse proxy (nginx, Caddy, Traefik, a load balancer), set `OPENVPM_TRUSTED_PROXY_HOPS` to the number of proxies in front of it. Each proxy must append the connecting address to `X-Forwarded-For` (the default for nginx `$proxy_add_x_forwarded_for`, Caddy, and Traefik). Make sure the app port is reachable only through those proxies.
 
 If you leave it unset, OpenVPM can't tell clients apart. Failed sign-ins from every client then share one limit (50 per 15 minutes), and the server logs a warning. Per-account limits still apply as normal. On Vercel, the platform-provided client address is used automatically.

@@ -128,6 +128,50 @@ export function resolveClientIp(
 }
 
 /**
+ * The client address a request claims when the deployment can't verify one:
+ * the leftmost `X-Forwarded-For` entry, else `X-Real-IP`. Anyone can forge
+ * this, so only use it where a forged value lets a caller dodge a limit but
+ * never lets them impose one on everyone else.
+ */
+export function unverifiedForwardedIp(req: unknown): string | null {
+  const headers = (req as { headers?: unknown } | null)?.headers;
+  return (
+    normalizeIp(forwardedForEntries(headers)[0]) ??
+    normalizeIp(headerValue(headers, "x-real-ip"))
+  );
+}
+
+export function isLoopbackIp(ip: string): boolean {
+  return ip === "::1" || /^127\./.test(ip);
+}
+
+/**
+ * True when a self-hosted request was evidently relayed by a reverse proxy
+ * but `OPENVPM_TRUSTED_PROXY_HOPS` is unset, so client addresses can't be
+ * verified. Next.js fills `X-Forwarded-For/-Proto/-Host` itself when they are
+ * missing, so only signals it never produces count: proxy-only headers, a
+ * multi-hop chain, HTTPS (the app server speaks plain HTTP), or a loopback
+ * client address.
+ */
+export function proxyWithoutTrustedHops(
+  req: unknown,
+  env: Env = process.env
+): boolean {
+  if (onVercel(env) || env[TRUSTED_PROXY_HOPS_ENV]?.trim()) return false;
+  const headers = (req as { headers?: unknown } | null)?.headers;
+  if (!headers) return false;
+  for (const name of ["x-real-ip", "forwarded", "via", "x-forwarded-server"]) {
+    if (headerValue(headers, name)) return true;
+  }
+  const entries = forwardedForEntries(headers);
+  if (entries.length > 1) return true;
+  const proto = headerValue(headers, "x-forwarded-proto")?.split(",")[0]?.trim();
+  if (proto?.toLowerCase() === "https") return true;
+  const first = normalizeIp(entries[0]);
+  return first !== null && isLoopbackIp(first);
+}
+
+/**
  * Client IP for low-stakes abuse throttles (portal, signing, uploads, error
  * reports). Uses the verified address when the deployment provides one; on an
  * unconfigured self-host it falls back to the unverified forwarded value so

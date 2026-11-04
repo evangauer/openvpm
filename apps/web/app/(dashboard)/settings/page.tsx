@@ -312,6 +312,29 @@ function SettingsLoadError({
   );
 }
 
+function TrustedProxyNotice() {
+  const notices = trpc.settings.deploymentNotices.useQuery(undefined, {
+    staleTime: Infinity,
+  });
+  if (!notices.data?.trustedProxyHopsMissing) return null;
+  return (
+    <div className="mt-4 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+      <div>
+        <p className="font-medium">Reverse proxy not configured</p>
+        <p className="mt-1">
+          This server is behind a reverse proxy, but{" "}
+          <code>OPENVPM_TRUSTED_PROXY_HOPS</code> isn&apos;t set, so OpenVPM
+          can&apos;t verify client addresses and per-IP sign-in limits can be
+          sidestepped. Set it to the number of proxies in front of the app and
+          restart. See &ldquo;Reverse proxies and sign-in limits&rdquo; in the
+          README for nginx, Caddy, and Traefik settings.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ───────────────────────────────────────────────
 export default function SettingsPage() {
   return (
@@ -376,6 +399,8 @@ function SettingsPageInner() {
           Guides
         </Button>
       </div>
+
+      <TrustedProxyNotice />
 
       <div className="mt-6 flex min-w-0 w-full max-w-full flex-col gap-6 lg:flex-row lg:gap-8">
         {/* Section nav: horizontal scroll on small screens, vertical on lg+ */}

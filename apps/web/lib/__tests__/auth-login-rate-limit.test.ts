@@ -397,29 +397,84 @@ describe("credentials sign-in throttling", () => {
     expect(mocks.buckets.has("login:ip:10.0.0.1")).toBe(false);
   });
 
-  it("does not trust X-Forwarded-For on a self-host without a trusted proxy", async () => {
+  it("can't be turned into a clinic-wide lockout on a self-host without a trusted proxy", async () => {
     vi.stubEnv("VERCEL", "");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     mocks.selectLimit.mockResolvedValue([]);
-    for (let i = 0; i < FIRST_IP_LIMIT; i += 1) {
-      await signIn(`victim${i}@example.com`, "Password1", {
-        "x-forwarded-for": `10.0.${i}.1`,
-      });
+    // An attacker sprays random accounts; the claimed address changes each
+    // time, so no per-IP bucket fills and nothing is shared with the clinic.
+    for (let i = 0; i < 1000; i += 1) {
+      await expect(
+        signIn(`victim${i}@example.com`, "Password1", {
+          "x-forwarded-for": `198.18.${i >> 8}.${i & 255}`,
+        })
+      ).resolves.toBe("invalid");
     }
+    const ipKeys = [...mocks.buckets.keys()].filter((key) => key.includes(":ip"));
+    expect(ipKeys).toHaveLength(1000);
+    expect(ipKeys.every((key) => key.startsWith("login:ip-unverified:198.18."))).toBe(true);
+
+    mocks.selectLimit.mockResolvedValue([mocks.activeUser]);
     await expect(
-      signIn("one-more@example.com", "Password1", {
-        "x-forwarded-for": "10.9.9.9",
+      signIn("admin@example.com", "correct-password", {
+        "x-forwarded-for": "203.0.113.10",
       })
-    ).resolves.toMatch(/^Too many sign-in attempts/);
-    expect(mocks.buckets.get("login:ip:unverified")?.count).toBeGreaterThan(
-      FIRST_IP_LIMIT
-    );
-    expect([...mocks.buckets.keys()].some((key) => key.includes("10.0."))).toBe(
-      false
-    );
+    ).resolves.toBe("ok");
     expect(warnSpy.mock.calls.flat().join(" ")).toContain(
       "OPENVPM_TRUSTED_PROXY_HOPS"
     );
+  });
+
+  it("still slows a single unverified client that doesn't rotate its address", async () => {
+    vi.stubEnv("VERCEL", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.selectLimit.mockResolvedValue([]);
+    const attacker = { "x-forwarded-for": "192.0.2.66" };
+    for (let i = 0; i < FIRST_IP_LIMIT; i += 1) {
+      await signIn(`victim${i}@example.com`, "Password1", attacker);
+    }
+    await expect(
+      signIn("one-more@example.com", "Password1", attacker)
+    ).resolves.toBe("Too many sign-in attempts. Try again in 15 minutes.");
+    expect(mocks.buckets.has("login:ip-unverified:192.0.2.66")).toBe(true);
+
+    // Other clients have their own buckets.
+    mocks.selectLimit.mockResolvedValue([mocks.activeUser]);
+    await expect(
+      signIn("admin@example.com", "correct-password", {
+        "x-forwarded-for": "203.0.113.10",
+      })
+    ).resolves.toBe("ok");
+  });
+
+  it("skips per-IP limits when a local proxy hides every client behind loopback", async () => {
+    vi.stubEnv("VERCEL", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.selectLimit.mockResolvedValue([]);
+    const viaProxy = { "x-forwarded-for": "127.0.0.1" };
+    for (let i = 0; i < FIRST_IP_LIMIT * 2; i += 1) {
+      await signIn(`victim${i}@example.com`, "Password1", viaProxy);
+    }
+    mocks.selectLimit.mockResolvedValue([mocks.activeUser]);
+    await expect(
+      signIn("admin@example.com", "correct-password", viaProxy)
+    ).resolves.toBe("ok");
+    expect([...mocks.buckets.keys()].filter((key) => key.includes(":ip"))).toEqual([]);
+  });
+
+  it("still locks an account by backoff when per-IP limits don't apply", async () => {
+    vi.stubEnv("VERCEL", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    for (let i = 0; i < 5; i += 1) {
+      await signIn("admin@example.com", "wrong-password", {
+        "x-forwarded-for": `198.18.0.${i}`,
+      });
+    }
+    await expect(
+      signIn("admin@example.com", "correct-password", {
+        "x-forwarded-for": "198.18.1.1",
+      })
+    ).resolves.toBe("Too many sign-in attempts. Try again in 1 minute.");
   });
 });
 

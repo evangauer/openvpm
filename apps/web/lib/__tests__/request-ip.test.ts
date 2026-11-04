@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clientIpFromRequest,
   normalizeIp,
+  proxyWithoutTrustedHops,
   resolveClientIp,
   trustedProxyHops,
+  unverifiedForwardedIp,
 } from "../request-ip";
 
 afterEach(() => {
@@ -143,5 +145,66 @@ describe("clientIpFromRequest", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("proxyWithoutTrustedHops", () => {
+  const req = (headers: Record<string, string>) => ({ headers });
+
+  it("flags a self-host whose requests evidently came through a proxy", () => {
+    for (const headers of <Record<string, string>[]>[
+      { "x-real-ip": "203.0.113.10" },
+      { forwarded: "for=203.0.113.10" },
+      { via: "1.1 caddy" },
+      { "x-forwarded-server": "traefik" },
+      { "x-forwarded-for": "203.0.113.10, 172.18.0.1" },
+      { "x-forwarded-for": "203.0.113.10", "x-forwarded-proto": "https" },
+      { "x-forwarded-for": "127.0.0.1", "x-forwarded-proto": "http" },
+    ]) {
+      expect(proxyWithoutTrustedHops(req(headers), SELF_HOST)).toBe(true);
+    }
+  });
+
+  it("stays quiet for what Next.js fills in itself on a direct connection", () => {
+    expect(
+      proxyWithoutTrustedHops(
+        req({
+          "x-forwarded-for": "203.0.113.10",
+          "x-forwarded-proto": "http",
+          "x-forwarded-host": "clinic.example",
+          "x-forwarded-port": "3000",
+        }),
+        SELF_HOST
+      )
+    ).toBe(false);
+  });
+
+  it("stays quiet once hops are configured, and on Vercel", () => {
+    const proxied = req({ "x-real-ip": "203.0.113.10" });
+    expect(proxyWithoutTrustedHops(proxied, ONE_PROXY)).toBe(false);
+    expect(proxyWithoutTrustedHops(proxied, { OPENVPM_TRUSTED_PROXY_HOPS: "0" })).toBe(false);
+    expect(proxyWithoutTrustedHops(proxied, { VERCEL: "1" })).toBe(false);
+  });
+
+  it("reads Fetch API headers too", () => {
+    expect(
+      proxyWithoutTrustedHops(
+        new Request("http://localhost/", { headers: { "x-real-ip": "203.0.113.10" } }),
+        SELF_HOST
+      )
+    ).toBe(true);
+  });
+});
+
+describe("unverifiedForwardedIp", () => {
+  it("returns the claimed client address, if it is an IP", () => {
+    expect(
+      unverifiedForwardedIp({ headers: { "x-forwarded-for": " 203.0.113.10:5000 , 10.0.0.1" } })
+    ).toBe("203.0.113.10");
+    expect(unverifiedForwardedIp({ headers: { "x-real-ip": "::ffff:198.51.100.5" } })).toBe(
+      "198.51.100.5"
+    );
+    expect(unverifiedForwardedIp({ headers: { "x-forwarded-for": "evil" } })).toBeNull();
+    expect(unverifiedForwardedIp(null)).toBeNull();
   });
 });

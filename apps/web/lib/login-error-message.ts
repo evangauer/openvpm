@@ -21,7 +21,11 @@ export function loginRetryAfterSeconds(error: string | null | undefined): number
 
 export function loginRateLimitedMessage(retryAfterSeconds: number): string {
   const minutes = Math.max(1, Math.ceil(retryAfterSeconds / 60));
-  return `Too many sign-in attempts. Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
+  if (minutes <= 60) {
+    return `Too many sign-in attempts. Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`;
+  }
+  const hours = Math.ceil(minutes / 60);
+  return `Too many sign-in attempts. Try again in ${hours} hours.`;
 }
 
 export function loginErrorMessage(error: string | null | undefined): string {
