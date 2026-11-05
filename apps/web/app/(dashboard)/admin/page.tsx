@@ -719,8 +719,10 @@ export default function AdminPage() {
             </p>
             <p className="text-sm text-muted-foreground tabular-nums">
               {nps.responses} clinic{nps.responses === 1 ? "" : "s"} ·{" "}
-              {nps.promoters} promoters · {nps.passives} passive ·{" "}
-              {nps.detractors} detractors (latest answer per clinic, 180 days)
+              {nps.promoters} promoter{nps.promoters === 1 ? "" : "s"} ·{" "}
+              {nps.passives} passive · {nps.detractors} detractor
+              {nps.detractors === 1 ? "" : "s"} (latest answer per clinic, 180
+              days)
             </p>
           </div>
           <ul className="mt-4 divide-y divide-border rounded-md border border-border text-sm">

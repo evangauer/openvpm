@@ -93,12 +93,12 @@ export default async function NpsPage({
               </p>
             </div>
             <input type="hidden" name="token" value={token} />
-            <fieldset className="flex flex-wrap gap-1.5">
+            <fieldset className="grid grid-cols-11 gap-1">
               <legend className="sr-only">Score</legend>
               {Array.from({ length: 11 }, (_, score) => (
                 <label
                   key={score}
-                  className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-border text-sm font-semibold hover:bg-muted/40 has-[:checked]:border-primary has-[:checked]:bg-primary has-[:checked]:text-primary-foreground"
+                  className="flex h-10 cursor-pointer items-center justify-center rounded-lg border border-border text-sm font-semibold hover:bg-muted/40 has-[:checked]:border-primary has-[:checked]:bg-primary has-[:checked]:text-primary-foreground"
                 >
                   <input
                     type="radio"
