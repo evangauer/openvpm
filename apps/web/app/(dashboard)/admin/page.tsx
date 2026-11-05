@@ -17,6 +17,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { PageLoading } from "@/components/common/loading";
 import { SmsRecoveryConsole } from "@/components/admin/sms-recovery-console";
 import { ClinicPilotConsole } from "@/components/admin/clinic-pilot-console";
+import { DEMO_DISCLOSURE_FOLLOWUP_V2 } from "@/lib/growth/demo-disclosure";
 
 const EMPTY_UUID = "00000000-0000-4000-8000-000000000000";
 const MESSAGING_HISTORY_LIMIT = 50;
@@ -107,6 +108,11 @@ export default function AdminPage() {
     trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false });
   const { data: recoveryQueue, error: recoveryError } =
     trpc.admin.activationRecovery.useQuery(undefined, { retry: false });
+  const { data: demoLeads, error: demoLeadsError } =
+    trpc.admin.demoLeads.useQuery(undefined, { retry: false });
+  const setDemoLeadPaused = trpc.admin.setDemoLeadPaused.useMutation({
+    onSuccess: () => utils.admin.demoLeads.invalidate(),
+  });
   const { data: journey, error: journeyError } =
     trpc.admin.journeyFunnel.useQuery({ days: 30 }, { retry: false });
   const { data: messagingQueue, error: messagingQueueError } =
@@ -684,6 +690,114 @@ export default function AdminPage() {
             {recoveryError
               ? "Could not load activation recovery."
               : "Loading activation recovery…"}
+          </p>
+        )}
+      </div>
+
+      {/* Demo leads */}
+      <div className="mt-6 rounded-lg border border-border bg-card p-5">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <TrendingUp className="h-4 w-4" />
+          <span className="text-sm">Demo leads</span>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          People who passed the hosted-demo email gate, most recent first.
+          Follow-up stops when they create an account or when you pause them
+          here to reply personally.
+        </p>
+        {demoLeads ? (
+          <div className="mt-4 overflow-x-auto rounded-md border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Email</th>
+                  <th className="px-3 py-2 font-medium">Seen</th>
+                  <th className="px-3 py-2 font-medium">Explored</th>
+                  <th className="px-3 py-2 font-medium">Follow-up</th>
+                  <th className="px-3 py-2 font-medium" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {demoLeads.map((lead) => (
+                  <tr key={lead.leadId} className="align-top hover:bg-muted/20">
+                    <td className="px-3 py-2">
+                      <a
+                        href={`mailto:${lead.email}`}
+                        className="font-medium underline-offset-2 hover:underline"
+                      >
+                        {lead.email}
+                      </a>
+                      {lead.registered ? (
+                        <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                          Created an account
+                        </p>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      <p>First {formatDate(lead.firstSeenAt)}</p>
+                      <p>
+                        Last {formatDate(lead.lastSeenAt)} · {lead.seenCount}{" "}
+                        visit{lead.seenCount === 1 ? "" : "s"}
+                      </p>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      <p className="tabular-nums">
+                        {lead.toolCount} tool{lead.toolCount === 1 ? "" : "s"}
+                      </p>
+                      {lead.firstTool ? (
+                        <p>First: {recoveryLabel(lead.firstTool)}</p>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      <p className="tabular-nums">
+                        {lead.emailsSent} sent
+                        {lead.lastEmailAt
+                          ? ` · last ${formatDate(lead.lastEmailAt)}`
+                          : ""}
+                      </p>
+                      <p>
+                        {lead.disclosureVersion === DEMO_DISCLOSURE_FOLLOWUP_V2
+                          ? "Getting-started series"
+                          : "One feedback email"}
+                      </p>
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      {lead.registered ? null : (
+                        <button
+                          type="button"
+                          disabled={setDemoLeadPaused.isPending}
+                          onClick={() =>
+                            setDemoLeadPaused.mutate({
+                              leadId: lead.leadId,
+                              paused: !lead.pausedAt,
+                            })
+                          }
+                          className="rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-muted/40 disabled:opacity-50"
+                        >
+                          {lead.pausedAt ? "Resume" : "Pause"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {demoLeads.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={5}
+                      className="px-3 py-6 text-center text-muted-foreground"
+                    >
+                      No demo leads yet.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {demoLeadsError
+              ? "Could not load demo leads."
+              : "Loading demo leads…"}
           </p>
         )}
       </div>

@@ -11,6 +11,7 @@ import {
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
   renderCheckoutRecoveryEmail,
+  renderDemoFollowupEmail,
   type RenderedEmail,
 } from "./src/render";
 
@@ -77,6 +78,27 @@ async function main() {
               url: `${brand.appUrl}/feedback/stop-reason?token=preview&reason=${index}`,
             })),
             feedbackUrl: `${brand.appUrl}/feedback/stop-reason?token=preview`,
+            bookingUrl: null,
+            unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
+          }),
+        ]),
+      ),
+    ),
+    ...Object.fromEntries<RenderedEmail>(
+      await Promise.all(
+        ([1, 2, 3, 4] as const).map(async (step): Promise<[string, RenderedEmail]> => [
+          `demo-followup-${step}`,
+          await renderDemoFollowupEmail({
+            brand,
+            step,
+            senderName: "Alex",
+            tool: {
+              name: "the day board",
+              pitch:
+                "Your whole day on one screen: who's checked in, who's waiting, and which room each patient is in.",
+            },
+            trialDays: 14,
+            signupUrl: `${brand.appUrl}/register?intent=cloud`,
             bookingUrl: null,
             unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
           }),

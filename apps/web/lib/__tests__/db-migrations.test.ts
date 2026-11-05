@@ -793,6 +793,39 @@ describe("committed Drizzle migrations", () => {
     }
   });
 
+  it("keeps pre-signup leads and their email ledger system-only", () => {
+    const sql = readRepoFile("packages/db/drizzle/0111_growth_leads.sql");
+    expect(sql).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(sql).toContain('CREATE TABLE "growth_leads"');
+    expect(sql).toContain('CREATE TABLE "growth_lead_emails"');
+    expect(sql).toContain('"disclosure_version" varchar(32) NOT NULL');
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "growth_lead_emails_dedupe_key_uq"',
+    );
+    expect(sql).toContain(
+      'ALTER TABLE "growth_leads" ENABLE ROW LEVEL SECURITY',
+    );
+    expect(sql).toContain(
+      'ALTER TABLE "growth_lead_emails" ENABLE ROW LEVEL SECURITY',
+    );
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    for (const table of ["growth_leads", "growth_lead_emails"]) {
+      const policy = rls.slice(
+        rls.indexOf(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`),
+      );
+      expect(policy).toContain(`CREATE POLICY system_only ON ${table}`);
+      expect(policy.slice(0, 300)).toContain("USING (app_rls_bypass())");
+      expect(policy.slice(0, 300)).not.toContain("app_current_practice_id");
+    }
+    const apiRoleRevokes = rls.slice(
+      rls.indexOf("'REVOKE ALL ON auth_email_attempts"),
+      rls.indexOf("FROM %I', r"),
+    );
+    expect(apiRoleRevokes).toContain("growth_leads");
+    expect(apiRoleRevokes).toContain("growth_lead_emails");
+  });
+
   it("adds durable replica leases and append-only storage evidence", () => {
     const sql = readRepoFile("packages/db/drizzle/0077_gifted_wolverine.sql");
     const eventTable = sql.indexOf('CREATE TABLE "file_storage_events"');

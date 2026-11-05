@@ -1,0 +1,31 @@
+/**
+ * What the demo email gate tells visitors their address is used for. The copy
+ * and its version live together: changing what we promise means bumping the
+ * version, and follow-up email never exceeds what a lead's version promised.
+ *
+ * Safe for client components (no server imports).
+ */
+export const DEMO_DISCLOSURE_FEEDBACK_V1 = "demo-feedback-v1";
+export const DEMO_DISCLOSURE_FOLLOWUP_V2 = "demo-followup-v2";
+
+export const DEMO_DISCLOSURE_VERSIONS = [
+  DEMO_DISCLOSURE_FEEDBACK_V1,
+  DEMO_DISCLOSURE_FOLLOWUP_V2,
+] as const;
+
+export type DemoDisclosureVersion = (typeof DEMO_DISCLOSURE_VERSIONS)[number];
+
+export const CURRENT_DEMO_DISCLOSURE: DemoDisclosureVersion =
+  DEMO_DISCLOSURE_FOLLOWUP_V2;
+
+export const CURRENT_DEMO_DISCLOSURE_TEXT =
+  "No call, sales form, or credit card. We use your email to protect this shared sandbox from automated abuse and to send a few short emails about getting started with OpenVPM. Unsubscribe anytime.";
+
+export function isDemoDisclosureVersion(
+  value: unknown,
+): value is DemoDisclosureVersion {
+  return (
+    typeof value === "string" &&
+    (DEMO_DISCLOSURE_VERSIONS as readonly string[]).includes(value)
+  );
+}
