@@ -21,6 +21,8 @@ import {
 } from "@/lib/rate-limit";
 import { clientIpFromRequest } from "@/lib/request-ip";
 import { readJsonRequestBody } from "@/lib/request-json";
+import { CURRENT_DEMO_DISCLOSURE } from "@/lib/growth/demo-disclosure";
+import { leadCaptureSecret } from "@/lib/growth/leads";
 
 const DEMO_ACCESS_BODY_MAX_BYTES = 2 * 1024;
 const DEMO_ACCESS_WINDOW_MS = 60 * 60 * 1000;
@@ -76,6 +78,39 @@ async function recordAcceptedDemoGate(
   });
   if (!response.ok) {
     throw new Error(`funnel endpoint returned ${response.status}`);
+  }
+}
+
+/**
+ * Hand the gated email to the app, which owns follow-up email. The demo has
+ * its own database and no email credentials. Skipped when LEAD_CAPTURE_SECRET
+ * is not configured (self-hosted demos).
+ */
+async function forwardDemoLead(
+  request: Request,
+  lead: { email: string; anonymousId?: string },
+): Promise<void> {
+  const secret = leadCaptureSecret();
+  if (!secret) return;
+  const response = await fetch(
+    new URL("/api/growth/leads", funnelEventEndpoint(request)),
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${secret}`,
+      },
+      body: JSON.stringify({
+        source: "demo",
+        email: lead.email,
+        ...(lead.anonymousId ? { anonymousId: lead.anonymousId } : {}),
+        disclosureVersion: CURRENT_DEMO_DISCLOSURE,
+      }),
+      signal: AbortSignal.timeout(1_500),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`lead capture returned ${response.status}`);
   }
 }
 
@@ -189,6 +224,18 @@ export async function POST(request: Request) {
     } catch (error) {
       console.error("[demo-access] funnel capture failed:", error);
     }
+  }
+
+  try {
+    await forwardDemoLead(request, {
+      email,
+      anonymousId: parsed.data.anonymousId,
+    });
+  } catch (error) {
+    console.error(
+      "[demo-access] lead capture failed:",
+      error instanceof Error ? error.message : String(error),
+    );
   }
 
   const response = NextResponse.json(

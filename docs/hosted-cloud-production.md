@@ -80,6 +80,10 @@ GROWTH_SENDER_NAME=        # signature + From display name for recovery email
 GROWTH_SENDER_REPLY_TO=    # real inbox that receives replies
 GROWTH_BOOKING_URL=        # optional https scheduling link
 LEAD_ALERT_WEBHOOK_URL=    # optional Slack-style webhook for hand-raises
+# Default-off. The timestamp is the prospective first-seen boundary.
+DEMO_FOLLOWUP_ENABLED=false
+DEMO_FOLLOWUP_ROLLOUT_AT=
+LEAD_CAPTURE_SECRET=...    # same 32+ byte value on the app and demo projects
 NEXTAUTH_URL=https://app.openvpm.com
 NEXT_PUBLIC_APP_URL=https://app.openvpm.com
 NEXTAUTH_SECRET=... # `openssl rand -base64 32`; production refuses published or <32-char values
@@ -562,6 +566,35 @@ the platform-admin activation recovery queue, and posts to
 by a transparent lead score (fit from clinic type and goal, intent from real
 activity, halved after 14 quiet days) and shows the reasons behind it.
 
+### Demo lead follow-up
+
+The demo deployment has its own database and no email credentials. When a
+visitor passes the demo email gate, the demo server forwards the address, the
+visitor's anonymous funnel id, and the disclosure version they saw to
+`/api/growth/leads` on the app, authenticated with `LEAD_CAPTURE_SECRET`. The
+app stores it in the system-only `growth_leads` table; no clinic session can
+read it. Without the secret on both projects, nothing is forwarded.
+
+The hourly `/api/cron/demo-followup` sweep (app only; it is a no-op wherever
+hosted billing is off, including the demo) sends personal, plain-text email:
+
+1. 3 hours after the first visit: "What did you think?", mentioning the first
+   product tool they opened.
+2. Day 2: that tool in their own clinic, with a signup link.
+3. Day 5: an offer of a 15-minute setup call.
+4. Day 9: answers to the questions clinics ask before switching.
+
+What each lead receives never exceeds what the gate told them. Visitors who
+saw the earlier "one brief email" wording (`demo-feedback-v1`) receive only the
+first email. Visitors who saw the current wording (`demo-followup-v2`) receive
+up to four, or two if they opened fewer than two product tools. Sends are at
+least 20 hours apart, stop after 21 days, honor platform email preferences
+before and under the send lock, and are recorded once per step in
+`growth_lead_emails`. Creating an account with the same address, or pausing
+the lead from the platform-admin "Demo leads" panel, ends the sequence. Signup
+links carry the visitor's funnel id and `utm_campaign=demo_followup_<step>`,
+so registrations are attributed to the email that produced them.
+
 Webhook endpoint:
 
 ```text
@@ -688,6 +721,7 @@ set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_FIRST_CLINIC_WIN_URL`,
 `CRON_HEARTBEAT_SETUP_RECOVERY_URL`,
 `CRON_HEARTBEAT_CHECKOUT_RECOVERY_URL`,
+`CRON_HEARTBEAT_DEMO_FOLLOWUP_URL`,
 `CRON_HEARTBEAT_WELLNESS_BILLING_URL`,
 `CRON_HEARTBEAT_RATE_LIMIT_CLEANUP_URL`,
 `CRON_HEARTBEAT_AUTH_CLEANUP_URL`,
@@ -714,7 +748,7 @@ pnpm db:push
 pnpm db:seed
 ```
 
-Demo login displays one-click role buttons. Demo should not use production Stripe, SMS, or email credentials.
+Demo login displays one-click role buttons. Demo should not use production Stripe, SMS, or email credentials. To hand gated demo emails to the app for follow-up, set the same `LEAD_CAPTURE_SECRET` on the demo and app projects (see "Demo lead follow-up").
 
 ## Public Repo Hygiene
 

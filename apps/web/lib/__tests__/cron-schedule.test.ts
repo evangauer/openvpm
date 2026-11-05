@@ -18,6 +18,7 @@ describe("Vercel cron schedule", () => {
         "/api/cron/first-clinic-win",
         "/api/cron/setup-recovery",
         "/api/cron/checkout-recovery",
+        "/api/cron/demo-followup",
         "/api/cron/wellness-billing",
         "/api/cron/rate-limit-cleanup",
         "/api/cron/auth-cleanup",
@@ -43,6 +44,11 @@ describe("Vercel cron schedule", () => {
       config.crons?.find((cron) => cron.path === "/api/cron/checkout-recovery")
         ?.schedule,
     ).toBe("25 * * * *");
+
+    expect(
+      config.crons?.find((cron) => cron.path === "/api/cron/demo-followup")
+        ?.schedule,
+    ).toBe("40 * * * *");
 
     expect(
       config.crons?.find((cron) => cron.path === "/api/cron/first-clinic-win")

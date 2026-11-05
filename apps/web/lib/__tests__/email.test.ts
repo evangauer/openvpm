@@ -792,6 +792,50 @@ describe("lifecycle email branding", () => {
     expect(payload.html).toContain("Alex");
   });
 
+  it("sends demo follow-up with tool copy and attributed signup links", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    vi.stubEnv("EMAIL_FROM", "OpenVPM <hello@mail.openvpm.com>");
+    vi.stubEnv("GROWTH_SENDER_NAME", "Alex");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-demo" } });
+    const { sendDemoFollowupEmail } = await loadEmail();
+
+    await expect(
+      sendDemoFollowupEmail({
+        to: "vet@clinic.com",
+        step: 2,
+        topTool: "day_board",
+        anonymousId: "11111111-1111-4111-8111-111111111111",
+        idempotencyKey: "lead:demo-followup:v1:x:2",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-demo" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      to: "vet@clinic.com",
+      from: "Alex at OpenVPM <hello@mail.openvpm.com>",
+      subject: "The day board, with your own clinic",
+      headers: {
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
+    expect(payload.html).toContain("which room each patient is in");
+    expect(payload.html).toContain("utm_campaign=demo_followup_2");
+    expect(payload.html).toContain(
+      "funnel_id=11111111-1111-4111-8111-111111111111",
+    );
+    expect(payload.html).toContain("you tried the OpenVPM demo");
+  });
+
   it("uses a signed human link and RFC one-click headers for trial email", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv(
