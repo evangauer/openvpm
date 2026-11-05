@@ -22,6 +22,7 @@ import {
   TRIAL_DAYS,
   hasHostedFullAccess,
 } from "@/lib/billing/plans";
+import { hasPreviewAccess, isPreviewPractice } from "@/lib/billing/preview";
 import { BILLING_CADENCES, CLOUD_BILLING_OPTIONS } from "@/lib/billing/catalog";
 import { usageForPractice, currentPeriodMonth } from "@/lib/billing/usage";
 import {
@@ -62,6 +63,7 @@ export const subscriptionRouter = createRouter({
         stripeCustomerId: practices.stripeCustomerId,
         stripeBillingAccount: practices.stripeBillingAccount,
         stripeSubscriptionId: practices.stripeSubscriptionId,
+        previewEndsAt: practices.previewEndsAt,
       })
       .from(practices)
       .where(activePracticeWhere(ctx.practiceId))
@@ -99,6 +101,10 @@ export const subscriptionRouter = createRouter({
         practice.billingStatus,
         practice.trialEndsAt
       ),
+      // Preview before card: set to the window's end while no trial exists.
+      previewEndsAt:
+        enforced && isPreviewPractice(practice) ? practice.previewEndsAt : null,
+      previewActive: enforced && hasPreviewAccess(practice),
       locationCount: counts.locationCount,
       billableSeatCount: counts.billableSeatCount,
       locationUnitPriceMonthlyUsd: CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,

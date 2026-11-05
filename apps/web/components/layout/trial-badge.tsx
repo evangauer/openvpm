@@ -93,6 +93,18 @@ export function TrialBadge() {
     );
   }
 
+  if (data.previewActive && data.previewEndsAt) {
+    return (
+      <Link
+        href="/settings?tab=billing"
+        className="inline-flex items-center gap-1.5 rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800 transition-colors hover:bg-teal-100"
+      >
+        <Clock className="h-3.5 w-3.5" />
+        {previewTimeLeftLabel(data.previewEndsAt)} · Start free trial
+      </Link>
+    );
+  }
+
   if (data.billingStatus === "none" && !data.trialEndsAt) {
     return (
       <Link
@@ -143,4 +155,16 @@ export function TrialBadge() {
   }
 
   return null;
+}
+
+/** "Preview: 2 days left", or hours on the last day. */
+export function previewTimeLeftLabel(
+  endsAt: Date | string,
+  now: Date = new Date(),
+): string {
+  const msLeft = new Date(endsAt).getTime() - now.getTime();
+  const hours = Math.max(1, Math.ceil(msLeft / (60 * 60 * 1000)));
+  if (hours < 24) return `Preview: ${hours}h left`;
+  const days = Math.ceil(hours / 24);
+  return `Preview: ${days} day${days === 1 ? "" : "s"} left`;
 }

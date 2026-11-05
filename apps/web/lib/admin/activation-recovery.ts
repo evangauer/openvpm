@@ -55,6 +55,8 @@ export interface ActivationRecoveryPractice {
   /** Why a never-trialed clinic stopped, from the recovery email answer. */
   stopReason: string | null;
   stopReasonNote: string | null;
+  /** Preview-before-card experiment arm, when the clinic was assigned one. */
+  previewArm: "preview" | "control" | null;
   lead: LeadScore;
 }
 
@@ -94,6 +96,9 @@ type RecoverySettings = {
     stopReason?: string | null;
     stopReasonNote?: string | null;
   };
+  growthExperiments?: {
+    previewBeforeCard?: { arm?: string | null };
+  };
 };
 
 export function recoveryLeadProfile(settingsValue: unknown): {
@@ -102,11 +107,14 @@ export function recoveryLeadProfile(settingsValue: unknown): {
   onboardingIntent: string | null;
   stopReason: string | null;
   stopReasonNote: string | null;
+  previewArm: "preview" | "control" | null;
 } {
   const settings = (settingsValue ?? {}) as RecoverySettings;
   const state = settings.onboardingState;
   const stopReason = settings.growthLead?.stopReason;
+  const arm = settings.growthExperiments?.previewBeforeCard?.arm;
   return {
+    previewArm: arm === "preview" || arm === "control" ? arm : null,
     clinicModel: state?.clinicModel ?? null,
     firstGoal: state?.firstGoal ?? null,
     onboardingIntent: state?.onboardingIntent ?? null,
@@ -513,6 +521,7 @@ export async function computeActivationRecovery(
       nextActionPriority: nextAction.priority,
       stopReason: profile.stopReason,
       stopReasonNote: profile.stopReasonNote,
+      previewArm: profile.previewArm,
       lead,
     };
   });

@@ -43,6 +43,7 @@ import {
 import { FUNNEL_EVENTS } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import { getFunnelVisitorId } from "@/lib/funnel-visitor";
+import { previewArmFor, type PreviewArm } from "@/lib/billing/preview";
 import {
   CLINIC_REGION_OPTIONS,
   type ClinicRegionCode,
@@ -82,6 +83,8 @@ export interface RegisterFormProps {
   cardRequired: boolean;
   trialDays: number;
   monthlyPriceUsd: number;
+  /** Share of card-required signups that explore a preview before the card. */
+  previewPercent?: number;
 }
 
 export default function RegisterForm(props: RegisterFormProps) {
@@ -98,7 +101,13 @@ export default function RegisterForm(props: RegisterFormProps) {
   );
 }
 
-function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPriceUsd }: RegisterFormProps) {
+function RegisterPageInner({
+  hostedBilling,
+  cardRequired,
+  trialDays,
+  monthlyPriceUsd,
+  previewPercent = 0,
+}: RegisterFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const cloudIntent = searchParams.get("intent") === "cloud";
@@ -115,6 +124,22 @@ function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPric
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  // Mirrors the server's assignment from the same funnel id, so the copy
+  // matches what registration will do.
+  const [previewArm, setPreviewArm] = useState<PreviewArm>("control");
+  useEffect(() => {
+    if (!cardRequired || previewPercent <= 0) return;
+    setPreviewArm(
+      previewArmFor(
+        acquisition?.funnelId ?? getFunnelVisitorId(),
+        previewPercent,
+      ),
+    );
+    // Assigned once per mount from the attribution snapshot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable arm
+  }, []);
+  const previewFirst = cardRequired && previewArm === "preview";
+  const cardFirst = cardRequired && !previewFirst;
 
   useEffect(() => {
     trackFunnelEvent(FUNNEL_EVENTS.signupLand, {
@@ -595,7 +620,7 @@ function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPric
             </button>
             <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-4">
               <p className="text-center text-xs text-slate-500">
-                {cardRequired ? "Card required. No charge today." : hostedBilling ? "No card required." : "Free to self-host."}
+                {previewFirst ? "No card needed to look around." : cardFirst ? "Card required. No charge today." : hostedBilling ? "No card required." : "Free to self-host."}
               </p>
               <Button
                 type="button"
@@ -637,7 +662,9 @@ function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPric
           </h1>
           <p className="mt-2 text-sm leading-6 text-slate-600">
             Choose your clinic country and create a password.
-            {cardRequired
+            {previewFirst
+              ? " Next, explore your workspace with sample data. Add a card when you're ready to start your free trial."
+              : cardFirst
               ? " Next, add your card securely through Stripe to start your free trial."
               : hostedBilling
                 ? " Your free trial starts immediately."
@@ -767,7 +794,7 @@ function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPric
                 </>
               ) : (
                 <>
-                  {cardRequired ? "Continue to secure checkout" : hostedBilling ? "Start my free trial" : "Create my workspace"}
+                  {previewFirst ? "Build my workspace" : cardFirst ? "Continue to secure checkout" : hostedBilling ? "Start my free trial" : "Create my workspace"}
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </>
               )}
@@ -776,10 +803,10 @@ function RegisterPageInner({ hostedBilling, cardRequired, trialDays, monthlyPric
             <p className="flex items-center justify-center gap-1.5 text-xs text-slate-500">
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
               {hostedBilling ? `Free for ${trialDays} days.` : "Free, open-source software."}
-              {cardRequired ? " Card required. No charge today." : hostedBilling ? " No credit card required." : ""}
+              {previewFirst ? " No card needed to look around." : cardFirst ? " Card required. No charge today." : hostedBilling ? " No credit card required." : ""}
             </p>
 
-            {cardRequired && (
+            {cardFirst && (
               <p className="text-center text-xs leading-5 text-slate-500">
                 After your {trialDays}-day trial, ${monthlyPriceUsd} USD/month per
                 active location, plus applicable taxes and usage overages.

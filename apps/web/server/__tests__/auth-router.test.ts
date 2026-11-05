@@ -743,7 +743,104 @@ describe("auth router input validation", () => {
       practiceName: "Neighborhood Veterinary",
       trialDays: 14,
       billingRequired: false,
+      previewEndsAt: null,
     });
+  });
+
+  it("opens a preview before card for the preview arm, with no checkout", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.stubEnv("HOSTED_PREVIEW_PERCENT", "100");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues, updateSet } = createRegistrationDb();
+    const before = Date.now();
+
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+        country: "US",
+        acquisition: { funnelId: "11111111-1111-4111-8111-111111111111" },
+      }),
+    ).resolves.toMatchObject({
+      checkoutUrl: undefined,
+      onboardingRequired: true,
+    });
+
+    const practiceInsert = insertValues.mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    // No trial and no subscription: the card still starts the trial.
+    expect(practiceInsert).not.toHaveProperty("billingStatus");
+    expect(practiceInsert).not.toHaveProperty("trialEndsAt");
+    const previewEndsAt = practiceInsert.previewEndsAt as Date;
+    expect(previewEndsAt).toBeInstanceOf(Date);
+    expect(previewEndsAt.getTime() - before).toBeGreaterThanOrEqual(
+      72 * 60 * 60 * 1000 - 1000,
+    );
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
+    expect(updateSet).toHaveBeenCalledWith({
+      settings: expect.objectContaining({
+        growthExperiments: {
+          previewBeforeCard: { arm: "preview", assignedAt: expect.any(String) },
+        },
+      }),
+    });
+    expect(mocks.sendWelcomeEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billingRequired: true,
+        previewEndsAt,
+      }),
+    );
+  });
+
+  it("keeps checkout first for the control arm and records the assignment", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.stubEnv("HOSTED_PREVIEW_PERCENT", "50");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues, updateSet } = createRegistrationDb();
+
+    // No funnel id: unattributable signups always stay on the control path.
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+        country: "US",
+      }),
+    ).resolves.toMatchObject({
+      checkoutUrl: "https://checkout.stripe.com/signup-checkout",
+      onboardingRequired: false,
+    });
+    expect(insertValues.mock.calls[0]?.[0]).not.toHaveProperty("previewEndsAt");
+    expect(updateSet).toHaveBeenCalledWith({
+      settings: expect.objectContaining({
+        growthExperiments: {
+          previewBeforeCard: { arm: "control", assignedAt: expect.any(String) },
+        },
+      }),
+    });
+  });
+
+  it("assigns no experiment arm while the preview share is unset", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, updateSet } = createRegistrationDb();
+
+    await callerWithDb(db).register({
+      email: "owner@example.com",
+      password: "password123",
+      practiceName: "Neighborhood Veterinary",
+      country: "US",
+      acquisition: { funnelId: "11111111-1111-4111-8111-111111111111" },
+    });
+    expect(updateSet).toHaveBeenCalledWith({
+      settings: expect.not.objectContaining({
+        growthExperiments: expect.anything(),
+      }),
+    });
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalled();
   });
 
   it("reports a console verification preview without claiming registration email delivery", async () => {

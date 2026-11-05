@@ -5,6 +5,7 @@ import { practices, users } from "@openpims/db";
 import { db } from "@openpims/db/client";
 import { authOptions } from "@/lib/auth";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
+import { hasPreviewAccess } from "@/lib/billing/preview";
 import { reviewLandingPath } from "@/lib/review-landing";
 import { sessionVersionIsCurrent } from "@/lib/session-version";
 import { withTenant } from "@/lib/tenant-db";
@@ -26,6 +27,8 @@ export default async function PostLoginPage() {
         tier: practices.subscriptionTier,
         billingStatus: practices.billingStatus,
         trialEndsAt: practices.trialEndsAt,
+        stripeSubscriptionId: practices.stripeSubscriptionId,
+        previewEndsAt: practices.previewEndsAt,
       })
       .from(practices)
       .innerJoin(
@@ -46,9 +49,10 @@ export default async function PostLoginPage() {
     redirect("/login");
   }
 
+  // A clinic in its preview lands in the product; the card comes after setup.
   if (account.role === "admin" && !account.recoveryHold && billingEnforced() && !hasHostedFullAccess(
     account.tier, account.billingStatus, account.trialEndsAt,
-  )) redirect("/settings?tab=billing");
+  ) && !hasPreviewAccess(account)) redirect("/settings?tab=billing");
 
   redirect(reviewLandingPath(account));
 }

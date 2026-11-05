@@ -81,6 +81,7 @@ function assertStaffOutboundEmailAllowed(
       id: string;
       emailVerifiedAt?: Date | string | null;
       practiceCreatedAt?: Date | string | null;
+      practiceInPreview?: boolean;
     };
   },
   operation: "appointment_reminder" | "invoice" | "vaccination_recall",
@@ -90,6 +91,7 @@ function assertStaffOutboundEmailAllowed(
     practiceCreatedAt: ctx.user.practiceCreatedAt,
     userId: ctx.user.id,
     userEmailVerifiedAt: ctx.user.emailVerifiedAt,
+    practiceInPreview: ctx.user.practiceInPreview,
     ip: ctx.ip,
     operation,
   });

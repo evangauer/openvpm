@@ -2454,6 +2454,7 @@ export const settingsRouter = createRouter({
         practiceCreatedAt: practice.createdAt,
         userId: ctx.user.id,
         userEmailVerifiedAt: ctx.user.emailVerifiedAt,
+        practiceInPreview: ctx.user.practiceInPreview,
         ip: ctx.ip,
         operation: "staff_invite",
       });

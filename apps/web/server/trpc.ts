@@ -30,6 +30,11 @@ import {
 } from "@/lib/billing/plans";
 import { readHostedAiAccess } from "@/lib/billing/ai-access";
 import {
+  hasPreviewAccess,
+  isPreviewPractice,
+  PREVIEW_OUTBOUND_BLOCK_MESSAGE,
+} from "@/lib/billing/preview";
+import {
   portalSessionTokenFromCookie,
   resolvePortalSession,
   type PortalSessionClient,
@@ -53,6 +58,8 @@ interface AppSession extends Session {
     recoveryHold?: boolean;
     emailVerifiedAt?: Date | string | null;
     practiceCreatedAt?: Date | string | null;
+    /** Started in a preview and has no card-backed trial yet. */
+    practiceInPreview?: boolean;
   };
 }
 
@@ -137,6 +144,10 @@ async function activeSessionOrNull(
           emailVerifiedAt: users.emailVerifiedAt,
           practiceCreatedAt: practices.createdAt,
           recoveryHold: practices.recoveryHold,
+          billingStatus: practices.billingStatus,
+          trialEndsAt: practices.trialEndsAt,
+          stripeSubscriptionId: practices.stripeSubscriptionId,
+          previewEndsAt: practices.previewEndsAt,
         })
         .from(users)
         .innerJoin(
@@ -175,6 +186,7 @@ async function activeSessionOrNull(
       emailVerifiedAt: activeUser.emailVerifiedAt,
       practiceCreatedAt: activeUser.practiceCreatedAt,
       recoveryHold: activeUser.recoveryHold,
+      practiceInPreview: billingEnforced() && isPreviewPractice(activeUser),
     },
   };
 }
@@ -222,6 +234,25 @@ const t = initTRPC.context<TRPCContext>().create({
 });
 
 export const createRouter = t.router;
+
+/**
+ * Cloud features a preview clinic can try in-app. Texting, AI, the public
+ * API, and integrations reach outside the clinic and wait for the trial.
+ */
+const PREVIEW_FEATURES: ReadonlySet<Feature> = new Set<Feature>([
+  "advancedReporting",
+  "multiLocation",
+]);
+
+const PREVIEW_BLOCKED_MUTATION_PREFIXES: readonly string[] = [
+  "messaging.",
+  "apiKeys.",
+  "webhooks.",
+  "billing.createPaymentAccountOnboarding",
+  "billing.refreshPaymentAccount",
+  "billing.openPaymentAccountDashboard",
+  "billing.createCardPaymentCheckout",
+];
 
 const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "auth.resendVerification",
@@ -449,6 +480,8 @@ export const protectedProcedure = t.procedure.use(
               tier: practices.subscriptionTier,
               billingStatus: practices.billingStatus,
               trialEndsAt: practices.trialEndsAt,
+              stripeSubscriptionId: practices.stripeSubscriptionId,
+              previewEndsAt: practices.previewEndsAt,
             })
             .from(practices)
             .where(
@@ -461,13 +494,22 @@ export const protectedProcedure = t.procedure.use(
           if (!practice) {
             throw practiceNotFound();
           }
-          if (
-            !hasHostedFullAccess(
-              practice.tier,
-              practice.billingStatus,
-              practice.trialEndsAt,
-            )
-          ) {
+          const fullAccess = hasHostedFullAccess(
+            practice.tier,
+            practice.billingStatus,
+            practice.trialEndsAt,
+          );
+          // A preview clinic may set up its workspace in-app. Surfaces that
+          // reach outside the clinic or buy provider resources wait for the
+          // card-backed trial; email, SMS, and AI also keep their own checks.
+          if (!fullAccess && hasPreviewAccess(practice)) {
+            if (PREVIEW_BLOCKED_MUTATION_PREFIXES.some((p) => path.startsWith(p))) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message: PREVIEW_OUTBOUND_BLOCK_MESSAGE,
+              });
+            }
+          } else if (!fullAccess) {
             throw new TRPCError({
               code: "FORBIDDEN",
               message:
@@ -603,6 +645,8 @@ export function requireFeature(feature: Feature) {
           tier: practices.subscriptionTier,
           billingStatus: practices.billingStatus,
           trialEndsAt: practices.trialEndsAt,
+          stripeSubscriptionId: practices.stripeSubscriptionId,
+          previewEndsAt: practices.previewEndsAt,
         })
         .from(practices)
         .where(
@@ -620,7 +664,9 @@ export function requireFeature(feature: Feature) {
         practice.billingStatus,
         practice.trialEndsAt,
       );
-      if (!isEntitled(tier, feature, true)) {
+      const previewFeature =
+        PREVIEW_FEATURES.has(feature) && hasPreviewAccess(practice);
+      if (!previewFeature && !isEntitled(tier, feature, true)) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: `Your plan doesn't include this feature. Upgrade to unlock it.`,

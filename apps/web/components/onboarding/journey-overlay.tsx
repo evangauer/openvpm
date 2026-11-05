@@ -288,7 +288,7 @@ function JourneyShell({
     [utils, setJourneyProgress],
   );
 
-  const finish = useCallback(async () => {
+  const finish = useCallback(async (finishPath?: string) => {
     await completeOnboarding.mutateAsync();
     if (!state.keepSampleData) {
       try {
@@ -308,14 +308,19 @@ function JourneyShell({
     });
     trackFunnelEvent(FUNNEL_EVENTS.firstActionSelected, {
       goal: state.firstGoal,
-      placement: state.hasImportedData ? "schedule" : "client",
+      placement: finishPath
+        ? "trial_checkout"
+        : state.hasImportedData
+          ? "schedule"
+          : "client",
       step: "first_action",
     });
     setIndex(null);
     router.push(
-      state.hasImportedData
-        ? "/schedule?setup=first-visit"
-        : "/clients/new?setup=first-visit",
+      finishPath ??
+        (state.hasImportedData
+          ? "/schedule?setup=first-visit"
+          : "/clients/new?setup=first-visit"),
     );
   }, [
     completeOnboarding,
@@ -343,7 +348,7 @@ function JourneyShell({
         step: step.id,
       });
       if (isLast) {
-        await finish();
+        await finish(handleRef.current?.finishPath);
       } else {
         handleRef.current = null;
         setContinueLabel(null);

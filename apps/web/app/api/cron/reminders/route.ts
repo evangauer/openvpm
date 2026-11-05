@@ -219,6 +219,14 @@ export async function GET(request: Request) {
             isNull(clients.deletedAt),
             eq(practices.appointmentRemindersEnabled, true),
             eq(practices.recoveryHold, false),
+            // A preview clinic has no card-backed trial yet: nothing leaves
+            // the app until it starts one.
+            sql`not (
+              ${practices.previewEndsAt} is not null
+              and ${practices.billingStatus} = 'none'
+              and ${practices.trialEndsAt} is null
+              and ${practices.stripeSubscriptionId} is null
+            )`,
             gte(appointments.startTime, now),
             lte(
               appointments.startTime,

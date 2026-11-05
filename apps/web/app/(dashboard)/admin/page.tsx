@@ -110,6 +110,10 @@ export default function AdminPage() {
     trpc.admin.activationRecovery.useQuery(undefined, { retry: false });
   const { data: demoLeads, error: demoLeadsError } =
     trpc.admin.demoLeads.useQuery(undefined, { retry: false });
+  const { data: previewExperiment } = trpc.admin.previewExperiment.useQuery(
+    undefined,
+    { retry: false },
+  );
   const setDemoLeadPaused = trpc.admin.setDemoLeadPaused.useMutation({
     onSuccess: () => utils.admin.demoLeads.invalidate(),
   });
@@ -629,6 +633,13 @@ export default function AdminPage() {
                     </td>
                     <td className="px-3 py-2 text-muted-foreground">
                       <p>{clinic.setupStage}</p>
+                      {clinic.previewArm ? (
+                        <p className="mt-0.5 text-xs">
+                          {clinic.previewArm === "preview"
+                            ? "Signup: preview before card"
+                            : "Signup: card first"}
+                        </p>
+                      ) : null}
                       {clinic.setupHelpRequestedAt ? (
                         <p className="mt-0.5 text-xs font-medium text-emerald-700">
                           Help requested{" "}
@@ -693,6 +704,55 @@ export default function AdminPage() {
           </p>
         )}
       </div>
+
+      {/* Preview before card experiment */}
+      {previewExperiment?.some((arm) => arm.registered > 0) ? (
+        <div className="mt-6 rounded-lg border border-border bg-card p-5">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <TrendingUp className="h-4 w-4" />
+            <span className="text-sm">Preview before card</span>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Card-required signups split between exploring a preview first and
+            adding a card first. Card and payment come from Stripe webhooks.
+          </p>
+          <div className="mt-4 overflow-x-auto rounded-md border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Signup</th>
+                  <th className="px-3 py-2 font-medium">Registered</th>
+                  <th className="px-3 py-2 font-medium">Finished setup</th>
+                  <th className="px-3 py-2 font-medium">Added card</th>
+                  <th className="px-3 py-2 font-medium">Paying</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border tabular-nums">
+                {previewExperiment.map((arm) => (
+                  <tr key={arm.arm}>
+                    <td className="px-3 py-2 font-medium">
+                      {arm.arm === "preview" ? "Preview first" : "Card first"}
+                    </td>
+                    <td className="px-3 py-2">{arm.registered}</td>
+                    {[arm.finishedSetup, arm.addedCard, arm.paying].map(
+                      (count, i) => (
+                        <td key={i} className="px-3 py-2">
+                          {count}
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            {arm.registered
+                              ? `${Math.round((count / arm.registered) * 100)}%`
+                              : ""}
+                          </span>
+                        </td>
+                      ),
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       {/* Demo leads */}
       <div className="mt-6 rounded-lg border border-border bg-card p-5">

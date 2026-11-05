@@ -69,6 +69,8 @@ Set these on the hosted app deployment:
 ```env
 HOSTED_BILLING_ENABLED=true
 HOSTED_NO_CARD_TRIAL=false
+# Default 0 (card first). See "Preview before card" below.
+HOSTED_PREVIEW_PERCENT=0
 # Default-off. Set both only after reviewing the verified-admin recipient
 # cohort; the timestamp is the prospective closeout eligibility boundary.
 FIRST_CLINIC_WIN_ENABLED=false
@@ -565,6 +567,31 @@ the platform-admin activation recovery queue, and posts to
 `LEAD_ALERT_WEBHOOK_URL` when configured. The queue also ranks each workspace
 by a transparent lead score (fit from clinic type and goal, intent from real
 activity, halved after 14 quiet days) and shows the reasons behind it.
+
+### Preview before card
+
+`HOSTED_PREVIEW_PERCENT` (0-100, default 0) sends that share of card-required
+signups into a 72-hour preview instead of Stripe Checkout. The clinic signs in
+straight away, runs guided setup on its sample data, and the last setup step
+asks for the card that starts the normal 14-day trial. The preview never starts
+a trial or a Stripe subscription; it only sets `practices.preview_ends_at`.
+
+During the preview the clinic can make in-app changes. Anything that reaches
+people outside the clinic or costs money stays off until a card-backed trial
+exists: client and staff email (including appointment reminders), texting and
+number purchases, AI, file uploads, API keys, webhooks, and payment accounts.
+When the window closes, the workspace becomes read-only like any signup that
+skipped checkout, and the billing page explains that the setup is saved.
+
+Assignment is a stable hash of the visitor's funnel id, so the register page
+and the server agree and a refresh does not switch arms. Visitors without a
+funnel id stay card first. Each assigned practice records its arm under
+`settings.growthExperiments.previewBeforeCard`, and the platform-admin page
+compares the arms: registered, finished setup, added card, and paying. Preview
+clinics also receive the checkout-recovery emails above; the first one invites
+them back into the workspace instead of to checkout.
+
+Apply migration `0112_practice_preview` before setting a non-zero share.
 
 ### Demo lead follow-up
 

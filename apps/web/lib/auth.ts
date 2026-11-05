@@ -75,6 +75,7 @@ declare module "next-auth" {
       sessionVersion?: number;
       emailVerifiedAt?: Date | string | null;
       practiceCreatedAt?: Date | string | null;
+      practiceInPreview?: boolean;
     };
   }
   interface User {
