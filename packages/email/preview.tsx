@@ -24,6 +24,13 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
   const emails = {
     welcome: await renderWelcomeEmail({ brand, practiceName, trialDays: 14 }),
+    "welcome-preview": await renderWelcomeEmail({
+      brand,
+      practiceName,
+      trialDays: 14,
+      billingRequired: true,
+      previewDays: 3,
+    }),
     "setup-recovery": await renderSetupRecoveryEmail({
       brand,
       practiceName,
@@ -84,6 +91,20 @@ async function main() {
         ]),
       ),
     ),
+    "checkout-recovery-1-preview": await renderCheckoutRecoveryEmail({
+      brand,
+      step: 1,
+      practiceName,
+      greetingName: "Sam",
+      senderName: "Alex",
+      trialDays: 14,
+      resumeUrl: brand.appUrl,
+      reasonLinks: [],
+      feedbackUrl: `${brand.appUrl}/feedback/stop-reason?token=preview`,
+      bookingUrl: null,
+      previewActive: true,
+      unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
+    }),
     ...Object.fromEntries<RenderedEmail>(
       await Promise.all(
         ([1, 2, 3, 4] as const).map(async (step): Promise<[string, RenderedEmail]> => [

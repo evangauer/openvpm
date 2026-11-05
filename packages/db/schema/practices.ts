@@ -43,6 +43,9 @@ export const practices = pgTable(
       .notNull()
       .default("none"),
     trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+    // Hosted preview before card: in-app setup on sample data until this time,
+    // without a trial or payment details. NULL for every other signup path.
+    previewEndsAt: timestamp("preview_ends_at", { withTimezone: true }),
     // Region/locale — gates currency, tax, formatting, and (later) regulatory
     // behavior. Defaults keep existing US practices working unchanged.
     country: varchar("country", { length: 2 }).notNull().default("US"), // ISO 3166-1 alpha-2

@@ -67,6 +67,7 @@ function candidate(overrides: Record<string, unknown> = {}) {
     adminEmail: "owner@example.com",
     adminName: "Sam Rivera",
     adminVerified: false,
+    previewActive: false,
     existingEmailCount: 0,
     lastEmailAt: null,
     ...overrides,
@@ -142,8 +143,22 @@ describe("checkout recovery cron", () => {
       practiceName: "Neighborhood Veterinary",
       adminName: "Sam Rivera",
       step: 1,
+      previewActive: false,
       idempotencyKey: `lc:checkout-recovery:v1:${PRACTICE_ID}:1`,
     });
+  });
+
+  it("invites a clinic still in its preview back into the workspace", async () => {
+    mocks.executeResults.push(
+      [candidate({ previewActive: true })],
+      [{ eligible: 1 }],
+    );
+
+    await GET(request());
+
+    expect(mocks.sendCheckoutRecoveryEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ step: 1, previewActive: true }),
+    );
   });
 
   it("skips clinics whose next step is not due", async () => {

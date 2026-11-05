@@ -29,6 +29,7 @@ interface CandidateRow {
   adminEmail: string;
   adminName: string | null;
   adminVerified: boolean;
+  previewActive: boolean;
   existingEmailCount: number | string;
   lastEmailAt: Date | string | null;
 }
@@ -75,6 +76,7 @@ async function checkoutRecoveryCandidates(
         admin.email as "adminEmail",
         admin.name as "adminName",
         admin.email_verified_at is not null as "adminVerified",
+        coalesce(p.preview_ends_at > now(), false) as "previewActive",
         coalesce(email_history.email_count, 0)::int as "existingEmailCount",
         email_history.last_email_at as "lastEmailAt"
       from practices p
@@ -190,6 +192,7 @@ export async function GET(request: Request) {
             practiceName: candidate.practiceName,
             adminName: candidate.adminName,
             step,
+            previewActive: candidate.previewActive === true,
             idempotencyKey: dedupeKey,
           }),
       });

@@ -30,6 +30,8 @@ export interface StepHandle {
   continueLabel?: string;
   /** Prevent advancing while a step is still preparing local input. */
   continueDisabled?: boolean;
+  /** Where finishing the last step lands, instead of the first clinic action. */
+  finishPath?: string;
   /**
    * Runs when the user presses Continue (or Finish). Do the step's own server
    * work here and return true to advance. Returning false (or throwing) keeps

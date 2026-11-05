@@ -410,6 +410,7 @@ export const careRemindersRouter = createRouter({
             practiceCreatedAt: ctx.user.practiceCreatedAt,
             userId: ctx.user.id,
             userEmailVerifiedAt: ctx.user.emailVerifiedAt,
+            practiceInPreview: ctx.user.practiceInPreview,
             ip: ctx.ip,
             operation: "care_reminder",
           });

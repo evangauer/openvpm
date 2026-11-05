@@ -36,6 +36,11 @@ import { newSubscriptionBillingAccount } from "@/lib/billing/stripe-accounts";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { createSubscriptionCheckoutSession } from "@/lib/stripe";
 import {
+  previewArmFor,
+  previewEndsAtFrom,
+  previewPercent,
+} from "@/lib/billing/preview";
+import {
   AUTH_EMAIL_MAX_LENGTH,
   AUTH_LOCATION_NAME_MAX_LENGTH,
   AUTH_NAME_MAX_LENGTH,
@@ -267,6 +272,16 @@ export const authRouter = createRouter({
       // adds a card to convert. Access gating keys off the practice's trial
       // columns (see hasHostedFullAccess), independent of any Stripe object.
       const noCardTrial = hostedBilling && noCardTrialEnabled();
+      // Preview before card (A/B): some card-required signups shape their
+      // workspace on sample data first and add the card to start the trial.
+      const previewSharePercent =
+        hostedBilling && !noCardTrial ? previewPercent() : 0;
+      const previewArm =
+        previewSharePercent > 0
+          ? previewArmFor(input.acquisition?.funnelId, previewSharePercent)
+          : null;
+      const previewEndsAt =
+        previewArm === "preview" ? previewEndsAtFrom() : undefined;
       const billingAccount = newSubscriptionBillingAccount();
       const trialEndsAt = noCardTrial ? trialEndsAtFrom() : undefined;
       let hostedCheckoutLineItems:
@@ -277,7 +292,7 @@ export const authRouter = createRouter({
           }>
         | undefined;
 
-      if (hostedBilling && !noCardTrial) {
+      if (hostedBilling && !noCardTrial && !previewEndsAt) {
         const { locationPriceId } = cloudCheckoutPriceIds("month", billingAccount);
         if (!locationPriceId) {
           throw new TRPCError({
@@ -328,6 +343,11 @@ export const authRouter = createRouter({
       if (onboardingDraft) {
         practiceSettings.onboardingDraft = onboardingDraft;
       }
+      if (previewArm) {
+        practiceSettings.growthExperiments = {
+          previewBeforeCard: { arm: previewArm, assignedAt: registeredAt },
+        };
+      }
       if (hostedBilling) {
         practiceSettings.onboardingCompletedAt = null;
       }
@@ -353,6 +373,7 @@ export const authRouter = createRouter({
                     trialEndsAt,
                   }
                 : {}),
+              ...(previewEndsAt ? { previewEndsAt } : {}),
             })
             .returning();
 
@@ -526,7 +547,7 @@ export const authRouter = createRouter({
         checkoutUrl,
         // Hosted signups (no-card trial) land in the first-run onboarding wizard
         // instead of the bare dashboard.
-        onboardingRequired: noCardTrial,
+        onboardingRequired: noCardTrial || Boolean(previewEndsAt),
       };
 
       if (verificationDispatch && ctx.postCommitEffect) {
@@ -573,6 +594,7 @@ export const authRouter = createRouter({
                   practiceName: input.practiceName.trim(),
                   trialDays: TRIAL_DAYS,
                   billingRequired: !noCardTrial,
+                  previewEndsAt: previewEndsAt ?? null,
                 }),
             });
           } catch {

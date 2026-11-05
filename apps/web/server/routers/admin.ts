@@ -28,6 +28,7 @@ import { computeActivationFunnel } from "@/lib/admin/activation-funnel";
 import { computeJourneyFunnel } from "@/lib/admin/journey-funnel";
 import { computeActivationRecovery } from "@/lib/admin/activation-recovery";
 import { listDemoLeads, setDemoLeadPaused } from "@/lib/admin/demo-leads";
+import { previewExperimentSummary } from "@/lib/admin/preview-experiment";
 import {
   CLINIC_PILOT_BLOCKERS,
   CLINIC_PILOT_COMMUNICATION_MODES,
@@ -3351,6 +3352,12 @@ export const adminRouter = createRouter({
   demoLeads: platformAdminProcedure.query(() => {
     noStore();
     return listDemoLeads(db);
+  }),
+
+  /** Preview-before-card experiment funnel by arm. */
+  previewExperiment: platformAdminProcedure.query(() => {
+    noStore();
+    return previewExperimentSummary(db);
   }),
 
   /** Pause automated follow-up when a person takes over the conversation. */

@@ -15,6 +15,7 @@ import {
   emailPreferenceRecipientHash,
 } from "@/lib/email-preferences";
 import { billingEnforced, TRIAL_DAYS } from "@/lib/billing/plans";
+import { PREVIEW_HOURS } from "@/lib/billing/preview";
 import {
   greetingName,
   STOP_REASON_LABELS,
@@ -728,6 +729,8 @@ export async function sendWelcomeEmail(data: {
   practiceName: string;
   trialDays?: number;
   billingRequired?: boolean;
+  /** Set when the clinic starts in a preview before adding a card. */
+  previewEndsAt?: Date | null;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
   const recipientHash = emailPreferenceRecipientHash(data.to);
@@ -752,6 +755,7 @@ export async function sendWelcomeEmail(data: {
     practiceName: data.practiceName,
     trialDays: data.trialDays ?? 14,
     billingRequired: data.billingRequired,
+    previewDays: data.previewEndsAt ? PREVIEW_HOURS / 24 : null,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
   return sendEmail({
@@ -824,6 +828,8 @@ export async function sendCheckoutRecoveryEmail(data: {
   practiceName: string;
   adminName: string | null;
   step: CheckoutRecoveryStep;
+  /** Still inside the preview before card: invite back into the workspace. */
+  previewActive?: boolean;
   idempotencyKey: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
@@ -856,10 +862,13 @@ export async function sendCheckoutRecoveryEmail(data: {
     greetingName: greetingName(data.adminName),
     senderName: sender.name,
     trialDays: TRIAL_DAYS,
-    resumeUrl: `${brand.appUrl}/settings?tab=billing`,
+    resumeUrl: data.previewActive
+      ? brand.appUrl
+      : `${brand.appUrl}/settings?tab=billing`,
     reasonLinks,
     feedbackUrl: feedbackUrl.toString(),
     bookingUrl: sender.bookingUrl,
+    previewActive: data.previewActive ?? false,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
   return sendEmail({

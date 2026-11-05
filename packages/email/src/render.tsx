@@ -99,7 +99,7 @@ export async function renderCheckoutRecoveryEmail(
   p: CheckoutRecoveryEmailProps,
 ): Promise<RenderedEmail> {
   return {
-    subject: checkoutRecoverySubject(p.step, p.practiceName),
+    subject: checkoutRecoverySubject(p.step, p.practiceName, p.previewActive),
     html: await render(<CheckoutRecoveryEmail {...p} />),
   };
 }

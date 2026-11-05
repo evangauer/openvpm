@@ -1573,6 +1573,7 @@ function BillingTab() {
     .map((option) => option.cadence);
   const firstActivation = !data.hasSubscription;
   const pendingTrial = firstActivation && !data.trialEndsAt && data.billingStatus === "none";
+  const previewEnded = pendingTrial && !!data.previewEndsAt && !data.previewActive;
   const checkoutStatus = searchParams.get("checkout");
   // Only surface the sync note when something actually needs attention.
   const showSyncNote =
@@ -1626,7 +1627,11 @@ function BillingTab() {
                   : "Your Cloud subscription"}
               </h3>
               <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                {pendingTrial
+                {pendingTrial && data.previewActive
+                  ? `Your setup is saved. Add your card securely in Stripe Checkout to start your ${TRIAL_DAYS}-day trial and unlock email, texting, and AI. No charge today.`
+                  : previewEnded
+                  ? `Your preview has ended and everything you set up is saved. Add your card securely in Stripe Checkout to start your ${TRIAL_DAYS}-day trial and pick up where you left off. No charge today.`
+                  : pendingTrial
                   ? `Add your card securely in Stripe Checkout to start your ${TRIAL_DAYS}-day trial. No charge today.`
                   : firstActivation
                   ? "Choose a billing schedule, then add your payment details in secure Stripe Checkout. Your workspace and trial stay exactly as they are."
@@ -1637,7 +1642,7 @@ function BillingTab() {
         </div>
 
         <div className="p-6 sm:p-8">
-          {showReadOnlyNotice ? (
+          {showReadOnlyNotice && !data.previewActive ? (
             <div className="mb-5 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <p>

@@ -17,13 +17,19 @@ export interface CheckoutRecoveryEmailProps {
   /** Signed feedback page with no answer preselected. */
   feedbackUrl: string;
   bookingUrl: string | null;
+  /** The clinic is still inside its preview before card. */
+  previewActive?: boolean;
   unsubscribeUrl?: string;
 }
 
 export function checkoutRecoverySubject(
   step: CheckoutRecoveryEmailProps["step"],
   practiceName: string,
+  previewActive = false,
 ): string {
+  if (previewActive && step === 1) {
+    return `${practiceName} is ready to explore`;
+  }
   switch (step) {
     case 1:
       return `Finish starting ${practiceName}'s OpenVPM trial`;
@@ -58,18 +64,42 @@ export function CheckoutRecoveryEmail({
   reasonLinks,
   feedbackUrl,
   bookingUrl,
+  previewActive = false,
   unsubscribeUrl,
 }: CheckoutRecoveryEmailProps) {
+  const previewIntro = previewActive && step === 1;
   return (
     <PersonalNote
       brand={brand}
-      preview={PREVIEW[step]}
+      preview={
+        previewIntro
+          ? "Pick up where you left off. No card needed yet."
+          : PREVIEW[step]
+      }
       greetingName={greetingName}
       senderName={senderName}
       unsubscribeUrl={unsubscribeUrl}
       recipientReason={`You're receiving this because you created ${practiceName} on OpenVPM.`}
     >
-      {step === 1 ? (
+      {previewIntro ? (
+        <>
+          <P>
+            Your {practiceName} workspace is set up with sample clients, pets,
+            and appointments, so you can see a whole clinic day before you
+            decide anything. No card needed while you look around.
+          </P>
+          <P>
+            <A href={resumeUrl}>Pick up where you left off</A>
+          </P>
+          <P>
+            When it feels right, add a card to start your {trialDays}-day free
+            trial. Everything you set up stays.
+          </P>
+          <P>If something got in the way, just reply. I read every reply.</P>
+        </>
+      ) : null}
+
+      {step === 1 && !previewIntro ? (
         <>
           <P>
             You set up {practiceName} on OpenVPM but didn&apos;t get to the last
