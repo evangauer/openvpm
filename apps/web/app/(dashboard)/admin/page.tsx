@@ -79,6 +79,14 @@ const recoveryTrialStyles: Record<string, string> = {
   no_trial: "bg-gray-100 text-gray-600",
 };
 
+const leadTierStyles: Record<string, string> = {
+  hot: "bg-red-100 text-red-700",
+  warm: "bg-amber-100 text-amber-800",
+  nurture: "bg-gray-100 text-gray-600",
+  self_host: "bg-indigo-100 text-indigo-700",
+  customer: "bg-green-100 text-green-700",
+};
+
 function recoveryLabel(value: string) {
   return value.replaceAll("_", " ");
 }
@@ -531,8 +539,10 @@ export default function AdminPage() {
           <span className="text-sm">Clinic activation recovery</span>
         </div>
         <p className="mt-2 text-xs text-muted-foreground">
-          Ranked by the next operator action, then by days since a real clinic
-          milestone. Internal/test workspaces and sample data are excluded.
+          Ranked by the next operator action, then by lead score, then by days
+          since a real clinic milestone. Lead score is fit (clinic type and
+          goal) plus intent (what they did); hover a score for its reasons.
+          Internal/test workspaces and sample data are excluded.
         </p>
         {recoveryQueue ? (
           <div className="mt-4 overflow-x-auto rounded-md border border-border">
@@ -541,6 +551,7 @@ export default function AdminPage() {
                 <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
                   <th className="px-3 py-2 font-medium">Rank</th>
                   <th className="px-3 py-2 font-medium">Clinic contact</th>
+                  <th className="px-3 py-2 font-medium">Lead</th>
                   <th className="px-3 py-2 font-medium">Trial</th>
                   <th className="px-3 py-2 font-medium">Setup</th>
                   <th className="px-3 py-2 font-medium">Real activity</th>
@@ -576,6 +587,25 @@ export default function AdminPage() {
                         </p>
                       )}
                     </td>
+                    <td className="px-3 py-2" title={clinic.lead.reasons.join("\n")}>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
+                          leadTierStyles[clinic.lead.tier] ??
+                          leadTierStyles.nurture
+                        }`}
+                      >
+                        {recoveryLabel(clinic.lead.tier)}
+                      </span>
+                      <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+                        {clinic.lead.total} · fit {clinic.lead.fit} · intent{" "}
+                        {clinic.lead.intent}
+                      </p>
+                      {clinic.lead.reasons[0] ? (
+                        <p className="mt-0.5 max-w-[14rem] text-xs text-muted-foreground">
+                          {clinic.lead.reasons[0]}
+                        </p>
+                      ) : null}
+                    </td>
                     <td className="px-3 py-2">
                       <span
                         className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
@@ -600,6 +630,14 @@ export default function AdminPage() {
                             clinic.setupHelpRequestedAt,
                             clinic.timezone,
                           )}
+                        </p>
+                      ) : null}
+                      {clinic.stopReason ? (
+                        <p className="mt-0.5 max-w-[16rem] text-xs font-medium text-emerald-700">
+                          Stopped: {recoveryLabel(clinic.stopReason)}
+                          {clinic.stopReasonNote
+                            ? ` — “${clinic.stopReasonNote}”`
+                            : ""}
                         </p>
                       ) : null}
                     </td>
@@ -631,7 +669,7 @@ export default function AdminPage() {
                 {recoveryQueue.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={7}
+                      colSpan={8}
                       className="px-3 py-6 text-center text-muted-foreground"
                     >
                       No clinic workspaces need activation recovery.

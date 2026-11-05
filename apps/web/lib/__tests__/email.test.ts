@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("@/lib/billing/plans", () => ({
   billingEnforced: mocks.billingEnforced,
+  TRIAL_DAYS: 14,
 }));
 
 vi.mock("resend", () => ({
@@ -738,6 +739,57 @@ describe("lifecycle email branding", () => {
     expect(payload.html).toContain("no call or credit card required");
     expect(payload.html).toContain("do not email patient files");
     expect(payload.html).toContain("/email-preferences?token=");
+  });
+
+  it("sends checkout recovery as a personal note with signed one-click answers", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    vi.stubEnv("EMAIL_FROM", "OpenVPM <hello@mail.openvpm.com>");
+    vi.stubEnv("GROWTH_SENDER_NAME", "Alex");
+    vi.stubEnv("GROWTH_SENDER_REPLY_TO", "alex@openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-checkout" } });
+    const { sendCheckoutRecoveryEmail } = await loadEmail();
+
+    await expect(
+      sendCheckoutRecoveryEmail({
+        to: "owner@example.com",
+        practiceId: "00000000-0000-4000-8000-0000000000aa",
+        practiceName: "Neighborhood Veterinary",
+        adminName: "Sam Rivera",
+        step: 2,
+        idempotencyKey: "lc:checkout-recovery:v1:x:2",
+      }),
+    ).resolves.toEqual({ success: true, id: "email-checkout" });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      to: "owner@example.com",
+      from: "Alex at OpenVPM <hello@mail.openvpm.com>",
+      replyTo: "alex@openvpm.com",
+      subject: "Quick question about Neighborhood Veterinary",
+      headers: {
+        "List-Unsubscribe": expect.stringContaining(
+          "https://app.openvpm.com/api/email-preferences/unsubscribe?token=",
+        ),
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+    });
+    expect(payload.html).toContain("Hi <!-- -->Sam");
+    expect(payload.html).toContain(
+      "https://app.openvpm.com/feedback/stop-reason?token=",
+    );
+    expect(payload.html).toContain("reason=card");
+    expect(payload.html).toContain("reason=self_host");
+    expect(payload.html).toContain("Alex");
   });
 
   it("uses a signed human link and RFC one-click headers for trial email", async () => {

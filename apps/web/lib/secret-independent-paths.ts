@@ -13,6 +13,8 @@ export const SECRET_INDEPENDENT_PATH_PREFIXES = [
   "/api/email-preferences",
   "/api/calendar",
   "/email-preferences",
+  "/api/growth",
+  "/feedback",
   "/sms",
 ];
 

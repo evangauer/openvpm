@@ -31,6 +31,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/capture",
   "/clinic-fit",
   "/email-preferences",
+  "/feedback",
   "/forgot-password",
   "/legal",
   "/login",
