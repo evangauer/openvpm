@@ -110,6 +110,7 @@ export default function AdminPage() {
     trpc.admin.activationRecovery.useQuery(undefined, { retry: false });
   const { data: demoLeads, error: demoLeadsError } =
     trpc.admin.demoLeads.useQuery(undefined, { retry: false });
+  const { data: nps } = trpc.admin.nps.useQuery(undefined, { retry: false });
   const { data: previewExperiment } = trpc.admin.previewExperiment.useQuery(
     undefined,
     { retry: false },
@@ -704,6 +705,61 @@ export default function AdminPage() {
           </p>
         )}
       </div>
+
+      {/* Net Promoter Score */}
+      {nps && nps.responses > 0 ? (
+        <div className="mt-6 rounded-lg border border-border bg-card p-5">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <TrendingUp className="h-4 w-4" />
+            <span className="text-sm">Net Promoter Score</span>
+          </div>
+          <div className="mt-3 flex flex-wrap items-baseline gap-x-6 gap-y-1">
+            <p className="font-heading text-3xl font-semibold tabular-nums">
+              {nps.score}
+            </p>
+            <p className="text-sm text-muted-foreground tabular-nums">
+              {nps.responses} clinic{nps.responses === 1 ? "" : "s"} ·{" "}
+              {nps.promoters} promoter{nps.promoters === 1 ? "" : "s"} ·{" "}
+              {nps.passives} passive · {nps.detractors} detractor
+              {nps.detractors === 1 ? "" : "s"} (latest answer per clinic, 180
+              days)
+            </p>
+          </div>
+          <ul className="mt-4 divide-y divide-border rounded-md border border-border text-sm">
+            {nps.recent.map((response) => (
+              <li
+                key={response.practiceId}
+                className="flex gap-3 px-3 py-2"
+              >
+                <span
+                  className={`w-7 shrink-0 text-center font-semibold tabular-nums ${
+                    response.category === "promoter"
+                      ? "text-emerald-700"
+                      : response.category === "detractor"
+                        ? "text-destructive"
+                        : "text-muted-foreground"
+                  }`}
+                >
+                  {response.score}
+                </span>
+                <div className="min-w-0">
+                  <p className="font-medium">
+                    {response.practiceName}
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      {formatDate(response.answeredAt)}
+                    </span>
+                  </p>
+                  {response.comment ? (
+                    <p className="mt-0.5 text-muted-foreground">
+                      “{response.comment}”
+                    </p>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {/* Preview before card experiment */}
       {previewExperiment?.some((arm) => arm.registered > 0) ? (

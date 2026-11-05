@@ -75,10 +75,13 @@ export async function POST(request: Request) {
       )
       where id = ${verified.practiceId}::uuid
         and deleted_at is null
-      returning name
+      returning name, trial_ends_at as "trialEndsAt"
     `),
   );
-  const practice = rowsFromExecute<{ name: string }>(result)[0];
+  const practice = rowsFromExecute<{
+    name: string;
+    trialEndsAt: Date | string | null;
+  }>(result)[0];
   if (!practice) {
     return NextResponse.redirect(pageUrl(request, { token: "" }), 303);
   }
@@ -86,7 +89,7 @@ export async function POST(request: Request) {
   await notifyLeadHandRaise({
     practiceId: verified.practiceId,
     practiceName: practice.name,
-    summary: `Stopped before trial: ${STOP_REASON_LABELS[reason]}`,
+    summary: `${practice.trialEndsAt ? "Trial lapsed" : "Stopped before trial"}: ${STOP_REASON_LABELS[reason]}`,
     note,
   });
 

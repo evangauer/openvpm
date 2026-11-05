@@ -13,6 +13,7 @@ export const CRON_HEARTBEAT_JOBS = [
   "setup-recovery",
   "checkout-recovery",
   "demo-followup",
+  "customer-lifecycle",
   "wellness-billing",
   "rate-limit-cleanup",
   "auth-cleanup",

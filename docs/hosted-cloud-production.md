@@ -568,6 +568,45 @@ the platform-admin activation recovery queue, and posts to
 by a transparent lead score (fit from clinic type and goal, intent from real
 activity, halved after 14 quiet days) and shows the reasons behind it.
 
+### Customer lifecycle email
+
+Trial-ending reminders (7, 3, and 1 days before the end) include a recap of
+what the clinic has really done: clients, appointments, invoices, and team
+members, never counting sample data. A clinic with nothing real yet gets a
+nudge to add one client and one visit.
+
+The daily `/api/cron/customer-lifecycle` sweep (16:00 UTC) runs four
+personal, plain-text campaigns from the named growth sender. It is default-off
+and prospective: set `CUSTOMER_LIFECYCLE_ENABLED=true` and an exact
+`CUSTOMER_LIFECYCLE_ROLLOUT_AT`, and each campaign only reaches clinics whose
+trigger happened after it.
+
+- **Team invite.** A trialing or paying clinic that is using OpenVPM for real
+  (activated) but still has a single user, 3 to 21 days after its trial
+  started, gets one note pointing to staff settings.
+- **Trial win-back.** A trial that ended without billing gets up to three
+  notes, 1, 7, and 21 days after it ended, at least 3 days apart, within 30
+  days. The first recaps what is saved, the second offers one-click reasons
+  through the signed `/feedback/stop-reason` page, and the third is the last.
+  Reactivating or answering ends the run, and answers post to
+  `LEAD_ALERT_WEBHOOK_URL`.
+- **Adoption.** 14 to 45 days after the first payment, one note names what
+  the clinic has not turned on yet (appointment reminders, a second team
+  member, the client portal). A clinic using all three gets nothing.
+- **NPS.** 30 days after the first payment and every 90 days after, within a
+  two-week window per cycle, the verified admin is asked the Net Promoter
+  question with eleven one-click scores. `/feedback/nps` preselects the score
+  and saves only on a deliberate submit, so link scanners never answer. One
+  answer per clinic per cycle is stored in the system-only
+  `practice_nps_responses` table; detractors and comments post to
+  `LEAD_ALERT_WEBHOOK_URL`, and platform admin shows the score and recent
+  answers.
+
+Every send uses the shared preference and suppression gate, a versioned
+dedupe key, and an eligibility re-check under the send lock. Self-hosted
+deployments never run these campaigns. Apply migration `0113_practice_nps`
+and `pnpm db:rls` before enabling.
+
 ### Preview before card
 
 `HOSTED_PREVIEW_PERCENT` (0-100, default 0) sends that share of card-required
@@ -749,6 +788,7 @@ set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_SETUP_RECOVERY_URL`,
 `CRON_HEARTBEAT_CHECKOUT_RECOVERY_URL`,
 `CRON_HEARTBEAT_DEMO_FOLLOWUP_URL`,
+`CRON_HEARTBEAT_CUSTOMER_LIFECYCLE_URL`,
 `CRON_HEARTBEAT_WELLNESS_BILLING_URL`,
 `CRON_HEARTBEAT_RATE_LIMIT_CLEANUP_URL`,
 `CRON_HEARTBEAT_AUTH_CLEANUP_URL`,

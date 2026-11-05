@@ -43,6 +43,10 @@
       "schedule": "40 * * * *"
     },
     {
+      "path": "/api/cron/customer-lifecycle",
+      "schedule": "0 16 * * *"
+    },
+    {
       "path": "/api/cron/wellness-billing",
       "schedule": "0 5 * * *"
     },

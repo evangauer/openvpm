@@ -662,6 +662,12 @@ CREATE POLICY system_only ON growth_lead_emails
   USING (app_rls_bypass())
   WITH CHECK (app_rls_bypass());
 
+ALTER TABLE practice_nps_responses ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS system_only ON practice_nps_responses;
+CREATE POLICY system_only ON practice_nps_responses
+  USING (app_rls_bypass())
+  WITH CHECK (app_rls_bypass());
+
 -- 7) Auth-infra tables are NOT tenant-scoped (tokens are used pre-login; the
 --    NextAuth session/verification tables are unused under the JWT strategy). We
 --    don't put tenant RLS on them; instead we revoke the Supabase data-API roles
@@ -675,7 +681,7 @@ BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
       EXECUTE format(
-        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, backup_runs, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, file_storage_events, financial_closes, funnel_events, growth_lead_emails, growth_leads, inventory_stock_adjustments, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, payment_disputes, payment_processor_payouts, payment_processor_refunds, payment_processor_settlements, platform_email_identity, platform_email_identity_aliases, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, prescription_events, recent_clinical_items, sessions, sms_delivery_event_history, sms_delivery_events, sms_provider_event_conflict_reviews, sms_provider_event_conflicts, sms_provider_event_resolutions, sms_provider_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
+        'REVOKE ALL ON auth_email_attempts, auth_email_delivery_events, auth_email_provider_identity_conflicts, auth_email_webhook_conflicts, auth_tokens, backup_runs, clinic_pilot_events, clinic_pilots, clinical_record_corrections, demo_accesses, dispense_charge_queue, file_object_replicas, file_storage_events, financial_closes, funnel_events, growth_lead_emails, growth_leads, inventory_stock_adjustments, lab_result_events, lab_result_replacements, messaging_registration_events, patient_allergies, patient_merge_events, payment_disputes, payment_processor_payouts, payment_processor_refunds, payment_processor_settlements, platform_email_identity, platform_email_identity_aliases, platform_email_preference_events, platform_email_preferences, practice_conversion_milestones, practice_nps_responses, prescription_events, recent_clinical_items, sessions, sms_delivery_event_history, sms_delivery_events, sms_provider_event_conflict_reviews, sms_provider_event_conflicts, sms_provider_event_resolutions, sms_provider_events, sms_send_attempt_events, sms_send_attempts, stripe_events, verification_tokens FROM %I', r
       );
       EXECUTE format(
         'REVOKE ALL ON FUNCTION public.validate_payment_processor_refund_tenant() FROM %I', r

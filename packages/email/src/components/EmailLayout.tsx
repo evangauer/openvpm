@@ -66,19 +66,21 @@ export function EmailLayout({
             ) : (
               <Row>
                 <Column style={{ width: "40px", verticalAlign: "middle" }}>
-                  <div
+                  {/* The brand mark as a hosted PNG (most clients drop SVG). The
+                      teal fill shows through when a client blocks images. */}
+                  <Img
+                    src={`${brand.appUrl.replace(/\/$/, "")}/email-mark.png`}
+                    alt=""
+                    width="32"
+                    height="32"
                     style={{
+                      display: "block",
                       width: "32px",
                       height: "32px",
-                      backgroundColor: theme.brand,
                       borderRadius: "8px",
-                      textAlign: "center",
-                      lineHeight: "32px",
-                      fontSize: "16px",
+                      backgroundColor: theme.brand,
                     }}
-                  >
-                    🐾
-                  </div>
+                  />
                 </Column>
                 <Column style={{ verticalAlign: "middle" }}>
                   <Text

@@ -12,6 +12,10 @@ import {
   renderPaymentFailedEmail,
   renderCheckoutRecoveryEmail,
   renderDemoFollowupEmail,
+  renderTeamInviteEmail,
+  renderTrialWinbackEmail,
+  renderAdoptionEmail,
+  renderNpsSurveyEmail,
   type RenderedEmail,
 } from "./src/render";
 
@@ -48,6 +52,72 @@ async function main() {
       monthlyPrice: "$79",
       billingUrl,
       billingConnected: false,
+      usage: { clients: 14, appointments: 22, invoices: 9, staffCount: 3 },
+      unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
+    }),
+    "team-invite": await renderTeamInviteEmail({
+      brand,
+      practiceName,
+      greetingName: "Sam",
+      senderName: "Alex",
+      appointments: 6,
+      inviteUrl: `${brand.appUrl}/settings?tab=staff`,
+      unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
+    }),
+    ...Object.fromEntries<RenderedEmail>(
+      await Promise.all(
+        ([1, 2, 3] as const).map(async (step): Promise<[string, RenderedEmail]> => [
+          `trial-winback-${step}`,
+          await renderTrialWinbackEmail({
+            brand,
+            step,
+            practiceName,
+            greetingName: "Sam",
+            senderName: "Alex",
+            usageSummary: "14 clients and 22 appointments",
+            reactivateUrl: billingUrl,
+            reasonLinks: [
+              "The price doesn't fit",
+              "It's missing something we need",
+            ].map((label, index) => ({
+              label,
+              url: `${brand.appUrl}/feedback/stop-reason?token=preview&reason=${index}`,
+            })),
+            unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
+          }),
+        ]),
+      ),
+    ),
+    adoption: await renderAdoptionEmail({
+      brand,
+      practiceName,
+      greetingName: "Sam",
+      senderName: "Alex",
+      tips: [
+        {
+          title: "Appointment reminders",
+          body: "Clients get an email or text before each visit, which cuts no-shows without anyone picking up the phone.",
+          linkLabel: "Turn on reminders",
+          url: `${brand.appUrl}/settings?tab=messaging`,
+        },
+        {
+          title: "The client portal",
+          body: "Every client has a private link to see their pets, visits, and invoices, so fewer calls come to the front desk.",
+          linkLabel: "Share a portal link",
+          url: `${brand.appUrl}/clients`,
+        },
+      ],
+      unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
+    }),
+    nps: await renderNpsSurveyEmail({
+      brand,
+      practiceName,
+      greetingName: "Sam",
+      senderName: "Alex",
+      scoreUrls: Array.from(
+        { length: 11 },
+        (_, score) => `${brand.appUrl}/feedback/nps?token=preview&score=${score}`,
+      ),
       unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
     }),
     receipt: await renderPaymentReceiptEmail({

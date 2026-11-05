@@ -403,6 +403,8 @@ describe("middleware NEXTAUTH_SECRET guard", () => {
       "/email-preferences",
       "/feedback/stop-reason",
       "/api/growth/stop-reason",
+      "/feedback/nps",
+      "/api/growth/nps",
       "/api/calendar/feed-token",
       "/sms/practice-1/terms",
     ]) {

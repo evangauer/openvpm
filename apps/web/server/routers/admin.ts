@@ -29,6 +29,7 @@ import { computeJourneyFunnel } from "@/lib/admin/journey-funnel";
 import { computeActivationRecovery } from "@/lib/admin/activation-recovery";
 import { listDemoLeads, setDemoLeadPaused } from "@/lib/admin/demo-leads";
 import { previewExperimentSummary } from "@/lib/admin/preview-experiment";
+import { npsSummary } from "@/lib/admin/nps";
 import {
   CLINIC_PILOT_BLOCKERS,
   CLINIC_PILOT_COMMUNICATION_MODES,
@@ -3352,6 +3353,12 @@ export const adminRouter = createRouter({
   demoLeads: platformAdminProcedure.query(() => {
     noStore();
     return listDemoLeads(db);
+  }),
+
+  /** Net Promoter answers from paying clinics. */
+  nps: platformAdminProcedure.query(() => {
+    noStore();
+    return npsSummary(db);
   }),
 
   /** Preview-before-card experiment funnel by arm. */
