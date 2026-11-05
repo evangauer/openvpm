@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { BrandBadge } from "@/components/brand/paw-mark";
 import { openvpmBrand } from "@openpims/email";
 import {
   isNpsScore,
@@ -56,8 +57,14 @@ export default async function NpsPage({
       className="flex min-h-screen items-center justify-center bg-surface px-4 py-12"
     >
       <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-sm sm:p-8">
-        <Link href="/" className="font-heading text-lg font-semibold">
-          OpenVPM
+        <Link
+          href="/"
+          className="inline-flex items-center gap-2.5 text-foreground"
+        >
+          <BrandBadge className="h-9 w-9 rounded-xl" pawClassName="h-5 w-5" />
+          <span className="font-heading text-lg font-semibold tracking-tight">
+            OpenVPM
+          </span>
         </Link>
 
         {!valid ? (
