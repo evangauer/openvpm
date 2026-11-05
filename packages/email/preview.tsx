@@ -10,6 +10,8 @@ import {
   renderTrialEndingEmail,
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
+  renderCheckoutRecoveryEmail,
+  type RenderedEmail,
 } from "./src/render";
 
 const brand = openvpmBrand();
@@ -54,6 +56,33 @@ async function main() {
       nextRetryDate: "July 3, 2026",
       billingUrl,
     }),
+    ...Object.fromEntries<RenderedEmail>(
+      await Promise.all(
+        ([1, 2, 3, 4] as const).map(async (step): Promise<[string, RenderedEmail]> => [
+          `checkout-recovery-${step}`,
+          await renderCheckoutRecoveryEmail({
+            brand,
+            step,
+            practiceName,
+            greetingName: "Sam",
+            senderName: "Alex",
+            trialDays: 14,
+            resumeUrl: `${brand.appUrl}/settings?tab=billing`,
+            reasonLinks: [
+              "I didn't want to enter a card yet",
+              "The price doesn't fit",
+              "It's not the right time",
+            ].map((label, index) => ({
+              label,
+              url: `${brand.appUrl}/feedback/stop-reason?token=preview&reason=${index}`,
+            })),
+            feedbackUrl: `${brand.appUrl}/feedback/stop-reason?token=preview`,
+            bookingUrl: null,
+            unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
+          }),
+        ]),
+      ),
+    ),
   };
 
   for (const [name, r] of Object.entries(emails)) {

@@ -7,12 +7,21 @@ import {
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
   renderFirstClinicWinEmail,
+  renderCheckoutRecoveryEmail,
 } from "@openpims/email";
 import {
   createEmailPreferenceLinks,
   emailPreferenceRecipientHash,
 } from "@/lib/email-preferences";
-import { billingEnforced } from "@/lib/billing/plans";
+import { billingEnforced, TRIAL_DAYS } from "@/lib/billing/plans";
+import {
+  greetingName,
+  STOP_REASON_LABELS,
+  STOP_REASONS,
+  type CheckoutRecoveryStep,
+} from "@/lib/growth/checkout-recovery";
+import { growthSender } from "@/lib/growth/sender";
+import { createStopReasonToken } from "@/lib/growth/stop-reason-token";
 import {
   defaultEmailFrom,
   emailDemoMode,
@@ -796,6 +805,68 @@ export async function sendSetupRecoveryEmail(data: {
       "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     },
+  });
+}
+
+/**
+ * Personal follow-up for a clinic that registered but never started its
+ * trial. Sent from a named person with replies going to a real inbox.
+ */
+export async function sendCheckoutRecoveryEmail(data: {
+  to: string;
+  practiceId: string;
+  practiceName: string;
+  adminName: string | null;
+  step: CheckoutRecoveryStep;
+  idempotencyKey: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const recipientHash = emailPreferenceRecipientHash(data.to);
+  const preferenceLinks = recipientHash
+    ? createEmailPreferenceLinks({ kind: "recipient", id: recipientHash })
+    : null;
+  if (!preferenceLinks) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
+  const token = createStopReasonToken(data.practiceId);
+  if (!token) {
+    return { success: false, error: "Feedback link signing is not configured." };
+  }
+  const feedbackUrl = new URL("/feedback/stop-reason", brand.appUrl);
+  feedbackUrl.searchParams.set("token", token);
+  const reasonLinks = STOP_REASONS.map((reason) => {
+    const url = new URL(feedbackUrl);
+    url.searchParams.set("reason", reason);
+    return { label: STOP_REASON_LABELS[reason], url: url.toString() };
+  });
+  const sender = growthSender(brand.supportEmail);
+  const { subject, html } = await renderCheckoutRecoveryEmail({
+    brand,
+    step: data.step,
+    practiceName: data.practiceName,
+    greetingName: greetingName(data.adminName),
+    senderName: sender.name,
+    trialDays: TRIAL_DAYS,
+    resumeUrl: `${brand.appUrl}/settings?tab=billing`,
+    reasonLinks,
+    feedbackUrl: feedbackUrl.toString(),
+    bookingUrl: sender.bookingUrl,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    from: sender.from,
+    replyTo: sender.replyTo,
+    headers: {
+      "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+    idempotencyKey: data.idempotencyKey,
   });
 }
 

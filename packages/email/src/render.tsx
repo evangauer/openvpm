@@ -21,6 +21,11 @@ import {
   FirstClinicWinEmail,
   type FirstClinicWinEmailProps,
 } from "./templates/FirstClinicWinEmail";
+import {
+  CheckoutRecoveryEmail,
+  checkoutRecoverySubject,
+  type CheckoutRecoveryEmailProps,
+} from "./templates/CheckoutRecoveryEmail";
 
 export interface RenderedEmail {
   subject: string;
@@ -82,5 +87,14 @@ export async function renderFirstClinicWinEmail(
   return {
     subject: "Your first real OpenVPM visit is complete",
     html: await render(<FirstClinicWinEmail {...p} />),
+  };
+}
+
+export async function renderCheckoutRecoveryEmail(
+  p: CheckoutRecoveryEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: checkoutRecoverySubject(p.step, p.practiceName),
+    html: await render(<CheckoutRecoveryEmail {...p} />),
   };
 }

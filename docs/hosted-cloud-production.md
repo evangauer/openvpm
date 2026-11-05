@@ -73,6 +73,13 @@ HOSTED_NO_CARD_TRIAL=false
 # cohort; the timestamp is the prospective closeout eligibility boundary.
 FIRST_CLINIC_WIN_ENABLED=false
 FIRST_CLINIC_WIN_ROLLOUT_AT=
+# Default-off. The timestamp is the prospective registration boundary.
+CHECKOUT_RECOVERY_ENABLED=false
+CHECKOUT_RECOVERY_ROLLOUT_AT=
+GROWTH_SENDER_NAME=        # signature + From display name for recovery email
+GROWTH_SENDER_REPLY_TO=    # real inbox that receives replies
+GROWTH_BOOKING_URL=        # optional https scheduling link
+LEAD_ALERT_WEBHOOK_URL=    # optional Slack-style webhook for hand-raises
 NEXTAUTH_URL=https://app.openvpm.com
 NEXT_PUBLIC_APP_URL=https://app.openvpm.com
 NEXTAUTH_SECRET=... # `openssl rand -base64 32`; production refuses published or <32-char values
@@ -534,6 +541,27 @@ remaining are excluded. Every send uses the shared preference/suppression gate,
 a campaign-versioned idempotency key, and the saved setup step. It never includes
 patient data and never asks a clinic to email an export or make it public.
 
+The hourly `/api/cron/checkout-recovery` sweep follows up with hosted clinics
+that registered but never started a trial (billing status `none`, no Stripe
+subscription, no trial end). It sends at most four personal, plain-text emails
+at 1 hour, 1 day, 3 days, and 10 days after registration, with at least 20
+hours between sends. An admin address that is not yet verified receives only
+the first two, so registering someone else's address cannot trigger the full
+run. Self-host paths, clinics that requested help, analytics-excluded rows,
+recovery-held practices, and registrations older than 30 days or before
+`CHECKOUT_RECOVERY_ROLLOUT_AT` are excluded, and eligibility is re-checked
+under the send lock. The second email links to `/feedback/stop-reason`, a
+signed, sign-in-free page where the clinic can say what stopped it. Links are
+signed with `EMAIL_PREFERENCE_SIGNING_SECRET` (and verified against
+`EMAIL_PREFERENCE_SIGNING_SECRET_PREVIOUS` after a rotation), so neither the
+cron nor the page depends on `NEXTAUTH_SECRET`. Opening the
+link only preselects an answer; saving needs a deliberate submit, so link
+scanners never record one. A saved answer ends the automated emails, appears in
+the platform-admin activation recovery queue, and posts to
+`LEAD_ALERT_WEBHOOK_URL` when configured. The queue also ranks each workspace
+by a transparent lead score (fit from clinic type and goal, intent from real
+activity, halved after 14 quiet days) and shows the reasons behind it.
+
 Webhook endpoint:
 
 ```text
@@ -659,6 +687,7 @@ set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_BILLING_LIFECYCLE_URL`,
 `CRON_HEARTBEAT_FIRST_CLINIC_WIN_URL`,
 `CRON_HEARTBEAT_SETUP_RECOVERY_URL`,
+`CRON_HEARTBEAT_CHECKOUT_RECOVERY_URL`,
 `CRON_HEARTBEAT_WELLNESS_BILLING_URL`,
 `CRON_HEARTBEAT_RATE_LIMIT_CLEANUP_URL`,
 `CRON_HEARTBEAT_AUTH_CLEANUP_URL`,

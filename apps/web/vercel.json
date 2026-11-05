@@ -35,6 +35,10 @@
       "schedule": "0 15 * * *"
     },
     {
+      "path": "/api/cron/checkout-recovery",
+      "schedule": "25 * * * *"
+    },
+    {
       "path": "/api/cron/wellness-billing",
       "schedule": "0 5 * * *"
     },

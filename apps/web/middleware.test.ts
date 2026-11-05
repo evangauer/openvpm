@@ -401,6 +401,8 @@ describe("middleware NEXTAUTH_SECRET guard", () => {
       "/api/v1/patients",
       "/api/email-preferences/unsubscribe",
       "/email-preferences",
+      "/feedback/stop-reason",
+      "/api/growth/stop-reason",
       "/api/calendar/feed-token",
       "/sms/practice-1/terms",
     ]) {
