@@ -37,6 +37,7 @@ export * from "./demo-access";
 export * from "./platform-email-preferences";
 export * from "./booking";
 export * from "./funnel-events";
+export * from "./growth-leads";
 export * from "./conversion-milestones";
 export * from "./migrations";
 export * from "./visit-closeouts";

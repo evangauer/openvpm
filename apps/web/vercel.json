@@ -39,6 +39,10 @@
       "schedule": "25 * * * *"
     },
     {
+      "path": "/api/cron/demo-followup",
+      "schedule": "40 * * * *"
+    },
+    {
       "path": "/api/cron/wellness-billing",
       "schedule": "0 5 * * *"
     },

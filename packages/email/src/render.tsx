@@ -26,6 +26,11 @@ import {
   checkoutRecoverySubject,
   type CheckoutRecoveryEmailProps,
 } from "./templates/CheckoutRecoveryEmail";
+import {
+  DemoFollowupEmail,
+  demoFollowupSubject,
+  type DemoFollowupEmailProps,
+} from "./templates/DemoFollowupEmail";
 
 export interface RenderedEmail {
   subject: string;
@@ -96,5 +101,14 @@ export async function renderCheckoutRecoveryEmail(
   return {
     subject: checkoutRecoverySubject(p.step, p.practiceName),
     html: await render(<CheckoutRecoveryEmail {...p} />),
+  };
+}
+
+export async function renderDemoFollowupEmail(
+  p: DemoFollowupEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: demoFollowupSubject(p.step, p.tool),
+    html: await render(<DemoFollowupEmail {...p} />),
   };
 }

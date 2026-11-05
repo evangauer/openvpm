@@ -11,3 +11,4 @@ export type { PaymentReceiptEmailProps } from "./src/templates/PaymentReceiptEma
 export type { PaymentFailedEmailProps } from "./src/templates/PaymentFailedEmail";
 export type { FirstClinicWinEmailProps } from "./src/templates/FirstClinicWinEmail";
 export type { CheckoutRecoveryEmailProps } from "./src/templates/CheckoutRecoveryEmail";
+export type { DemoFollowupEmailProps } from "./src/templates/DemoFollowupEmail";

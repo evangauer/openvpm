@@ -27,6 +27,7 @@ import { isPlatformAdmin } from "@/lib/platform-admin";
 import { computeActivationFunnel } from "@/lib/admin/activation-funnel";
 import { computeJourneyFunnel } from "@/lib/admin/journey-funnel";
 import { computeActivationRecovery } from "@/lib/admin/activation-recovery";
+import { listDemoLeads, setDemoLeadPaused } from "@/lib/admin/demo-leads";
 import {
   CLINIC_PILOT_BLOCKERS,
   CLINIC_PILOT_COMMUNICATION_MODES,
@@ -3345,6 +3346,22 @@ export const adminRouter = createRouter({
   activationRecovery: platformAdminProcedure.query(() =>
     computeActivationRecovery(db, new Date()),
   ),
+
+  /** Recent hosted-demo visitors, what they explored, and follow-up sent. */
+  demoLeads: platformAdminProcedure.query(() => {
+    noStore();
+    return listDemoLeads(db);
+  }),
+
+  /** Pause automated follow-up when a person takes over the conversation. */
+  setDemoLeadPaused: platformAdminProcedure
+    .input(z.object({ leadId: z.string().guid(), paused: z.boolean() }))
+    .mutation(async ({ input }) => {
+      if (!(await setDemoLeadPaused(db, input.leadId, input.paused))) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Lead not found." });
+      }
+      return input;
+    }),
 
   /** Audited operating queue for the deliberately bounded clinic pilot. */
   clinicPilotQueue: platformAdminProcedure.query(() => {

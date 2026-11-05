@@ -8,6 +8,7 @@ import {
   renderPaymentFailedEmail,
   renderFirstClinicWinEmail,
   renderCheckoutRecoveryEmail,
+  renderDemoFollowupEmail,
 } from "@openpims/email";
 import {
   createEmailPreferenceLinks,
@@ -21,6 +22,11 @@ import {
   type CheckoutRecoveryStep,
 } from "@/lib/growth/checkout-recovery";
 import { growthSender } from "@/lib/growth/sender";
+import {
+  demoToolCopy,
+  type DemoFollowupStep,
+} from "@/lib/growth/demo-followup";
+import { buildCloudSignupUrl } from "@/lib/funnel-analytics";
 import { createStopReasonToken } from "@/lib/growth/stop-reason-token";
 import {
   defaultEmailFrom,
@@ -853,6 +859,60 @@ export async function sendCheckoutRecoveryEmail(data: {
     resumeUrl: `${brand.appUrl}/settings?tab=billing`,
     reasonLinks,
     feedbackUrl: feedbackUrl.toString(),
+    bookingUrl: sender.bookingUrl,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    from: sender.from,
+    replyTo: sender.replyTo,
+    headers: {
+      "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+    idempotencyKey: data.idempotencyKey,
+  });
+}
+
+/**
+ * Follow-up for someone who tried the hosted demo. Signup links carry the
+ * visitor's anonymous funnel id so a resulting registration is attributed to
+ * the demo and to this email.
+ */
+export async function sendDemoFollowupEmail(data: {
+  to: string;
+  step: DemoFollowupStep;
+  topTool: string | null;
+  anonymousId: string | null;
+  idempotencyKey: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const recipientHash = emailPreferenceRecipientHash(data.to);
+  const preferenceLinks = recipientHash
+    ? createEmailPreferenceLinks({ kind: "recipient", id: recipientHash })
+    : null;
+  if (!preferenceLinks) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
+  const sender = growthSender(brand.supportEmail);
+  const { subject, html } = await renderDemoFollowupEmail({
+    brand,
+    step: data.step,
+    senderName: sender.name,
+    tool: demoToolCopy(data.topTool),
+    trialDays: TRIAL_DAYS,
+    signupUrl: buildCloudSignupUrl({
+      appOrigin: brand.appUrl,
+      source: "demo",
+      medium: "email",
+      campaign: `demo_followup_${data.step}`,
+      visitorId: data.anonymousId,
+    }),
     bookingUrl: sender.bookingUrl,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });

@@ -20,6 +20,7 @@ import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import { getFunnelVisitorId, useFunnelVisitorId } from "@/lib/funnel-visitor";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
 import { loginErrorMessage } from "@/lib/login-error-message";
+import { CURRENT_DEMO_DISCLOSURE_TEXT } from "@/lib/growth/demo-disclosure";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
@@ -162,9 +163,7 @@ function LoginPageInner() {
               Immediate access to the live demo
             </p>
             <p className="text-xs leading-5 text-muted-foreground">
-              No call, sales form, or credit card. We use your email to protect
-              this shared sandbox from automated abuse. We may send one brief
-              email asking what you thought; unsubscribe anytime.
+              {CURRENT_DEMO_DISCLOSURE_TEXT}
             </p>
           </div>
         )}
