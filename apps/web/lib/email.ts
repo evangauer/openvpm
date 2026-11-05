@@ -9,6 +9,12 @@ import {
   renderFirstClinicWinEmail,
   renderCheckoutRecoveryEmail,
   renderDemoFollowupEmail,
+  renderTeamInviteEmail,
+  renderTrialWinbackEmail,
+  renderAdoptionEmail,
+  renderNpsSurveyEmail,
+  type AdoptionTip,
+  type TrialUsage,
 } from "@openpims/email";
 import {
   createEmailPreferenceLinks,
@@ -29,6 +35,12 @@ import {
 } from "@/lib/growth/demo-followup";
 import { buildCloudSignupUrl } from "@/lib/funnel-analytics";
 import { createStopReasonToken } from "@/lib/growth/stop-reason-token";
+import { createNpsToken } from "@/lib/growth/nps-token";
+import {
+  TRIAL_WINBACK_REASONS,
+  type AdoptionGap,
+  type TrialWinbackStep,
+} from "@/lib/growth/customer-lifecycle";
 import {
   defaultEmailFrom,
   emailDemoMode,
@@ -948,6 +960,8 @@ export async function sendTrialEndingEmail(data: {
   monthlyPrice?: string;
   billingUrl?: string;
   billingConnected?: boolean;
+  /** Real trial activity for a personal recap; omitted when unavailable. */
+  usage?: TrialUsage | null;
   idempotencyKey?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
@@ -977,6 +991,7 @@ export async function sendTrialEndingEmail(data: {
     monthlyPrice: data.monthlyPrice ?? "$79",
     billingUrl,
     billingConnected: data.billingConnected,
+    usage: data.usage ?? null,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
   return sendEmail({
@@ -1090,4 +1105,193 @@ export async function sendPaymentFailedEmail(data: {
     replyTo: brand.supportEmail,
     idempotencyKey: data.idempotencyKey,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Customer lifecycle: team invite, trial win-back, adoption, NPS
+// ---------------------------------------------------------------------------
+
+type SendOutcome = { success: boolean; id?: string; error?: string };
+
+function recipientPreferenceLinks(to: string) {
+  const recipientHash = emailPreferenceRecipientHash(to);
+  return recipientHash
+    ? createEmailPreferenceLinks({ kind: "recipient", id: recipientHash })
+    : null;
+}
+
+const PREFERENCES_UNAVAILABLE: SendOutcome = {
+  success: false,
+  error: "Email preference signing is not configured.",
+};
+
+/** Send a personal growth note from the named sender with one-click unsubscribe. */
+function sendGrowthNote(
+  data: { to: string; idempotencyKey: string },
+  rendered: { subject: string; html: string },
+  preferenceLinks: { oneClickUrl: string },
+  sender: ReturnType<typeof growthSender>,
+): Promise<SendOutcome> {
+  return sendEmail({
+    to: data.to,
+    subject: rendered.subject,
+    html: rendered.html,
+    from: sender.from,
+    replyTo: sender.replyTo,
+    headers: {
+      "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+    idempotencyKey: data.idempotencyKey,
+  });
+}
+
+export async function sendTeamInviteNudgeEmail(data: {
+  to: string;
+  practiceName: string;
+  adminName: string | null;
+  appointments: number;
+  idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  const sender = growthSender(brand.supportEmail);
+  const rendered = await renderTeamInviteEmail({
+    brand,
+    practiceName: data.practiceName,
+    greetingName: greetingName(data.adminName),
+    senderName: sender.name,
+    appointments: data.appointments,
+    inviteUrl: `${brand.appUrl}/settings?tab=staff`,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
+}
+
+export async function sendTrialWinbackEmail(data: {
+  to: string;
+  practiceId: string;
+  practiceName: string;
+  adminName: string | null;
+  step: TrialWinbackStep;
+  usageSummary: string | null;
+  idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  let reasonLinks: Array<{ label: string; url: string }> = [];
+  if (data.step === 2) {
+    const token = createStopReasonToken(data.practiceId);
+    if (!token) {
+      return { success: false, error: "Feedback link signing is not configured." };
+    }
+    const feedbackUrl = new URL("/feedback/stop-reason", brand.appUrl);
+    feedbackUrl.searchParams.set("token", token);
+    reasonLinks = TRIAL_WINBACK_REASONS.map((reason) => {
+      const url = new URL(feedbackUrl);
+      url.searchParams.set("reason", reason);
+      return { label: STOP_REASON_LABELS[reason], url: url.toString() };
+    });
+  }
+  const sender = growthSender(brand.supportEmail);
+  const rendered = await renderTrialWinbackEmail({
+    brand,
+    step: data.step,
+    practiceName: data.practiceName,
+    greetingName: greetingName(data.adminName),
+    senderName: sender.name,
+    usageSummary: data.usageSummary,
+    reactivateUrl: `${brand.appUrl}/settings?tab=billing`,
+    reasonLinks,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
+}
+
+const ADOPTION_TIPS: Record<
+  AdoptionGap,
+  Omit<AdoptionTip, "url"> & { path: string }
+> = {
+  reminders: {
+    title: "Appointment reminders",
+    body: "Clients get an email or text before each visit, which cuts no-shows without anyone picking up the phone.",
+    linkLabel: "Turn on reminders",
+    path: "/settings?tab=messaging",
+  },
+  team: {
+    title: "Your team",
+    body: "Staff accounts are free and unlimited, and the shared schedule and whiteboard only pay off when everyone is in them.",
+    linkLabel: "Invite your team",
+    path: "/settings?tab=staff",
+  },
+  portal: {
+    title: "The client portal",
+    body: "Every client has a private link to see their pets, visits, and invoices, so fewer calls come to the front desk.",
+    linkLabel: "Share a portal link",
+    path: "/clients",
+  },
+};
+
+export async function sendAdoptionEmail(data: {
+  to: string;
+  practiceName: string;
+  adminName: string | null;
+  gaps: AdoptionGap[];
+  idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  if (data.gaps.length === 0) {
+    return { success: false, error: "No adoption tips to send." };
+  }
+  const sender = growthSender(brand.supportEmail);
+  const rendered = await renderAdoptionEmail({
+    brand,
+    practiceName: data.practiceName,
+    greetingName: greetingName(data.adminName),
+    senderName: sender.name,
+    tips: data.gaps.map((gap) => {
+      const { path, ...tip } = ADOPTION_TIPS[gap];
+      return { ...tip, url: `${brand.appUrl}${path}` };
+    }),
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
+}
+
+export async function sendNpsSurveyEmail(data: {
+  to: string;
+  practiceId: string;
+  practiceName: string;
+  adminName: string | null;
+  survey: string;
+  idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  const token = createNpsToken(data.practiceId, data.survey);
+  if (!token) {
+    return { success: false, error: "Feedback link signing is not configured." };
+  }
+  const surveyUrl = new URL("/feedback/nps", brand.appUrl);
+  surveyUrl.searchParams.set("token", token);
+  const scoreUrls = Array.from({ length: 11 }, (_, score) => {
+    const url = new URL(surveyUrl);
+    url.searchParams.set("score", String(score));
+    return url.toString();
+  });
+  const sender = growthSender(brand.supportEmail);
+  const rendered = await renderNpsSurveyEmail({
+    brand,
+    practiceName: data.practiceName,
+    greetingName: greetingName(data.adminName),
+    senderName: sender.name,
+    scoreUrls,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
 }

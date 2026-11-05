@@ -10,6 +10,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { baseColumns } from "./common";
+import { practices } from "./practices";
 
 /**
  * People who showed interest in OpenVPM before creating a clinic: hosted-demo
@@ -95,6 +96,43 @@ export const growthLeadEmails = pgTable(
     statusCheck: check(
       "growth_lead_emails_status_check",
       sql`${table.status} in ('pending', 'sent', 'failed')`,
+    ),
+  }),
+);
+
+/**
+ * Net Promoter answers from paying clinics, one per practice per survey. The
+ * survey key (for example "nps:2") names the 90-day cycle the email belonged
+ * to, so a second click on the same email updates the answer instead of
+ * counting twice. System-only: written from a signed email link.
+ */
+export const practiceNpsResponses = pgTable(
+  "practice_nps_responses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+    practiceId: uuid("practice_id")
+      .notNull()
+      .references(() => practices.id),
+    survey: varchar("survey", { length: 64 }).notNull(),
+    score: integer("score").notNull(),
+    comment: varchar("comment", { length: 1000 }),
+  },
+  (table) => ({
+    practiceSurveyUq: uniqueIndex("practice_nps_responses_practice_survey_uq").on(
+      table.practiceId,
+      table.survey,
+    ),
+    createdIdx: index("practice_nps_responses_created_idx").on(table.createdAt),
+    scoreCheck: check(
+      "practice_nps_responses_score_check",
+      sql`${table.score} between 0 and 10`,
     ),
   }),
 );

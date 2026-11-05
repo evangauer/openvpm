@@ -83,6 +83,26 @@ vi.mock("@/lib/email-lifecycle", () => ({
   sendOptionalPlatformEmail: mocks.sendOptionalPlatformEmail,
 }));
 
+vi.mock("@/lib/growth/practice-usage", () => ({
+  practiceUsageByIds: vi.fn(
+    async (_tx: unknown, ids: string[]) =>
+      new Map(
+        ids.map((id) => [
+          id,
+          {
+            clients: 12,
+            patients: 15,
+            appointments: 30,
+            invoices: 8,
+            staffCount: 3,
+            portalSessions: 0,
+            remindersEnabled: true,
+          },
+        ]),
+      ),
+  ),
+}));
+
 vi.mock("@/lib/alerts", () => ({
   alertOps: mocks.alertOps,
 }));
@@ -197,6 +217,12 @@ describe("billing lifecycle cron", () => {
       trialEndDate: "July 4, 2026",
       monthlyPrice: "$79",
       billingConnected: false,
+      usage: expect.objectContaining({
+        clients: 12,
+        appointments: 30,
+        invoices: 8,
+        staffCount: 3,
+      }),
       idempotencyKey: `lc:trial-ending:${PRACTICE_ID}:2026-07-04:t-3`,
     });
     expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith({

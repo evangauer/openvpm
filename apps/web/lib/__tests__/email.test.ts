@@ -792,6 +792,108 @@ describe("lifecycle email branding", () => {
     expect(payload.html).toContain("Alex");
   });
 
+  function stubGrowthEmailEnv() {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_SIGNING_SECRET",
+      "stable-signing-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_BASE_URL", "https://app.openvpm.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.openvpm.com");
+    vi.stubEnv("EMAIL_FROM", "OpenVPM <hello@mail.openvpm.com>");
+    vi.stubEnv("GROWTH_SENDER_NAME", "Alex");
+    vi.stubEnv("GROWTH_SENDER_REPLY_TO", "alex@openvpm.com");
+    mocks.resendSend.mockResolvedValue({ data: { id: "email-growth" } });
+  }
+
+  it("sends a lapsed-trial win-back with one-click reasons but no card option", async () => {
+    stubGrowthEmailEnv();
+    const { sendTrialWinbackEmail } = await loadEmail();
+
+    await sendTrialWinbackEmail({
+      to: "owner@example.com",
+      practiceId: "00000000-0000-4000-8000-0000000000aa",
+      practiceName: "Neighborhood Veterinary",
+      adminName: "Sam Rivera",
+      step: 2,
+      usageSummary: null,
+      idempotencyKey: "lc:trial-winback:v1:x:2",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload).toMatchObject({
+      from: "Alex at OpenVPM <hello@mail.openvpm.com>",
+      subject: "What didn't work for Neighborhood Veterinary?",
+    });
+    expect(payload.html).toContain("/feedback/stop-reason?token=");
+    expect(payload.html).toContain("reason=price");
+    expect(payload.html).not.toContain("reason=card");
+  });
+
+  it("sends an NPS survey with eleven signed score links", async () => {
+    stubGrowthEmailEnv();
+    const { sendNpsSurveyEmail } = await loadEmail();
+
+    await sendNpsSurveyEmail({
+      to: "owner@example.com",
+      practiceId: "00000000-0000-4000-8000-0000000000aa",
+      practiceName: "Neighborhood Veterinary",
+      adminName: "Sam Rivera",
+      survey: "nps:1",
+      idempotencyKey: "lc:nps:v1:x:1",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.subject).toBe("One quick question about OpenVPM");
+    const links = payload.html.match(/\/feedback\/nps\?token=[^"]+score=\d+/g);
+    expect(links).toHaveLength(11);
+    expect(payload.html).toContain("score=0");
+    expect(payload.html).toContain("score=10");
+  });
+
+  it("sends adoption tips only for what the clinic has not turned on", async () => {
+    stubGrowthEmailEnv();
+    const { sendAdoptionEmail } = await loadEmail();
+
+    await sendAdoptionEmail({
+      to: "owner@example.com",
+      practiceName: "Neighborhood Veterinary",
+      adminName: null,
+      gaps: ["reminders", "portal"],
+      idempotencyKey: "lc:adoption:v1:x",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.subject).toBe(
+      "Two things worth turning on in Neighborhood Veterinary",
+    );
+    expect(payload.html).toContain("/settings?tab=messaging");
+    expect(payload.html).toContain("The client portal");
+    expect(payload.html).not.toContain("Invite your team");
+  });
+
+  it("sends the team invite nudge with a link to staff settings", async () => {
+    stubGrowthEmailEnv();
+    const { sendTeamInviteNudgeEmail } = await loadEmail();
+
+    await sendTeamInviteNudgeEmail({
+      to: "owner@example.com",
+      practiceName: "Neighborhood Veterinary",
+      adminName: "Sam Rivera",
+      appointments: 6,
+      idempotencyKey: "lc:team-invite:v1:x",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.subject).toBe("Bring your team into Neighborhood Veterinary");
+    expect(payload.html).toContain("6 appointments");
+    expect(payload.html).toContain("/settings?tab=staff");
+  });
+
   it("sends demo follow-up with tool copy and attributed signup links", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv(

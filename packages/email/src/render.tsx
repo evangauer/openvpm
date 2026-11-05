@@ -2,6 +2,26 @@ import * as React from "react";
 import { render } from "@react-email/render";
 import { WelcomeEmail, type WelcomeEmailProps } from "./templates/WelcomeEmail";
 import {
+  TeamInviteEmail,
+  teamInviteSubject,
+  type TeamInviteEmailProps,
+} from "./templates/TeamInviteEmail";
+import {
+  TrialWinbackEmail,
+  trialWinbackSubject,
+  type TrialWinbackEmailProps,
+} from "./templates/TrialWinbackEmail";
+import {
+  AdoptionEmail,
+  adoptionSubject,
+  type AdoptionEmailProps,
+} from "./templates/AdoptionEmail";
+import {
+  NpsSurveyEmail,
+  npsSurveySubject,
+  type NpsSurveyEmailProps,
+} from "./templates/NpsSurveyEmail";
+import {
   TrialEndingEmail,
   type TrialEndingEmailProps,
 } from "./templates/TrialEndingEmail";
@@ -110,5 +130,41 @@ export async function renderDemoFollowupEmail(
   return {
     subject: demoFollowupSubject(p.step, p.tool),
     html: await render(<DemoFollowupEmail {...p} />),
+  };
+}
+
+export async function renderTeamInviteEmail(
+  p: TeamInviteEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: teamInviteSubject(p.practiceName),
+    html: await render(<TeamInviteEmail {...p} />),
+  };
+}
+
+export async function renderTrialWinbackEmail(
+  p: TrialWinbackEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: trialWinbackSubject(p.step, p.practiceName),
+    html: await render(<TrialWinbackEmail {...p} />),
+  };
+}
+
+export async function renderAdoptionEmail(
+  p: AdoptionEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: adoptionSubject(p.practiceName, p.tips.length),
+    html: await render(<AdoptionEmail {...p} />),
+  };
+}
+
+export async function renderNpsSurveyEmail(
+  p: NpsSurveyEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: npsSurveySubject(),
+    html: await render(<NpsSurveyEmail {...p} />),
   };
 }
