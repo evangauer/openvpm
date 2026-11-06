@@ -30,7 +30,7 @@ describe("GET /api/growth/build-resume", () => {
       state: { clinicName: "Harbor View" },
       scene: "visit",
       savedAt: "2026-11-05T18:00:00Z",
-      disclosureVersion: "build-v1",
+      disclosureVersion: "build-v2",
     });
     const token = createBuildResumeToken(LEAD)!;
     const response = await GET(

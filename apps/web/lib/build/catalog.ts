@@ -2,9 +2,6 @@
  * Content for "Build your clinic": the guided, pre-checkout walkthrough a new
  * hosted clinic takes before the card gate. Client-safe and data-only so the
  * flow, the register API, and tests share one source.
- *
- * Every "ready" line must describe something the product does today. Gaps go
- * in `onTheWay`, said plainly, so a clinic finds out before it pays.
  */
 import { z } from "zod";
 import { inTreatment, percentFromEnv } from "@/lib/experiments/bucket";
@@ -116,17 +113,9 @@ export interface BuildPracticeProfile {
    * Names match the starter catalog where one exists.
    */
   services: BuildService[];
-  ready: string[];
-  onTheWay: string[];
   sample: BuildSample;
 }
 
-const READY_COMMON = [
-  "Online booking that creates the pet's chart",
-  "Email and text reminders in your name",
-  "AI-drafted SOAP notes you review",
-  "Invoices clients can pay by card",
-];
 
 export const BUILD_PRACTICE_PROFILES: Record<
   BuildPracticeType,
@@ -145,8 +134,6 @@ export const BUILD_PRACTICE_PROFILES: Record<
       { name: "Spay / Neuter", price: 350 },
     ],
     sample: DOG_WELLNESS,
-    ready: READY_COMMON,
-    onTheWay: [],
   },
   mobile: {
     label: "Mobile / house-call",
@@ -169,8 +156,6 @@ export const BUILD_PRACTICE_PROFILES: Record<
         { label: "Rabies vaccine", price: 35 },
       ],
     },
-    ready: READY_COMMON,
-    onTheWay: ["Offline mode for spots with no signal"],
   },
   equine: {
     label: "Equine & farm",
@@ -202,8 +187,6 @@ export const BUILD_PRACTICE_PROFILES: Record<
       due: "a Coggins test",
       recall: "Coggins recall · 24 horses due",
     },
-    ready: READY_COMMON,
-    onTheWay: ["Herd-level records", "Offline mode for spots with no signal"],
   },
   specialty: {
     label: "Specialty / wellness",
@@ -230,8 +213,6 @@ export const BUILD_PRACTICE_PROFILES: Record<
         { label: "Nutrition plan", price: 120 },
       ],
     },
-    ready: READY_COMMON,
-    onTheWay: [],
   },
   shelter: {
     label: "Shelter / nonprofit",
@@ -260,8 +241,6 @@ export const BUILD_PRACTICE_PROFILES: Record<
         { label: "Microchip", price: 20 },
       ],
     },
-    ready: READY_COMMON,
-    onTheWay: [],
   },
 };
 
@@ -328,9 +307,9 @@ export function inBuilderArm(
 // ---------------------------------------------------------------------------
 
 /** What a person agrees to when they save their build by email. */
-export const BUILD_SAVE_DISCLOSURE_VERSION = "build-v1";
+export const BUILD_SAVE_DISCLOSURE_VERSION = "build-v2";
 export const BUILD_SAVE_DISCLOSURE_TEXT =
-  "We'll email you a link to pick up where you left off, plus one follow-up note. Unsubscribe anytime.";
+  "We'll send a link to pick up where you left off. You'll only hear from us when it's worth your time. Unsubscribe anytime.";
 
 /** The walkthrough's own state, as saved and restored. */
 export const buildSavedStateSchema = z

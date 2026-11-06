@@ -22,7 +22,7 @@ describe("saved build progress", () => {
       state,
       scene: "visit",
       savedAt: "2026-11-05T18:00:00.000Z",
-      disclosureVersion: "build-v1",
+      disclosureVersion: "build-v2",
     };
     expect(parseBuildProgress(saved)).toEqual(saved);
     expect(parseBuildProgress({ ...saved, scene: "nowhere" })).toBeNull();

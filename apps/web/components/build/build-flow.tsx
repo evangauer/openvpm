@@ -9,6 +9,7 @@ import {
   type ComponentType,
   type CSSProperties,
   type FormEvent,
+  type RefObject,
 } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -21,6 +22,20 @@ import {
   Lock,
   RotateCcw,
 } from "lucide-react";
+import {
+  BellRing,
+  CalendarCheck,
+  Clock,
+  CreditCard,
+  Eye,
+  Heart,
+  LifeBuoy,
+  MessageSquare,
+  PawPrint,
+  PhoneOff,
+  Receipt,
+  Smartphone,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { BillingCadence } from "@/lib/billing/catalog";
 import { trpc } from "@/lib/trpc";
@@ -28,6 +43,7 @@ import {
   BUILD_PRACTICE_PROFILES,
   BUILD_SCENE_LABELS,
   BUILD_SCENES,
+  BUILD_SYSTEM_LABELS,
   BUILD_SYSTEMS,
   BUILD_PRACTICE_TYPES,
   BUILD_SAVE_DISCLOSURE_TEXT,
@@ -59,8 +75,10 @@ import {
   PaidStage,
   PracticeControls,
   PracticeStage,
-  RecordsNotes,
+  RecordsPromise,
   RecordsStage,
+  ScenePoints,
+  type ScenePoint,
   RemindStage,
   servicesFor,
   ServicesControls,
@@ -88,20 +106,24 @@ const INITIAL_STATE: BuildState = {
 interface SceneCopy {
   title: (draft: BuildState) => string;
   lead: (draft: BuildState) => string;
+  /** Why this matters to the clinic, its team, and its clients. */
+  points?: (draft: BuildState) => ScenePoint[];
   note?: string;
   replay?: boolean;
 }
+
+const sample = (d: BuildState) => BUILD_PRACTICE_PROFILES[d.practiceType].sample;
 
 const COPY: Record<BuildScene, SceneCopy> = {
   practice: {
     title: (d) => `Let's build ${displayName(d)} on OpenVPM.`,
     lead: () =>
-      "About three minutes. Tell us how you practice and we'll shape the whole system around it.",
+      "About three minutes. Tell us how you practice and we'll shape everything around it.",
   },
   brand: {
     title: () => "Make it unmistakably yours.",
     lead: () =>
-      "Your name and color carry through everything clients see: booking, reminders, the portal, and invoices.",
+      "Your name and color show up everywhere your clients do: booking, reminders, the portal, and invoices.",
   },
   services: {
     title: () => "Your services, your prices.",
@@ -110,45 +132,66 @@ const COPY: Record<BuildScene, SceneCopy> = {
   },
   book: {
     title: () => "A client books while you're off the clock.",
-    lead: (d) => {
-      const { owner, pet } = BUILD_PRACTICE_PROFILES[d.practiceType].sample;
-      return `${owner} books ${pet}'s visit from their phone. It lands on ${displayName(d)}'s schedule, with ${pet}'s chart started.`;
-    },
+    lead: (d) =>
+      `${sample(d).owner} books ${sample(d).pet}'s visit from their phone at 9:41 PM. It's on your schedule before you wake up.`,
+    points: (d) => [
+      { icon: Heart, text: "Clients book whenever it suits them, from a page in your brand." },
+      { icon: PhoneOff, text: "Your front desk spends less time on the phone." },
+      { icon: PawPrint, text: `${sample(d).pet}'s chart is started before the visit.` },
+    ],
     replay: true,
   },
   remind: {
     title: () => "Reminders go out on their own.",
     lead: (d) =>
-      `The day before, ${BUILD_PRACTICE_PROFILES[d.practiceType].sample.owner} gets a reminder in your name, and the reply lands in your inbox. Recalls go out the same way, in bulk.`,
-    note: "Texting turns on after a short carrier registration, and we walk you through it. Email works from day one.",
+      `The day before, ${sample(d).owner} gets a friendly reminder in your name, and their reply lands in your inbox.`,
+    points: () => [
+      { icon: CalendarCheck, text: "Fewer no-shows, without anyone making calls." },
+      { icon: MessageSquare, text: "Replies land in one inbox the whole team can see." },
+      { icon: BellRing, text: "Recalls for every pet that's due go out in one click." },
+    ],
+    note: "Email works from day one. Texting turns on after a quick carrier registration we walk you through.",
     replay: true,
   },
   visit: {
-    title: (d) =>
-      `You focus on ${BUILD_PRACTICE_PROFILES[d.practiceType].sample.pet}. The note writes itself.`,
-    lead: (d) =>
-      `The AI drafts the SOAP note from the exam for you to review, and charges flow straight onto the invoice.`,
+    title: (d) => `You focus on ${sample(d).pet}. The note writes itself.`,
+    lead: () =>
+      "The AI drafts the SOAP note from the exam for you to review, and charges flow straight onto the invoice.",
+    points: () => [
+      { icon: Clock, text: "Notes are done before the next patient, not after closing." },
+      { icon: Receipt, text: "Charges land on the invoice as you work, so nothing slips." },
+      { icon: Heart, text: "Your attention stays on the patient and the family." },
+    ],
     replay: true,
   },
   paid: {
     title: () => "Paid on the spot.",
     lead: (d) =>
-      `The invoice lands in ${BUILD_PRACTICE_PROFILES[d.practiceType].sample.owner}'s portal and they pay by card in a tap. It's recorded on your side automatically.`,
-    note: "Card payments use your own Stripe account, connected in a few minutes.",
+      `The invoice lands in ${sample(d).owner}'s portal and they pay by card in a tap. It's recorded on your side automatically.`,
+    points: () => [
+      { icon: CreditCard, text: "Get paid before clients reach the car." },
+      { icon: Receipt, text: "No statements to mail and no balances to chase." },
+      { icon: Smartphone, text: "Clients pay from their phone, wherever they are." },
+    ],
+    note: "Payments go to your own Stripe account, connected in a few minutes.",
     replay: true,
   },
   records: {
     title: () => "Bring your history with you.",
     lead: (d) =>
       d.currentSystem === "paper" || d.currentSystem === "other"
-        ? "Import a spreadsheet of clients and pets, or start fresh. Need a hand? We'll help you move it."
-        : "Upload your export and review every record before it's saved. Need a hand? We'll help you move it.",
+        ? "Import a spreadsheet of clients and pets, or start fresh."
+        : `Upload your ${BUILD_SYSTEM_LABELS[d.currentSystem]} export and every client, pet, and vaccine comes with you.`,
+    points: () => [
+      { icon: Eye, text: "Review every record before anything is saved." },
+      { icon: LifeBuoy, text: "Need a hand? We'll help you move it." },
+    ],
     replay: true,
   },
   gate: {
     title: (d) => `${brandName(d)} is ready for you.`,
     lead: () =>
-      "Clients booked, got their reminders, and paid on their own while you did the work only you can do. Everything you built is saved. Start your free trial to open it.",
+      "Everything you built is saved. Start your free trial and open it today.",
   },
 };
 
@@ -169,7 +212,7 @@ const CONTROLS: Partial<Record<BuildScene, ComponentType<SceneProps>>> = {
   practice: PracticeControls,
   brand: BrandControls,
   services: ServicesControls,
-  records: RecordsNotes,
+  records: RecordsPromise,
   gate: GateSummary,
 };
 
@@ -374,7 +417,36 @@ export function BuildFlow({
     [],
   );
 
-  const go = (next: number) => {
+  const rememberEmail = useCallback((email: string) => {
+    setSavedEmail(email);
+    try {
+      window.localStorage.setItem(`${STORAGE_KEY}_email`, email);
+    } catch {
+      // Saved on the server either way.
+    }
+  }, []);
+
+  // Leaving the save step without saving: keep a typed address, otherwise
+  // check once that they meant to skip it.
+  const saveInput = useRef<HTMLInputElement>(null);
+  const [askedToSave, setAskedToSave] = useState(false);
+  const [confirmingSkip, setConfirmingSkip] = useState(false);
+
+  const go = (next: number, skipSaveCheck = false) => {
+    if (scene === "book" && next > index && !savedEmail && !skipSaveCheck) {
+      const typed = saveInput.current?.value.trim().toLowerCase() ?? "";
+      if (EMAIL_PATTERN.test(typed)) {
+        void saveProgress(typed, scene, draft).then((ok) => {
+          if (ok) rememberEmail(typed);
+        });
+      } else if (!askedToSave) {
+        setAskedToSave(true);
+        setConfirmingSkip(true);
+        saveInput.current?.focus();
+        return;
+      }
+    }
+    setConfirmingSkip(false);
     if (next > index) {
       trackFunnelEvent(FUNNEL_EVENTS.buildSceneCompleted, {
         scene,
@@ -448,8 +520,13 @@ export function BuildFlow({
               <p className="mt-3 text-[15px] leading-7 text-slate-600">
                 {copy.lead(draft)}
               </p>
+              {copy.points ? (
+                <div className="mt-6">
+                  <ScenePoints points={copy.points(draft)} />
+                </div>
+              ) : null}
               {copy.note ? (
-                <p className="mt-2 text-sm leading-6 text-slate-500">{copy.note}</p>
+                <p className="mt-5 text-sm leading-6 text-slate-500">{copy.note}</p>
               ) : null}
               {Controls ? (
                 <div className="mt-7">
@@ -460,14 +537,11 @@ export function BuildFlow({
                 <SaveProgress
                   draft={draft}
                   savedEmail={savedEmail}
-                  onSaved={(email) => {
-                    setSavedEmail(email);
-                    try {
-                      window.localStorage.setItem(`${STORAGE_KEY}_email`, email);
-                    } catch {
-                      // Saved on the server either way.
-                    }
-                  }}
+                  onSaved={rememberEmail}
+                  inputRef={saveInput}
+                  confirmingSkip={confirmingSkip}
+                  onSkip={() => go(index + 1, true)}
+                  autoFocus={!still}
                 />
               ) : null}
               {copy.replay && !still ? (
@@ -535,29 +609,52 @@ export function BuildFlow({
   );
 }
 
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 function SaveProgress({
   draft,
   savedEmail,
   onSaved,
+  inputRef,
+  confirmingSkip,
+  onSkip,
+  autoFocus,
 }: {
   draft: BuildState;
   savedEmail: string | null;
   onSaved: (email: string) => void;
+  inputRef: RefObject<HTMLInputElement | null>;
+  confirmingSkip: boolean;
+  onSkip: () => void;
+  autoFocus: boolean;
 }) {
   const [email, setEmail] = useState("");
   const [state, setState] = useState<"idle" | "saving" | "error">("idle");
+
+  // Ready to type on arrival, on devices with a keyboard; on phones the
+  // keyboard would cover the story.
+  useEffect(() => {
+    if (!autoFocus || savedEmail) return;
+    if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    const timer = setTimeout(
+      () => inputRef.current?.focus({ preventScroll: true }),
+      350,
+    );
+    return () => clearTimeout(timer);
+  }, [autoFocus, savedEmail, inputRef]);
+
   if (savedEmail) {
     return (
       <p className="mt-7 flex items-center gap-2 text-sm text-slate-600">
         <Check className="h-4 w-4" style={{ color: "var(--b)" }} />
-        {brandName(draft)} is saved for {savedEmail}.
+        {brandName(draft)}&apos;s progress is saved for {savedEmail}.
       </p>
     );
   }
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const value = email.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+    if (!EMAIL_PATTERN.test(value)) {
       setState("error");
       return;
     }
@@ -570,13 +667,23 @@ function SaveProgress({
     }
   };
   return (
-    <form onSubmit={submit} className="mt-7 rounded-xl border border-slate-200 p-4">
-      <p className="text-sm font-medium text-slate-800">
-        Save {brandName(draft)} to finish later
-      </p>
+    <form
+      onSubmit={submit}
+      className={cn(
+        "mt-7 rounded-xl border p-4 transition-colors",
+        confirmingSkip ? "border-[var(--b)]" : "border-slate-200",
+      )}
+    >
+      <label htmlFor="build-save-email" className="text-sm font-medium text-slate-800">
+        Save {brandName(draft)}&apos;s progress
+      </label>
       <div className="mt-3 flex gap-2">
         <input
+          ref={inputRef}
+          id="build-save-email"
+          name="email"
           type="email"
+          inputMode="email"
           autoComplete="email"
           placeholder="you@yourclinic.com"
           value={email}
@@ -584,13 +691,13 @@ function SaveProgress({
             setEmail(event.target.value);
             setState("idle");
           }}
-          aria-label="Email to save your progress"
           className="h-10 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-[var(--b)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--b)_20%,white)]"
         />
         <button
           type="submit"
           disabled={state === "saving"}
-          className="inline-flex h-10 min-w-[72px] items-center justify-center rounded-lg border border-slate-200 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+          className="inline-flex h-10 min-w-[72px] items-center justify-center rounded-lg px-4 text-sm font-semibold text-white transition-[background,opacity] duration-500 disabled:opacity-60"
+          style={{ background: "var(--b)" }}
         >
           {state === "saving" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
         </button>
@@ -600,6 +707,19 @@ function SaveProgress({
           ? "That didn't save. Check the address and try again."
           : BUILD_SAVE_DISCLOSURE_TEXT}
       </p>
+      {confirmingSkip ? (
+        <p className="mt-3 border-t border-slate-100 pt-3 text-sm leading-6 text-slate-700" role="status">
+          Continue without saving? {brandName(draft)} will only live in this
+          browser.{" "}
+          <button
+            type="button"
+            onClick={onSkip}
+            className="font-medium text-slate-500 underline underline-offset-4 hover:text-slate-800"
+          >
+            Continue anyway
+          </button>
+        </p>
+      ) : null}
     </form>
   );
 }
@@ -720,7 +840,7 @@ function GateForm({
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    if (!EMAIL_PATTERN.test(email.trim())) {
       setError("Enter your work email.");
       return;
     }

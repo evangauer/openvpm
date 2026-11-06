@@ -20,7 +20,6 @@ describe("build catalog", () => {
       const profile = BUILD_PRACTICE_PROFILES[type];
       expect(profile.services.length).toBeGreaterThan(0);
       expect(profile.services.length).toBeLessThanOrEqual(BUILD_SERVICE_MAX);
-      expect(profile.ready.length).toBeGreaterThan(0);
       expect(
         buildDraftSchema.safeParse({
           practiceType: type,

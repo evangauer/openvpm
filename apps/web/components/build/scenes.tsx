@@ -3,8 +3,14 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { motion } from "motion/react";
 import {
+  CalendarCheck,
   Check,
   Clock,
+  CreditCard,
+  FileText,
+  LifeBuoy,
+  Rocket,
+  Users,
   Compass,
   Dog,
   FileSpreadsheet,
@@ -1438,42 +1444,53 @@ export function PaidStage({ draft, playId, still }: SceneProps) {
 // 8. Records and fit
 // ---------------------------------------------------------------------------
 
-/** Left column on the records scene: what's ready and, plainly, what isn't. */
-export function RecordsNotes({ draft }: SceneProps) {
-  const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
-  const source = BUILD_SYSTEM_LABELS[draft.currentSystem];
-  const gaps = [
-    ...profile.onTheWay.map((line) => `Not yet: ${line.toLowerCase()}`),
-    `Missing something you rely on${isFromPaper(draft) ? "" : ` in ${source}`}? Tell us and we'll show you a workaround or when it's coming.`,
-  ];
+export interface ScenePoint {
+  icon: LucideIcon;
+  text: string;
+}
+
+/** A scene's benefits, one short line each, with an icon in the brand color. */
+export function ScenePoints({ points }: { points: ScenePoint[] }) {
   return (
-    <div className="space-y-5 text-sm">
-      <div>
-        <p className="mb-2 font-medium text-slate-700">Ready for {profile.plural}</p>
-        <ul className="space-y-1.5 text-slate-600">
-          {profile.ready.map((line) => (
-            <li key={line} className="flex gap-2">
-              <Check
-                className="mt-0.5 h-4 w-4 shrink-0"
-                style={{ color: "var(--b)" }}
-                aria-hidden="true"
-              />
-              {line}
-            </li>
-          ))}
-        </ul>
-      </div>
-      <div>
-        <p className="mb-2 font-medium text-slate-700">Being straight with you</p>
-        <ul className="space-y-1.5 text-slate-600">
-          {gaps.map((line) => (
-            <li key={line} className="flex gap-2">
-              <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-slate-400" />
-              {line}
-            </li>
-          ))}
-        </ul>
-      </div>
+    <ul className="space-y-3">
+      {points.map(({ icon: Icon, text }) => (
+        <li key={text} className="flex items-center gap-3 text-[15px] text-slate-700">
+          <span
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors duration-500"
+            style={{
+              background: "color-mix(in srgb, var(--b) 10%, white)",
+              color: "var(--b)",
+            }}
+            aria-hidden="true"
+          >
+            <Icon className="h-4 w-4" />
+          </span>
+          {text}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Under the records scene: we build fast, and we build what clinics ask for. */
+export function RecordsPromise() {
+  return (
+    <div className="rounded-xl border border-slate-200 p-4">
+      <p className="flex items-center gap-2 text-sm font-medium text-slate-900">
+        <Rocket className="h-4 w-4" style={{ color: "var(--b)" }} aria-hidden="true" />
+        We ship new features every week.
+      </p>
+      <p className="mt-1 text-sm leading-6 text-slate-600">
+        Missing something you rely on?{" "}
+        <a
+          href="mailto:support@openvpm.com?subject=Something%20I%20need%20in%20OpenVPM"
+          className="font-medium underline underline-offset-4"
+          style={{ color: "var(--b)" }}
+        >
+          Email us
+        </a>{" "}
+        and we&apos;ll build it.
+      </p>
     </div>
   );
 }
@@ -1579,34 +1596,31 @@ export function RecordsStage({ draft, playId, still }: SceneProps) {
 // 9. The gate: what's waiting inside
 // ---------------------------------------------------------------------------
 
+/** The gate's case for starting today: everything the plan includes. */
 export function GateSummary({ draft }: SceneProps) {
-  const name = brandName(draft);
-  const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
   const offered = draft.services.filter((service) => service.on).length;
-  const lines = [
-    `${draft.logo ? "Your logo and color" : "Your color"} on booking, reminders, the portal, and invoices`,
-    `${offered} service${offered === 1 ? "" : "s"} on your price list`,
-    `Your booking page at /book/${bookingSlug(draft)}, ready to publish`,
-    `A workspace shaped for ${profile.plural}`,
-    isFromPaper(draft)
-      ? "A spreadsheet import whenever you're ready"
-      : `An import from ${BUILD_SYSTEM_LABELS[draft.currentSystem]}, ready to review`,
+  const included: ScenePoint[] = [
+    { icon: Users, text: "Unlimited staff, with no per-seat fees" },
+    { icon: CalendarCheck, text: "Online booking, reminders, and a client portal in your brand" },
+    { icon: FileText, text: "AI-drafted SOAP notes you review and sign" },
+    { icon: CreditCard, text: "Card payments straight to your own Stripe account" },
+    {
+      icon: LifeBuoy,
+      text: isFromPaper(draft)
+        ? "Help importing your clients and pets"
+        : `Help moving your records from ${BUILD_SYSTEM_LABELS[draft.currentSystem]}`,
+    },
+    { icon: Rocket, text: "New features every week, at no extra cost" },
   ];
   return (
-    <div className="mt-6">
-      <p className="mb-2.5 text-sm font-medium text-slate-700">Waiting inside {name}</p>
-      <ul className="space-y-2 text-sm text-slate-600">
-        {lines.map((line) => (
-          <li key={line} className="flex gap-2">
-            <Check
-              className="mt-0.5 h-4 w-4 shrink-0"
-              style={{ color: "var(--b)" }}
-              aria-hidden="true"
-            />
-            {line}
-          </li>
-        ))}
-      </ul>
+    <div>
+      <p className="mb-3 text-sm font-medium text-slate-700">Everything included</p>
+      <ScenePoints points={included} />
+      <p className="mt-6 border-t border-slate-100 pt-4 text-sm leading-6 text-slate-500">
+        Already set up: {draft.logo ? "your logo and color" : "your color"},{" "}
+        {offered} service{offered === 1 ? "" : "s"}, and your booking page at
+        /book/{bookingSlug(draft)}.
+      </p>
     </div>
   );
 }

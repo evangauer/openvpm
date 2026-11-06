@@ -615,8 +615,9 @@ color, and picks from recommended services or adds its own, with prices. It
 then watches its own clinic in
 action, in mockups that carry its name and color: a client booking online,
 reminders going out, a visit with an AI-drafted note, and an invoice paid by
-card. It sees what an import of its records looks like, along with a plain
-list of what is not built yet for its kind of practice. Nothing is created
+card. Each moment comes with a few lines on what it means for the clinic, its
+team, and its clients. It sees what an import of its records looks like, and
+how to ask for anything it is missing. Nothing is created
 until the last step, the card gate: the clinic picks monthly or annual billing
 (annual is offered only when `STRIPE_PRICE_CLOUD_LOCATION_ANNUAL` is set), and
 email, password, and country create the account and send it to Stripe Checkout
@@ -632,8 +633,11 @@ color, and it travels with the build. After checkout, the workspace uploads
 it through the regular logo upload on the first visit with an active trial,
 and never replaces a logo the clinic already has.
 
-On the booking scene the clinic can save its build by email ("We'll email
-you a link to pick up where you left off, plus one follow-up note"). Saved
+On the booking scene the clinic can save its build by email ("We'll send a
+link to pick up where you left off. You'll only hear from us when it's worth
+your time."). The field is focused on arrival on devices with a keyboard, an
+address typed but not submitted is saved on Continue, and continuing with an
+empty field asks once whether to skip saving. Saved
 builds live in `growth_leads.build_progress` (migration `0114_build_progress`)
 and stay current as the person moves through scenes. The hourly
 `/api/cron/build-followup` sweep, default-off behind `BUILD_FOLLOWUP_ENABLED`

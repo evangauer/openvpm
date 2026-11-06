@@ -19,7 +19,7 @@ const body = {
   email: " Dr.Ray@HarborView.test ",
   anonymousId: "11111111-1111-4111-8111-111111111111",
   scene: "services",
-  disclosureVersion: "build-v1",
+  disclosureVersion: "build-v2",
   state: {
     practiceType: "companion",
     currentSystem: "avimark",

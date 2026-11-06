@@ -57,7 +57,7 @@ function row(savedAgoMs: number, extra: Record<string, unknown> = {}) {
       state,
       scene: "visit",
       savedAt: new Date(NOW.getTime() - savedAgoMs).toISOString(),
-      disclosureVersion: "build-v1",
+      disclosureVersion: "build-v2",
     },
     existingEmailCount: 0,
     lastEmailAt: null,
