@@ -62,6 +62,26 @@ afterEach(() => {
 });
 
 describe("/api/funnel-event", () => {
+  it.each([
+    "demo_welcome_viewed",
+    "demo_workflow_selected",
+    "demo_workflow_started",
+    "demo_welcome_skipped",
+  ])("records %s without contact or patient metadata", async (name) => {
+    const response = await POST(request({
+      ...validEvent,
+      name,
+      path: "/demo-start",
+      props: { tool: "lab_results", email: "test@example.invalid", patientId: "private" },
+    }, "https://demo.openvpm.com"));
+    expect(response.status).toBe(202);
+    expect(mocks.insertFunnelEvent).toHaveBeenCalledWith({}, expect.objectContaining({
+      eventName: name,
+      path: "/demo-start",
+      metadata: { tool: "lab_results" },
+    }));
+  });
+
   it("accepts a privacy-bounded first-party event with CORS", async () => {
     const response = await POST(request(validEvent));
 

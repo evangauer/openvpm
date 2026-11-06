@@ -9,6 +9,7 @@ import {
 } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import { useFunnelVisitorId } from "@/lib/funnel-visitor";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { DemoRoleSwitcher } from "@/components/demo/demo-role-switcher";
 
@@ -34,12 +35,15 @@ export function DemoConversionBar() {
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-primary/20 bg-primary/5 px-3 py-2 sm:px-6">
       <p className="text-sm text-foreground">
-        <span className="font-medium">Like this workflow?</span>{" "}
+        <span className="font-medium">Shared demo.</span>{" "}
         <span className="text-muted-foreground">
-          Start a 14-day Cloud trial with your own clinic data. Card required; no charge today.
+          Use sample information only.
         </span>
       </p>
       <div className="flex flex-wrap items-center gap-3">
+        <Link href="/demo-start" className="inline-flex min-h-11 items-center text-sm text-primary hover:underline">
+          Choose a workflow
+        </Link>
         <DemoRoleSwitcher />
         <a
           href={href}
