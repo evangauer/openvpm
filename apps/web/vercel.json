@@ -81,6 +81,10 @@
     {
       "path": "/api/cron/conversion-reconcile",
       "schedule": "35 * * * *"
+    },
+    {
+      "path": "/api/cron/newsletter-followup",
+      "schedule": "10 * * * *"
     }
   ]
 }

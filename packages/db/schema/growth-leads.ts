@@ -48,6 +48,8 @@ export const growthLeads = pgTable(
      * scene reached, when, and the disclosure shown when they saved it.
      */
     buildProgress: jsonb("build_progress"),
+    /** Independent newsletter consent; never overwrites demo/build consent. */
+    newsletterSubscription: jsonb("newsletter_subscription"),
   },
   (table) => ({
     emailHashUq: uniqueIndex("growth_leads_email_hash_uq").on(table.emailHash),

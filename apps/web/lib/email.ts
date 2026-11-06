@@ -2,6 +2,7 @@ import { Resend } from "resend";
 import {
   openvpmBrand,
   renderWelcomeEmail,
+  renderNewsletterEmail,
   renderSetupRecoveryEmail,
   renderTrialEndingEmail,
   renderPaymentReceiptEmail,
@@ -1344,5 +1345,32 @@ export async function sendBuildFollowupEmail(data: {
     bookingUrl: sender.bookingUrl,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
+}
+
+/** Confirmed newsletter subscribers have their own consent and unsubscribe path. */
+export async function sendNewsletterEmail(data: {
+  to: string; step: 0 | 1 | 2 | 3; token?: string;
+  interest: "general" | "offline" | "labs" | "migration";
+  anonymousId: string | null; idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  if (data.step === 0 && !data.token) return { success: false, error: "Confirmation link missing." };
+  const url = data.step === 0 ? new URL("/newsletter/confirm", brand.appUrl)
+    : data.step === 1 ? new URL("https://demo.openvpm.com/login")
+    : new URL(data.step === 2 ? "/clinic-fit" : "/start", brand.appUrl);
+  // A fragment keeps the confirmation capability out of request URLs and referrers.
+  if (data.step === 0) url.hash = new URLSearchParams({ token: data.token! }).toString();
+  else {
+    url.searchParams.set("utm_source", "email");
+    url.searchParams.set("utm_medium", "email");
+    url.searchParams.set("utm_campaign", `newsletter_welcome_${data.step}`);
+    if (data.anonymousId) url.searchParams.set("funnel_id", data.anonymousId);
+  }
+  const sender = growthSender(brand.supportEmail);
+  const rendered = await renderNewsletterEmail({ brand, step: data.step, interest: data.interest,
+    senderName: sender.name, actionUrl: url.toString(), unsubscribeUrl: preferenceLinks.preferencesUrl });
   return sendGrowthNote(data, rendered, preferenceLinks, sender);
 }
