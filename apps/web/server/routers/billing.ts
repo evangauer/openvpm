@@ -4238,6 +4238,18 @@ export const billingRouter = createRouter({
           .returning();
 
         if (!updated) {
+          const [paymentHistory] = await tx
+            .select({ id: payments.id })
+            .from(payments)
+            .where(and(eq(payments.invoiceId, input.id), isNull(payments.deletedAt)))
+            .limit(1);
+          if (paymentHistory) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "Invoices with payment or refund history cannot be voided. Apply a credit to cancel the remaining balance while preserving the payment history.",
+            });
+          }
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "Invoice changed while voiding. Refresh and try again.",

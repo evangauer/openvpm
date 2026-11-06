@@ -39,6 +39,9 @@ const USER_ID = "00000000-0000-0000-0000-000000000001";
 const HOUR = 60 * 60 * 1000;
 
 const probeRouter = createRouter({
+  settings: createRouter({
+    setJourneyProgress: protectedProcedure.mutation(() => "cursor-saved"),
+  }),
   clients: createRouter({
     create: protectedProcedure.mutation(() => "write-ok"),
   }),
@@ -136,6 +139,7 @@ describe("preview before card access", () => {
       code: "FORBIDDEN",
     });
     await expect(caller.inPreview()).resolves.toBe(false);
+    await expect(caller.settings.setJourneyProgress()).resolves.toBe("cursor-saved");
   });
 
   it("drops preview limits once the trial starts", async () => {

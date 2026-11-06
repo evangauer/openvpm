@@ -381,6 +381,7 @@ export async function runGoldenClinic(fixture: DisposableClinic) {
     backup,
     practice: practice!,
     doctor: doctor!,
+    foreignDoctor: foreignDoctor!,
     patient,
     client,
     appointment,

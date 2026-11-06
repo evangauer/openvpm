@@ -258,6 +258,9 @@ const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "auth.resendVerification",
   "settings.requestAccountDeletion",
   "settings.setMarketingEmailPreference",
+  // Saving a setup cursor/dismissal must remain possible before checkout.
+  // This procedure cannot change clinic records or start provider work.
+  "settings.setJourneyProgress",
   "subscription.createCheckout",
   "subscription.openBillingPortal",
   // Platform-operator tooling must keep working even when the operator's own
