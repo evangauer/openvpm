@@ -15,6 +15,7 @@ import {
 import { isSecretIndependentPath } from "./lib/secret-independent-paths";
 
 const CAPABILITY_PATH_PREFIXES = [
+  "/newsletter/confirm",
   "/capture",
   "/sign",
   "/treatment-plan",
@@ -35,6 +36,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/forgot-password",
   "/legal",
   "/login",
+  "/newsletter",
   "/portal",
   "/register",
   "/reset-password",

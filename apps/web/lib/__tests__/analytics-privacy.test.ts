@@ -4,6 +4,7 @@ import { filterVercelAnalyticsEvent } from "../analytics-privacy";
 
 describe("Vercel Analytics capability privacy", () => {
   it.each([
+    "https://app.openvpm.com/newsletter/confirm#token=private-token",
     "https://app.openvpm.com/capture/raw-secret-token",
     "https://app.openvpm.com/capture/raw-secret-token?source=qr",
     "https://app.openvpm.com/sign/raw-secret-token",
