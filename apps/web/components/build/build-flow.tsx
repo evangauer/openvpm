@@ -12,7 +12,7 @@ import {
 } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, MotionConfig } from "motion/react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -21,6 +21,8 @@ import {
   Lock,
   RotateCcw,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import type { BillingCadence } from "@/lib/billing/catalog";
 import { trpc } from "@/lib/trpc";
 import {
   BUILD_PRACTICE_PROFILES,
@@ -53,10 +55,11 @@ import {
   BrandControls,
   BrandStage,
   displayName,
-  GateStage,
+  GateSummary,
   PaidStage,
   PracticeControls,
   PracticeStage,
+  RecordsNotes,
   RecordsStage,
   RemindStage,
   servicesFor,
@@ -82,14 +85,6 @@ const INITIAL_STATE: BuildState = {
   logo: null,
 };
 
-/** Scenes that tell the day-at-the-clinic story. */
-const STORY_SCENES: ReadonlySet<BuildScene> = new Set([
-  "book",
-  "remind",
-  "visit",
-  "paid",
-]);
-
 interface SceneCopy {
   title: (draft: BuildState) => string;
   lead: (draft: BuildState) => string;
@@ -106,25 +101,25 @@ const COPY: Record<BuildScene, SceneCopy> = {
   brand: {
     title: () => "Make it unmistakably yours.",
     lead: () =>
-      "Your name and colour carry through everything clients see: booking, reminders, the portal, and invoices.",
+      "Your name and color carry through everything clients see: booking, reminders, the portal, and invoices.",
   },
   services: {
     title: () => "Your services, your prices.",
     lead: () =>
-      "We started you with what practices like yours usually offer. Keep, drop, or reprice them.",
+      "Start with what practices like yours usually offer, then add your own. Clients see these when they book.",
   },
   book: {
     title: () => "A client books while you're off the clock.",
     lead: (d) => {
       const { owner, pet } = BUILD_PRACTICE_PROFILES[d.practiceType].sample;
-      return `${owner} books ${pet}'s visit from their phone. It lands on ${displayName(d)}'s schedule, and ${pet}'s chart is created from the booking before the visit.`;
+      return `${owner} books ${pet}'s visit from their phone. It lands on ${displayName(d)}'s schedule, with ${pet}'s chart started.`;
     },
     replay: true,
   },
   remind: {
     title: () => "Reminders go out on their own.",
     lead: (d) =>
-      `The day before, ${BUILD_PRACTICE_PROFILES[d.practiceType].sample.owner} gets a reminder in your name. Recalls and care reminders go out the same way, in bulk.`,
+      `The day before, ${BUILD_PRACTICE_PROFILES[d.practiceType].sample.owner} gets a reminder in your name, and the reply lands in your inbox. Recalls go out the same way, in bulk.`,
     note: "Texting turns on after a short carrier registration, and we walk you through it. Email works from day one.",
     replay: true,
   },
@@ -132,7 +127,7 @@ const COPY: Record<BuildScene, SceneCopy> = {
     title: (d) =>
       `You focus on ${BUILD_PRACTICE_PROFILES[d.practiceType].sample.pet}. The note writes itself.`,
     lead: (d) =>
-      `${BUILD_PRACTICE_PROFILES[d.practiceType].sample.pet} checks in and the whole team sees it. The AI drafts the SOAP note for you to review, and charges flow straight onto the invoice.`,
+      `The AI drafts the SOAP note from the exam for you to review, and charges flow straight onto the invoice.`,
     replay: true,
   },
   paid: {
@@ -146,18 +141,19 @@ const COPY: Record<BuildScene, SceneCopy> = {
     title: () => "Bring your history with you.",
     lead: (d) =>
       d.currentSystem === "paper" || d.currentSystem === "other"
-        ? "Import a spreadsheet of clients and pets, or start fresh with today's appointments. Need a hand? We'll help you move it."
-        : "Upload your export and review every record before it's saved. Your current system stays in place until you're ready. Need a hand? We'll help you move it.",
+        ? "Import a spreadsheet of clients and pets, or start fresh. Need a hand? We'll help you move it."
+        : "Upload your export and review every record before it's saved. Need a hand? We'll help you move it.",
     replay: true,
   },
   gate: {
     title: (d) => `${brandName(d)} is ready for you.`,
     lead: () =>
-      "That was your day: clients booked, got their reminders, and paid on their own while you did the work only you can do. Everything you built is saved. Start your free trial to open it.",
+      "Clients booked, got their reminders, and paid on their own while you did the work only you can do. Everything you built is saved. Start your free trial to open it.",
   },
 };
 
-const STAGES: Record<BuildScene, ComponentType<SceneProps>> = {
+/** The picture on the right; the gate shows the payment card instead. */
+const STAGES: Partial<Record<BuildScene, ComponentType<SceneProps>>> = {
   practice: PracticeStage,
   brand: BrandStage,
   services: ServicesStage,
@@ -166,13 +162,15 @@ const STAGES: Record<BuildScene, ComponentType<SceneProps>> = {
   visit: VisitStage,
   paid: PaidStage,
   records: RecordsStage,
-  gate: GateStage,
 };
 
+/** The one thing to do on the left, under the copy. */
 const CONTROLS: Partial<Record<BuildScene, ComponentType<SceneProps>>> = {
   practice: PracticeControls,
   brand: BrandControls,
   services: ServicesControls,
+  records: RecordsNotes,
+  gate: GateSummary,
 };
 
 function restore(): { state: BuildState; scene: number } | null {
@@ -270,15 +268,18 @@ export function toBuildDraft(state: BuildState): BuildDraft {
 
 /**
  * "Build your clinic": a guided walk through OpenVPM with the clinic's own
- * name, colour, and services, ending at the card gate. Nothing is created
+ * name, color, and services, ending at the card gate. Nothing is created
  * until the gate; choices live in this browser until then.
  */
 export function BuildFlow({
   trialDays,
   monthlyPriceUsd,
+  annualPriceUsd,
 }: {
   trialDays: number;
   monthlyPriceUsd: number;
+  /** Null when annual billing isn't offered. */
+  annualPriceUsd: number | null;
 }) {
   const searchParams = useSearchParams();
   const acquisition = useMemo(
@@ -393,28 +394,24 @@ export function BuildFlow({
   const props: SceneProps = { draft, update, playId, still };
   const isGate = scene === "gate";
   const ready = canContinue(scene, draft);
-  const eyebrow = STORY_SCENES.has(scene)
-    ? `A day at ${brandName(draft)}`
-    : isGate
-      ? "Your clinic, ready"
-      : `Building ${brandName(draft)}`;
 
   return (
+    <MotionConfig reducedMotion="user">
     <main
       id="main-content"
-      className="min-h-screen bg-[linear-gradient(135deg,#fff7ed_0%,#f5f3ff_35%,#fdf2f8_65%,#ecfdf5_100%)] px-3 py-4 text-slate-900 sm:px-6 sm:py-8"
+      className="min-h-screen bg-slate-100/70 px-3 py-4 text-slate-900 sm:px-6 sm:py-8"
       style={{ "--b": draft.brandColor } as CSSProperties}
     >
-      <div className="mx-auto w-full max-w-6xl overflow-hidden rounded-3xl bg-white/95 shadow-[0_30px_80px_-30px_rgba(15,23,42,0.35)] ring-1 ring-slate-200/70">
-        <header className="flex items-center gap-4 border-b border-slate-100 px-5 py-4 sm:px-8">
+      <div className="mx-auto flex w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <header className="flex h-16 items-center gap-6 border-b border-slate-100 px-5 sm:px-8">
           <div className="flex min-w-0 items-center gap-2.5">
             <ClinicMark name={displayName(draft)} logo={draft.logo} size={28} />
-            <span className="truncate font-heading text-base font-semibold">
-              {draft.clinicName.trim() || "Your clinic"}
+            <span className="truncate font-heading text-[15px] font-semibold">
+              {brandName(draft)}
             </span>
           </div>
           <div
-            className="ml-auto hidden flex-1 gap-1 sm:flex"
+            className="ml-auto hidden max-w-md flex-1 gap-1 sm:flex"
             role="progressbar"
             aria-valuemin={1}
             aria-valuemax={BUILD_SCENES.length}
@@ -424,93 +421,89 @@ export function BuildFlow({
             {BUILD_SCENES.map((id, i) => (
               <span
                 key={id}
-                className="h-1.5 flex-1 rounded-full transition-colors duration-500"
+                className="h-1 flex-1 rounded-full transition-colors duration-500"
                 style={{ background: i <= index ? "var(--b)" : "#e2e8f0" }}
               />
             ))}
           </div>
-          <span className="whitespace-nowrap text-xs text-slate-500">
+          <span className="ml-auto whitespace-nowrap text-xs text-slate-500 sm:ml-0">
             {index + 1} of {BUILD_SCENES.length} · {BUILD_SCENE_LABELS[scene]}
           </span>
         </header>
 
         <AnimatePresence mode="wait" initial={false} custom={direction}>
-        <motion.div
-          key={scene}
-          custom={direction}
-          initial={still ? false : { opacity: 0, x: 40 * direction }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={still ? undefined : { opacity: 0, x: -40 * direction }}
-          transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
-          className="grid gap-6 px-5 py-6 sm:px-8 sm:py-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-10"
-        >
-          <section className="min-w-0">
-            <p
-              className="mb-2 text-xs font-semibold uppercase tracking-[0.12em]"
-              style={{ color: "var(--b)" }}
-            >
-              {eyebrow}
-            </p>
-            <h1 className="font-heading text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
-              {copy.title(draft)}
-            </h1>
-            <p className="mt-3 text-base leading-7 text-slate-600">
-              {copy.lead(draft)}
-            </p>
-            {copy.note ? (
-              <p className="mt-3 text-sm leading-6 text-slate-500">{copy.note}</p>
-            ) : null}
-            {scene === "services" ? (
-              <SaveProgress
-                draft={draft}
-                savedEmail={savedEmail}
-                onSaved={(email) => {
-                  setSavedEmail(email);
-                  try {
-                    window.localStorage.setItem(`${STORAGE_KEY}_email`, email);
-                  } catch {
-                    // Saved on the server either way.
-                  }
-                }}
-              />
-            ) : null}
-            {Controls ? (
-              <div className="mt-6">
-                <Controls {...props} />
-              </div>
-            ) : null}
-            {copy.replay && !still ? (
-              <button
-                type="button"
-                onClick={() => setPlayId((id) => id + 1)}
-                className="mt-5 inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-800"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Play it again
-              </button>
-            ) : null}
-            {isGate ? (
-              <GateForm
-                draft={draft}
-                defaultEmail={savedEmail ?? ""}
-                trialDays={trialDays}
-                monthlyPriceUsd={monthlyPriceUsd}
-                acquisition={acquisition}
-              />
-            ) : null}
-          </section>
-          <section className="min-w-0">
-            <Stage {...props} />
-          </section>
-        </motion.div>
+          <motion.div
+            key={scene}
+            custom={direction}
+            initial={still ? false : { opacity: 0, x: 24 * direction }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={still ? undefined : { opacity: 0, x: -24 * direction }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            className="grid gap-8 px-5 py-6 sm:px-8 sm:py-8 lg:min-h-[600px] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-12"
+          >
+            <section className="min-w-0 lg:pt-1">
+              <h1 className="font-heading text-[28px] font-semibold leading-[1.15] tracking-tight sm:text-[32px]">
+                {copy.title(draft)}
+              </h1>
+              <p className="mt-3 text-[15px] leading-7 text-slate-600">
+                {copy.lead(draft)}
+              </p>
+              {copy.note ? (
+                <p className="mt-2 text-sm leading-6 text-slate-500">{copy.note}</p>
+              ) : null}
+              {Controls ? (
+                <div className="mt-7">
+                  <Controls {...props} />
+                </div>
+              ) : null}
+              {scene === "book" ? (
+                <SaveProgress
+                  draft={draft}
+                  savedEmail={savedEmail}
+                  onSaved={(email) => {
+                    setSavedEmail(email);
+                    try {
+                      window.localStorage.setItem(`${STORAGE_KEY}_email`, email);
+                    } catch {
+                      // Saved on the server either way.
+                    }
+                  }}
+                />
+              ) : null}
+              {copy.replay && !still ? (
+                <button
+                  type="button"
+                  onClick={() => setPlayId((id) => id + 1)}
+                  className="mt-6 inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-800"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Play it again
+                </button>
+              ) : null}
+            </section>
+            <section className="min-w-0">
+              {isGate ? (
+                <GateForm
+                  draft={draft}
+                  defaultEmail={savedEmail ?? ""}
+                  trialDays={trialDays}
+                  monthlyPriceUsd={monthlyPriceUsd}
+                  annualPriceUsd={annualPriceUsd}
+                  acquisition={acquisition}
+                />
+              ) : Stage ? (
+                <Stage {...props} />
+              ) : null}
+            </section>
+          </motion.div>
         </AnimatePresence>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-slate-100 px-5 py-4 sm:px-8">
+        <footer className="flex h-[72px] items-center justify-between gap-3 border-t border-slate-100 px-5 sm:px-8">
           {index > 0 ? (
             <button
               type="button"
               onClick={() => go(index - 1)}
-              className="inline-flex h-11 items-center gap-2 rounded-xl px-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
+              className="inline-flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
             >
               <ArrowLeft className="h-4 w-4" />
               Back
@@ -528,7 +521,7 @@ export function BuildFlow({
               type="button"
               disabled={!ready}
               onClick={() => go(index + 1)}
-              className="inline-flex h-11 items-center gap-2 rounded-xl px-5 text-sm font-semibold text-white shadow-lg transition-[background,opacity] duration-500 disabled:opacity-50"
+              className="inline-flex h-10 items-center gap-2 rounded-lg px-5 text-sm font-semibold text-white transition-[background,opacity] duration-500 disabled:opacity-40"
               style={{ background: "var(--b)" }}
             >
               {scene === "records" ? "See my clinic" : "Continue"}
@@ -538,6 +531,7 @@ export function BuildFlow({
         </footer>
       </div>
     </main>
+    </MotionConfig>
   );
 }
 
@@ -554,9 +548,9 @@ function SaveProgress({
   const [state, setState] = useState<"idle" | "saving" | "error">("idle");
   if (savedEmail) {
     return (
-      <p className="mt-5 inline-flex items-center gap-2 rounded-full bg-slate-50 px-3 py-1.5 text-sm text-slate-600 ring-1 ring-slate-200">
+      <p className="mt-7 flex items-center gap-2 text-sm text-slate-600">
         <Check className="h-4 w-4" style={{ color: "var(--b)" }} />
-        Saved for {savedEmail}
+        {brandName(draft)} is saved for {savedEmail}.
       </p>
     );
   }
@@ -568,7 +562,7 @@ function SaveProgress({
       return;
     }
     setState("saving");
-    if (await saveProgress(value, "services", draft)) {
+    if (await saveProgress(value, "book", draft)) {
       onSaved(value);
       setState("idle");
     } else {
@@ -576,16 +570,11 @@ function SaveProgress({
     }
   };
   return (
-    <motion.form
-      onSubmit={submit}
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="mt-5 rounded-2xl border border-slate-200 bg-slate-50/70 p-3"
-    >
-      <p className="text-sm font-semibold text-slate-800">
-        Save {brandName(draft)} so you don&apos;t lose it
+    <form onSubmit={submit} className="mt-7 rounded-xl border border-slate-200 p-4">
+      <p className="text-sm font-medium text-slate-800">
+        Save {brandName(draft)} to finish later
       </p>
-      <div className="mt-2 flex gap-2">
+      <div className="mt-3 flex gap-2">
         <input
           type="email"
           autoComplete="email"
@@ -596,13 +585,12 @@ function SaveProgress({
             setState("idle");
           }}
           aria-label="Email to save your progress"
-          className="h-10 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-[var(--b)]"
+          className="h-10 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-[var(--b)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--b)_20%,white)]"
         />
         <button
           type="submit"
           disabled={state === "saving"}
-          className="h-10 rounded-xl px-4 text-sm font-semibold text-white disabled:opacity-60"
-          style={{ background: "var(--b)" }}
+          className="inline-flex h-10 min-w-[72px] items-center justify-center rounded-lg border border-slate-200 bg-white px-4 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-60"
         >
           {state === "saving" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
         </button>
@@ -612,7 +600,62 @@ function SaveProgress({
           ? "That didn't save. Check the address and try again."
           : BUILD_SAVE_DISCLOSURE_TEXT}
       </p>
-    </motion.form>
+    </form>
+  );
+}
+
+function PlanOption({
+  selected,
+  onSelect,
+  name,
+  price,
+  interval,
+  detail,
+  badge,
+}: {
+  selected: boolean;
+  onSelect: () => void;
+  name: string;
+  price: number;
+  interval: string;
+  detail: string;
+  badge?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onSelect}
+      className={cn(
+        "relative rounded-xl border p-3.5 text-left transition-colors",
+        selected
+          ? "border-[var(--b)] bg-[color-mix(in_srgb,var(--b)_5%,white)] ring-1 ring-[var(--b)]"
+          : "border-slate-200 hover:border-slate-300",
+      )}
+    >
+      <span className="flex items-center justify-between gap-2">
+        <span className="text-sm font-medium text-slate-900">{name}</span>
+        {badge ? (
+          <span
+            className="rounded-full px-2 py-0.5 text-[11px] font-medium"
+            style={{
+              background: "color-mix(in srgb, var(--b) 12%, white)",
+              color: "color-mix(in srgb, var(--b) 80%, black)",
+            }}
+          >
+            {badge}
+          </span>
+        ) : null}
+      </span>
+      <span className="mt-2 block">
+        <span className="font-heading text-2xl font-semibold tabular-nums">
+          ${price.toLocaleString("en-US")}
+        </span>
+        <span className="text-sm text-slate-500">{interval}</span>
+      </span>
+      <span className="mt-0.5 block text-xs text-slate-500">{detail}</span>
+    </button>
   );
 }
 
@@ -621,18 +664,33 @@ function GateForm({
   defaultEmail,
   trialDays,
   monthlyPriceUsd,
+  annualPriceUsd,
   acquisition,
 }: {
   draft: BuildState;
   defaultEmail: string;
   trialDays: number;
   monthlyPriceUsd: number;
+  annualPriceUsd: number | null;
   acquisition: ReturnType<typeof acquisitionFromSearchParams>;
 }) {
+  const [cadence, setCadence] = useState<BillingCadence>("month");
   const [email, setEmail] = useState(defaultEmail);
   const [password, setPassword] = useState("");
   const [country, setCountry] = useState<ClinicRegionCode | "">("");
   const [error, setError] = useState("");
+  const annual = annualPriceUsd !== null && cadence === "year";
+  const trialEnds = useMemo(
+    () =>
+      new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toLocaleDateString(
+        "en-US",
+        { month: "long", day: "numeric" },
+      ),
+    [trialDays],
+  );
+  const then = annual
+    ? `$${annualPriceUsd.toLocaleString("en-US")}/year`
+    : `$${monthlyPriceUsd}/month`;
 
   const register = trpc.auth.register.useMutation({
     onSuccess: (data) => {
@@ -662,12 +720,16 @@ function GateForm({
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!country) {
-      setError("Choose your clinic's country.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setError("Enter your work email.");
       return;
     }
     if (password.length < 8) {
       setError("Use at least 8 characters for your password.");
+      return;
+    }
+    if (!country) {
+      setError("Choose your clinic's country.");
       return;
     }
     setError("");
@@ -691,63 +753,106 @@ function GateForm({
         getFunnelVisitorId(),
       ),
       build,
+      billingCadence: annual ? "year" : "month",
     });
   };
 
   const field =
-    "h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-[var(--b)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--b)_25%,white)]";
+    "h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-[var(--b)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--b)_20%,white)]";
 
   return (
-    <form onSubmit={submit} className="mt-6 space-y-3" noValidate>
-      <div className="flex items-baseline gap-2">
-        <span className="font-heading text-2xl font-bold">${monthlyPriceUsd}</span>
-        <span className="text-sm text-slate-500">
-          /month per location · free for {trialDays} days
-        </span>
-      </div>
-      {error ? (
-        <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          {error}
+    <form
+      onSubmit={submit}
+      noValidate
+      className="rounded-2xl border border-slate-200 p-5 sm:p-6"
+    >
+      {annualPriceUsd !== null ? (
+        <div role="radiogroup" aria-label="Plan" className="grid grid-cols-2 gap-2.5">
+          <PlanOption
+            selected={!annual}
+            onSelect={() => setCadence("month")}
+            name="Monthly"
+            price={monthlyPriceUsd}
+            interval="/mo"
+            detail="Cancel anytime"
+          />
+          <PlanOption
+            selected={annual}
+            onSelect={() => setCadence("year")}
+            name="Annual"
+            price={annualPriceUsd}
+            interval="/yr"
+            detail={`About $${Math.round(annualPriceUsd / 12)}/mo, billed yearly`}
+            badge={`Save $${(monthlyPriceUsd * 12 - annualPriceUsd).toLocaleString("en-US")}`}
+          />
+        </div>
+      ) : (
+        <div className="flex items-baseline gap-1">
+          <span className="font-heading text-2xl font-semibold">${monthlyPriceUsd}</span>
+          <span className="text-sm text-slate-500">/month per location</span>
+        </div>
+      )}
+
+      <div className="mt-4 rounded-lg bg-slate-50 px-3.5 py-3 text-sm">
+        <div className="flex items-center justify-between">
+          <span className="font-medium text-slate-800">{trialDays}-day free trial</span>
+          <span className="font-semibold tabular-nums">$0.00 today</span>
+        </div>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Then {then} per location from {trialEnds}. Cancel before then and
+          you won&apos;t be charged.
         </p>
-      ) : null}
-      <input
-        type="email"
-        required
-        autoComplete="email"
-        placeholder="Work email"
-        value={email}
-        onChange={(event) => setEmail(event.target.value)}
-        className={field}
-        aria-label="Work email"
-      />
-      <input
-        type="password"
-        required
-        autoComplete="new-password"
-        placeholder="Create a password (8+ characters)"
-        value={password}
-        onChange={(event) => setPassword(event.target.value)}
-        className={field}
-        aria-label="Password"
-      />
-      <select
-        required
-        value={country}
-        onChange={(event) => setCountry(event.target.value as ClinicRegionCode)}
-        className={field}
-        aria-label="Clinic country"
-      >
-        <option value="">Clinic country</option>
-        {CLINIC_REGION_OPTIONS.map((option) => (
-          <option key={option.code} value={option.code}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+      </div>
+
+      <div className="mt-5 space-y-2.5">
+        {error ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+          >
+            {error}
+          </p>
+        ) : null}
+        <input
+          type="email"
+          required
+          autoComplete="email"
+          placeholder="Work email"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+          className={field}
+          aria-label="Work email"
+        />
+        <input
+          type="password"
+          required
+          autoComplete="new-password"
+          placeholder="Create a password (8+ characters)"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          className={field}
+          aria-label="Password"
+        />
+        <select
+          required
+          value={country}
+          onChange={(event) => setCountry(event.target.value as ClinicRegionCode)}
+          className={cn(field, !country && "text-slate-400")}
+          aria-label="Clinic country"
+        >
+          <option value="">Clinic country</option>
+          {CLINIC_REGION_OPTIONS.map((option) => (
+            <option key={option.code} value={option.code} className="text-slate-900">
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
       <button
         type="submit"
         disabled={register.isPending}
-        className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl text-sm font-semibold text-white shadow-lg transition-[background] duration-500 disabled:opacity-60"
+        className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg text-sm font-semibold text-white transition-[background,opacity] duration-500 disabled:opacity-60"
         style={{ background: "var(--b)" }}
       >
         {register.isPending ? (
@@ -757,21 +862,21 @@ function GateForm({
           </>
         ) : (
           <>
-            Add card &amp; open my clinic
+            Start free trial
             <ArrowRight className="h-4 w-4" />
           </>
         )}
       </button>
-      <p className="flex items-center justify-center gap-1.5 text-xs text-slate-500">
+      <p className="mt-3 flex items-center justify-center gap-1.5 text-xs text-slate-500">
         <Lock className="h-3.5 w-3.5" />
-        Secure checkout by Stripe · no charge today
+        Card details are collected securely by Stripe.
       </p>
-      <p className="text-center text-xs leading-5 text-slate-500">
-        After your {trialDays}-day trial, ${monthlyPriceUsd} USD/month per
-        active location, plus applicable taxes and usage overages. Billing
-        starts automatically. Cancel in Settings → Plan &amp; Billing before
-        the trial ends to avoid a subscription charge. By continuing you agree
-        to the{" "}
+      <p className="mt-3 text-center text-[11px] leading-[17px] text-slate-400">
+        After your {trialDays}-day trial, {then.replace("/", " USD/")} per
+        active location, plus applicable taxes
+        {annual ? "" : " and usage overages"}. Billing starts automatically.
+        Cancel in Settings → Plan &amp; Billing before the trial ends to avoid a
+        subscription charge. By continuing you agree to the{" "}
         <Link href="/legal/terms" className="underline">
           Terms of Service
         </Link>{" "}

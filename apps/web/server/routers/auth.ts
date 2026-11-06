@@ -33,6 +33,7 @@ import { sendTrackedVerificationEmail } from "@/lib/auth-email-delivery";
 import { sendOptionalPlatformEmail } from "@/lib/email-lifecycle";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
 import { newSubscriptionBillingAccount } from "@/lib/billing/stripe-accounts";
+import { BILLING_CADENCES } from "@/lib/billing/catalog";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { createSubscriptionCheckoutSession } from "@/lib/stripe";
 import {
@@ -235,6 +236,8 @@ export const authRouter = createRouter({
         acquisition: signupAcquisitionSchema.optional(),
         /** Choices from "Build your clinic"; the workspace opens built. */
         build: buildDraftSchema.optional(),
+        /** The plan chosen before checkout; only card-gated signups use it. */
+        billingCadence: z.enum(BILLING_CADENCES).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -308,13 +311,16 @@ export const authRouter = createRouter({
           }>
         | undefined;
 
+      const billingCadence = input.billingCadence ?? "month";
       if (hostedBilling && !noCardTrial && !previewEndsAt) {
-        const { locationPriceId } = cloudCheckoutPriceIds("month", billingAccount);
+        const { locationPriceId } = cloudCheckoutPriceIds(billingCadence, billingAccount);
         if (!locationPriceId) {
           throw new TRPCError({
             code: "SERVICE_UNAVAILABLE",
             message:
-              "Hosted billing is not configured. Please contact support to finish signup.",
+              billingCadence === "year"
+                ? "Annual billing isn't available right now. Choose monthly to start your trial."
+                : "Hosted billing is not configured. Please contact support to finish signup.",
           });
         }
 
@@ -513,7 +519,7 @@ export const authRouter = createRouter({
                 customerEmail: email,
                 trialPeriodDays: TRIAL_DAYS,
                 ...(billingAccount === "openvpm" ? { billingAccount } : {}),
-                billingCadence: "month",
+                billingCadence,
                 source: "signup",
                 successUrl: `${base}/login?checkout=success`,
                 cancelUrl: `${base}/login?checkout=cancelled`,

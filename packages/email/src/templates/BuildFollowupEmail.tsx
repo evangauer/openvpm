@@ -6,7 +6,7 @@ export interface BuildFollowupEmailProps {
   brand: Brand;
   step: 1 | 2;
   clinicName: string;
-  /** The colour they chose, shown as a little badge of their clinic. */
+  /** The color they chose, shown as a little badge of their clinic. */
   brandColor: string;
   /** The system they're coming from, e.g. "Shepherd"; null for paper. */
   currentSystem: string | null;
@@ -79,7 +79,7 @@ export function BuildFollowupEmail({
         <>
           <P>
             You started building {clinicName} on OpenVPM. It&apos;s saved,
-            colours and services included:
+            colors and services included:
           </P>
           <ClinicBadge name={clinicName} color={brandColor} />
           <P>

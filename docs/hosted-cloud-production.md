@@ -611,30 +611,35 @@ and `pnpm db:rls` before enabling.
 
 `/start` is a guided signup for the hosted service. The clinic picks how it
 practices and the system it uses today, names the clinic, chooses a brand
-colour, and sets its services and prices. It then watches its own clinic in
-action, in mockups that carry its name and colour: a client booking online,
+color, and picks from recommended services or adds its own, with prices. It
+then watches its own clinic in
+action, in mockups that carry its name and color: a client booking online,
 reminders going out, a visit with an AI-drafted note, and an invoice paid by
 card. It sees what an import of its records looks like, along with a plain
 list of what is not built yet for its kind of practice. Nothing is created
-until the last step, the card gate: email, password, and country create the
-account and send the clinic to Stripe Checkout for the 14-day trial. Choices
-are kept in the browser until then.
+until the last step, the card gate: the clinic picks monthly or annual billing
+(annual is offered only when `STRIPE_PRICE_CLOUD_LOCATION_ANNUAL` is set), and
+email, password, and country create the account and send it to Stripe Checkout
+for the 14-day trial on that plan. Choices are kept in the browser until then.
+
+Every mockup is drawn on one fixed canvas that scales to the screen, so the
+windows and phones keep the same size from step to step.
 
 Story scenes run as a day at the clinic, with a clock and, at the end of each
 moment, what the client gained and what the vet gained. The clinic can upload
-its logo: it is resized in the browser, its main colour becomes the brand
-colour, and it travels with the build. After checkout, the workspace uploads
+its logo: it is resized in the browser, its main color becomes the brand
+color, and it travels with the build. After checkout, the workspace uploads
 it through the regular logo upload on the first visit with an active trial,
 and never replaces a logo the clinic already has.
 
-After the brand scene the clinic can save its build by email ("We'll email
+On the booking scene the clinic can save its build by email ("We'll email
 you a link to pick up where you left off, plus one follow-up note"). Saved
 builds live in `growth_leads.build_progress` (migration `0114_build_progress`)
 and stay current as the person moves through scenes. The hourly
 `/api/cron/build-followup` sweep, default-off behind `BUILD_FOLLOWUP_ENABLED`
 and a prospective `BUILD_FOLLOWUP_ROLLOUT_AT`, sends at most two personal notes
 counted from the last save: a resume link after 2 hours and an offer of help
-after 3 days. Each note shows the clinic's name in its colour and links to
+after 3 days. Each note shows the clinic's name in its color and links to
 `/start?resume=<signed token>`, which restores the saved build in any browser.
 Creating an account with that address, or pausing the lead, ends the notes.
 An address already known from the demo keeps its demo consent and gains the
@@ -642,11 +647,11 @@ build alongside.
 
 On registration the workspace opens built:
 
-- the brand colour is applied;
+- the brand color is applied;
 - the chosen services are added to the catalog at the chosen prices, or
   reprice matching starter services;
 - an unpublished online booking page is created from the clinic's name, with
-  every starter visit type bookable and the brand colour, ready to review and
+  every starter visit type bookable and the brand color, ready to review and
   publish from settings;
 - guided setup starts at the import step for clinics moving from another
   system;

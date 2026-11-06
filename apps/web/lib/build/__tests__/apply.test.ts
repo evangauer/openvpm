@@ -78,7 +78,7 @@ describe("setUpBuildBookingPage", () => {
     return { tx, inserted };
   }
 
-  it("creates an unpublished page from the clinic's name, types, and colour", async () => {
+  it("creates an unpublished page from the clinic's name, types, and color", async () => {
     const { tx, inserted } = bookingTx(["harbor-view-vet"]);
     const slug = await setUpBuildBookingPage(tx as never, {
       practiceId: "practice-1",

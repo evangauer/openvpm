@@ -111,7 +111,10 @@ export interface BuildPracticeProfile {
   modules: string[];
   /** What we shape for this kind of practice. */
   traits: string[];
-  /** Starting services; names match the starter catalog where one exists. */
+  /**
+   * Recommended services, shown first; clinics add their own beside them.
+   * Names match the starter catalog where one exists.
+   */
   services: BuildService[];
   ready: string[];
   onTheWay: string[];
@@ -132,7 +135,7 @@ export const BUILD_PRACTICE_PROFILES: Record<
   companion: {
     label: "Companion clinic",
     plural: "companion clinics",
-    modules: ["Schedule", "Whiteboard", "Patients", "Records", "Billing", "Client portal", "Reminders"],
+    modules: ["Dashboard", "Schedule", "Whiteboard", "Patients", "Clients", "Records", "Billing", "Inbox"],
     traits: ["Dogs, cats & exotics", "Exam rooms & a live whiteboard", "Vaccine recalls & care reminders"],
     services: [
       { name: "Wellness Exam", price: 65 },
@@ -148,7 +151,7 @@ export const BUILD_PRACTICE_PROFILES: Record<
   mobile: {
     label: "Mobile / house-call",
     plural: "mobile practices",
-    modules: ["Schedule", "Patients", "Records", "Billing", "Client portal", "Reminders"],
+    modules: ["Dashboard", "Schedule", "Patients", "Clients", "Records", "Billing", "Inbox"],
     traits: ["Your day from your phone", "House-call & trip fee pricing", "Clients book and pay without calling"],
     services: [
       { name: "House-Call Exam", price: 120 },
@@ -172,7 +175,7 @@ export const BUILD_PRACTICE_PROFILES: Record<
   equine: {
     label: "Equine & farm",
     plural: "equine and farm practices",
-    modules: ["Schedule", "Patients", "Records", "Billing", "Reminders"],
+    modules: ["Dashboard", "Schedule", "Patients", "Clients", "Records", "Billing", "Inbox"],
     traits: ["Horses, cattle & small ruminants", "Farm-call pricing", "Owner reminders by text and email"],
     services: [
       { name: "Farm Call", price: 95 },
@@ -205,7 +208,7 @@ export const BUILD_PRACTICE_PROFILES: Record<
   specialty: {
     label: "Specialty / wellness",
     plural: "specialty and wellness practices",
-    modules: ["Schedule", "Patients", "Records", "Templates", "Billing", "Client portal"],
+    modules: ["Dashboard", "Schedule", "Patients", "Clients", "Records", "Billing", "Reports"],
     traits: ["Consults & follow-ups", "Your own note templates", "An open API for your tools"],
     services: [
       { name: "Consultation", price: 180 },
@@ -233,7 +236,7 @@ export const BUILD_PRACTICE_PROFILES: Record<
   shelter: {
     label: "Shelter / nonprofit",
     plural: "shelters and nonprofits",
-    modules: ["Schedule", "Patients", "Records", "Billing", "Reminders"],
+    modules: ["Dashboard", "Schedule", "Patients", "Clients", "Records", "Billing", "Inbox"],
     traits: ["Fast intake records", "Low-cost clinic pricing", "Roles for staff & volunteers"],
     services: [
       { name: "Intake Exam", price: 25 },

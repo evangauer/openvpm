@@ -1,13 +1,34 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { motion } from "motion/react";
-import { ImagePlus, Loader2, X } from "lucide-react";
+import {
+  Check,
+  Clock,
+  Compass,
+  Dog,
+  FileSpreadsheet,
+  HeartPulse,
+  Home,
+  ImagePlus,
+  Leaf,
+  Loader2,
+  Moon,
+  PawPrint,
+  Plus,
+  Sun,
+  Sunrise,
+  Truck,
+  Upload,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   BUILD_BRAND_COLORS,
   BUILD_PRACTICE_PROFILES,
   BUILD_PRACTICE_TYPES,
+  BUILD_SERVICE_MAX,
   BUILD_SERVICE_PRICE_MAX,
   BUILD_SYSTEM_LABELS,
   BUILD_SYSTEMS,
@@ -17,13 +38,18 @@ import {
 import { suggestBookingSlug } from "@/lib/booking/page-config";
 import { processLogo } from "@/lib/build/logo";
 import {
-  buildStyles as styles,
+  AppWindow,
+  BookingHeader,
+  BrowserWindow,
+  Caption,
+  CaptionItem,
+  CANVAS_WIDTH,
   ClinicMark,
-  Desk,
   Phone,
   PhoneOverlay,
-  ScheduleRow,
+  PortalHeader,
   Stage,
+  StatusPill,
   WinCards,
   type StoryWin,
 } from "./mockups";
@@ -58,6 +84,14 @@ export function servicesFor(type: BuildPracticeType): BuildServiceChoice[] {
     ...service,
     on: true,
   }));
+}
+
+/** Whether a service is one we recommend for this practice type. */
+export function isRecommended(type: BuildPracticeType, name: string): boolean {
+  const key = name.trim().toLowerCase();
+  return BUILD_PRACTICE_PROFILES[type].services.some(
+    (service) => service.name.toLowerCase() === key,
+  );
 }
 
 /** The clinic's name inside a sentence: "Let's build your clinic…". */
@@ -109,44 +143,154 @@ function useBeats(at: readonly number[], playId: number, still: boolean) {
   return beat;
 }
 
-function Chip({
-  on,
-  onClick,
-  children,
-}: {
-  on: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <motion.button
-      type="button"
-      onClick={onClick}
-      aria-pressed={on}
-      whileTap={{ scale: 0.96 }}
-      className={cn(
-        "rounded-full border px-3.5 py-2 text-sm transition-colors",
-        on
-          ? "border-[var(--b)] bg-[color-mix(in_srgb,var(--b)_12%,white)] font-semibold text-slate-900"
-          : "border-slate-200 bg-white text-slate-700 hover:border-slate-300",
-      )}
-    >
-      {children}
-    </motion.button>
-  );
+/** Types `text` out from `startMs`, a few characters at a time. */
+function useTyped(
+  text: string,
+  startMs: number,
+  playId: number,
+  still: boolean,
+  step = 3,
+) {
+  const chars = Array.from(text);
+  const [count, setCount] = useState(still ? chars.length : 0);
+  useEffect(() => {
+    const total = Array.from(text).length;
+    if (still) {
+      setCount(total);
+      return;
+    }
+    setCount(0);
+    let i = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const start = setTimeout(function tick() {
+      i = Math.min(total, i + step);
+      setCount(i);
+      if (i < total) timer = setTimeout(tick, 28);
+    }, startMs);
+    return () => {
+      clearTimeout(start);
+      clearTimeout(timer);
+    };
+  }, [text, startMs, playId, still, step]);
+  return { shown: chars.slice(0, count).join(""), done: count >= chars.length, count };
+}
+
+// ---------------------------------------------------------------------------
+// The sample clinic day every scene shares
+// ---------------------------------------------------------------------------
+
+const TYPE_COLORS = {
+  recheck: "#65a30d",
+  dental: "#0891b2",
+  vaccination: "#2563eb",
+} as const;
+
+interface DayVisit {
+  /** Hours after 8 AM. */
+  start: number;
+  length: number;
+  time: string;
+  pet: string;
+  owner: string;
+  type: string;
+  color: string;
+}
+
+const DOCTOR = "Dr. Reyes";
+
+/** The other patients on Tuesday's schedule, around the sample visit. */
+function otherVisits(draft: BuildState): DayVisit[] {
+  if (draft.practiceType === "equine") {
+    return [
+      { start: 0, length: 0.5, time: "8:00 AM", pet: "Duke", owner: "Chen", type: "Coggins Test", color: TYPE_COLORS.vaccination },
+      { start: 2, length: 1, time: "10:00 AM", pet: "Bramble", owner: "Brooks", type: "Dental Float", color: TYPE_COLORS.dental },
+      { start: 3.25, length: 0.5, time: "11:15 AM", pet: "Willow", owner: "Patel", type: "Recheck", color: TYPE_COLORS.recheck },
+    ];
+  }
+  return [
+    { start: 0, length: 0.5, time: "8:00 AM", pet: "Luna", owner: "Chen", type: "Recheck", color: TYPE_COLORS.recheck },
+    { start: 2, length: 1, time: "10:00 AM", pet: "Mango", owner: "Brooks", type: "Dental", color: TYPE_COLORS.dental },
+    { start: 3.25, length: 0.5, time: "11:15 AM", pet: "Olive", owner: "Patel", type: "Vaccination", color: TYPE_COLORS.vaccination },
+  ];
+}
+
+function sampleVisit(draft: BuildState, type?: string): DayVisit {
+  const sample = sampleFor(draft);
+  return {
+    start: 1,
+    length: 0.75,
+    time: "9:00 AM",
+    pet: sample.pet,
+    owner: "Lee",
+    type: type ?? sample.visit,
+    color: "var(--b)",
+  };
+}
+
+function patientLine(type: BuildPracticeType): string {
+  if (type === "equine") return "Equine · Quarter Horse · 9 yrs";
+  if (type === "shelter") return "Canine · Mixed breed · about 2 yrs";
+  return "Canine · Golden Retriever · 4 yrs";
 }
 
 function Label({ children }: { children: ReactNode }) {
   return (
-    <p className="mb-2 mt-5 text-xs font-semibold uppercase tracking-wide text-slate-500 first:mt-0">
+    <p className="mb-2 mt-6 text-sm font-medium text-slate-700 first:mt-0">
       {children}
     </p>
+  );
+}
+
+const field =
+  "h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none transition-colors focus:border-[var(--b)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--b)_20%,white)]";
+
+function Chip({
+  on,
+  onClick,
+  icon: Icon,
+  children,
+}: {
+  on: boolean;
+  onClick: () => void;
+  icon?: LucideIcon;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={on}
+      className={cn(
+        "inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm transition-colors",
+        on
+          ? "border-[var(--b)] bg-[color-mix(in_srgb,var(--b)_8%,white)] font-medium text-slate-900"
+          : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900",
+      )}
+    >
+      {Icon ? (
+        <Icon
+          className="h-4 w-4 shrink-0"
+          style={on ? { color: "var(--b)" } : undefined}
+          aria-hidden="true"
+        />
+      ) : null}
+      {children}
+    </button>
   );
 }
 
 // ---------------------------------------------------------------------------
 // 1. Practice
 // ---------------------------------------------------------------------------
+
+/** The same icons the app uses for each kind of practice. */
+const PRACTICE_ICONS: Record<BuildPracticeType, LucideIcon> = {
+  companion: Dog,
+  mobile: Truck,
+  equine: Leaf,
+  specialty: HeartPulse,
+  shelter: Home,
+};
 
 export function PracticeControls({ draft, update }: SceneProps) {
   return (
@@ -157,8 +301,19 @@ export function PracticeControls({ draft, update }: SceneProps) {
           <Chip
             key={type}
             on={draft.practiceType === type}
+            icon={PRACTICE_ICONS[type]}
             onClick={() =>
-              update({ practiceType: type, services: servicesFor(type) })
+              update({
+                practiceType: type,
+                services: [
+                  ...servicesFor(type),
+                  ...draft.services.filter(
+                    (service) =>
+                      !isRecommended(draft.practiceType, service.name) &&
+                      !isRecommended(type, service.name),
+                  ),
+                ].slice(0, BUILD_SERVICE_MAX),
+              })
             }
           >
             {BUILD_PRACTICE_PROFILES[type].label}
@@ -171,6 +326,7 @@ export function PracticeControls({ draft, update }: SceneProps) {
           <Chip
             key={system}
             on={draft.currentSystem === system}
+            icon={system === "other" ? Compass : undefined}
             onClick={() => update({ currentSystem: system })}
           >
             {BUILD_SYSTEM_LABELS[system]}
@@ -181,37 +337,98 @@ export function PracticeControls({ draft, update }: SceneProps) {
   );
 }
 
+function AppointmentRow({ visit }: { visit: DayVisit }) {
+  return (
+    <div className="flex items-center gap-3 rounded-md border border-slate-200 px-3 py-2">
+      <span className="flex w-[70px] shrink-0 items-center gap-1 text-[10.5px] text-slate-500">
+        <Clock className="h-3 w-3" aria-hidden="true" />
+        {visit.time}
+      </span>
+      <span className="min-w-0 text-[11px]">
+        <span
+          className="font-medium transition-colors duration-500"
+          style={{ color: "var(--b)" }}
+        >
+          {visit.pet}
+        </span>{" "}
+        <span className="text-slate-500">({visit.owner})</span>
+        <span className="block truncate text-[10.5px] text-slate-500">
+          {visit.type} with {DOCTOR}
+        </span>
+      </span>
+    </div>
+  );
+}
+
 export function PracticeStage({ draft }: SceneProps) {
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
-  const lines = [
-    ...profile.traits,
-    isFromPaper(draft)
-      ? "Start fresh, or import a spreadsheet"
-      : `Bring your records from ${BUILD_SYSTEM_LABELS[draft.currentSystem]}`,
+  const visits = [otherVisits(draft)[0]!, sampleVisit(draft)];
+  const stats: Array<[string, string]> = [
+    ["Today's appointments", "8"],
+    ["Checked in", "1"],
+    ["Due for recall", draft.practiceType === "equine" ? "24" : "38"],
   ];
   return (
-    <Stage>
-      <Desk
-        key={draft.practiceType}
+    <Stage
+      label="Your dashboard"
+      footer={
+        <Caption>
+          {profile.traits.map((trait) => (
+            <CaptionItem key={trait}>{trait}</CaptionItem>
+          ))}
+        </Caption>
+      }
+    >
+      <AppWindow
         clinicName={brandName(draft)}
         logo={draft.logo}
         modules={profile.modules}
-        active="Schedule"
-        title={`Shaped for ${profile.plural}`}
+        active="Dashboard"
+        title="Good morning"
+        width={CANVAS_WIDTH}
       >
-        {lines.map((line, i) => (
+        <motion.div
+          key={draft.practiceType}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="flex h-full flex-col"
+        >
+          <div className="grid grid-cols-3 gap-2.5">
+            {stats.map(([label, value]) => (
+              <div key={label} className="rounded-lg border border-slate-200 px-3 py-2">
+                <div className="text-[10px] text-slate-500">{label}</div>
+                <div className="font-heading text-[17px] font-semibold">{value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="mb-1.5 mt-3 text-[11.5px] font-semibold">
+            Upcoming Appointments
+          </div>
+          <div className="space-y-1.5">
+            {visits.map((visit, i) => (
+              <motion.div
+                key={`${draft.practiceType}-${visit.pet}`}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1 + i * 0.06 }}
+              >
+                <AppointmentRow visit={visit} />
+              </motion.div>
+            ))}
+          </div>
           <motion.div
-            key={`${draft.currentSystem}-${line}`}
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.15 + i * 0.12 }}
-            className={cn(styles.row, "!border-l-[var(--b)]")}
+            key={draft.currentSystem}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="mt-auto flex items-center gap-2 rounded-md border border-dashed border-slate-300 px-3 py-2 text-[10.5px] text-slate-600"
           >
-            <b>{i < profile.traits.length ? "✓" : "↪"}</b>
-            {line}
+            <Upload className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+            {isFromPaper(draft)
+              ? "Import a spreadsheet of clients and pets, or start fresh."
+              : `Bring your records from ${BUILD_SYSTEM_LABELS[draft.currentSystem]} when you're ready.`}
           </motion.div>
-        ))}
-      </Desk>
+        </motion.div>
+      </AppWindow>
     </Stage>
   );
 }
@@ -236,7 +453,7 @@ export function BrandControls({ draft, update }: SceneProps) {
           ? { logo: logo.dataUrl, brandColor: logo.color }
           : { logo: logo.dataUrl },
       );
-      setNote(logo.color ? "We matched your colour to your logo." : null);
+      setNote(logo.color ? "We matched your color to your logo." : null);
     } catch (error) {
       setNote(error instanceof Error ? error.message : "That image didn't work.");
     } finally {
@@ -254,10 +471,10 @@ export function BrandControls({ draft, update }: SceneProps) {
         maxLength={120}
         placeholder="Neighborhood Veterinary"
         autoComplete="organization"
-        className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-[var(--b)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--b)_25%,white)]"
+        className={cn(field, "w-full")}
       />
       <Label>Logo</Label>
-      <div className="flex items-center gap-3">
+      <div className="flex h-10 items-center gap-3">
         <input
           ref={fileRef}
           type="file"
@@ -268,7 +485,7 @@ export function BrandControls({ draft, update }: SceneProps) {
         />
         {draft.logo ? (
           <>
-            <ClinicMark name={brandName(draft)} logo={draft.logo} size={44} />
+            <ClinicMark name={brandName(draft)} logo={draft.logo} size={40} />
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
@@ -290,7 +507,7 @@ export function BrandControls({ draft, update }: SceneProps) {
             type="button"
             onClick={() => fileRef.current?.click()}
             disabled={busy}
-            className="inline-flex h-11 items-center gap-2 rounded-xl border border-dashed border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:border-[var(--b)]"
+            className="inline-flex h-10 items-center gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 transition-colors hover:border-slate-400"
           >
             {busy ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -302,7 +519,7 @@ export function BrandControls({ draft, update }: SceneProps) {
         )}
       </div>
       {note ? <p className="mt-2 text-sm text-slate-500">{note}</p> : null}
-      <Label>Brand colour</Label>
+      <Label>Brand color</Label>
       <div className="flex flex-wrap items-center gap-2">
         {BUILD_BRAND_COLORS.map((color) => (
           <button
@@ -312,9 +529,8 @@ export function BrandControls({ draft, update }: SceneProps) {
             aria-pressed={draft.brandColor === color}
             onClick={() => update({ brandColor: color })}
             className={cn(
-              "h-8 w-8 rounded-lg border-2 border-white shadow-[0_0_0_1px_#cbd5e1] transition-transform",
-              draft.brandColor === color &&
-                "scale-110 shadow-[0_0_0_2px_#0f172a]",
+              "h-8 w-8 rounded-full border-2 border-white ring-1 ring-slate-200 transition-shadow",
+              draft.brandColor === color && "ring-2 ring-slate-900",
             )}
             style={{ background: color }}
           />
@@ -324,9 +540,9 @@ export function BrandControls({ draft, update }: SceneProps) {
             type="color"
             value={draft.brandColor}
             onChange={(event) => update({ brandColor: event.target.value })}
-            className="h-8 w-8 cursor-pointer rounded-lg border border-slate-200 bg-white p-0.5"
+            className="h-8 w-8 cursor-pointer rounded-full border border-slate-200 bg-white p-0.5"
           />
-          Exact colour
+          Exact color
         </label>
       </div>
     </div>
@@ -340,44 +556,86 @@ export function BrandStage({ draft }: SceneProps) {
     .replace(/^an? /, "")
     .replace(/^./, (c) => c.toUpperCase());
   return (
-    <Stage>
-      <Phone
-        clinicName={name}
-        logo={draft.logo}
-        subtitle="Client portal"
-        tabs={{ items: ["Home", "Pets", "Visits", "Bills"], active: "Home" }}
-      >
-        <div className={styles.phoneBody}>
-          <div className="mb-1.5 font-semibold">Hi {sample.owner} 👋</div>
-          <div className={styles.item}>
-            <span className="truncate">
-              {sample.pet} · {sample.visit}
+    <Stage
+      label="What your clients see"
+      footer={
+        <Caption>
+          <CaptionItem>Booking page</CaptionItem>
+          <CaptionItem>Reminders</CaptionItem>
+          <CaptionItem>Client portal</CaptionItem>
+          <CaptionItem>Invoices</CaptionItem>
+        </Caption>
+      }
+    >
+      <BrowserWindow className="bg-slate-50">
+        <div className="flex items-center gap-2.5 border-b border-slate-100 bg-white px-4 py-2.5">
+          <ClinicMark name={name} logo={draft.logo} size={26} />
+          <div className="min-w-0 text-[11px] leading-4">
+            <div className="truncate font-semibold">{name}</div>
+            <div className="truncate text-slate-500">
+              {sample.pet}&apos;s visit is tomorrow
+            </div>
+          </div>
+          <span className="ml-auto text-[10px] text-slate-400">8:00 AM</span>
+        </div>
+        <div className="mx-auto mt-4 w-[300px] overflow-hidden rounded-lg border border-slate-200 bg-white">
+          <div
+            className="h-1.5 transition-colors duration-500"
+            style={{ background: "var(--b)" }}
+          />
+          <div className="px-5 py-4 text-[11px] leading-[17px] text-slate-600">
+            <div className="mb-3 flex items-center gap-2">
+              <ClinicMark name={name} logo={draft.logo} size={24} />
+              <b className="truncate text-[12px] text-slate-900">{name}</b>
+            </div>
+            <p className="font-semibold text-slate-900">Hi {sample.owner},</p>
+            <p className="mt-1">
+              {sample.pet}&apos;s {sample.visit.toLowerCase()} is tomorrow,
+              Tuesday at 9:00 AM. Reply to this email if you need to change it.
+            </p>
+            <span
+              className="mt-3 inline-block rounded-md px-3 py-1.5 text-[10.5px] font-semibold text-white transition-colors duration-500"
+              style={{ background: "var(--b)" }}
+            >
+              View appointment
             </span>
-            <b>Tue</b>
           </div>
-          <div className={styles.item}>
-            <span className="truncate">{dueLabel} due</span>
-            <b style={{ color: "var(--b)" }}>Book</b>
+        </div>
+      </BrowserWindow>
+      <Phone time="8:00" dark>
+        <PortalHeader clinicName={name} logo={draft.logo} />
+        <div className="space-y-2 p-2.5">
+          <div className="px-0.5 text-[12px] font-semibold">
+            Welcome back, {sample.owner}
           </div>
-          <div className={styles.item}>
-            <span>Invoice #1042</span>
-            <b>{money(sampleTotal(draft))}</b>
+          <div className="rounded-lg border border-slate-200 bg-white p-2.5">
+            <div className="text-[9.5px] font-medium text-slate-500">Upcoming</div>
+            <div className="mt-0.5 font-medium">
+              {sample.pet} · {sample.visit}
+            </div>
+            <div className="text-[10px] text-slate-500">Tue, 9:00 AM</div>
+          </div>
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white p-2.5">
+            <div className="min-w-0">
+              <div className="text-[9.5px] font-medium text-slate-500">Due soon</div>
+              <div className="truncate font-medium">{dueLabel}</div>
+            </div>
+            <span
+              className="rounded-md px-2 py-1 text-[10px] font-semibold text-white transition-colors duration-500"
+              style={{ background: "var(--b)" }}
+            >
+              Book
+            </span>
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-2.5">
+            <div>
+              <div className="text-[9.5px] font-medium text-slate-500">Balance</div>
+              <div className="font-medium">$0.00</div>
+            </div>
+            <StatusPill label="Paid up" tone="green" />
           </div>
         </div>
       </Phone>
-      <div className={styles.email}>
-        <div className={styles.emailHead}>
-          <ClinicMark name={name} logo={draft.logo} onBrand />
-          <span className="truncate">{name}</span>
-        </div>
-        <div className={styles.emailBody}>
-          <b>Reminder: {sample.pet}&apos;s visit</b>
-          <br />
-          Tuesday at 9:00 AM.
-          <br />
-          <span className={styles.emailButton}>View appointment</span>
-        </div>
-      </div>
     </Stage>
   );
 }
@@ -386,83 +644,224 @@ export function BrandStage({ draft }: SceneProps) {
 // 3. Services
 // ---------------------------------------------------------------------------
 
+function PriceInput({
+  value,
+  onChange,
+  label,
+}: {
+  value: number;
+  onChange: (price: number) => void;
+  label: string;
+}) {
+  return (
+    <div className="relative">
+      <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-slate-400">
+        $
+      </span>
+      <input
+        type="number"
+        inputMode="decimal"
+        min={0}
+        max={BUILD_SERVICE_PRICE_MAX}
+        step="1"
+        value={Number.isFinite(value) ? value : ""}
+        onChange={(event) => {
+          const price = Number(event.target.value);
+          if (Number.isFinite(price) && price >= 0 && price <= BUILD_SERVICE_PRICE_MAX) {
+            onChange(price);
+          }
+        }}
+        aria-label={label}
+        className={cn(field, "h-9 w-24 pl-6 pr-2 text-right tabular-nums")}
+      />
+    </div>
+  );
+}
+
 export function ServicesControls({ draft, update }: SceneProps) {
+  const [name, setName] = useState("");
+  const [price, setPrice] = useState(0);
+  const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
   const set = (index: number, patch: Partial<BuildServiceChoice>) =>
     update({
       services: draft.services.map((service, i) =>
         i === index ? { ...service, ...patch } : service,
       ),
     });
+  const rows = draft.services.map((service, index) => ({ service, index }));
+  const recommended = rows.filter(({ service }) =>
+    isRecommended(draft.practiceType, service.name),
+  );
+  const own = rows.filter(
+    ({ service }) => !isRecommended(draft.practiceType, service.name),
+  );
+  const trimmed = name.trim();
+  const duplicate = draft.services.some(
+    (service) => service.name.toLowerCase() === trimmed.toLowerCase(),
+  );
+  const full = draft.services.length >= BUILD_SERVICE_MAX;
+
+  const add = (event: FormEvent) => {
+    event.preventDefault();
+    if (!trimmed || duplicate || full) return;
+    update({
+      services: [...draft.services, { name: trimmed.slice(0, 80), price, on: true }],
+    });
+    setName("");
+    setPrice(0);
+  };
+
+  const rowClass =
+    "flex h-12 items-center gap-3 rounded-lg border bg-white pl-3 pr-1.5 transition-colors";
+
   return (
-    <div className="space-y-2">
-      {draft.services.map((service, i) => (
-        <div
-          key={service.name}
-          className={cn(
-            "flex items-center gap-3 rounded-xl border bg-white px-3 py-2 transition-colors",
-            service.on ? "border-[var(--b)]" : "border-slate-200 opacity-60",
-          )}
-        >
-          <input
-            type="checkbox"
-            checked={service.on}
-            onChange={(event) => set(i, { on: event.target.checked })}
-            aria-label={`Offer ${service.name}`}
-            className="h-4 w-4 accent-[var(--b)]"
-          />
-          <span className="flex-1 text-sm font-medium">{service.name}</span>
-          <span className="text-sm text-slate-500">$</span>
-          <input
-            type="number"
-            inputMode="decimal"
-            min={0}
-            max={BUILD_SERVICE_PRICE_MAX}
-            step="1"
-            value={service.price}
-            onChange={(event) => {
-              const price = Number(event.target.value);
-              if (Number.isFinite(price) && price >= 0) set(i, { price });
-            }}
-            aria-label={`${service.name} price`}
-            className="h-8 w-20 rounded-lg border border-slate-200 px-2 text-right text-sm"
-          />
-        </div>
-      ))}
+    <div>
+      <Label>Recommended for {profile.plural}</Label>
+      <div className="space-y-1.5">
+        {recommended.map(({ service, index }) => (
+          <label
+            key={service.name}
+            className={cn(
+              rowClass,
+              "cursor-pointer",
+              service.on ? "border-slate-200" : "border-slate-200 bg-slate-50",
+            )}
+          >
+            <input
+              type="checkbox"
+              checked={service.on}
+              onChange={(event) => set(index, { on: event.target.checked })}
+              aria-label={`Offer ${service.name}`}
+              className="h-4 w-4 rounded accent-[var(--b)]"
+            />
+            <span
+              className={cn(
+                "flex-1 truncate text-sm",
+                service.on ? "font-medium text-slate-900" : "text-slate-400",
+              )}
+            >
+              {service.name}
+            </span>
+            <PriceInput
+              value={service.price}
+              onChange={(value) => set(index, { price: value })}
+              label={`${service.name} price`}
+            />
+          </label>
+        ))}
+      </div>
+
+      <Label>Your services</Label>
+      <div className="space-y-1.5">
+        {own.map(({ service, index }) => (
+          <div key={service.name} className={cn(rowClass, "border-slate-200")}>
+            <span className="flex-1 truncate text-sm font-medium text-slate-900">
+              {service.name}
+            </span>
+            <PriceInput
+              value={service.price}
+              onChange={(value) => set(index, { price: value })}
+              label={`${service.name} price`}
+            />
+            <button
+              type="button"
+              onClick={() =>
+                update({ services: draft.services.filter((_, i) => i !== index) })
+              }
+              aria-label={`Remove ${service.name}`}
+              className="flex h-9 w-9 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ))}
+        {full ? (
+          <p className="text-sm text-slate-500">
+            That&apos;s {BUILD_SERVICE_MAX} services. Add the rest inside your
+            clinic.
+          </p>
+        ) : (
+          <form
+            onSubmit={add}
+            className={cn(rowClass, "border-dashed border-slate-300")}
+          >
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              maxLength={80}
+              placeholder="Add a service you offer"
+              aria-label="Service name"
+              className="h-9 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
+            />
+            <PriceInput value={price} onChange={setPrice} label="New service price" />
+            <button
+              type="submit"
+              disabled={!trimmed || duplicate}
+              aria-label="Add service"
+              className="flex h-9 w-9 items-center justify-center rounded-md text-white transition-opacity disabled:opacity-30"
+              style={{ background: "var(--b)" }}
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          </form>
+        )}
+        {duplicate && trimmed ? (
+          <p className="text-sm text-slate-500">That one&apos;s already on your list.</p>
+        ) : null}
+      </div>
     </div>
   );
+}
+
+export function bookingSlug(draft: BuildState): string {
+  return suggestBookingSlug(brandName(draft)) || "your-clinic";
 }
 
 export function ServicesStage({ draft }: SceneProps) {
   const name = brandName(draft);
   const offered = draft.services.filter((service) => service.on);
-  const slug = suggestBookingSlug(name) || "your-clinic";
   return (
-    <Stage>
-      <Phone clinicName={name} logo={draft.logo} subtitle="Book online">
-        <div className={styles.phoneBody}>
-          <div className="mb-1.5 font-semibold">What does your pet need?</div>
-          {offered.map((service) => (
-            <motion.div
-              layout
-              key={service.name}
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              className={styles.item}
-            >
-              <span className="truncate">{service.name}</span>
-              <b>{money(service.price)}</b>
-            </motion.div>
-          ))}
+    <Stage
+      label="Your booking page"
+      footer={
+        <Caption>
+          <CaptionItem>Share it on your website and Google profile</CaptionItem>
+          <CaptionItem>Requests land on your schedule</CaptionItem>
+        </Caption>
+      }
+    >
+      <BrowserWindow
+        url={`app.openvpm.com/book/${bookingSlug(draft)}`}
+        width={CANVAS_WIDTH}
+        className="bg-slate-50 p-4"
+      >
+        <div className="mx-auto flex h-full max-w-[460px] flex-col gap-3">
+          <BookingHeader clinicName={name} logo={draft.logo} />
+          <div className="min-h-0 flex-1 rounded-xl bg-white p-3.5 shadow-[0_1px_2px_rgba(15,23,42,0.06)]">
+            <div className="text-[11.5px] font-semibold">What does your pet need?</div>
+            <div className="mt-2.5 grid grid-cols-2 gap-1.5">
+              {offered.map((service, i) => (
+                <motion.div
+                  layout
+                  key={service.name}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="flex items-center gap-2 rounded-md border border-slate-200 px-2.5 py-1.5 text-[10.5px]"
+                >
+                  <span
+                    className={cn(
+                      "h-2.5 w-2.5 shrink-0 rounded-full border",
+                      i === 0 ? "border-[3px] border-[var(--b)]" : "border-slate-300",
+                    )}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{service.name}</span>
+                  <span className="tabular-nums text-slate-500">{money(service.price)}</span>
+                </motion.div>
+              ))}
+            </div>
+          </div>
         </div>
-      </Phone>
-      <div className="max-w-[230px] self-center text-sm leading-6 text-slate-600">
-        <b className="text-slate-900">Your booking page, ready to share.</b>
-        <div className="my-2 truncate rounded-lg bg-white/90 px-2.5 py-1.5 font-mono text-[11px] text-slate-700 shadow-sm">
-          app.openvpm.com/book/{slug}
-        </div>
-        Put it on your website or Google profile. Requests land on your
-        schedule without phone tag.
-      </div>
+      </BrowserWindow>
     </Stage>
   );
 }
@@ -474,93 +873,169 @@ export function ServicesStage({ draft }: SceneProps) {
 export function bookWin(draft: BuildState): StoryWin {
   const { owner, pet } = sampleFor(draft);
   return {
-    client: `${owner} booked at 9:41 PM in under a minute. No phone call.`,
-    you: `It's on your schedule with ${pet}'s chart started. No phone tag.`,
+    clientLabel: `For ${owner}`,
+    client: "Booked at 9:41 PM in under a minute. No phone call.",
+    you: `On your schedule with ${pet}'s chart started.`,
   };
 }
 
+const HOUR_HEIGHT = 60;
+
+function ScheduleBlock({ visit, fresh = false }: { visit: DayVisit; fresh?: boolean }) {
+  const height = visit.length * HOUR_HEIGHT - 3;
+  return (
+    <motion.div
+      initial={fresh ? { opacity: 0, scale: 0.92 } : false}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ type: "spring", stiffness: 360, damping: 26 }}
+      className="absolute left-1 right-1 overflow-hidden rounded-md px-2 py-1 text-[10.5px]"
+      style={{
+        top: visit.start * HOUR_HEIGHT + 1,
+        height,
+        background: `color-mix(in srgb, ${visit.color} 13%, white)`,
+        borderLeft: `3px solid ${visit.color}`,
+      }}
+    >
+      <div className="flex items-center gap-1.5 font-medium">
+        <span
+          className="h-1.5 w-1.5 shrink-0 rounded-full"
+          style={{ background: fresh ? "#f59e0b" : "#22c55e" }}
+        />
+        <span className="truncate">{visit.pet}</span>
+        {fresh ? (
+          <span className="ml-auto shrink-0 text-[9.5px] font-medium text-slate-500">
+            Booked online
+          </span>
+        ) : null}
+      </div>
+      {height >= 36 ? (
+        <div className="mt-0.5 truncate text-slate-500">
+          {visit.type} · {visit.time.replace(" AM", "")}
+        </div>
+      ) : null}
+    </motion.div>
+  );
+}
+
 export function BookStage({ draft, playId, still }: SceneProps) {
-  const beat = useBeats([900, 1700, 2500, 2900, 3700], playId, still);
+  const beat = useBeats([900, 1700, 2500, 2900, 3600], playId, still);
   const name = brandName(draft);
-  const offered = draft.services.filter((service) => service.on).slice(0, 3);
-  const first = offered[0]?.name ?? "Wellness Exam";
-  const sample = sampleFor(draft);
+  const offered = draft.services.filter((service) => service.on);
+  const first = offered[0]?.name ?? sampleFor(draft).visit;
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
+  const fresh = sampleVisit(draft, first);
   return (
     <Stage
-      clock="Monday · 9:41 PM"
+      label="Monday, 9:41 PM"
+      icon={Moon}
       footer={<WinCards win={bookWin(draft)} show={beat >= 5} />}
     >
-      <Phone
+      <AppWindow
         clinicName={name}
         logo={draft.logo}
-        subtitle="Book online"
+        modules={profile.modules}
+        active="Schedule"
+        title="Tuesday"
+        actions={
+          <span className="flex rounded-md border border-slate-200 text-[10px] font-medium">
+            <span className="rounded-l-md bg-slate-100 px-2 py-0.5">Day</span>
+            <span className="px-2 py-0.5 text-slate-500">Week</span>
+          </span>
+        }
+      >
+        <div className="flex">
+          <div className="w-10 shrink-0">
+            {["8 AM", "9 AM", "10 AM", "11 AM"].map((hour) => (
+              <div
+                key={hour}
+                className="text-[9.5px] text-slate-400"
+                style={{ height: HOUR_HEIGHT }}
+              >
+                {hour}
+              </div>
+            ))}
+          </div>
+          <div className="relative flex-1 border-l border-slate-100" style={{ height: HOUR_HEIGHT * 4 }}>
+            {[0, 1, 2, 3].map((hour) => (
+              <div key={hour}>
+                <div
+                  className="absolute left-0 right-0 border-t border-slate-100"
+                  style={{ top: hour * HOUR_HEIGHT }}
+                />
+                <div
+                  className="absolute left-0 right-0 border-t border-dashed border-slate-100"
+                  style={{ top: hour * HOUR_HEIGHT + HOUR_HEIGHT / 2 }}
+                />
+              </div>
+            ))}
+            {otherVisits(draft).map((visit) => (
+              <ScheduleBlock key={visit.pet} visit={visit} />
+            ))}
+            {beat >= 4 ? <ScheduleBlock visit={fresh} fresh /> : null}
+          </div>
+        </div>
+      </AppWindow>
+      <Phone
+        time="9:41"
+        dark
         overlay={
           <PhoneOverlay
             on={beat >= 4}
-            title="Request sent!"
+            title="Request sent"
             detail={
               <>
-                Tue 9:00 · {first}
+                Tue, 9:00 AM · {first}
                 <br />
-                {name} will confirm shortly
+                {name} will confirm shortly.
               </>
             }
           />
         }
       >
-        <div className={styles.phoneBody}>
-          <div className="mb-1.5 font-semibold">Pick a service</div>
-          {offered.map((service, i) => (
-            <div
-              key={service.name}
-              className={cn(styles.item, i === 0 && beat >= 1 && styles.itemPicked)}
-            >
-              <span className="truncate">{service.name}</span>
-              <b>{money(service.price)}</b>
+        <div className="space-y-2 p-2.5">
+          <BookingHeader clinicName={name} logo={draft.logo} />
+          <div className="rounded-xl bg-white p-2.5 shadow-[0_1px_2px_rgba(15,23,42,0.06)]">
+            <div className="mb-1 text-[10px] font-medium text-slate-600">
+              Appointment type
             </div>
-          ))}
-          <div className={styles.slots}>
-            {["8:30", "9:00", "9:30", "1:00", "2:30", "4:00"].map((slot) => (
-              <span
-                key={slot}
-                className={cn(
-                  styles.slot,
-                  slot === "9:00" && beat >= 2 && styles.slotPicked,
-                )}
-              >
-                {slot}
-              </span>
-            ))}
+            <div
+              className={cn(
+                "truncate rounded-md border px-2 py-1.5 text-[10.5px] transition-colors",
+                beat >= 1 ? "border-[var(--b)] text-slate-900" : "border-slate-200 text-slate-400",
+              )}
+            >
+              {beat >= 1 ? first : "Choose a service"}
+            </div>
+            <div className="mb-1 mt-2.5 text-[10px] font-medium text-slate-600">
+              Tuesday
+            </div>
+            <div className="grid grid-cols-3 gap-1">
+              {["8:30", "9:00", "9:30", "1:00", "2:30", "4:00"].map((slot) => {
+                const picked = slot === "9:00" && beat >= 2;
+                return (
+                  <span
+                    key={slot}
+                    className={cn(
+                      "rounded-md border py-1 text-center text-[10px] transition-colors",
+                      picked ? "border-[var(--b)] text-white" : "border-slate-200",
+                    )}
+                    style={picked ? { background: "var(--b)" } : undefined}
+                  >
+                    {slot}
+                  </span>
+                );
+              })}
+            </div>
+            <motion.div
+              className="mt-2.5 rounded-lg py-1.5 text-center text-[10.5px] font-semibold text-white"
+              style={{ background: "var(--b)" }}
+              animate={{ scale: beat === 3 ? 0.96 : 1 }}
+            >
+              Request appointment
+            </motion.div>
           </div>
-          <motion.div
-            className={styles.cta}
-            animate={{ scale: beat === 3 ? 0.94 : 1 }}
-          >
-            Request appointment
-          </motion.div>
         </div>
       </Phone>
-      <Desk
-        clinicName={name}
-        logo={draft.logo}
-        modules={profile.modules}
-        active="Schedule"
-        title="Tuesday · Schedule"
-      >
-        <ScheduleRow time="8:00" pet="Luna" what="Recheck" status="Booked" />
-        {beat >= 4 ? (
-          <ScheduleRow
-            time="9:00"
-            pet={sample.pet}
-            what={first}
-            status="New · online"
-            tone="brand"
-            fresh
-          />
-        ) : null}
-        <ScheduleRow time="10:30" pet="Mango" what="Dental" status="Booked" />
-      </Desk>
     </Stage>
   );
 }
@@ -568,75 +1043,135 @@ export function BookStage({ draft, playId, still }: SceneProps) {
 export function remindWin(draft: BuildState): StoryWin {
   const { owner } = sampleFor(draft);
   return {
-    client: `${owner} got a friendly heads-up from you, right on time.`,
-    you: "Reminders and recalls went out while you made coffee.",
+    clientLabel: `For ${owner}`,
+    client: "A friendly heads-up from you, right on time.",
+    you: "Reminders went out on their own. Replies land in your inbox.",
   };
 }
 
+const CLIENT_REPLY = "Awesome, thank you! 😊";
+
 export function RemindStage({ draft, playId, still }: SceneProps) {
-  const beat = useBeats([500, 1600, 2600, 3400], playId, still);
+  const beat = useBeats([500, 3000, 3500, 4200], playId, still);
+  const reply = useTyped(CLIENT_REPLY, 1500, playId, still, 1);
   const name = brandName(draft);
   const sample = sampleFor(draft);
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
-  const bubble = (on: boolean) => ({
-    initial: false as const,
-    animate: on ? { opacity: 1, y: 0 } : { opacity: 0, y: 8 },
-    transition: { type: "spring" as const, stiffness: 300, damping: 24 },
-  });
+  const reminder = `Hi ${sample.owner}, this is ${name}. ${sample.pet}'s ${sample.visit.toLowerCase()} is tomorrow at 9:00 AM. See you then!`;
+  const replied = beat >= 2;
+  const threads = [
+    {
+      who: `${sample.owner} Lee`,
+      text: beat >= 3 ? CLIENT_REPLY : `${sample.pet}'s visit is tomorrow at 9:00 AM`,
+      time: beat >= 3 ? "8:01 AM" : "8:00 AM",
+      unread: beat >= 3,
+    },
+    { who: "Maria Chen", text: "Thanks, see you Thursday", time: "7:52 AM", unread: false },
+    { who: "Jordan Brooks", text: "Could we move to 11 instead?", time: "Mon", unread: false },
+  ];
   return (
     <Stage
-      clock="Tuesday · 8:00 AM"
+      label="Tuesday, 8:00 AM"
+      icon={Sunrise}
       footer={<WinCards win={remindWin(draft)} show={beat >= 4} />}
     >
-      <Phone clinicName={name}>
-        <div className={styles.thread}>
-          <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-500">
-            <ClinicMark name={name} logo={draft.logo} size={16} />
-            {name}
-          </div>
-          <motion.div
-            className={cn(styles.bubble, styles.bubbleIn, styles.bubbleOn)}
-            {...bubble(beat >= 1)}
-          >
-            Hi {sample.owner}, this is {name}. {sample.pet}&apos;s{" "}
-            {sample.visit.toLowerCase()} is tomorrow at 9:00 AM. See you then!
-          </motion.div>
-          <motion.div
-            className={cn(styles.bubble, styles.bubbleIn, styles.bubbleOn)}
-            {...bubble(beat >= 3)}
-          >
-            {sample.pet} is due for {sample.due}. Book a time online whenever
-            it suits you.
-          </motion.div>
-        </div>
-      </Phone>
-      <Desk
+      <AppWindow
         clinicName={name}
         logo={draft.logo}
         modules={profile.modules}
-        active="Reminders"
-        title="Tomorrow · Reminders"
+        active="Inbox"
+        title="Inbox"
       >
-        <ScheduleRow time="8:00" pet="Luna" what="Recheck" status="Sent" tone="good" />
-        <ScheduleRow
-          time="9:00"
-          pet={sample.pet}
-          what={sample.visit}
-          status={beat >= 2 ? "Text + email sent" : "Queued"}
-          tone={beat >= 2 ? "good" : "neutral"}
-        />
-        <ScheduleRow time="10:30" pet="Mango" what="Dental" status="Sent" tone="good" />
-        <motion.div
-          className={cn(styles.row, "!border-l-[var(--b)]")}
-          animate={{ opacity: beat >= 3 ? 1 : 0.45 }}
-        >
-          <b>↻</b>
-          <span className="truncate">{sample.recall}</span>
-          <span className={cn(styles.badge, beat >= 3 && styles.badgeBrand)}>
-            {beat >= 3 ? "Sending" : "Ready"}
+        <div className="mb-2.5 grid grid-cols-2 gap-2">
+          <div className="rounded-lg border border-slate-200 px-2.5 py-2">
+            <div className="text-[10px] text-slate-500">Reminders sent</div>
+            <div className="mt-0.5 flex items-center justify-between">
+              <b className="font-heading text-[14px]">12</b>
+              <StatusPill label="Sent" tone="green" />
+            </div>
+          </div>
+          <div className="rounded-lg border border-slate-200 px-2.5 py-2">
+            <div className="truncate text-[10px] text-slate-500">{sample.recall.split(" · ")[0]}</div>
+            <div className="mt-0.5 flex items-center justify-between">
+              <b className="font-heading text-[14px]">{sample.recall.split(" · ")[1]?.split(" ")[0]}</b>
+              <StatusPill label="Sending" tone="brand" />
+            </div>
+          </div>
+        </div>
+        <div className="overflow-hidden rounded-lg border border-slate-200">
+          {threads.map((thread) => (
+            <motion.div
+              layout
+              key={thread.who}
+              className="flex items-center gap-2.5 border-b border-slate-100 px-2.5 py-2 last:border-b-0"
+            >
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[9.5px] font-semibold text-slate-600">
+                {thread.who.split(" ").map((part) => part[0]).join("")}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center justify-between text-[10.5px]">
+                  <span className={thread.unread ? "font-semibold" : "font-medium"}>
+                    {thread.who}
+                  </span>
+                  <span className="text-[9.5px] text-slate-400">{thread.time}</span>
+                </span>
+                <span
+                  className={cn(
+                    "block truncate text-[10.5px]",
+                    thread.unread ? "text-slate-900" : "text-slate-500",
+                  )}
+                >
+                  {thread.text}
+                </span>
+              </span>
+              {thread.unread ? (
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ background: "var(--b)" }}
+                />
+              ) : null}
+            </motion.div>
+          ))}
+        </div>
+      </AppWindow>
+      <Phone time="8:00">
+        <div className="flex flex-col items-center gap-0.5 border-b border-slate-100 pb-1.5">
+          <ClinicMark name={name} logo={draft.logo} size={26} className="rounded-full" />
+          <span className="max-w-[150px] truncate text-[9.5px] font-medium">{name}</span>
+        </div>
+        <div className="flex flex-col gap-1.5 px-2.5 pt-2.5">
+          <motion.div
+            initial={false}
+            animate={beat >= 1 ? { opacity: 1, y: 0 } : { opacity: 0, y: 6 }}
+            className="max-w-[86%] self-start rounded-2xl rounded-bl-md bg-slate-100 px-2.5 py-1.5 text-[10.5px] leading-[15px]"
+          >
+            {reminder}
+          </motion.div>
+          <motion.div
+            initial={false}
+            animate={replied ? { opacity: 1, y: 0 } : { opacity: 0, y: 6 }}
+            className="max-w-[92%] self-end whitespace-nowrap rounded-2xl rounded-br-md bg-[#0a84ff] px-2.5 py-1.5 text-[10.5px] leading-[15px] text-white"
+          >
+            {CLIENT_REPLY}
+          </motion.div>
+        </div>
+        <div className="absolute inset-x-2 bottom-2 flex items-center gap-1.5 rounded-full border border-slate-200 px-2.5 py-1.5 text-[10.5px]">
+          <span className={cn("flex-1 truncate", !reply.count || replied ? "text-slate-400" : "text-slate-900")}>
+            {replied || !reply.count ? "Text message" : reply.shown}
           </span>
-        </motion.div>
-      </Desk>
+          <span
+            className={cn(
+              "flex h-4 w-4 items-center justify-center rounded-full text-white transition-colors",
+              reply.count && !replied ? "bg-[#0a84ff]" : "bg-slate-200",
+            )}
+            aria-hidden="true"
+          >
+            <svg viewBox="0 0 10 10" className="h-2.5 w-2.5" fill="currentColor">
+              <path d="M5 1.5 8.5 5H6v3.5H4V5H1.5z" />
+            </svg>
+          </span>
+        </div>
+      </Phone>
     </Stage>
   );
 }
@@ -644,88 +1179,118 @@ export function RemindStage({ draft, playId, still }: SceneProps) {
 export function visitWin(draft: BuildState): StoryWin {
   const { pet } = sampleFor(draft);
   return {
-    client: `${pet} got your full attention, not your keyboard.`,
+    clientLabel: `For ${pet}`,
+    client: "Your full attention, not your keyboard.",
     you: "The note was drafted for you. Review it, sign it, done.",
   };
 }
 
 export function VisitStage({ draft, playId, still }: SceneProps) {
   const sample = sampleFor(draft);
-  const soap = sample.soap.join("\n");
-  const beat = useBeats([600, 4400, 4800, 5200, 5900, 6500], playId, still);
-  const [typed, setTyped] = useState(still ? soap.length : 0);
-  useEffect(() => {
-    if (still) {
-      setTyped(soap.length);
-      return;
-    }
-    setTyped(0);
-    let i = 0;
-    let timer: ReturnType<typeof setTimeout>;
-    const start = setTimeout(function tick() {
-      i = Math.min(soap.length, i + 3);
-      setTyped(i);
-      if (i < soap.length) timer = setTimeout(tick, 28);
-    }, 700);
-    return () => {
-      clearTimeout(start);
-      clearTimeout(timer);
-    };
-  }, [playId, still, soap]);
-
+  const sections = sample.soap.map((line) => {
+    const at = line.indexOf(": ");
+    return at > 0
+      ? { letter: line.slice(0, at), text: line.slice(at + 2) }
+      : { letter: "", text: line };
+  });
+  const joined = sections.map((section) => section.text).join("\u0000");
+  const typed = useTyped(joined, 900, playId, still);
+  const parts = typed.shown.split("\u0000");
+  const beat = useBeats([600, 5000, 5400, 5800, 6300, 6900], playId, still);
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
   const status =
-    beat >= 5 ? "Ready for checkout" : beat >= 1 ? "In exam" : "Checked in";
+    beat >= 5
+      ? { label: "Ready for checkout", tone: "green" as const }
+      : beat >= 1
+        ? { label: "In exam", tone: "brand" as const }
+        : { label: "Checked in", tone: "amber" as const };
+  const charges = sample.charges.slice(0, Math.max(0, beat - 1));
+  const total = charges.reduce((sum, line) => sum + line.price, 0);
   return (
     <Stage
-      clock="Tuesday · 9:00 AM"
+      label="Tuesday, 9:00 AM"
+      icon={Sun}
       footer={<WinCards win={visitWin(draft)} show={beat >= 6} />}
     >
-      <Desk
+      <AppWindow
         clinicName={brandName(draft)}
         logo={draft.logo}
         modules={profile.modules}
         active="Records"
-        width={470}
-        title={
-          <span className="flex items-center gap-2">
-            {sample.pet} · {sample.visit}
-            <motion.span
-              key={status}
-              initial={{ scale: 0.85, opacity: 0.4 }}
-              animate={{ scale: 1, opacity: 1 }}
-              className={cn(styles.badge, styles.badgeBrand)}
-            >
-              {status}
-            </motion.span>
-          </span>
-        }
+        title={sample.visit}
+        actions={<StatusPill label={status.label} tone={status.tone} />}
+        width={CANVAS_WIDTH}
       >
-        <div
-          className={cn(
-            styles.note,
-            typed < soap.length && typed > 0 && styles.typing,
-          )}
-        >
-          {typed === 0 ? (
-            <span className="text-slate-500">✨ Drafting from your exam…</span>
-          ) : (
-            soap.slice(0, typed)
-          )}
-        </div>
-        <h4 className={cn(styles.deskTitle, "mt-3")}>Charges</h4>
-        {sample.charges.slice(0, Math.max(0, beat - 1)).map((line) => (
-          <motion.div
-            key={line.label}
-            initial={{ opacity: 0, x: -8 }}
-            animate={{ opacity: 1, x: 0 }}
-            className={styles.line}
+        <div className="mb-3 flex items-center gap-2.5">
+          <span
+            className="flex h-8 w-8 items-center justify-center rounded-full"
+            style={{ background: "color-mix(in srgb, var(--b) 12%, white)", color: "var(--b)" }}
           >
-            <span>{line.label}</span>
-            <span>{money(line.price)}</span>
-          </motion.div>
-        ))}
-      </Desk>
+            <PawPrint className="h-4 w-4" aria-hidden="true" />
+          </span>
+          <div className="text-[10.5px] leading-4">
+            <div className="text-[12.5px] font-semibold">{sample.pet}</div>
+            <div className="text-slate-500">
+              {patientLine(draft.practiceType)} · {sample.owner} Lee
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-[1fr_168px] gap-3">
+          <div className="rounded-lg border border-slate-200 p-2.5">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-[11px] font-semibold">SOAP note</span>
+              <span className="text-[9.5px] text-slate-500">
+                {typed.done ? "Drafted for you · review to sign" : "Drafting from the exam…"}
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {sections.map((section, i) => (
+                <div key={section.letter || i} className="flex gap-2 text-[10.5px] leading-[15px]">
+                  <span className="w-3 shrink-0 font-semibold text-slate-400">
+                    {section.letter}
+                  </span>
+                  <span className="min-h-[15px] text-slate-700">
+                    {parts[i] ?? ""}
+                    {!typed.done && parts.length - 1 === i ? (
+                      <span
+                        className="ml-px inline-block h-3 w-px translate-y-0.5 animate-pulse"
+                        style={{ background: "var(--b)" }}
+                      />
+                    ) : null}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-col rounded-lg border border-slate-200 p-2.5">
+            <span className="mb-1.5 text-[11px] font-semibold">Charges</span>
+            {charges.map((line) => (
+              <motion.div
+                key={line.label}
+                initial={{ opacity: 0, y: 3 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex justify-between border-b border-slate-100 py-1 text-[10.5px]"
+              >
+                <span className="truncate pr-2">{line.label}</span>
+                <span className="tabular-nums">{money(line.price)}</span>
+              </motion.div>
+            ))}
+            <div className="mt-auto flex justify-between pt-1.5 text-[11px] font-semibold">
+              <span>Total</span>
+              <span className="tabular-nums">{money(total)}</span>
+            </div>
+            <div
+              className={cn(
+                "mt-2 rounded-md py-1.5 text-center text-[10.5px] font-semibold transition-colors duration-300",
+                beat >= 5 ? "text-white" : "bg-slate-100 text-slate-400",
+              )}
+              style={beat >= 5 ? { background: "var(--b)" } : undefined}
+            >
+              Send to checkout
+            </div>
+          </div>
+        </div>
+      </AppWindow>
     </Stage>
   );
 }
@@ -735,7 +1300,8 @@ const COLLECTED_BEFORE = 1092;
 export function paidWin(draft: BuildState): StoryWin {
   const { owner } = sampleFor(draft);
   return {
-    client: `${owner} paid from their phone in one tap.`,
+    clientLabel: `For ${owner}`,
+    client: "Paid from their phone in one tap.",
     you: `${money(sampleTotal(draft))} collected before they left. Nothing to chase.`,
   };
 }
@@ -763,74 +1329,107 @@ export function PaidStage({ draft, playId, still }: SceneProps) {
   }, [beat, still, after, total]);
 
   const name = brandName(draft);
+  const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
   const paid = beat >= 2;
+  const invoices = [
+    { id: "#1042", who: `${sample.owner} Lee`, amount: total, paid },
+    { id: "#1041", who: "Maria Chen", amount: 86, paid: true },
+    { id: "#1040", who: "Jordan Brooks", amount: 412, paid: true },
+  ];
   return (
     <Stage
-      clock="Tuesday · 9:42 AM"
+      label="Tuesday, 9:42 AM"
+      icon={Sun}
       footer={<WinCards win={paidWin(draft)} show={beat >= 3} />}
     >
-      <Phone
+      <AppWindow
         clinicName={name}
         logo={draft.logo}
-        subtitle="Invoice #1042"
-        tabs={{ items: ["Home", "Pets", "Visits", "Bills"], active: "Bills" }}
+        modules={profile.modules}
+        active="Billing"
+        title="Billing"
+      >
+        <div className="mb-3 grid grid-cols-2 gap-2">
+          <div className="rounded-lg border border-slate-200 px-2.5 py-2">
+            <div className="text-[10px] text-slate-500">Collected today</div>
+            <div className="font-heading text-[17px] font-semibold tabular-nums">
+              ${collected.toLocaleString("en-US")}
+            </div>
+          </div>
+          <div className="rounded-lg border border-slate-200 px-2.5 py-2">
+            <div className="text-[10px] text-slate-500">Open invoices</div>
+            <div className="font-heading text-[17px] font-semibold tabular-nums">
+              {paid ? 0 : 1}
+            </div>
+          </div>
+        </div>
+        <div className="overflow-hidden rounded-lg border border-slate-200">
+          <div className="grid grid-cols-[36px_1fr_44px_56px] gap-1.5 border-b border-slate-100 bg-slate-50 px-2.5 py-1.5 text-[9.5px] font-medium text-slate-500">
+            <span>Invoice</span>
+            <span>Client</span>
+            <span className="text-right">Total</span>
+            <span>Status</span>
+          </div>
+          {invoices.map((invoice) => (
+            <div
+              key={invoice.id}
+              className="grid grid-cols-[44px_1fr_56px_76px] items-center gap-2 border-b border-slate-100 px-2.5 py-2 text-[10.5px] last:border-b-0"
+            >
+              <span className="text-slate-500">{invoice.id}</span>
+              <span className="truncate">{invoice.who}</span>
+              <span className="text-right tabular-nums">{money(invoice.amount)}</span>
+              <StatusPill
+                label={invoice.paid ? "Paid" : "Open"}
+                tone={invoice.paid ? "green" : "amber"}
+              />
+            </div>
+          ))}
+        </div>
+      </AppWindow>
+      <Phone
+        time="9:42"
+        dark
         overlay={
           <PhoneOverlay
             on={paid}
-            title={`Paid · ${money(total)}`}
-            detail={`Receipt sent to ${sample.owner}`}
+            title={`Paid ${money(total)}`}
+            detail={`Receipt sent to ${sample.owner}.`}
           />
         }
       >
-        <div className={styles.phoneBody}>
-          {sample.charges.map((line) => (
-            <div key={line.label} className={styles.line}>
-              <span>{line.label}</span>
-              <span>{money(line.price)}</span>
+        <PortalHeader clinicName={name} logo={draft.logo} />
+        <div className="p-2.5">
+          <div className="rounded-lg border border-slate-200 bg-white p-2.5">
+            <div className="flex items-baseline justify-between">
+              <b className="text-[11.5px]">Invoice #1042</b>
+              <span className="text-[9.5px] text-slate-500">Today</span>
             </div>
-          ))}
-          <div className="my-2 flex justify-between font-bold">
-            Total<span>{money(total)}</span>
+            <div className="mb-1.5 text-[10px] text-slate-500">
+              {sample.pet} · {sample.visit}
+            </div>
+            {sample.charges.map((line) => (
+              <div
+                key={line.label}
+                className="flex justify-between border-b border-slate-100 py-1 text-[10.5px]"
+              >
+                <span className="truncate pr-2">{line.label}</span>
+                <span className="tabular-nums">{money(line.price)}</span>
+              </div>
+            ))}
+            <div className="mt-1.5 flex justify-between text-[11px] font-semibold">
+              <span>Total</span>
+              <span className="tabular-nums">{money(total)}</span>
+            </div>
           </div>
           <motion.div
-            className={styles.cta}
-            animate={{ scale: beat === 1 ? 0.94 : 1 }}
+            className="mt-2.5 rounded-lg py-2 text-center text-[11px] font-semibold text-white"
+            style={{ background: "var(--b)" }}
+            animate={{ scale: beat === 1 ? 0.96 : 1 }}
           >
             Pay {money(total)}
           </motion.div>
         </div>
       </Phone>
-      <div className={styles.desk} style={{ width: 300 }}>
-        <div className={styles.deskBar} aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
-        <div className={styles.deskMain}>
-          <h4 className={styles.deskTitle}>Today</h4>
-          <div className={styles.kpis}>
-            <div className={styles.kpi}>
-              <small>Visits</small>
-              <b>8</b>
-            </div>
-            <div className={styles.kpi}>
-              <small>Collected</small>
-              <b>${collected.toLocaleString("en-US")}</b>
-            </div>
-            <div className={styles.kpi}>
-              <small>Unpaid</small>
-              <b>{paid ? "$0" : money(total)}</b>
-            </div>
-          </div>
-          <ScheduleRow
-            time="9:00"
-            pet={sample.pet}
-            what={sample.visit}
-            status={paid ? "Paid ✓" : "Visit done"}
-            tone={paid ? "good" : "neutral"}
-          />
-        </div>
-      </div>
     </Stage>
   );
 }
@@ -839,132 +1438,175 @@ export function PaidStage({ draft, playId, still }: SceneProps) {
 // 8. Records and fit
 // ---------------------------------------------------------------------------
 
-export function RecordsStage({ draft, playId, still }: SceneProps) {
-  const beat = useBeats([300, 650, 1000, 1350], playId, still);
+/** Left column on the records scene: what's ready and, plainly, what isn't. */
+export function RecordsNotes({ draft }: SceneProps) {
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
   const source = BUILD_SYSTEM_LABELS[draft.currentSystem];
-  const fromPaper = isFromPaper(draft);
-  const meters: Array<[string, string]> = [
-    ["Clients", "100%"],
-    ["Patients", "100%"],
-    ["Vaccine history", "92%"],
-    ["Visit notes", "78%"],
+  const gaps = [
+    ...profile.onTheWay.map((line) => `Not yet: ${line.toLowerCase()}`),
+    `Missing something you rely on${isFromPaper(draft) ? "" : ` in ${source}`}? Tell us and we'll show you a workaround or when it's coming.`,
   ];
   return (
-    <Stage className="flex-col !items-stretch">
-      <div className={styles.panel}>
-        <div className="mb-2 font-semibold">
-          Import preview · {fromPaper ? "your spreadsheet" : `${source} export`}
-        </div>
-        {meters.map(([label, width], i) => (
-          <div key={label}>
-            <div className="text-[11px]">{label}</div>
-            <div className={styles.meter}>
-              <i style={{ width: beat > i ? width : "0%" }} />
-            </div>
-          </div>
-        ))}
-        <div className="text-[11px] text-slate-500">
-          Nothing is saved until you review it. Your current system stays in
-          place while you try OpenVPM.
-        </div>
-      </div>
-      <div className="grid w-full gap-3 sm:grid-cols-2">
-        <div className={styles.panel}>
-          <b>Ready for {profile.plural}</b>
-          <ul className="mt-2 space-y-1 text-[12.5px]">
-            {profile.ready.map((line) => (
-              <li key={line} className={styles.check}>
-                {line}
-              </li>
-            ))}
-          </ul>
-        </div>
-        <div className={styles.panel}>
-          <b>Being straight with you</b>
-          <ul className="mt-2 list-disc space-y-1 pl-4 text-[12.5px]">
-            {profile.onTheWay.map((line) => (
-              <li key={line}>Not yet: {line.toLowerCase()}</li>
-            ))}
-            <li>
-              Missing something you rely on
-              {fromPaper ? "" : ` in ${source}`}? Tell us, and we&apos;ll
-              show you a workaround or when it&apos;s coming.
+    <div className="space-y-5 text-sm">
+      <div>
+        <p className="mb-2 font-medium text-slate-700">Ready for {profile.plural}</p>
+        <ul className="space-y-1.5 text-slate-600">
+          {profile.ready.map((line) => (
+            <li key={line} className="flex gap-2">
+              <Check
+                className="mt-0.5 h-4 w-4 shrink-0"
+                style={{ color: "var(--b)" }}
+                aria-hidden="true"
+              />
+              {line}
             </li>
-          </ul>
-        </div>
+          ))}
+        </ul>
       </div>
+      <div>
+        <p className="mb-2 font-medium text-slate-700">Being straight with you</p>
+        <ul className="space-y-1.5 text-slate-600">
+          {gaps.map((line) => (
+            <li key={line} className="flex gap-2">
+              <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-slate-400" />
+              {line}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+export function RecordsStage({ draft, playId, still }: SceneProps) {
+  const beat = useBeats([400, 900, 1400, 1900, 2400], playId, still);
+  const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
+  const fromPaper = isFromPaper(draft);
+  const source = BUILD_SYSTEM_LABELS[draft.currentSystem];
+  const file = fromPaper
+    ? { name: "clients-and-pets.csv", size: "380 KB" }
+    : { name: `${draft.currentSystem}-export.zip`, size: "48 MB" };
+  const rows: Array<{ label: string; count: string; note: string }> = fromPaper
+    ? [
+        { label: "Clients", count: "1,248", note: "All matched" },
+        { label: "Patients", count: "2,031", note: "All matched" },
+        { label: "Vaccine history", count: "3,904", note: "12 to review" },
+      ]
+    : [
+        { label: "Clients", count: "1,248", note: "All matched" },
+        { label: "Patients", count: "2,031", note: "All matched" },
+        { label: "Vaccine history", count: "9,412", note: "38 to review" },
+        { label: "Visit notes", count: "6,880", note: "Attached to charts" },
+      ];
+  return (
+    <Stage
+      label="Your import, before anything is saved"
+      footer={
+        <Caption>
+          <CaptionItem>Nothing is saved until you review it</CaptionItem>
+          <CaptionItem>Your current system stays in place while you try OpenVPM</CaptionItem>
+        </Caption>
+      }
+    >
+      <AppWindow
+        clinicName={brandName(draft)}
+        logo={draft.logo}
+        modules={profile.modules}
+        active="Clients"
+        title={fromPaper ? "Import a spreadsheet" : `Import from ${source}`}
+        width={CANVAS_WIDTH}
+        actions={
+          <span
+            className={cn(
+              "rounded-md px-2.5 py-1 text-[10.5px] font-semibold transition-colors duration-300",
+              beat >= rows.length + 1 ? "text-white" : "bg-slate-100 text-slate-400",
+            )}
+            style={beat >= rows.length + 1 ? { background: "var(--b)" } : undefined}
+          >
+            Review import
+          </span>
+        }
+      >
+        <div className="mb-3 flex items-center gap-2.5 rounded-lg border border-slate-200 px-3 py-2">
+          <FileSpreadsheet className="h-4 w-4 text-slate-400" aria-hidden="true" />
+          <span className="text-[11px] font-medium">{file.name}</span>
+          <span className="text-[10px] text-slate-400">{file.size}</span>
+          <span className="ml-auto">
+            <StatusPill
+              label={beat >= rows.length + 1 ? "Read" : "Reading"}
+              tone={beat >= rows.length + 1 ? "green" : "amber"}
+            />
+          </span>
+        </div>
+        <div className="overflow-hidden rounded-lg border border-slate-200">
+          <div className="grid grid-cols-[1fr_64px_120px_104px] gap-3 border-b border-slate-100 bg-slate-50 px-3 py-1.5 text-[9.5px] font-medium text-slate-500">
+            <span>Records</span>
+            <span className="text-right">Found</span>
+            <span>Progress</span>
+            <span>Status</span>
+          </div>
+          {rows.map((row, i) => {
+            const done = beat > i;
+            return (
+              <div
+                key={row.label}
+                className="grid grid-cols-[1fr_64px_120px_104px] items-center gap-3 border-b border-slate-100 px-3 py-2.5 text-[10.5px] last:border-b-0"
+              >
+                <span className="font-medium">{row.label}</span>
+                <span className="text-right tabular-nums text-slate-600">
+                  {done ? row.count : "—"}
+                </span>
+                <span className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                  <motion.span
+                    className="block h-full rounded-full"
+                    style={{ background: "var(--b)" }}
+                    initial={false}
+                    animate={{ width: done ? "100%" : "0%" }}
+                    transition={{ duration: still ? 0 : 0.45, ease: "easeOut" }}
+                  />
+                </span>
+                <span className="truncate text-slate-500">{done ? row.note : "Waiting"}</span>
+              </div>
+            );
+          })}
+        </div>
+      </AppWindow>
     </Stage>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 9. The gate: your day, recapped, and what's waiting inside
+// 9. The gate: what's waiting inside
 // ---------------------------------------------------------------------------
 
-export function GateStage({ draft }: SceneProps) {
+export function GateSummary({ draft }: SceneProps) {
   const name = brandName(draft);
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
   const offered = draft.services.filter((service) => service.on).length;
-  const tiles = [
-    { big: "1", small: "booking, no phone call" },
-    { big: "2", small: "reminders sent for you" },
-    { big: "1", small: "note drafted for you" },
-    { big: money(sampleTotal(draft)), small: "collected on the spot" },
-  ];
   const lines = [
-    `${draft.logo ? "Your logo and " : ""}${name} colours on your portal, booking page & reminders`,
+    `${draft.logo ? "Your logo and color" : "Your color"} on booking, reminders, the portal, and invoices`,
     `${offered} service${offered === 1 ? "" : "s"} on your price list`,
-    `A booking page ready to publish at /book/${suggestBookingSlug(name) || "your-clinic"}`,
-    `Shaped for ${profile.plural}`,
+    `Your booking page at /book/${bookingSlug(draft)}, ready to publish`,
+    `A workspace shaped for ${profile.plural}`,
     isFromPaper(draft)
       ? "A spreadsheet import whenever you're ready"
       : `An import from ${BUILD_SYSTEM_LABELS[draft.currentSystem]}, ready to review`,
   ];
   return (
-    <Stage className="!min-h-0 flex-col !items-stretch">
-      <div className="w-full">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Your day at {name}
-        </p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {tiles.map((tile, i) => (
-            <motion.div
-              key={tile.small}
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ type: "spring", stiffness: 320, damping: 24, delay: i * 0.1 }}
-              className="rounded-xl bg-white/95 p-3 shadow-sm"
-            >
-              <div
-                className="font-heading text-2xl font-bold"
-                style={{ color: "var(--b)" }}
-              >
-                {tile.big}
-              </div>
-              <div className="text-[12px] leading-4 text-slate-600">
-                {tile.small}
-              </div>
-            </motion.div>
-          ))}
-        </div>
-      </div>
-      <div className={cn(styles.panel, "w-full")}>
-        <b className="text-base">Waiting inside {name}</b>
-        <ul className="mt-3 space-y-2 text-sm">
-          {lines.map((line, i) => (
-            <motion.li
-              key={line}
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.4 + i * 0.08 }}
-              className={styles.check}
-            >
-              {line}
-            </motion.li>
-          ))}
-        </ul>
-      </div>
-    </Stage>
+    <div className="mt-6">
+      <p className="mb-2.5 text-sm font-medium text-slate-700">Waiting inside {name}</p>
+      <ul className="space-y-2 text-sm text-slate-600">
+        {lines.map((line) => (
+          <li key={line} className="flex gap-2">
+            <Check
+              className="mt-0.5 h-4 w-4 shrink-0"
+              style={{ color: "var(--b)" }}
+              aria-hidden="true"
+            />
+            {line}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

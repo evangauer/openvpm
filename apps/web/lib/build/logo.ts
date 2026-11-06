@@ -1,5 +1,5 @@
 /**
- * Turn an uploaded logo into a small PNG for previews, and pick the colour
+ * Turn an uploaded logo into a small PNG for previews, and pick the color
  * that best represents it. Browser-only; nothing leaves the device here.
  */
 
@@ -9,7 +9,7 @@ const SAMPLE_EDGE_PX = 48;
 
 export interface ProcessedLogo {
   dataUrl: string;
-  /** The logo's most characteristic colour, or null for monochrome logos. */
+  /** The logo's most characteristic color, or null for monochrome logos. */
   color: string | null;
 }
 
@@ -36,7 +36,7 @@ function toHex(r: number, g: number, b: number): string {
 }
 
 /**
- * The dominant saturated colour: pixels are grouped into coarse buckets and
+ * The dominant saturated color: pixels are grouped into coarse buckets and
  * weighted by saturation, ignoring transparency, white, black, and greys.
  */
 export function dominantColor(data: Uint8ClampedArray): string | null {

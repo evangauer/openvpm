@@ -858,6 +858,47 @@ describe("auth router input validation", () => {
     });
   });
 
+  it("starts the trial on the annual plan when the clinic picks it", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_location_annual");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db } = createRegistrationDb();
+
+    await callerWithDb(db).register({
+      email: "owner@example.com",
+      password: "password123",
+      practiceName: "Cedar Mobile Vet",
+      country: "US",
+      billingCadence: "year",
+    });
+
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lineItems: [{ priceId: "price_location_annual", quantity: 1 }],
+        billingCadence: "year",
+      }),
+    );
+  });
+
+  it("refuses an annual signup before account writes when annual isn't configured", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues } = createRegistrationDb();
+
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Cedar Mobile Vet",
+        country: "US",
+        billingCadence: "year",
+      }),
+    ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
+  });
+
   it("rejects a malformed build before any account writes", async () => {
     mocks.billingEnforced.mockReturnValue(true);
     const { db, insertValues } = createRegistrationDb();

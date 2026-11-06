@@ -6,7 +6,7 @@ function pixels(...colors: Array<[number, number, number, number]>) {
 }
 
 describe("dominantColor", () => {
-  it("picks the logo's saturated colour, ignoring white, black, grey, and transparency", () => {
+  it("picks the logo's saturated color, ignoring white, black, grey, and transparency", () => {
     const orange: [number, number, number, number] = [232, 89, 12, 255];
     const data = pixels(
       ...Array(20).fill(orange),

@@ -57,7 +57,7 @@ export async function applyBuildServices(
 
 /**
  * Give a built clinic its online booking page, unpublished: a slug from its
- * name, every starter visit type bookable, and its brand colour. The clinic
+ * name, every starter visit type bookable, and its brand color. The clinic
  * reviews hours and publishes it from settings. Runs in a savepoint, so a
  * slug race or a bad name never fails registration; it just skips the page.
  */
