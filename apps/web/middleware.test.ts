@@ -109,6 +109,18 @@ describe("middleware security headers", () => {
     expectSecurityHeaders(lookalikeResponse);
   });
 
+  it("keeps the build-your-clinic signup public without exposing lookalikes", async () => {
+    mocks.getToken.mockResolvedValue(null);
+
+    const startResponse = await middleware(request("/start"));
+    const lookalikeResponse = await middleware(request("/starter"));
+
+    expect(startResponse.headers.get("location")).toBeNull();
+    expect(lookalikeResponse.headers.get("location")).toBe(
+      "https://openvpm.test/login?next=%2Fstarter",
+    );
+  });
+
   it("adds security headers to API routes without middleware auth redirects", async () => {
     const response = await middleware(request("/api/health"));
 

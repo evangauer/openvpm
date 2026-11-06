@@ -6,6 +6,7 @@ import {
   CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
 } from "@/lib/billing/plans";
 import { previewPercent } from "@/lib/billing/preview";
+import { builderPercent } from "@/lib/build/catalog";
 
 // Render the same server configuration used by registration, including rollbacks.
 export const dynamic = "force-dynamic";
@@ -18,6 +19,7 @@ export default function RegisterPage() {
       cardRequired={hostedBilling && !noCardTrialEnabled()}
       trialDays={TRIAL_DAYS}
       previewPercent={previewPercent()}
+      builderPercent={builderPercent()}
       monthlyPriceUsd={CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD}
     />
   );

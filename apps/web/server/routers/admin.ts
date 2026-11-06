@@ -30,6 +30,7 @@ import { computeActivationRecovery } from "@/lib/admin/activation-recovery";
 import { listDemoLeads, setDemoLeadPaused } from "@/lib/admin/demo-leads";
 import { previewExperimentSummary } from "@/lib/admin/preview-experiment";
 import { npsSummary } from "@/lib/admin/nps";
+import { buildFunnelSummary } from "@/lib/admin/build-funnel";
 import {
   CLINIC_PILOT_BLOCKERS,
   CLINIC_PILOT_COMMUNICATION_MODES,
@@ -3353,6 +3354,12 @@ export const adminRouter = createRouter({
   demoLeads: platformAdminProcedure.query(() => {
     noStore();
     return listDemoLeads(db);
+  }),
+
+  /** Where visitors leave "Build your clinic". */
+  buildFunnel: platformAdminProcedure.query(() => {
+    noStore();
+    return buildFunnelSummary(db);
   }),
 
   /** Net Promoter answers from paying clinics. */

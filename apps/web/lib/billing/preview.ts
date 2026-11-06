@@ -8,6 +8,8 @@
  * so its copy matches what registration will do.
  */
 
+import { inTreatment, percentFromEnv } from "@/lib/experiments/bucket";
+
 const HOUR_MS = 60 * 60 * 1000;
 
 /** How long a clinic can look around before the trial asks for a card. */
@@ -24,19 +26,7 @@ export type PreviewArm = "preview" | "control";
 export function previewPercent(
   raw: string | undefined = process.env[PREVIEW_PERCENT_ENV],
 ): number {
-  const value = Number.parseInt(raw?.trim() ?? "", 10);
-  if (!Number.isFinite(value) || value <= 0) return 0;
-  return Math.min(value, 100);
-}
-
-/** 32-bit FNV-1a: a stable, dependency-free bucket for a visitor id. */
-function fnv1a(value: string): number {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < value.length; i++) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
+  return percentFromEnv(raw);
 }
 
 /**
@@ -48,10 +38,7 @@ export function previewArmFor(
   funnelId: string | null | undefined,
   percent: number,
 ): PreviewArm {
-  const id = funnelId?.trim().toLowerCase();
-  if (!id || percent <= 0) return "control";
-  if (percent >= 100) return "preview";
-  return fnv1a(`preview-before-card:${id}`) % 100 < percent
+  return inTreatment(funnelId, percent, "preview-before-card")
     ? "preview"
     : "control";
 }

@@ -607,6 +607,40 @@ dedupe key, and an eligibility re-check under the send lock. Self-hosted
 deployments never run these campaigns. Apply migration `0113_practice_nps`
 and `pnpm db:rls` before enabling.
 
+### Build your clinic
+
+`/start` is a guided signup for the hosted service. The clinic picks how it
+practices and the system it uses today, names the clinic, chooses a brand
+colour, and sets its services and prices. It then watches its own clinic in
+action, in mockups that carry its name and colour: a client booking online,
+reminders going out, a visit with an AI-drafted note, and an invoice paid by
+card. It sees what an import of its records looks like, along with a plain
+list of what is not built yet for its kind of practice. Nothing is created
+until the last step, the card gate: email, password, and country create the
+account and send the clinic to Stripe Checkout for the 14-day trial. Choices
+are kept in the browser until then.
+
+On registration the workspace opens built:
+
+- the brand colour is applied;
+- the chosen services are added to the catalog at the chosen prices, or
+  reprice matching starter services;
+- guided setup starts at the import step for clinics moving from another
+  system;
+- the practice records `settings.buildFlow` and the experiment arm.
+
+`HOSTED_BUILDER_PERCENT` (0-100, default 0) sends that share of card-required
+visitors from `/register` to `/start`. Assignment is a stable hash of the
+funnel visitor id, separate from the preview experiment. Builder signups always
+gate on the card, even when `HOSTED_PREVIEW_PERCENT` is set. Self-hosted
+deployments redirect `/start` to `/register`.
+
+Each scene sends `build_scene_viewed` and `build_scene_completed` funnel events
+(scene, practice type, current system, service count, and time on the scene;
+no contact details), and the gate sends `build_gate_submitted`. The
+platform-admin page shows how many visitors reached each scene in the last 30
+days, the median time per scene, gate submissions, and cards added.
+
 ### Preview before card
 
 `HOSTED_PREVIEW_PERCENT` (0-100, default 0) sends that share of card-required

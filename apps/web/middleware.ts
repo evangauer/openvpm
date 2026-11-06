@@ -40,6 +40,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/reset-password",
   "/sign",
   "/sms",
+  "/start",
   "/treatment-plan",
   "/verify-email",
 ];

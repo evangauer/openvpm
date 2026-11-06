@@ -36,6 +36,12 @@ import { newSubscriptionBillingAccount } from "@/lib/billing/stripe-accounts";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { createSubscriptionCheckoutSession } from "@/lib/stripe";
 import {
+  buildDraftSchema,
+  buildFirstGoal,
+  builderPercent,
+} from "@/lib/build/catalog";
+import { applyBuildServices } from "@/lib/build/apply";
+import {
   previewArmFor,
   previewEndsAtFrom,
   previewPercent,
@@ -224,6 +230,8 @@ export const authRouter = createRouter({
         ).optional(),
         onboardingDraft: onboardingDraftSchema.optional(),
         acquisition: signupAcquisitionSchema.optional(),
+        /** Choices from "Build your clinic"; the workspace opens built. */
+        build: buildDraftSchema.optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -259,8 +267,12 @@ export const authRouter = createRouter({
       }
 
       const onboardingDraft = cleanOnboardingDraft(input.onboardingDraft);
-      const registrationProfile =
-        input.onboardingDraft?.clinicModel && input.onboardingDraft.firstGoal
+      const registrationProfile = input.build
+        ? {
+            clinicModel: input.build.practiceType,
+            firstGoal: buildFirstGoal(input.build.currentSystem),
+          }
+        : input.onboardingDraft?.clinicModel && input.onboardingDraft.firstGoal
           ? {
               clinicModel: input.onboardingDraft.clinicModel,
               firstGoal: input.onboardingDraft.firstGoal,
@@ -274,8 +286,9 @@ export const authRouter = createRouter({
       const noCardTrial = hostedBilling && noCardTrialEnabled();
       // Preview before card (A/B): some card-required signups shape their
       // workspace on sample data first and add the card to start the trial.
+      // The builder already showed the product, so it always gates on the card.
       const previewSharePercent =
-        hostedBilling && !noCardTrial ? previewPercent() : 0;
+        hostedBilling && !noCardTrial && !input.build ? previewPercent() : 0;
       const previewArm =
         previewSharePercent > 0
           ? previewArmFor(input.acquisition?.funnelId, previewSharePercent)
@@ -343,9 +356,30 @@ export const authRouter = createRouter({
       if (onboardingDraft) {
         practiceSettings.onboardingDraft = onboardingDraft;
       }
+      const growthExperiments: Record<string, unknown> = {};
       if (previewArm) {
-        practiceSettings.growthExperiments = {
-          previewBeforeCard: { arm: previewArm, assignedAt: registeredAt },
+        growthExperiments.previewBeforeCard = {
+          arm: previewArm,
+          assignedAt: registeredAt,
+        };
+      }
+      if (hostedBilling && !noCardTrial && (input.build || builderPercent() > 0)) {
+        growthExperiments.signupFlow = {
+          arm: input.build ? "builder" : "classic",
+          assignedAt: registeredAt,
+        };
+      }
+      if (Object.keys(growthExperiments).length > 0) {
+        practiceSettings.growthExperiments = growthExperiments;
+      }
+      if (input.build) {
+        practiceSettings.brandColor = input.build.brandColor.toLowerCase();
+        practiceSettings.buildFlow = {
+          version: 1,
+          practiceType: input.build.practiceType,
+          currentSystem: input.build.currentSystem,
+          serviceCount: input.build.services.length,
+          completedAt: registeredAt,
         };
       }
       if (hostedBilling) {
@@ -427,6 +461,13 @@ export const authRouter = createRouter({
               practiceId: createdPractice.id,
               locationId: createdLocation.id,
             });
+            if (input.build) {
+              await applyBuildServices(
+                tx as unknown as Database,
+                createdPractice.id,
+                input.build.services,
+              );
+            }
             if (hostedBilling) {
               practiceSettings.demoData = await seedDemoData(
                 tx as unknown as Database,

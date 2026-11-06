@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
   createSubscriptionCheckoutSession: vi.fn(async () => ({
     url: "https://checkout.stripe.com/signup-checkout",
   })),
+  applyBuildServices: vi.fn(async () => undefined),
   seedPractice: vi.fn(async () => undefined),
   seedDemoData: vi.fn(async () => ({})),
   billingEnforced: vi.fn(() => false),
@@ -71,6 +72,10 @@ vi.mock("@/lib/auth-email-delivery", () => ({
 
 vi.mock("@/lib/email-lifecycle", () => ({
   sendOptionalPlatformEmail: mocks.sendOptionalPlatformEmail,
+}));
+
+vi.mock("@/lib/build/apply", () => ({
+  applyBuildServices: mocks.applyBuildServices,
 }));
 
 vi.mock("@/lib/onboarding/defaults", () => ({
@@ -793,6 +798,83 @@ describe("auth router input validation", () => {
         previewEndsAt,
       }),
     );
+  });
+
+  it("builds the workspace from Build your clinic and always gates on the card", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.stubEnv("HOSTED_PREVIEW_PERCENT", "100");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues, updateSet } = createRegistrationDb();
+    const build = {
+      practiceType: "mobile" as const,
+      currentSystem: "shepherd" as const,
+      brandColor: "#7C3AED",
+      services: [
+        { name: "House-Call Exam", price: 120 },
+        { name: "Trip Fee", price: 45 },
+      ],
+    };
+
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Cedar Mobile Vet",
+        country: "US",
+        acquisition: { funnelId: "11111111-1111-4111-8111-111111111111" },
+        build,
+      }),
+    ).resolves.toMatchObject({
+      checkoutUrl: "https://checkout.stripe.com/signup-checkout",
+      onboardingRequired: false,
+    });
+
+    // Even at a 100% preview share, the builder signup goes to Checkout.
+    expect(insertValues.mock.calls[0]?.[0]).not.toHaveProperty("previewEndsAt");
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalled();
+    expect(mocks.applyBuildServices).toHaveBeenCalledWith(
+      expect.anything(),
+      "practice-1",
+      build.services,
+    );
+    expect(updateSet).toHaveBeenCalledWith({
+      settings: expect.objectContaining({
+        brandColor: "#7c3aed",
+        buildFlow: expect.objectContaining({
+          version: 1,
+          practiceType: "mobile",
+          currentSystem: "shepherd",
+          serviceCount: 2,
+        }),
+        growthExperiments: {
+          signupFlow: { arm: "builder", assignedAt: expect.any(String) },
+        },
+        onboardingState: expect.objectContaining({
+          clinicModel: "mobile",
+          firstGoal: "import_records",
+        }),
+      }),
+    });
+  });
+
+  it("rejects a malformed build before any account writes", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues } = createRegistrationDb();
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Cedar Mobile Vet",
+        country: "US",
+        build: {
+          practiceType: "mobile",
+          currentSystem: "shepherd",
+          brandColor: "purple",
+          services: [],
+        } as never,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("keeps checkout first for the control arm and records the assignment", async () => {

@@ -44,6 +44,7 @@ import { FUNNEL_EVENTS } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import { getFunnelVisitorId } from "@/lib/funnel-visitor";
 import { previewArmFor, type PreviewArm } from "@/lib/billing/preview";
+import { inBuilderArm } from "@/lib/build/catalog";
 import {
   CLINIC_REGION_OPTIONS,
   type ClinicRegionCode,
@@ -85,6 +86,8 @@ export interface RegisterFormProps {
   monthlyPriceUsd: number;
   /** Share of card-required signups that explore a preview before the card. */
   previewPercent?: number;
+  /** Share of card-required signups sent through "Build your clinic". */
+  builderPercent?: number;
 }
 
 export default function RegisterForm(props: RegisterFormProps) {
@@ -107,6 +110,7 @@ function RegisterPageInner({
   trialDays,
   monthlyPriceUsd,
   previewPercent = 0,
+  builderPercent = 0,
 }: RegisterFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -136,6 +140,18 @@ function RegisterPageInner({
       ),
     );
     // Assigned once per mount from the attribution snapshot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable arm
+  }, []);
+  // "Build your clinic" A/B: visitors in the builder arm take the guided,
+  // card-gated walkthrough instead, keeping their attribution parameters.
+  useEffect(() => {
+    if (!cardRequired || builderPercent <= 0) return;
+    if (
+      inBuilderArm(acquisition?.funnelId ?? getFunnelVisitorId(), builderPercent)
+    ) {
+      router.replace(`/start${window.location.search}`);
+    }
+    // Decided once per mount from the attribution snapshot.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stable arm
   }, []);
   const previewFirst = cardRequired && previewArm === "preview";

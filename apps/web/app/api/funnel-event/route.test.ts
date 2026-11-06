@@ -90,6 +90,61 @@ describe("/api/funnel-event", () => {
     );
   });
 
+  it("keeps only known build-your-clinic scene metadata", async () => {
+    const response = await POST(
+      request(
+        {
+          ...validEvent,
+          name: "build_scene_completed",
+          path: "/start",
+          props: {
+            scene: "records",
+            system: "shepherd",
+            model: "mobile",
+            ms: 12_345,
+            services: 5,
+          },
+        },
+        "https://app.openvpm.com",
+      ),
+    );
+    expect(response.status).toBe(202);
+    expect(mocks.insertFunnelEvent).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        eventName: "build_scene_completed",
+        metadata: {
+          scene: "records",
+          system: "shepherd",
+          model: "mobile",
+          ms: 12_345,
+          services: 5,
+        },
+      }),
+    );
+
+    await POST(
+      request(
+        {
+          ...validEvent,
+          eventId: "323e4567-e89b-42d3-a456-426614174000",
+          name: "build_scene_viewed",
+          props: {
+            scene: "not-a-scene",
+            system: "made-up",
+            ms: -5,
+            services: 1.5,
+          },
+        },
+        "https://app.openvpm.com",
+      ),
+    );
+    expect(mocks.insertFunnelEvent).toHaveBeenLastCalledWith(
+      {},
+      expect.objectContaining({ metadata: {} }),
+    );
+  });
+
   it("rejects untrusted origins before writing", async () => {
     const response = await POST(request(validEvent, "https://evil.example"));
     expect(response.status).toBe(403);
