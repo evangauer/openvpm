@@ -620,11 +620,34 @@ until the last step, the card gate: email, password, and country create the
 account and send the clinic to Stripe Checkout for the 14-day trial. Choices
 are kept in the browser until then.
 
+Story scenes run as a day at the clinic, with a clock and, at the end of each
+moment, what the client gained and what the vet gained. The clinic can upload
+its logo: it is resized in the browser, its main colour becomes the brand
+colour, and it travels with the build. After checkout, the workspace uploads
+it through the regular logo upload on the first visit with an active trial,
+and never replaces a logo the clinic already has.
+
+After the brand scene the clinic can save its build by email ("We'll email
+you a link to pick up where you left off, plus one follow-up note"). Saved
+builds live in `growth_leads.build_progress` (migration `0114_build_progress`)
+and stay current as the person moves through scenes. The hourly
+`/api/cron/build-followup` sweep, default-off behind `BUILD_FOLLOWUP_ENABLED`
+and a prospective `BUILD_FOLLOWUP_ROLLOUT_AT`, sends at most two personal notes
+counted from the last save: a resume link after 2 hours and an offer of help
+after 3 days. Each note shows the clinic's name in its colour and links to
+`/start?resume=<signed token>`, which restores the saved build in any browser.
+Creating an account with that address, or pausing the lead, ends the notes.
+An address already known from the demo keeps its demo consent and gains the
+build alongside.
+
 On registration the workspace opens built:
 
 - the brand colour is applied;
 - the chosen services are added to the catalog at the chosen prices, or
   reprice matching starter services;
+- an unpublished online booking page is created from the clinic's name, with
+  every starter visit type bookable and the brand colour, ready to review and
+  publish from settings;
 - guided setup starts at the import step for clinics moving from another
   system;
 - the practice records `settings.buildFlow` and the experiment arm.
@@ -823,6 +846,7 @@ set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_CHECKOUT_RECOVERY_URL`,
 `CRON_HEARTBEAT_DEMO_FOLLOWUP_URL`,
 `CRON_HEARTBEAT_CUSTOMER_LIFECYCLE_URL`,
+`CRON_HEARTBEAT_BUILD_FOLLOWUP_URL`,
 `CRON_HEARTBEAT_WELLNESS_BILLING_URL`,
 `CRON_HEARTBEAT_RATE_LIMIT_CLEANUP_URL`,
 `CRON_HEARTBEAT_AUTH_CLEANUP_URL`,

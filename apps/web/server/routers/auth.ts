@@ -40,7 +40,10 @@ import {
   buildFirstGoal,
   builderPercent,
 } from "@/lib/build/catalog";
-import { applyBuildServices } from "@/lib/build/apply";
+import {
+  applyBuildServices,
+  setUpBuildBookingPage,
+} from "@/lib/build/apply";
 import {
   previewArmFor,
   previewEndsAtFrom,
@@ -467,6 +470,18 @@ export const authRouter = createRouter({
                 createdPractice.id,
                 input.build.services,
               );
+              const bookingSlug = await setUpBuildBookingPage(
+                tx as unknown as Database,
+                {
+                  practiceId: createdPractice.id,
+                  clinicName: input.practiceName,
+                  brandColor: input.build.brandColor,
+                },
+              );
+              if (bookingSlug) {
+                (practiceSettings.buildFlow as Record<string, unknown>).bookingSlug =
+                  bookingSlug;
+              }
             }
             if (hostedBilling) {
               practiceSettings.demoData = await seedDemoData(

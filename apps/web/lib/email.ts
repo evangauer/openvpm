@@ -13,6 +13,7 @@ import {
   renderTrialWinbackEmail,
   renderAdoptionEmail,
   renderNpsSurveyEmail,
+  renderBuildFollowupEmail,
   type AdoptionTip,
   type TrialUsage,
 } from "@openpims/email";
@@ -36,6 +37,12 @@ import {
 import { buildCloudSignupUrl } from "@/lib/funnel-analytics";
 import { createStopReasonToken } from "@/lib/growth/stop-reason-token";
 import { createNpsToken } from "@/lib/growth/nps-token";
+import { createBuildResumeToken } from "@/lib/build/progress";
+import type { BuildFollowupStep } from "@/lib/build/followup";
+import {
+  BUILD_SYSTEM_LABELS,
+  type BuildSavedState,
+} from "@/lib/build/catalog";
 import {
   TRIAL_WINBACK_REASONS,
   type AdoptionGap,
@@ -1291,6 +1298,50 @@ export async function sendNpsSurveyEmail(data: {
     greetingName: greetingName(data.adminName),
     senderName: sender.name,
     scoreUrls,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
+}
+
+/**
+ * Follow-up for someone who saved "Build your clinic" and left. The link
+ * restores their saved build; signups from it are attributed to the step.
+ */
+export async function sendBuildFollowupEmail(data: {
+  to: string;
+  leadId: string;
+  step: BuildFollowupStep;
+  state: BuildSavedState;
+  anonymousId: string | null;
+  idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  const token = createBuildResumeToken(data.leadId);
+  if (!token) {
+    return { success: false, error: "Resume link signing is not configured." };
+  }
+  const resume = new URL("/start", brand.appUrl);
+  resume.searchParams.set("resume", token);
+  resume.searchParams.set("utm_source", "email");
+  resume.searchParams.set("utm_medium", "email");
+  resume.searchParams.set("utm_campaign", `build_followup_${data.step}`);
+  if (data.anonymousId) resume.searchParams.set("funnel_id", data.anonymousId);
+  const sender = growthSender(brand.supportEmail);
+  const system = data.state.currentSystem;
+  const rendered = await renderBuildFollowupEmail({
+    brand,
+    step: data.step,
+    clinicName: data.state.clinicName.trim() || "Your clinic",
+    brandColor: data.state.brandColor,
+    currentSystem:
+      system === "paper" || system === "other"
+        ? null
+        : BUILD_SYSTEM_LABELS[system],
+    senderName: sender.name,
+    resumeUrl: resume.toString(),
+    bookingUrl: sender.bookingUrl,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
   return sendGrowthNote(data, rendered, preferenceLinks, sender);

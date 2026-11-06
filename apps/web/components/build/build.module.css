@@ -274,6 +274,17 @@
   transform: scale(0);
   transition: transform 0.5s cubic-bezier(0.2, 1.6, 0.4, 1);
 }
+.tickStatic {
+  display: flex;
+  width: 46px;
+  height: 46px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--b);
+  font-size: 24px;
+  color: #fff;
+}
 .overlayOn .tick {
   transform: scale(1);
 }

@@ -6,7 +6,7 @@ import type { DemoDisclosureVersion } from "@/lib/growth/demo-disclosure";
 export const LEAD_CAPTURE_SECRET_ENV = "LEAD_CAPTURE_SECRET";
 const LEAD_CAPTURE_SECRET_MIN_BYTES = 32;
 
-export type LeadSource = "demo" | "newsletter";
+export type LeadSource = "demo" | "newsletter" | "build";
 
 export function normalizeLeadEmail(email: string): string {
   return email.trim().toLowerCase();

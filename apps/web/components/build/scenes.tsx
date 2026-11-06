@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { motion } from "motion/react";
+import { ImagePlus, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   BUILD_BRAND_COLORS,
@@ -12,13 +14,18 @@ import {
   type BuildPracticeType,
   type BuildSystem,
 } from "@/lib/build/catalog";
+import { suggestBookingSlug } from "@/lib/booking/page-config";
+import { processLogo } from "@/lib/build/logo";
 import {
   buildStyles as styles,
+  ClinicMark,
   Desk,
   Phone,
   PhoneOverlay,
   ScheduleRow,
   Stage,
+  WinCards,
+  type StoryWin,
 } from "./mockups";
 
 export interface BuildServiceChoice {
@@ -33,6 +40,8 @@ export interface BuildState {
   clinicName: string;
   brandColor: string;
   services: BuildServiceChoice[];
+  /** A small PNG data URL of their logo, kept in this browser only. */
+  logo: string | null;
 }
 
 export interface SceneProps {
@@ -61,19 +70,23 @@ export function brandName(draft: BuildState): string {
   return draft.clinicName.trim() || "Your clinic";
 }
 
-function sampleFor(draft: BuildState) {
+export function sampleFor(draft: BuildState) {
   return BUILD_PRACTICE_PROFILES[draft.practiceType].sample;
 }
 
-function sampleTotal(draft: BuildState): number {
+export function sampleTotal(draft: BuildState): number {
   return sampleFor(draft).charges.reduce((sum, line) => sum + line.price, 0);
 }
 
-function money(value: number): string {
+export function money(value: number): string {
   return `$${value.toLocaleString("en-US", {
     minimumFractionDigits: value % 1 ? 2 : 0,
     maximumFractionDigits: 2,
   })}`;
+}
+
+function isFromPaper(draft: BuildState): boolean {
+  return draft.currentSystem === "paper" || draft.currentSystem === "other";
 }
 
 /**
@@ -106,19 +119,20 @@ function Chip({
   children: ReactNode;
 }) {
   return (
-    <button
+    <motion.button
       type="button"
       onClick={onClick}
       aria-pressed={on}
+      whileTap={{ scale: 0.96 }}
       className={cn(
-        "rounded-full border px-3.5 py-2 text-sm transition-all",
+        "rounded-full border px-3.5 py-2 text-sm transition-colors",
         on
           ? "border-[var(--b)] bg-[color-mix(in_srgb,var(--b)_12%,white)] font-semibold text-slate-900"
           : "border-slate-200 bg-white text-slate-700 hover:border-slate-300",
       )}
     >
       {children}
-    </button>
+    </motion.button>
   );
 }
 
@@ -169,37 +183,34 @@ export function PracticeControls({ draft, update }: SceneProps) {
 
 export function PracticeStage({ draft }: SceneProps) {
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
-  const fromPaper =
-    draft.currentSystem === "paper" || draft.currentSystem === "other";
+  const lines = [
+    ...profile.traits,
+    isFromPaper(draft)
+      ? "Start fresh, or import a spreadsheet"
+      : `Bring your records from ${BUILD_SYSTEM_LABELS[draft.currentSystem]}`,
+  ];
   return (
     <Stage>
       <Desk
         key={draft.practiceType}
         clinicName={brandName(draft)}
+        logo={draft.logo}
         modules={profile.modules}
         active="Schedule"
         title={`Shaped for ${profile.plural}`}
       >
-        {profile.traits.map((trait, i) => (
-          <div
-            key={trait}
-            className={cn(styles.row, styles.rowNew)}
-            style={{ animationDelay: `${200 + i * 150}ms` }}
+        {lines.map((line, i) => (
+          <motion.div
+            key={`${draft.currentSystem}-${line}`}
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.15 + i * 0.12 }}
+            className={cn(styles.row, "!border-l-[var(--b)]")}
           >
-            <b>✓</b>
-            {trait}
-          </div>
+            <b>{i < profile.traits.length ? "✓" : "↪"}</b>
+            {line}
+          </motion.div>
         ))}
-        <div
-          key={draft.currentSystem}
-          className={cn(styles.row, styles.rowNew)}
-          style={{ animationDelay: "700ms" }}
-        >
-          <b>↪</b>
-          {fromPaper
-            ? "Start fresh, or import a spreadsheet"
-            : `Bring your records from ${BUILD_SYSTEM_LABELS[draft.currentSystem]}`}
-        </div>
       </Desk>
     </Stage>
   );
@@ -210,6 +221,30 @@ export function PracticeStage({ draft }: SceneProps) {
 // ---------------------------------------------------------------------------
 
 export function BrandControls({ draft, update }: SceneProps) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const onFile = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      const logo = await processLogo(file);
+      update(
+        logo.color
+          ? { logo: logo.dataUrl, brandColor: logo.color }
+          : { logo: logo.dataUrl },
+      );
+      setNote(logo.color ? "We matched your colour to your logo." : null);
+    } catch (error) {
+      setNote(error instanceof Error ? error.message : "That image didn't work.");
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
   return (
     <div>
       <Label>Clinic name</Label>
@@ -221,6 +256,52 @@ export function BrandControls({ draft, update }: SceneProps) {
         autoComplete="organization"
         className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-[var(--b)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--b)_25%,white)]"
       />
+      <Label>Logo</Label>
+      <div className="flex items-center gap-3">
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/svg+xml"
+          className="sr-only"
+          onChange={(event) => void onFile(event.target.files?.[0])}
+          aria-label="Upload your logo"
+        />
+        {draft.logo ? (
+          <>
+            <ClinicMark name={brandName(draft)} logo={draft.logo} size={44} />
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              className="text-sm font-medium text-slate-700 underline-offset-4 hover:underline"
+            >
+              Change
+            </button>
+            <button
+              type="button"
+              onClick={() => update({ logo: null })}
+              className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"
+            >
+              <X className="h-3.5 w-3.5" />
+              Remove
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={busy}
+            className="inline-flex h-11 items-center gap-2 rounded-xl border border-dashed border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:border-[var(--b)]"
+          >
+            {busy ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <ImagePlus className="h-4 w-4" />
+            )}
+            Upload your logo
+          </button>
+        )}
+      </div>
+      {note ? <p className="mt-2 text-sm text-slate-500">{note}</p> : null}
       <Label>Brand colour</Label>
       <div className="flex flex-wrap items-center gap-2">
         {BUILD_BRAND_COLORS.map((color) => (
@@ -245,13 +326,9 @@ export function BrandControls({ draft, update }: SceneProps) {
             onChange={(event) => update({ brandColor: event.target.value })}
             className="h-8 w-8 cursor-pointer rounded-lg border border-slate-200 bg-white p-0.5"
           />
-          Your exact colour
+          Exact colour
         </label>
       </div>
-      <p className="mt-4 text-sm leading-6 text-slate-500">
-        You&apos;ll add your logo once you&apos;re in. It appears everywhere
-        your colour does.
-      </p>
     </div>
   );
 }
@@ -259,9 +336,17 @@ export function BrandControls({ draft, update }: SceneProps) {
 export function BrandStage({ draft }: SceneProps) {
   const name = brandName(draft);
   const sample = sampleFor(draft);
+  const dueLabel = sample.due
+    .replace(/^an? /, "")
+    .replace(/^./, (c) => c.toUpperCase());
   return (
     <Stage>
-      <Phone clinicName={name} subtitle="Client portal">
+      <Phone
+        clinicName={name}
+        logo={draft.logo}
+        subtitle="Client portal"
+        tabs={{ items: ["Home", "Pets", "Visits", "Bills"], active: "Home" }}
+      >
         <div className={styles.phoneBody}>
           <div className="mb-1.5 font-semibold">Hi {sample.owner} 👋</div>
           <div className={styles.item}>
@@ -271,9 +356,7 @@ export function BrandStage({ draft }: SceneProps) {
             <b>Tue</b>
           </div>
           <div className={styles.item}>
-            <span className="truncate">
-              {sample.due.replace(/^an? /, "").replace(/^./, (c) => c.toUpperCase())} due
-            </span>
+            <span className="truncate">{dueLabel} due</span>
             <b style={{ color: "var(--b)" }}>Book</b>
           </div>
           <div className={styles.item}>
@@ -284,15 +367,13 @@ export function BrandStage({ draft }: SceneProps) {
       </Phone>
       <div className={styles.email}>
         <div className={styles.emailHead}>
-          <span className={cn(styles.logo, styles.logoOnBrand)}>
-            {name.slice(0, 1).toUpperCase()}
-          </span>
+          <ClinicMark name={name} logo={draft.logo} onBrand />
           <span className="truncate">{name}</span>
         </div>
         <div className={styles.emailBody}>
           <b>Reminder: {sample.pet}&apos;s visit</b>
           <br />
-          Tuesday at 9:00 AM with Dr. Lee.
+          Tuesday at 9:00 AM.
           <br />
           <span className={styles.emailButton}>View appointment</span>
         </div>
@@ -347,10 +428,6 @@ export function ServicesControls({ draft, update }: SceneProps) {
           />
         </div>
       ))}
-      <p className="pt-1 text-sm text-slate-500">
-        These start your price list and your online booking menu. Add the rest
-        anytime.
-      </p>
     </div>
   );
 }
@@ -358,41 +435,52 @@ export function ServicesControls({ draft, update }: SceneProps) {
 export function ServicesStage({ draft }: SceneProps) {
   const name = brandName(draft);
   const offered = draft.services.filter((service) => service.on);
+  const slug = suggestBookingSlug(name) || "your-clinic";
   return (
     <Stage>
-      <Phone clinicName={name} subtitle="Book online">
+      <Phone clinicName={name} logo={draft.logo} subtitle="Book online">
         <div className={styles.phoneBody}>
           <div className="mb-1.5 font-semibold">What does your pet need?</div>
-          {offered.map((service, i) => (
-            <div
+          {offered.map((service) => (
+            <motion.div
+              layout
               key={service.name}
+              initial={{ opacity: 0, x: -8 }}
+              animate={{ opacity: 1, x: 0 }}
               className={styles.item}
-              style={{ animationDelay: `${i * 80}ms` }}
             >
               <span className="truncate">{service.name}</span>
               <b>{money(service.price)}</b>
-            </div>
+            </motion.div>
           ))}
         </div>
       </Phone>
       <div className="max-w-[230px] self-center text-sm leading-6 text-slate-600">
-        <b className="text-slate-900">
-          Clients book themselves, any hour.
-        </b>
-        <br />
-        Share your booking link on your website, Google profile, or social
-        pages. Requests land on your schedule without phone tag.
+        <b className="text-slate-900">Your booking page, ready to share.</b>
+        <div className="my-2 truncate rounded-lg bg-white/90 px-2.5 py-1.5 font-mono text-[11px] text-slate-700 shadow-sm">
+          app.openvpm.com/book/{slug}
+        </div>
+        Put it on your website or Google profile. Requests land on your
+        schedule without phone tag.
       </div>
     </Stage>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 4. A client books
+// Story scenes: a day at the clinic, with a win for the client and for you.
 // ---------------------------------------------------------------------------
 
+export function bookWin(draft: BuildState): StoryWin {
+  const { owner, pet } = sampleFor(draft);
+  return {
+    client: `${owner} booked at 9:41 PM in under a minute. No phone call.`,
+    you: `It's on your schedule with ${pet}'s chart started. No phone tag.`,
+  };
+}
+
 export function BookStage({ draft, playId, still }: SceneProps) {
-  const beat = useBeats([900, 1700, 2500, 2900], playId, still);
+  const beat = useBeats([900, 1700, 2500, 2900, 3700], playId, still);
   const name = brandName(draft);
   const offered = draft.services.filter((service) => service.on).slice(0, 3);
   const first = offered[0]?.name ?? "Wellness Exam";
@@ -400,14 +488,12 @@ export function BookStage({ draft, playId, still }: SceneProps) {
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
   return (
     <Stage
-      caption={
-        beat >= 4
-          ? `${sample.pet}'s chart, created from the booking`
-          : "Online booking → your schedule"
-      }
+      clock="Monday · 9:41 PM"
+      footer={<WinCards win={bookWin(draft)} show={beat >= 5} />}
     >
       <Phone
         clinicName={name}
+        logo={draft.logo}
         subtitle="Book online"
         overlay={
           <PhoneOverlay
@@ -447,13 +533,17 @@ export function BookStage({ draft, playId, still }: SceneProps) {
               </span>
             ))}
           </div>
-          <div className={cn(styles.cta, beat === 3 && styles.ctaPressed)}>
+          <motion.div
+            className={styles.cta}
+            animate={{ scale: beat === 3 ? 0.94 : 1 }}
+          >
             Request appointment
-          </div>
+          </motion.div>
         </div>
       </Phone>
       <Desk
         clinicName={name}
+        logo={draft.logo}
         modules={profile.modules}
         active="Schedule"
         title="Tuesday · Schedule"
@@ -475,33 +565,54 @@ export function BookStage({ draft, playId, still }: SceneProps) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// 5. Reminders
-// ---------------------------------------------------------------------------
+export function remindWin(draft: BuildState): StoryWin {
+  const { owner } = sampleFor(draft);
+  return {
+    client: `${owner} got a friendly heads-up from you, right on time.`,
+    you: "Reminders and recalls went out while you made coffee.",
+  };
+}
 
 export function RemindStage({ draft, playId, still }: SceneProps) {
-  const beat = useBeats([500, 1600, 2600], playId, still);
+  const beat = useBeats([500, 1600, 2600, 3400], playId, still);
   const name = brandName(draft);
   const sample = sampleFor(draft);
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
+  const bubble = (on: boolean) => ({
+    initial: false as const,
+    animate: on ? { opacity: 1, y: 0 } : { opacity: 0, y: 8 },
+    transition: { type: "spring" as const, stiffness: 300, damping: 24 },
+  });
   return (
-    <Stage>
+    <Stage
+      clock="Tuesday · 8:00 AM"
+      footer={<WinCards win={remindWin(draft)} show={beat >= 4} />}
+    >
       <Phone clinicName={name}>
         <div className={styles.thread}>
-          <div className="text-center text-[10px] text-slate-500">{name}</div>
-          <div className={cn(styles.bubble, styles.bubbleIn, beat >= 1 && styles.bubbleOn)}>
-            Hi {sample.owner}, this is {name}. {sample.pet}&apos;s{" "}
-            {sample.visit.toLowerCase()} is tomorrow at 9:00 AM. See you
-            then!
+          <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-500">
+            <ClinicMark name={name} logo={draft.logo} size={16} />
+            {name}
           </div>
-          <div className={cn(styles.bubble, styles.bubbleIn, beat >= 3 && styles.bubbleOn)}>
+          <motion.div
+            className={cn(styles.bubble, styles.bubbleIn, styles.bubbleOn)}
+            {...bubble(beat >= 1)}
+          >
+            Hi {sample.owner}, this is {name}. {sample.pet}&apos;s{" "}
+            {sample.visit.toLowerCase()} is tomorrow at 9:00 AM. See you then!
+          </motion.div>
+          <motion.div
+            className={cn(styles.bubble, styles.bubbleIn, styles.bubbleOn)}
+            {...bubble(beat >= 3)}
+          >
             {sample.pet} is due for {sample.due}. Book a time online whenever
             it suits you.
-          </div>
+          </motion.div>
         </div>
       </Phone>
       <Desk
         clinicName={name}
+        logo={draft.logo}
         modules={profile.modules}
         active="Reminders"
         title="Tomorrow · Reminders"
@@ -515,97 +626,122 @@ export function RemindStage({ draft, playId, still }: SceneProps) {
           tone={beat >= 2 ? "good" : "neutral"}
         />
         <ScheduleRow time="10:30" pet="Mango" what="Dental" status="Sent" tone="good" />
-        <div className={cn(styles.row, beat >= 3 && styles.rowNew)} style={{ opacity: beat >= 3 ? 1 : 0.4 }}>
+        <motion.div
+          className={cn(styles.row, "!border-l-[var(--b)]")}
+          animate={{ opacity: beat >= 3 ? 1 : 0.45 }}
+        >
           <b>↻</b>
           <span className="truncate">{sample.recall}</span>
           <span className={cn(styles.badge, beat >= 3 && styles.badgeBrand)}>
             {beat >= 3 ? "Sending" : "Ready"}
           </span>
-        </div>
+        </motion.div>
       </Desk>
     </Stage>
   );
 }
 
-// ---------------------------------------------------------------------------
-// 6. The visit
-// ---------------------------------------------------------------------------
-
-
+export function visitWin(draft: BuildState): StoryWin {
+  const { pet } = sampleFor(draft);
+  return {
+    client: `${pet} got your full attention, not your keyboard.`,
+    you: "The note was drafted for you. Review it, sign it, done.",
+  };
+}
 
 export function VisitStage({ draft, playId, still }: SceneProps) {
   const sample = sampleFor(draft);
-  const SOAP_DRAFT = sample.soap.join("\n");
-  const beat = useBeats([600, 4400, 4800, 5200, 5900], playId, still);
-  const [typed, setTyped] = useState(still ? SOAP_DRAFT.length : 0);
+  const soap = sample.soap.join("\n");
+  const beat = useBeats([600, 4400, 4800, 5200, 5900, 6500], playId, still);
+  const [typed, setTyped] = useState(still ? soap.length : 0);
   useEffect(() => {
     if (still) {
-      setTyped(SOAP_DRAFT.length);
+      setTyped(soap.length);
       return;
     }
     setTyped(0);
     let i = 0;
     let timer: ReturnType<typeof setTimeout>;
     const start = setTimeout(function tick() {
-      i = Math.min(SOAP_DRAFT.length, i + 3);
+      i = Math.min(soap.length, i + 3);
       setTyped(i);
-      if (i < SOAP_DRAFT.length) timer = setTimeout(tick, 28);
+      if (i < soap.length) timer = setTimeout(tick, 28);
     }, 700);
     return () => {
       clearTimeout(start);
       clearTimeout(timer);
     };
-    // SOAP_DRAFT is fixed per practice type, which also restarts playId.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playId, still]);
+  }, [playId, still, soap]);
 
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
   const status =
     beat >= 5 ? "Ready for checkout" : beat >= 1 ? "In exam" : "Checked in";
-  const charges = sample.charges.map(
-    (line) => [line.label, money(line.price)] as const,
-  );
   return (
-    <Stage>
+    <Stage
+      clock="Tuesday · 9:00 AM"
+      footer={<WinCards win={visitWin(draft)} show={beat >= 6} />}
+    >
       <Desk
         clinicName={brandName(draft)}
+        logo={draft.logo}
         modules={profile.modules}
         active="Records"
         width={470}
         title={
           <span className="flex items-center gap-2">
             {sample.pet} · {sample.visit}
-            <span className={cn(styles.badge, styles.badgeBrand)}>{status}</span>
+            <motion.span
+              key={status}
+              initial={{ scale: 0.85, opacity: 0.4 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className={cn(styles.badge, styles.badgeBrand)}
+            >
+              {status}
+            </motion.span>
           </span>
         }
       >
-        <div className={cn(styles.note, typed < SOAP_DRAFT.length && typed > 0 && styles.typing)}>
+        <div
+          className={cn(
+            styles.note,
+            typed < soap.length && typed > 0 && styles.typing,
+          )}
+        >
           {typed === 0 ? (
             <span className="text-slate-500">✨ Drafting from your exam…</span>
           ) : (
-            SOAP_DRAFT.slice(0, typed)
+            soap.slice(0, typed)
           )}
         </div>
         <h4 className={cn(styles.deskTitle, "mt-3")}>Charges</h4>
-        {charges.slice(0, Math.max(0, beat - 1)).map(([label, amount]) => (
-          <div key={label} className={styles.line}>
-            <span>{label}</span>
-            <span>{amount}</span>
-          </div>
+        {sample.charges.slice(0, Math.max(0, beat - 1)).map((line) => (
+          <motion.div
+            key={line.label}
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            className={styles.line}
+          >
+            <span>{line.label}</span>
+            <span>{money(line.price)}</span>
+          </motion.div>
         ))}
       </Desk>
     </Stage>
   );
 }
 
-// ---------------------------------------------------------------------------
-// 7. Getting paid
-// ---------------------------------------------------------------------------
-
 const COLLECTED_BEFORE = 1092;
 
+export function paidWin(draft: BuildState): StoryWin {
+  const { owner } = sampleFor(draft);
+  return {
+    client: `${owner} paid from their phone in one tap.`,
+    you: `${money(sampleTotal(draft))} collected before they left. Nothing to chase.`,
+  };
+}
+
 export function PaidStage({ draft, playId, still }: SceneProps) {
-  const beat = useBeats([1200, 1500], playId, still);
+  const beat = useBeats([1200, 1500, 2600], playId, still);
   const sample = sampleFor(draft);
   const total = sampleTotal(draft);
   const after = COLLECTED_BEFORE + total;
@@ -629,10 +765,15 @@ export function PaidStage({ draft, playId, still }: SceneProps) {
   const name = brandName(draft);
   const paid = beat >= 2;
   return (
-    <Stage>
+    <Stage
+      clock="Tuesday · 9:42 AM"
+      footer={<WinCards win={paidWin(draft)} show={beat >= 3} />}
+    >
       <Phone
         clinicName={name}
+        logo={draft.logo}
         subtitle="Invoice #1042"
+        tabs={{ items: ["Home", "Pets", "Visits", "Bills"], active: "Bills" }}
         overlay={
           <PhoneOverlay
             on={paid}
@@ -651,9 +792,12 @@ export function PaidStage({ draft, playId, still }: SceneProps) {
           <div className="my-2 flex justify-between font-bold">
             Total<span>{money(total)}</span>
           </div>
-          <div className={cn(styles.cta, beat === 1 && styles.ctaPressed)}>
+          <motion.div
+            className={styles.cta}
+            animate={{ scale: beat === 1 ? 0.94 : 1 }}
+          >
             Pay {money(total)}
-          </div>
+          </motion.div>
         </div>
       </Phone>
       <div className={styles.desk} style={{ width: 300 }}>
@@ -699,8 +843,7 @@ export function RecordsStage({ draft, playId, still }: SceneProps) {
   const beat = useBeats([300, 650, 1000, 1350], playId, still);
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
   const source = BUILD_SYSTEM_LABELS[draft.currentSystem];
-  const fromPaper =
-    draft.currentSystem === "paper" || draft.currentSystem === "other";
+  const fromPaper = isFromPaper(draft);
   const meters: Array<[string, string]> = [
     ["Clients", "100%"],
     ["Patients", "100%"],
@@ -756,37 +899,69 @@ export function RecordsStage({ draft, playId, still }: SceneProps) {
 }
 
 // ---------------------------------------------------------------------------
-// 9. The gate summary
+// 9. The gate: your day, recapped, and what's waiting inside
 // ---------------------------------------------------------------------------
 
 export function GateStage({ draft }: SceneProps) {
+  const name = brandName(draft);
   const profile = BUILD_PRACTICE_PROFILES[draft.practiceType];
   const offered = draft.services.filter((service) => service.on).length;
-  const fromPaper =
-    draft.currentSystem === "paper" || draft.currentSystem === "other";
+  const tiles = [
+    { big: "1", small: "booking, no phone call" },
+    { big: "2", small: "reminders sent for you" },
+    { big: "1", small: "note drafted for you" },
+    { big: money(sampleTotal(draft)), small: "collected on the spot" },
+  ];
   const lines = [
-    `${displayName(draft)} colours on your portal, booking page & reminders`,
-    `${offered} service${offered === 1 ? "" : "s"} on your price list and booking menu`,
+    `${draft.logo ? "Your logo and " : ""}${name} colours on your portal, booking page & reminders`,
+    `${offered} service${offered === 1 ? "" : "s"} on your price list`,
+    `A booking page ready to publish at /book/${suggestBookingSlug(name) || "your-clinic"}`,
     `Shaped for ${profile.plural}`,
-    "Email and text reminders, ready to switch on",
-    "AI-drafted notes and card payments",
-    fromPaper
+    isFromPaper(draft)
       ? "A spreadsheet import whenever you're ready"
       : `An import from ${BUILD_SYSTEM_LABELS[draft.currentSystem]}, ready to review`,
   ];
   return (
-    <Stage className="!min-h-0">
-      <div className={cn(styles.panel, "max-w-md")}>
-        <b className="text-base">What&apos;s waiting inside</b>
+    <Stage className="!min-h-0 flex-col !items-stretch">
+      <div className="w-full">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Your day at {name}
+        </p>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {tiles.map((tile, i) => (
+            <motion.div
+              key={tile.small}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ type: "spring", stiffness: 320, damping: 24, delay: i * 0.1 }}
+              className="rounded-xl bg-white/95 p-3 shadow-sm"
+            >
+              <div
+                className="font-heading text-2xl font-bold"
+                style={{ color: "var(--b)" }}
+              >
+                {tile.big}
+              </div>
+              <div className="text-[12px] leading-4 text-slate-600">
+                {tile.small}
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      </div>
+      <div className={cn(styles.panel, "w-full")}>
+        <b className="text-base">Waiting inside {name}</b>
         <ul className="mt-3 space-y-2 text-sm">
           {lines.map((line, i) => (
-            <li
+            <motion.li
               key={line}
-              className={cn(styles.check, styles.reveal)}
-              style={{ animationDelay: `${i * 90}ms` }}
+              initial={{ opacity: 0, x: -8 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.4 + i * 0.08 }}
+              className={styles.check}
             >
               {line}
-            </li>
+            </motion.li>
           ))}
         </ul>
       </div>

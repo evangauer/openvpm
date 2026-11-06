@@ -319,3 +319,34 @@ export function inBuilderArm(
 ): boolean {
   return inTreatment(funnelId, percent, "build-your-clinic");
 }
+
+// ---------------------------------------------------------------------------
+// Saving progress by email
+// ---------------------------------------------------------------------------
+
+/** What a person agrees to when they save their build by email. */
+export const BUILD_SAVE_DISCLOSURE_VERSION = "build-v1";
+export const BUILD_SAVE_DISCLOSURE_TEXT =
+  "We'll email you a link to pick up where you left off, plus one follow-up note. Unsubscribe anytime.";
+
+/** The walkthrough's own state, as saved and restored. */
+export const buildSavedStateSchema = z
+  .object({
+    practiceType: z.enum(BUILD_PRACTICE_TYPES),
+    currentSystem: z.enum(BUILD_SYSTEMS),
+    clinicName: z.string().trim().max(120),
+    brandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    services: z
+      .array(
+        z
+          .object({
+            name: z.string().trim().min(1).max(80),
+            price: z.number().finite().min(0).max(BUILD_SERVICE_PRICE_MAX),
+            on: z.boolean(),
+          })
+          .strict(),
+      )
+      .max(BUILD_SERVICE_MAX),
+  })
+  .strict();
+export type BuildSavedState = z.infer<typeof buildSavedStateSchema>;

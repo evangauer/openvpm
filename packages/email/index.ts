@@ -17,3 +17,4 @@ export type { TeamInviteEmailProps } from "./src/templates/TeamInviteEmail";
 export type { TrialWinbackEmailProps } from "./src/templates/TrialWinbackEmail";
 export type { AdoptionEmailProps, AdoptionTip } from "./src/templates/AdoptionEmail";
 export type { NpsSurveyEmailProps } from "./src/templates/NpsSurveyEmail";
+export type { BuildFollowupEmailProps } from "./src/templates/BuildFollowupEmail";

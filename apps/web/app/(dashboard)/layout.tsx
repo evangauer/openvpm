@@ -9,6 +9,7 @@ import { ErrorBoundary } from "@/components/common/error-boundary";
 import { TourProvider } from "@/components/tour/tour-provider";
 import { OnboardingJourneyProvider } from "@/components/onboarding/journey-overlay";
 import { WelcomeProvider } from "@/components/welcome/welcome-provider";
+import { PendingLogoUpload } from "@/components/build/pending-logo-upload";
 import { BrandTheme } from "@/components/brand/brand-theme";
 import { VerifyEmailBanner } from "@/components/layout/verify-email-banner";
 import { DemoConversionBar } from "@/components/demo/demo-conversion-bar";
@@ -43,6 +44,7 @@ export default function DashboardLayout({
     <TourProvider>
       <OnboardingJourneyProvider>
         <WelcomeProvider>
+        <PendingLogoUpload />
         <div className="flex h-screen overflow-hidden">
           <Sidebar className="hidden lg:flex" />
           {mobileNavOpen && (

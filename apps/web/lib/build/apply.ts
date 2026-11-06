@@ -1,7 +1,15 @@
-import { and, eq, isNull } from "drizzle-orm";
-import { services } from "@openpims/db";
+import { and, eq, inArray, isNull } from "drizzle-orm";
+import { appointmentTypes, bookingPages, services } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import type { BuildService } from "@/lib/build/catalog";
+import {
+  BOOKING_SLUG_MAX_LENGTH,
+  BOOKING_WELCOME_MAX_LENGTH,
+  DEFAULT_BOOKING_PAGE_CONFIG,
+  isValidBookingSlug,
+  suggestBookingSlug,
+  type BookingPageConfig,
+} from "@/lib/booking/page-config";
 
 /**
  * Put the services a clinic chose while building into its catalog at the
@@ -44,5 +52,62 @@ export async function applyBuildServices(
         taxable: false,
       });
     }
+  }
+}
+
+/**
+ * Give a built clinic its online booking page, unpublished: a slug from its
+ * name, every starter visit type bookable, and its brand colour. The clinic
+ * reviews hours and publishes it from settings. Runs in a savepoint, so a
+ * slug race or a bad name never fails registration; it just skips the page.
+ */
+export async function setUpBuildBookingPage(
+  tx: Database,
+  input: { practiceId: string; clinicName: string; brandColor: string },
+): Promise<string | null> {
+  const base = suggestBookingSlug(input.clinicName);
+  if (!isValidBookingSlug(base)) return null;
+  try {
+    return await tx.transaction(async (sp) => {
+      const candidates = [
+        base,
+        ...[2, 3, 4, 5].map((n) =>
+          `${base.slice(0, BOOKING_SLUG_MAX_LENGTH - 2)}-${n}`,
+        ),
+      ].filter(isValidBookingSlug);
+      const taken = new Set(
+        (
+          await sp
+            .select({ slug: bookingPages.slug })
+            .from(bookingPages)
+            .where(inArray(bookingPages.slug, candidates))
+        ).map((row) => row.slug),
+      );
+      const slug = candidates.find((candidate) => !taken.has(candidate));
+      if (!slug) return null;
+      const types = await sp
+        .select({ id: appointmentTypes.id })
+        .from(appointmentTypes)
+        .where(eq(appointmentTypes.practiceId, input.practiceId));
+      const config: BookingPageConfig = {
+        ...DEFAULT_BOOKING_PAGE_CONFIG,
+        bookableTypeIds: types.map((type) => type.id),
+        accentColor: input.brandColor.toLowerCase(),
+        welcomeText: `Book a visit with ${input.clinicName.trim()}.`.slice(
+          0,
+          BOOKING_WELCOME_MAX_LENGTH,
+        ),
+      };
+      await sp.insert(bookingPages).values({
+        practiceId: input.practiceId,
+        slug,
+        published: false,
+        config,
+      });
+      return slug;
+    });
+  } catch (error) {
+    console.error("[build] booking page setup skipped:", error);
+    return null;
   }
 }

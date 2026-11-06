@@ -76,6 +76,7 @@ vi.mock("@/lib/email-lifecycle", () => ({
 
 vi.mock("@/lib/build/apply", () => ({
   applyBuildServices: mocks.applyBuildServices,
+  setUpBuildBookingPage: vi.fn(async () => "cedar-mobile-vet"),
 }));
 
 vi.mock("@/lib/onboarding/defaults", () => ({

@@ -12,16 +12,26 @@ import {
 } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, ArrowRight, Loader2, Lock, RotateCcw } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  Loader2,
+  Lock,
+  RotateCcw,
+} from "lucide-react";
 import { trpc } from "@/lib/trpc";
-import { cn } from "@/lib/utils";
 import {
   BUILD_PRACTICE_PROFILES,
   BUILD_SCENE_LABELS,
   BUILD_SCENES,
   BUILD_SYSTEMS,
   BUILD_PRACTICE_TYPES,
+  BUILD_SAVE_DISCLOSURE_TEXT,
+  BUILD_SAVE_DISCLOSURE_VERSION,
   type BuildDraft,
+  type BuildSavedState,
   type BuildScene,
 } from "@/lib/build/catalog";
 import {
@@ -36,9 +46,10 @@ import {
   CLINIC_REGION_OPTIONS,
   type ClinicRegionCode,
 } from "@/lib/locale/clinic-regions";
-import { ClinicMark, buildStyles as styles } from "./mockups";
+import { ClinicMark } from "./mockups";
 import {
   BookStage,
+  brandName,
   BrandControls,
   BrandStage,
   displayName,
@@ -57,6 +68,10 @@ import {
 } from "./scenes";
 
 const STORAGE_KEY = "openvpm_build_v1";
+/** The logo preview lives apart from the draft: it can be ~100 KB. */
+const LOGO_KEY = "openvpm_build_logo";
+/** Read by the workspace after checkout to upload the logo for real. */
+export const PENDING_LOGO_KEY = "openvpm_build_logo_pending";
 
 const INITIAL_STATE: BuildState = {
   practiceType: "companion",
@@ -64,7 +79,16 @@ const INITIAL_STATE: BuildState = {
   clinicName: "",
   brandColor: "#0d9488",
   services: servicesFor("companion"),
+  logo: null,
 };
+
+/** Scenes that tell the day-at-the-clinic story. */
+const STORY_SCENES: ReadonlySet<BuildScene> = new Set([
+  "book",
+  "remind",
+  "visit",
+  "paid",
+]);
 
 interface SceneCopy {
   title: (draft: BuildState) => string;
@@ -90,7 +114,7 @@ const COPY: Record<BuildScene, SceneCopy> = {
       "We started you with what practices like yours usually offer. Keep, drop, or reprice them.",
   },
   book: {
-    title: () => "Watch a client book with you.",
+    title: () => "A client books while you're off the clock.",
     lead: (d) => {
       const { owner, pet } = BUILD_PRACTICE_PROFILES[d.practiceType].sample;
       return `${owner} books ${pet}'s visit from their phone. It lands on ${displayName(d)}'s schedule, and ${pet}'s chart is created from the booking before the visit.`;
@@ -105,7 +129,8 @@ const COPY: Record<BuildScene, SceneCopy> = {
     replay: true,
   },
   visit: {
-    title: () => "The visit, without the paperwork.",
+    title: (d) =>
+      `You focus on ${BUILD_PRACTICE_PROFILES[d.practiceType].sample.pet}. The note writes itself.`,
     lead: (d) =>
       `${BUILD_PRACTICE_PROFILES[d.practiceType].sample.pet} checks in and the whole team sees it. The AI drafts the SOAP note for you to review, and charges flow straight onto the invoice.`,
     replay: true,
@@ -126,9 +151,9 @@ const COPY: Record<BuildScene, SceneCopy> = {
     replay: true,
   },
   gate: {
-    title: (d) => `${displayName(d)} is ready.`,
+    title: (d) => `${brandName(d)} is ready for you.`,
     lead: () =>
-      "Everything you just built is saved. Start your free trial to open your workspace.",
+      "That was your day: clients booked, got their reminders, and paid on their own while you did the work only you can do. Everything you built is saved. Start your free trial to open it.",
   },
 };
 
@@ -166,9 +191,16 @@ function restore(): { state: BuildState; scene: number } | null {
     ) {
       return null;
     }
+    let logo: string | null = null;
+    try {
+      const storedLogo = window.localStorage.getItem(LOGO_KEY);
+      if (storedLogo?.startsWith("data:image/")) logo = storedLogo;
+    } catch {
+      // A missing logo preview is fine.
+    }
     const scene = Number(saved.scene);
     return {
-      state,
+      state: { ...state, logo },
       scene:
         Number.isInteger(scene) && scene >= 0 && scene < BUILD_SCENES.length
           ? scene
@@ -183,6 +215,43 @@ function canContinue(scene: BuildScene, draft: BuildState): boolean {
   if (scene === "brand") return draft.clinicName.trim().length >= 2;
   if (scene === "services") return draft.services.some((s) => s.on);
   return true;
+}
+
+function toSavedState(state: BuildState): BuildSavedState {
+  return {
+    practiceType: state.practiceType,
+    currentSystem: state.currentSystem,
+    clinicName: state.clinicName.trim(),
+    brandColor: state.brandColor.toLowerCase(),
+    services: state.services.map((service) => ({
+      name: service.name,
+      price: Math.round(service.price * 100) / 100,
+      on: service.on,
+    })),
+  };
+}
+
+async function saveProgress(
+  email: string,
+  scene: BuildScene,
+  state: BuildState,
+): Promise<boolean> {
+  try {
+    const response = await fetch("/api/growth/build-save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email,
+        anonymousId: getFunnelVisitorId() ?? undefined,
+        scene,
+        state: toSavedState(state),
+        disclosureVersion: BUILD_SAVE_DISCLOSURE_VERSION,
+      }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 export function toBuildDraft(state: BuildState): BuildDraft {
@@ -223,6 +292,8 @@ export function BuildFlow({
   const [restored, setRestored] = useState(false);
   const [playId, setPlayId] = useState(0);
   const [still, setStill] = useState(false);
+  const [direction, setDirection] = useState(1);
+  const [savedEmail, setSavedEmail] = useState<string | null>(null);
   const enteredAt = useRef(Date.now());
 
   const scene = BUILD_SCENES[index]!;
@@ -233,21 +304,55 @@ export function BuildFlow({
       setDraft(saved.state);
       setIndex(saved.scene);
     }
-    setRestored(true);
+    try {
+      setSavedEmail(window.localStorage.getItem(`${STORAGE_KEY}_email`));
+    } catch {
+      // Without storage the save card simply shows again.
+    }
     setStill(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+    // A resume link from email restores the build saved on the server.
+    const token = new URLSearchParams(window.location.search).get("resume");
+    if (!token) {
+      setRestored(true);
+      return;
+    }
+    void fetch(`/api/growth/build-resume?token=${encodeURIComponent(token)}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body: { state?: BuildSavedState; scene?: BuildScene } | null) => {
+        if (body?.state) {
+          setDraft((prev) => ({ ...prev, ...body.state, logo: prev.logo }));
+          const at = BUILD_SCENES.indexOf(body.scene ?? "practice");
+          setIndex(at >= 0 ? at : 0);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => setRestored(true));
   }, []);
 
   useEffect(() => {
     if (!restored) return;
+    const { logo, ...rest } = draft;
     try {
       window.localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ state: draft, scene: index }),
+        JSON.stringify({ state: rest, scene: index }),
       );
+      if (logo) window.localStorage.setItem(LOGO_KEY, logo);
+      else window.localStorage.removeItem(LOGO_KEY);
     } catch {
       // Progress saving is a convenience; private modes may refuse it.
     }
   }, [draft, index, restored]);
+
+  // Once someone saved by email, keep their saved build current as they go,
+  // so the resume link and the follow-up note reflect where they stopped.
+  useEffect(() => {
+    if (!restored || !savedEmail) return;
+    void saveProgress(savedEmail, scene, draft);
+    // Re-save on scene changes only, not on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index, restored, savedEmail]);
 
   useEffect(() => {
     if (!restored) return;
@@ -278,6 +383,7 @@ export function BuildFlow({
         ms: Math.min(Date.now() - enteredAt.current, 60 * 60 * 1000),
       });
     }
+    setDirection(next > index ? 1 : -1);
     setIndex(Math.max(0, Math.min(BUILD_SCENES.length - 1, next)));
   };
 
@@ -287,6 +393,11 @@ export function BuildFlow({
   const props: SceneProps = { draft, update, playId, still };
   const isGate = scene === "gate";
   const ready = canContinue(scene, draft);
+  const eyebrow = STORY_SCENES.has(scene)
+    ? `A day at ${brandName(draft)}`
+    : isGate
+      ? "Your clinic, ready"
+      : `Building ${brandName(draft)}`;
 
   return (
     <main
@@ -297,7 +408,7 @@ export function BuildFlow({
       <div className="mx-auto w-full max-w-6xl overflow-hidden rounded-3xl bg-white/95 shadow-[0_30px_80px_-30px_rgba(15,23,42,0.35)] ring-1 ring-slate-200/70">
         <header className="flex items-center gap-4 border-b border-slate-100 px-5 py-4 sm:px-8">
           <div className="flex min-w-0 items-center gap-2.5">
-            <ClinicMark name={displayName(draft)} />
+            <ClinicMark name={displayName(draft)} logo={draft.logo} size={28} />
             <span className="truncate font-heading text-base font-semibold">
               {draft.clinicName.trim() || "Your clinic"}
             </span>
@@ -323,14 +434,23 @@ export function BuildFlow({
           </span>
         </header>
 
-        <div
+        <AnimatePresence mode="wait" initial={false} custom={direction}>
+        <motion.div
           key={scene}
-          className={cn(
-            styles.sceneIn,
-            "grid gap-6 px-5 py-6 sm:px-8 sm:py-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-10",
-          )}
+          custom={direction}
+          initial={still ? false : { opacity: 0, x: 40 * direction }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={still ? undefined : { opacity: 0, x: -40 * direction }}
+          transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+          className="grid gap-6 px-5 py-6 sm:px-8 sm:py-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-10"
         >
           <section className="min-w-0">
+            <p
+              className="mb-2 text-xs font-semibold uppercase tracking-[0.12em]"
+              style={{ color: "var(--b)" }}
+            >
+              {eyebrow}
+            </p>
             <h1 className="font-heading text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
               {copy.title(draft)}
             </h1>
@@ -339,6 +459,20 @@ export function BuildFlow({
             </p>
             {copy.note ? (
               <p className="mt-3 text-sm leading-6 text-slate-500">{copy.note}</p>
+            ) : null}
+            {scene === "services" ? (
+              <SaveProgress
+                draft={draft}
+                savedEmail={savedEmail}
+                onSaved={(email) => {
+                  setSavedEmail(email);
+                  try {
+                    window.localStorage.setItem(`${STORAGE_KEY}_email`, email);
+                  } catch {
+                    // Saved on the server either way.
+                  }
+                }}
+              />
             ) : null}
             {Controls ? (
               <div className="mt-6">
@@ -358,6 +492,7 @@ export function BuildFlow({
             {isGate ? (
               <GateForm
                 draft={draft}
+                defaultEmail={savedEmail ?? ""}
                 trialDays={trialDays}
                 monthlyPriceUsd={monthlyPriceUsd}
                 acquisition={acquisition}
@@ -367,7 +502,8 @@ export function BuildFlow({
           <section className="min-w-0">
             <Stage {...props} />
           </section>
-        </div>
+        </motion.div>
+        </AnimatePresence>
 
         <footer className="flex items-center justify-between gap-3 border-t border-slate-100 px-5 py-4 sm:px-8">
           {index > 0 ? (
@@ -405,18 +541,95 @@ export function BuildFlow({
   );
 }
 
+function SaveProgress({
+  draft,
+  savedEmail,
+  onSaved,
+}: {
+  draft: BuildState;
+  savedEmail: string | null;
+  onSaved: (email: string) => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState<"idle" | "saving" | "error">("idle");
+  if (savedEmail) {
+    return (
+      <p className="mt-5 inline-flex items-center gap-2 rounded-full bg-slate-50 px-3 py-1.5 text-sm text-slate-600 ring-1 ring-slate-200">
+        <Check className="h-4 w-4" style={{ color: "var(--b)" }} />
+        Saved for {savedEmail}
+      </p>
+    );
+  }
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const value = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+      setState("error");
+      return;
+    }
+    setState("saving");
+    if (await saveProgress(value, "services", draft)) {
+      onSaved(value);
+      setState("idle");
+    } else {
+      setState("error");
+    }
+  };
+  return (
+    <motion.form
+      onSubmit={submit}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="mt-5 rounded-2xl border border-slate-200 bg-slate-50/70 p-3"
+    >
+      <p className="text-sm font-semibold text-slate-800">
+        Save {brandName(draft)} so you don&apos;t lose it
+      </p>
+      <div className="mt-2 flex gap-2">
+        <input
+          type="email"
+          autoComplete="email"
+          placeholder="you@yourclinic.com"
+          value={email}
+          onChange={(event) => {
+            setEmail(event.target.value);
+            setState("idle");
+          }}
+          aria-label="Email to save your progress"
+          className="h-10 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-[var(--b)]"
+        />
+        <button
+          type="submit"
+          disabled={state === "saving"}
+          className="h-10 rounded-xl px-4 text-sm font-semibold text-white disabled:opacity-60"
+          style={{ background: "var(--b)" }}
+        >
+          {state === "saving" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+        </button>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-slate-500">
+        {state === "error"
+          ? "That didn't save. Check the address and try again."
+          : BUILD_SAVE_DISCLOSURE_TEXT}
+      </p>
+    </motion.form>
+  );
+}
+
 function GateForm({
   draft,
+  defaultEmail,
   trialDays,
   monthlyPriceUsd,
   acquisition,
 }: {
   draft: BuildState;
+  defaultEmail: string;
   trialDays: number;
   monthlyPriceUsd: number;
   acquisition: ReturnType<typeof acquisitionFromSearchParams>;
 }) {
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(defaultEmail);
   const [password, setPassword] = useState("");
   const [country, setCountry] = useState<ClinicRegionCode | "">("");
   const [error, setError] = useState("");
@@ -429,7 +642,13 @@ function GateForm({
       });
       if (data.checkoutUrl && isSafeCheckoutRedirectUrl(data.checkoutUrl)) {
         try {
+          // Hand the logo to the workspace, which uploads it after checkout.
+          if (draft.logo) {
+            window.localStorage.setItem(PENDING_LOGO_KEY, draft.logo);
+          }
           window.localStorage.removeItem(STORAGE_KEY);
+          window.localStorage.removeItem(LOGO_KEY);
+          window.localStorage.removeItem(`${STORAGE_KEY}_email`);
         } catch {
           // The account exists either way.
         }
