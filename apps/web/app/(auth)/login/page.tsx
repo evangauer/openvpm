@@ -42,7 +42,7 @@ function LoginPageInner() {
   const visitorId = useFunnelVisitorId();
   const nextPath = safeAuthNextPath(
     searchParams.get("next"),
-    "/post-login",
+    DEMO_MODE ? "/demo-start" : "/post-login",
   );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -141,7 +141,7 @@ function LoginPageInner() {
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {DEMO_MODE
-              ? "Explore the live product"
+              ? "Try a day in your clinic"
               : "Sign in to your practice"}
           </p>
         </div>
@@ -149,12 +149,11 @@ function LoginPageInner() {
         {DEMO_MODE && (
           <div className="mb-6 rounded-md border border-primary/20 bg-primary/5 p-4">
             <p className="mb-1 text-sm font-semibold text-foreground">
-              Immediate access to the live demo
+              A sample clinic, ready to explore
             </p>
             <p className="text-xs leading-5 text-muted-foreground">
-              No call, sales form, or credit card. We use your email to protect
-              this shared sandbox from automated abuse. We may send one brief
-              email asking what you thought; unsubscribe anytime.
+              Open a patient chart, follow a lab result, or explore billing.
+              No credit card or setup needed.
             </p>
           </div>
         )}
@@ -217,9 +216,15 @@ function LoginPageInner() {
                 ? "Opening demo..."
                 : "Signing in..."
               : DEMO_MODE
-                ? "Open the live demo"
+                ? "Explore the demo"
                 : "Sign in"}
           </button>
+          {DEMO_MODE && (
+            <p className="text-xs leading-5 text-muted-foreground">
+              Your email helps protect this shared demo from abuse. We may send
+              one short feedback email. Unsubscribe anytime.
+            </p>
+          )}
         </form>
 
         {!DEMO_MODE && (
@@ -233,7 +238,7 @@ function LoginPageInner() {
           </p>
         )}
         <p className="mt-2 text-center text-sm text-muted-foreground">
-          Don&apos;t have an account?{" "}
+          {DEMO_MODE ? "Ready for your own workspace?" : "Don't have an account?"}{" "}
           {DEMO_MODE ? (
             <a
               href={buildCloudSignupUrl({
