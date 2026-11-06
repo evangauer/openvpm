@@ -200,7 +200,7 @@ export function DashboardCharts({
       <div className="grid gap-4 md:grid-cols-2">
         <div className="rounded-lg border border-border bg-card p-6">
           <h2 className="mb-4 font-heading text-lg font-semibold">
-            Revenue (Last 30 Days)
+            Net collections (Last 30 Days)
           </h2>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={revenueByDay}>
@@ -222,12 +222,12 @@ export function DashboardCharts({
                   borderRadius: "0.5rem",
                   fontSize: "0.875rem",
                 }}
-                formatter={(value: number) => [fmtMoney(value), "Revenue"]}
+                formatter={(value: number) => [fmtMoney(value), "Net collections"]}
               />
               <Line
                 type="monotone"
                 dataKey="revenue"
-                name="Revenue"
+                name="Net collections"
                 stroke="#0d9488"
                 strokeWidth={2}
                 dot={false}
@@ -239,7 +239,7 @@ export function DashboardCharts({
 
         <div className="rounded-lg border border-border bg-card p-6">
           <h2 className="mb-4 font-heading text-lg font-semibold">
-            Production by Doctor (MTD)
+            Net collections by doctor (MTD)
           </h2>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart
@@ -268,11 +268,11 @@ export function DashboardCharts({
                   borderRadius: "0.5rem",
                   fontSize: "0.875rem",
                 }}
-                formatter={(value: number) => [fmtMoney(value), "Production"]}
+                formatter={(value: number) => [fmtMoney(value), "Net collections"]}
               />
               <Bar
                 dataKey="production"
-                name="Production"
+                name="Net collections"
                 fill="#14b8a6"
                 radius={[0, 4, 4, 0]}
               />
