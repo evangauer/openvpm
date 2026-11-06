@@ -293,6 +293,7 @@ describe("csvToCareReminderRecords", () => {
         },
       ],
       errors: [],
+      sourceRows: [1],
     });
   });
 

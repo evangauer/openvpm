@@ -24,6 +24,7 @@ import {
   type SoapNoteImportRecord,
   type CareReminderImportRecord,
   type ServiceImportRecord,
+  remapRowIssues,
   csvToClientRecords,
   csvToPatientRecords,
   csvToVaccinationRecords,
@@ -1400,6 +1401,7 @@ async function loadClientCsvPlan(
   records: ClientImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   const existing = await db
     .select({
@@ -1422,7 +1424,10 @@ async function loadClientCsvPlan(
     .orderBy(clients.id)
     .for("update");
   const plan = planClientCsvImport(records, source, existing);
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -1444,6 +1449,7 @@ async function loadPatientCsvPlan(
   records: PatientImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   // Keep the lock order practice -> clients -> patients for every migration.
   const clientRows = await db
@@ -1498,7 +1504,10 @@ async function loadPatientCsvPlan(
     clientLookup,
     existingPatients,
   );
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -1830,6 +1839,7 @@ async function loadVaccinationCsvPlan(
   records: VaccinationImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   const patientRows = await loadMigrationPatientReferences(db, practiceId);
   const patientLookup = createPatientReferenceLookup(patientRows);
@@ -1856,7 +1866,10 @@ async function loadVaccinationCsvPlan(
     source,
     existingDoses,
   );
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -2044,6 +2057,7 @@ async function loadCareReminderCsvPlan(
   records: CareReminderImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   const patientRows = await loadMigrationPatientReferences(db, practiceId);
   const patientLookup = createPatientReferenceLookup(patientRows);
@@ -2071,7 +2085,10 @@ async function loadCareReminderCsvPlan(
     source,
     existingReminders,
   );
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -2254,6 +2271,7 @@ async function loadServiceCsvPlan(
   records: ServiceImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   await database.execute(
     sql`select pg_advisory_xact_lock(hashtext(${`service-catalog:${practiceId}`}::text))`,
@@ -2273,7 +2291,10 @@ async function loadServiceCsvPlan(
     .orderBy(services.id)
     .for("update");
   const plan = planServiceImport(records, source, existingServices);
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -2459,6 +2480,7 @@ async function loadSoapNoteCsvPlan(
   records: SoapNoteImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   const patientRows = await loadMigrationPatientReferences(db, practiceId);
   const patientLookup = createPatientReferenceLookup(patientRows);
@@ -2489,7 +2511,10 @@ async function loadSoapNoteCsvPlan(
     source,
     existingNotes,
   );
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -3037,7 +3062,7 @@ export const dataRouter = createRouter({
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
       requireValidImportIntent(input);
-      const { records, errors } = csvToClientRecords(input.csv);
+      const { records, errors, sourceRows } = csvToClientRecords(input.csv);
       const validRecords = parseClientImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
@@ -3126,6 +3151,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {
@@ -3234,7 +3260,7 @@ export const dataRouter = createRouter({
             "This onboarding import session is out of date. Refresh OpenVPM to check clients before pets.",
         });
       }
-      const { records, errors } = csvToPatientRecords(input.csv);
+      const { records, errors, sourceRows } = csvToPatientRecords(input.csv);
       const validRecords = parsePatientImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
@@ -3321,6 +3347,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {
@@ -3420,7 +3447,7 @@ export const dataRouter = createRouter({
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
       requireValidImportIntent(input);
-      const { records, errors } = csvToVaccinationRecords(input.csv);
+      const { records, errors, sourceRows } = csvToVaccinationRecords(input.csv);
       const validRecords = parseVaccinationImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
@@ -3504,6 +3531,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {
@@ -3575,7 +3603,7 @@ export const dataRouter = createRouter({
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
       requireValidImportIntent(input);
-      const { records, errors } = csvToSoapNoteRecords(input.csv);
+      const { records, errors, sourceRows } = csvToSoapNoteRecords(input.csv);
       const validRecords = parseSoapNoteImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
@@ -3659,6 +3687,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {
@@ -3733,7 +3762,7 @@ export const dataRouter = createRouter({
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
       requireValidImportIntent(input);
-      const { records, errors } = csvToCareReminderRecords(input.csv);
+      const { records, errors, sourceRows } = csvToCareReminderRecords(input.csv);
       const validRecords = parseCareReminderImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
@@ -3815,6 +3844,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {
@@ -3878,7 +3908,7 @@ export const dataRouter = createRouter({
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
       requireValidImportIntent(input);
-      const { records, errors } = csvToServiceRecords(input.csv);
+      const { records, errors, sourceRows } = csvToServiceRecords(input.csv);
       const validRecords = parseServiceImportRecords(records);
 
       await assertActivePractice(ctx);
@@ -3892,6 +3922,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {
