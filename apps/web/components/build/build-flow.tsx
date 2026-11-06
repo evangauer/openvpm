@@ -226,11 +226,19 @@ const CONTROLS: Partial<Record<BuildScene, ComponentType<SceneProps>>> = {
   gate: GateSummary,
 };
 
-function restore(): { state: BuildState; scene: number } | null {
+function restore(): {
+  state: BuildState;
+  scene: number;
+  cadence: BillingCadence;
+} | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    const saved = JSON.parse(raw) as { state?: BuildState; scene?: number };
+    const saved = JSON.parse(raw) as {
+      state?: BuildState;
+      scene?: number;
+      cadence?: BillingCadence;
+    };
     const state = saved.state;
     if (
       !state ||
@@ -252,6 +260,7 @@ function restore(): { state: BuildState; scene: number } | null {
     const scene = Number(saved.scene);
     return {
       state: { ...state, logo },
+      cadence: saved.cadence === "year" ? "year" : "month",
       scene:
         Number.isInteger(scene) && scene >= 0 && scene < BUILD_SCENES.length
           ? scene
@@ -344,6 +353,8 @@ export function BuildFlow({
   const [draft, setDraft] = useState<BuildState>(INITIAL_STATE);
   const [index, setIndex] = useState(0);
   const [restored, setRestored] = useState(false);
+  const [cadence, setCadence] = useState<BillingCadence>("month");
+  const [resumeError, setResumeError] = useState<string | null>(null);
   const [playId, setPlayId] = useState(0);
   const [still, setStill] = useState(false);
   const [direction, setDirection] = useState(1);
@@ -357,6 +368,7 @@ export function BuildFlow({
     if (saved) {
       setDraft(saved.state);
       setIndex(saved.scene);
+      setCadence(saved.cadence);
     }
     try {
       setSavedEmail(window.localStorage.getItem(`${STORAGE_KEY}_email`));
@@ -372,7 +384,17 @@ export function BuildFlow({
       return;
     }
     void fetch(`/api/growth/build-resume?token=${encodeURIComponent(token)}`)
-      .then((response) => (response.ok ? response.json() : null))
+      .then((response) => {
+        if (!response.ok) {
+          setResumeError(
+            response.status === 404
+              ? "This saved-progress link has expired or is no longer available. You can continue with this browser’s progress, or start building your clinic below."
+              : "We couldn’t load your saved progress. Try opening the link again, or continue below.",
+          );
+          return null;
+        }
+        return response.json();
+      })
       .then((body: { state?: BuildSavedState; scene?: BuildScene } | null) => {
         if (body?.state) {
           setDraft((prev) => ({ ...prev, ...body.state, logo: prev.logo }));
@@ -380,7 +402,9 @@ export function BuildFlow({
           setIndex(at >= 0 ? at : 0);
         }
       })
-      .catch(() => undefined)
+      .catch(() => setResumeError(
+        "We couldn’t load your saved progress. Try opening the link again.",
+      ))
       .finally(() => setRestored(true));
   }, []);
 
@@ -390,14 +414,14 @@ export function BuildFlow({
     try {
       window.localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ state: rest, scene: index }),
+        JSON.stringify({ state: rest, scene: index, cadence }),
       );
       if (logo) window.localStorage.setItem(LOGO_KEY, logo);
       else window.localStorage.removeItem(LOGO_KEY);
     } catch {
       // Progress saving is a convenience; private modes may refuse it.
     }
-  }, [draft, index, restored]);
+  }, [draft, index, cadence, restored]);
 
   // Once someone saved by email, keep their saved build current as they go,
   // so the resume link and the follow-up note reflect where they stopped.
@@ -518,6 +542,11 @@ export function BuildFlow({
           </span>
         </header>
 
+        {resumeError ? (
+          <p role="alert" className="border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-900 sm:px-8">
+            {resumeError}
+          </p>
+        ) : null}
         <AnimatePresence mode="wait" initial={false} custom={direction}>
           <motion.div
             key={scene}
@@ -579,6 +608,8 @@ export function BuildFlow({
                   monthlyPriceUsd={monthlyPriceUsd}
                   annualPriceUsd={annualPriceUsd}
                   acquisition={acquisition}
+                  cadence={cadence}
+                  setCadence={setCadence}
                 />
               ) : Stage ? (
                 <Stage {...props} />
@@ -801,6 +832,8 @@ function GateForm({
   monthlyPriceUsd,
   annualPriceUsd,
   acquisition,
+  cadence,
+  setCadence,
 }: {
   draft: BuildState;
   defaultEmail: string;
@@ -808,8 +841,9 @@ function GateForm({
   monthlyPriceUsd: number;
   annualPriceUsd: number | null;
   acquisition: ReturnType<typeof acquisitionFromSearchParams>;
+  cadence: BillingCadence;
+  setCadence: (value: BillingCadence) => void;
 }) {
-  const [cadence, setCadence] = useState<BillingCadence>("month");
   const [email, setEmail] = useState(defaultEmail);
   const [password, setPassword] = useState("");
   const [country, setCountry] = useState<ClinicRegionCode | "">("");

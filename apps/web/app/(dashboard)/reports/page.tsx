@@ -65,7 +65,7 @@ type DateRange = { startDate: string; endDate: string };
 type ReportPdfCell = string | number | null | undefined;
 
 const tabs: { key: Tab; label: string; icon: React.ElementType }[] = [
-  { key: "revenue", label: "Revenue", icon: DollarSign },
+  { key: "revenue", label: "Net collections", icon: DollarSign },
   { key: "appointments", label: "Appointments", icon: CalendarCheck },
   { key: "services", label: "Services", icon: BarChart3 },
   { key: "inventory", label: "Inventory", icon: Package },
@@ -343,7 +343,7 @@ function RevenueTab({ dateRange }: { dateRange: DateRange }) {
     diff !== null && diff !== 0
       ? `${diff > 0 ? "+" : ""}${diff}% vs previous period`
       : diff === null && data.total > 0
-        ? "New revenue this period"
+        ? "New collections this period"
         : undefined;
   const revenueRows = [
     [
@@ -356,7 +356,7 @@ function RevenueTab({ dateRange }: { dateRange: DateRange }) {
       `${data.range.previousStartDate} to ${data.range.previousEndDate}`,
       data.previousTotal,
     ],
-    ...data.daily.map((row) => ["daily_revenue", row.date, row.amount]),
+    ...data.daily.map((row) => ["daily_net_collections", row.date, row.amount]),
   ];
   const exportRevenue = () =>
     downloadReportCsv(reportFilename("revenue", data.range), [
@@ -366,7 +366,7 @@ function RevenueTab({ dateRange }: { dateRange: DateRange }) {
   const exportRevenuePdf = () =>
     void downloadReportPdf({
       filename: reportFilename("revenue", data.range, "pdf"),
-      title: "Revenue Report",
+      title: "Net Collections Report",
       subtitle: `${data.range.startDate} to ${data.range.endDate}`,
       columns: ["Metric", "Period", "Amount"],
       rows: revenueRows.map(([metric, period, amount]) => [
@@ -374,11 +374,12 @@ function RevenueTab({ dateRange }: { dateRange: DateRange }) {
         period,
         formatCurrency(Number(amount)),
       ]),
-      emptyMessage: "No revenue data for this period.",
+      emptyMessage: "No collections for this period.",
     });
 
   return (
     <div className="space-y-6">
+      <p className="text-sm text-muted-foreground">Payments less refunds, by date received. Credits and write-offs are excluded.</p>
       <div className="grid gap-4 sm:grid-cols-2">
         <KpiCard
           title="Selected Range"
@@ -396,7 +397,7 @@ function RevenueTab({ dateRange }: { dateRange: DateRange }) {
       <div className="rounded-lg border border-border bg-card p-5">
         <div className="mb-4 flex items-center justify-between gap-3">
           <h3 className="text-sm font-medium text-muted-foreground">
-            Daily Revenue
+            Daily Net Collections
           </h3>
           <ReportExportButtons
             onCsv={exportRevenue}
@@ -412,8 +413,8 @@ function RevenueTab({ dateRange }: { dateRange: DateRange }) {
           <EmptyState
             className="border-0 bg-transparent py-12"
             icon={DollarSign}
-            title="No revenue data for this period"
-            description="Paid invoices will appear here once they fall inside the selected date range."
+            title="No collections for this period"
+            description="Payments and refunds appear on the date received. Credits and write-offs are not cash collections."
           />
         )}
       </div>
@@ -582,7 +583,7 @@ function ServicesTab({ dateRange }: { dateRange: DateRange }) {
   ]);
   const exportServices = () =>
     downloadReportCsv(reportFilename("services", data.range), [
-      ["service", "count", "revenue"],
+      ["service", "count", "billed_charges"],
       ...serviceRows,
     ]);
   const exportServicesPdf = () =>
@@ -590,7 +591,7 @@ function ServicesTab({ dateRange }: { dateRange: DateRange }) {
       filename: reportFilename("services", data.range, "pdf"),
       title: "Services Report",
       subtitle: `${data.range.startDate} to ${data.range.endDate}`,
-      columns: ["Service", "Count", "Revenue"],
+      columns: ["Service", "Count", "Billed charges"],
       rows: serviceRows.map(([name, count, revenue]) => [
         name,
         count,
@@ -640,7 +641,7 @@ function ServicesTab({ dateRange }: { dateRange: DateRange }) {
               <tr className="border-b border-border text-left text-muted-foreground">
                 <th className="pb-2 font-medium">Service</th>
                 <th className="pb-2 font-medium text-right">Count</th>
-                <th className="pb-2 font-medium text-right">Total Revenue</th>
+                <th className="pb-2 font-medium text-right">Billed charges</th>
               </tr>
             </thead>
             <tbody>

@@ -111,7 +111,22 @@ export function brandName(draft: BuildState): string {
 }
 
 export function sampleFor(draft: BuildState) {
-  return BUILD_PRACTICE_PROFILES[draft.practiceType].sample;
+  const sample = BUILD_PRACTICE_PROFILES[draft.practiceType].sample;
+  const selected = draft.services.filter((service) => service.on);
+  const charges = sample.charges.flatMap((line) => {
+    const service = selected.find(
+      (candidate) => candidate.name.trim().toLowerCase() === line.label.toLowerCase(),
+    );
+    return service ? [{ label: service.name, price: service.price }] : [];
+  });
+  // A custom-only catalog still gets a useful preview, without inventing fees.
+  return {
+    ...sample,
+    charges: charges.length ? charges : selected.slice(0, 3).map((service) => ({
+      label: service.name,
+      price: service.price,
+    })),
+  };
 }
 
 export function sampleTotal(draft: BuildState): number {

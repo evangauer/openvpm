@@ -23,7 +23,7 @@ describe("reports export UI", () => {
     expect(source).toContain("generateReportPdf");
     expect(source).toContain('Export CSV');
     expect(source).toContain('Export PDF');
-    expect(source).toContain('title: "Revenue Report"');
+    expect(source).toContain('title: "Net Collections Report"');
     expect(source).toContain('title: "Appointments Report"');
     expect(source).toContain('title: "Services Report"');
     expect(source).toContain('title: "Inventory Alerts Report"');
@@ -101,7 +101,7 @@ describe("reports export UI", () => {
     );
 
     expect(source).toContain('import { EmptyState } from "@/components/common/empty-state"');
-    expect(revenueBlock).toContain('title="No revenue data for this period"');
+    expect(revenueBlock).toContain('title="No collections for this period"');
     expect(appointmentsBlock).toContain('title="No doctor breakdown available"');
     expect(inventoryBlock).toContain('title="All stock levels OK"');
   });

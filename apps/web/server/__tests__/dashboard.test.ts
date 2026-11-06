@@ -25,6 +25,7 @@ function createDashboardDb(selectResults: unknown[][]) {
     const result = results.shift() ?? [];
     const builder = {
       from: vi.fn(() => builder),
+      innerJoin: vi.fn(() => builder),
       leftJoin: vi.fn(() => builder),
       where: vi.fn(() => builder),
       groupBy: vi.fn(() => builder),
@@ -143,10 +144,10 @@ describe("dashboard router", () => {
     expect(source).not.toContain("practice?.timezone");
     expect(source).toContain("dateInputUtcRangeForTimeZone(new Date(), timezone)");
     expect(source).toContain("lt(appointments.startTime, today.end)");
-    expect(source).toContain("lt(invoices.createdAt, today.end)");
+    expect(source).toContain("lt(payments.receivedAt, today.end)");
     expect(source).toContain("monthStartDateInput(today.date)");
     expect(source).toContain("timezone(${reportTimeZone}, ${appointments.startTime})");
-    expect(source).toContain("timezone(${reportTimeZone}, ${invoices.createdAt})");
+    expect(source).toContain("timezone(${reportTimeZone}, ${payments.receivedAt})");
     expect(source).toContain("coalesce(${users.name}, 'Unassigned')");
     expect(source).toContain("eq(invoices.appointmentId, appointments.id)");
     expect(source).toContain("eq(appointments.practiceId, ctx.practiceId)");
@@ -172,6 +173,6 @@ describe("dashboard router", () => {
     expect(source).not.toContain(
       "date_trunc('day', ${appointments.startTime})"
     );
-    expect(source).not.toContain("date_trunc('day', ${invoices.createdAt})");
+    expect(source).not.toContain("date_trunc('day', ${payments.receivedAt})");
   });
 });
