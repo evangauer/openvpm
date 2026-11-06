@@ -4,6 +4,7 @@ import { createRouter, protectedProcedure } from "../trpc";
 import {
   appointments,
   invoices,
+  payments,
   patients,
   practices,
   users,
@@ -118,20 +119,22 @@ export const dashboardRouter = createRouter({
           )
         ),
 
-      // Revenue MTD (paid invoices this month)
+      // Net collections MTD (payments less refunds received this month)
       ctx.db
         .select({
-          total: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+          total: sql<string>`coalesce(sum(${payments.amount}::numeric), 0)`,
         })
-        .from(invoices)
+        .from(payments)
+        .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
         .where(
           and(
             eq(invoices.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
             isNull(invoices.deletedAt),
-            eq(invoices.status, "paid"),
-            gte(invoices.createdAt, monthStart),
-            lt(invoices.createdAt, today.end)
+            isNull(payments.deletedAt),
+            eq(invoices.isEstimate, false),
+            gte(payments.receivedAt, monthStart),
+            lt(payments.receivedAt, today.end)
           )
         ),
 
@@ -238,28 +241,30 @@ export const dashboardRouter = createRouter({
       timezone
     ).start;
     const revenueDay = sql`
-      date_trunc('day', timezone(${reportTimeZone}, ${invoices.createdAt}))
+      date_trunc('day', timezone(${reportTimeZone}, ${payments.receivedAt}))
     `;
 
     const revenueByDayRows = await ctx.db
       .select({
         day: sql<string>`to_char(${revenueDay}, 'Mon DD')`,
         dayOrder: sql<string>`to_char(${revenueDay}, 'YYYY-MM-DD')`,
-        revenue: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+        revenue: sql<string>`coalesce(sum(${payments.amount}::numeric), 0)`,
       })
-      .from(invoices)
+      .from(payments)
+      .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
       .where(
         and(
           eq(invoices.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
           isNull(invoices.deletedAt),
-          eq(invoices.status, "paid"),
-          gte(invoices.createdAt, thirtyDaysAgo),
-          lt(invoices.createdAt, today.end)
+          isNull(payments.deletedAt),
+          eq(invoices.isEstimate, false),
+          gte(payments.receivedAt, thirtyDaysAgo),
+          lt(payments.receivedAt, today.end)
         )
       )
       .groupBy(revenueDay)
-      .orderBy(sql`min(${invoices.createdAt})`);
+      .orderBy(sql`min(${payments.receivedAt})`);
 
     const revenueByDay = revenueByDayRows.map((r) => ({
       date: r.day,
@@ -299,14 +304,15 @@ export const dashboardRouter = createRouter({
       value: Number(r.count),
     }));
 
-    // --- Production by doctor (month to date paid invoices) ---
+    // --- Net collections by doctor (month to date payments less refunds) ---
     const doctorProductionName = sql<string>`coalesce(${users.name}, 'Unassigned')`;
     const productionByDoctorRows = await ctx.db
       .select({
         doctorName: doctorProductionName,
-        production: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+        production: sql<string>`coalesce(sum(${payments.amount}::numeric), 0)`,
       })
-      .from(invoices)
+      .from(payments)
+      .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
       .leftJoin(
         appointments,
         and(
@@ -329,13 +335,14 @@ export const dashboardRouter = createRouter({
           eq(invoices.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
           isNull(invoices.deletedAt),
-          eq(invoices.status, "paid"),
-          gte(invoices.createdAt, monthStart),
-          lt(invoices.createdAt, today.end)
+          isNull(payments.deletedAt),
+          eq(invoices.isEstimate, false),
+          gte(payments.receivedAt, monthStart),
+          lt(payments.receivedAt, today.end)
         )
       )
       .groupBy(doctorProductionName)
-      .orderBy(sql`coalesce(sum(${invoices.total}::numeric), 0) desc`);
+      .orderBy(sql`coalesce(sum(${payments.amount}::numeric), 0) desc`);
 
     const productionByDoctor = productionByDoctorRows.slice(0, 8).map((r) => ({
       doctorName: r.doctorName,

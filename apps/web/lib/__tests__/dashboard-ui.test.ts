@@ -69,11 +69,11 @@ describe("dashboard analytics UI", () => {
     );
 
     expect(source).toContain("type ProductionByDoctorPoint");
-    expect(source).toContain("Production by Doctor (MTD)");
+    expect(source).toContain("Net collections by doctor (MTD)");
     expect(source).toContain('dataKey="doctorName"');
     expect(source).toContain('dataKey="production"');
     expect(source).toContain(
-      'formatter={(value: number) => [fmtMoney(value), "Production"]}',
+      'formatter={(value: number) => [fmtMoney(value), "Net collections"]}',
     );
   });
 
