@@ -22,6 +22,8 @@ jobs:
             test: golden-clinic
           - name: Disposable restore drill
             test: disposable-restore
+          - name: Newsletter consent and delivery
+            test: newsletter
     services:
       postgres:
         image: postgres:16-alpine
@@ -42,6 +44,7 @@ jobs:
       OPENPIMS_APP_DB_PASSWORD: openpims_app
       GOLDEN_CLINIC_DB_INTEGRATION: "1"
       DISPOSABLE_RESTORE_DB_INTEGRATION: "1"
+      NEWSLETTER_DB_INTEGRATION: "1"
       MESSAGING_PROVISIONING_ENABLED: "false"
       MESSAGING_INBOUND_ENABLED: "false"
       MESSAGING_SENDING_ENABLED: "false"
@@ -64,6 +67,8 @@ jobs:
         env:
           OFFLINE_WORKSPACE_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/offline-workspace.integration.test.ts
+      - if: matrix.test == 'newsletter'
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/newsletter-delivery.integration.test.ts
 
   build:
     runs-on: ubuntu-latest

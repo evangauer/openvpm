@@ -15,6 +15,7 @@ export const SECRET_INDEPENDENT_PATH_PREFIXES = [
   "/email-preferences",
   "/api/growth",
   "/feedback",
+  "/newsletter",
   "/sms",
 ];
 
