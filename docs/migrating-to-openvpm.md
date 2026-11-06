@@ -58,6 +58,15 @@ write; the reviewed CSV dry run remains authoritative.
 
 Where: **Settings → Data → Import**. Clients and patients can also be brought in during onboarding in the "Bring your real data" step; vaccine and medical history are done from Settings → Data. Each step shows a dry-run report first: rows parsed, rows that will import, duplicates, unmatched owners or pets, and per-row issues with row numbers.
 
+In Settings, repeated issues are grouped with the first 20 affected data-row
+numbers. **Download rows to review** saves a local CSV worksheet containing all
+affected rows and their issues, including warnings for rows that may still
+import. Data-row numbers start at 1 after the header and exclude blank lines;
+quoted multiline fields count as one row. Fix the original export and preview
+it again before confirming. A malformed file must be repaired before its rows
+can be downloaded. The worksheet adds diagnostic columns and protects
+formula-like cells for spreadsheet viewing; it is not an automatic retry file.
+
 ## Pilot operator checklist
 
 The smallest supported production pilot is a reviewed clients-and-patients migration into a new practice before staff enter live records. Add vaccinations and medical history only after the clinic accepts the owner/patient links.
