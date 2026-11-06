@@ -21,6 +21,8 @@ COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
 COPY . .
 
+ARG NODE_OPTIONS
+
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build --filter=@openpims/web
 
