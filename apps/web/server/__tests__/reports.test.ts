@@ -298,10 +298,10 @@ describe("reports", () => {
     expect(source).toContain("await getReportDateRange(ctx, input)");
     expect(source).toContain("lt(invoices.createdAt, range.endExclusive)");
     expect(source).toContain(
-      "lt(invoices.createdAt, range.previousEndExclusive)"
+      "lt(payments.receivedAt, range.previousEndExclusive)"
     );
     expect(source).toContain("lt(appointments.startTime, range.endExclusive)");
-    expect(source).toContain("timezone(${reportTimeZone}, ${invoices.createdAt})");
+    expect(source).toContain("timezone(${reportTimeZone}, ${payments.receivedAt})");
     expect(source).not.toContain(
       "date_trunc('day', ${invoices.createdAt})"
     );
