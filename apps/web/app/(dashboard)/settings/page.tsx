@@ -1,5 +1,7 @@
 "use client";
 
+import { ImportRowIssues } from "@/components/settings/import-row-issues";
+
 import { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
@@ -4455,7 +4457,7 @@ function DataTab() {
                   </div>
                   <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <ImportStat
-                      label="Rows parsed"
+                      label="Valid rows"
                       value={importPreview.total}
                     />
                     <ImportStat
@@ -4494,24 +4496,13 @@ function DataTab() {
                     />
                   </div>
 
-                  {importPreview.errors.length > 0 && (
-                    <div className="mt-4 space-y-1">
-                      <p className="text-sm font-medium text-destructive">
-                        {importPreview.errors.length} row issue(s):
-                      </p>
-                      <ul className="max-h-40 space-y-0.5 overflow-y-auto text-xs text-destructive">
-                        {importPreview.errors.map((err, i) => (
-                          <li key={i}>{err}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                  <ImportRowIssues errors={importPreview.errors} csv={csvText} />
                   <p className="mt-4 text-xs text-muted-foreground">
                     Only the{" "}
                     {importPreview.willInsert +
                       (importPreview.willReconcile ?? 0)}{" "}
-                    listed changes will be saved. {importPreview.errors.length}{" "}
-                    issue row(s) will be skipped.
+                    listed changes will be saved. Review any reported issues first;
+                    some rows may import with a warning.
                   </p>
                   <p className="mt-2 text-xs font-medium text-amber-700">
                     Start with a small representative sample. A confirmed import

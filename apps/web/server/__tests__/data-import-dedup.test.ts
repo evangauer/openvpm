@@ -127,6 +127,20 @@ afterEach(() => {
 });
 
 describe("data import duplicate handling", () => {
+  it("reports duplicate checks against source CSV rows after a rejected row", async () => {
+    const { db, insertValues } = createDb([[{ id: CLIENT_ID, email: "existing@example.com" }]]);
+    const result = await callerWithDb(db).importClientsCsv({
+      csv: "First Name,Last Name,Email\nIncomplete,,bad@example.com\nExisting,Owner,existing@example.com\nNew,Owner,new@example.com",
+      dryRun: true,
+    });
+    expect(result).toMatchObject({ willInsert: 1, duplicates: 1 });
+    expect(result.errors).toEqual([
+      "Row 1: firstName and lastName are required.",
+      "Row 2: Skipped a duplicate client.",
+    ]);
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
   it("bounds compatibility for pre-deploy import tabs", () => {
     expect(
       legacyImportCompatibilityOpen(
