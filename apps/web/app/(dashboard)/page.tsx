@@ -118,8 +118,8 @@ const kpiConfig = [
   },
   {
     key: "revenueMtd" as const,
-    label: "Revenue (MTD)",
-    description: "Paid invoices this month",
+    label: "Net collections (MTD)",
+    description: "Payments less refunds this month",
     icon: DollarSign,
     isCurrency: true,
   },
@@ -259,8 +259,8 @@ export default function DashboardPage() {
       chartData.appointmentsByDay.some(
         (d) => d.completed + d.scheduled + d.cancelled > 0,
       ) ||
-      chartData.revenueByDay.some((d) => d.revenue > 0) ||
-      chartData.productionByDoctor.some((d) => d.production > 0));
+      chartData.revenueByDay.some((d) => d.revenue !== 0) ||
+      chartData.productionByDoctor.some((d) => d.production !== 0));
 
   return (
     <div className="space-y-8">

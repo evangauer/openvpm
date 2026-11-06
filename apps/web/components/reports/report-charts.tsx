@@ -44,7 +44,7 @@ export function RevenueLineChart({
           tickFormatter={(value) => `$${value}`}
         />
         <Tooltip
-          formatter={(value: number) => [formatCurrency(value), "Revenue"]}
+          formatter={(value: number) => [formatCurrency(value), "Net collections"]}
           contentStyle={{
             backgroundColor: "hsl(var(--card))",
             border: "1px solid hsl(var(--border))",
