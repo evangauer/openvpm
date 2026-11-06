@@ -88,6 +88,16 @@ import {
   type SceneProps,
 } from "./scenes";
 
+/**
+ * The welcome screen's soft pastel gradient, with a touch of the OpenVPM
+ * teal glowing in from the corners.
+ */
+const PAGE_BACKGROUND = [
+  "radial-gradient(60% 55% at 100% 100%, hsl(166 91% 32% / 0.16), transparent 70%)",
+  "radial-gradient(45% 40% at 0% 0%, hsl(166 91% 32% / 0.07), transparent 70%)",
+  "linear-gradient(135deg, #fff7ed 0%, #f5f3ff 30%, #fdf2f8 60%, #ecfdf5 100%)",
+].join(", ");
+
 const STORAGE_KEY = "openvpm_build_v1";
 /** The logo preview lives apart from the draft: it can be ~100 KB. */
 const LOGO_KEY = "openvpm_build_logo";
@@ -471,8 +481,13 @@ export function BuildFlow({
     <MotionConfig reducedMotion="user">
     <main
       id="main-content"
-      className="min-h-screen bg-slate-100/70 px-3 py-4 text-slate-900 sm:px-6 sm:py-8"
-      style={{ "--b": draft.brandColor } as CSSProperties}
+      className="flex min-h-screen flex-col justify-center px-3 py-4 text-slate-900 sm:px-6 sm:py-8"
+      style={
+        {
+          "--b": draft.brandColor,
+          background: PAGE_BACKGROUND,
+        } as CSSProperties
+      }
     >
       <div className="mx-auto flex w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white">
         <header className="flex h-16 items-center gap-6 border-b border-slate-100 px-5 sm:px-8">
@@ -511,7 +526,7 @@ export function BuildFlow({
             animate={{ opacity: 1, x: 0 }}
             exit={still ? undefined : { opacity: 0, x: -24 * direction }}
             transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-            className="grid gap-8 px-5 py-6 sm:px-8 sm:py-8 lg:min-h-[600px] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-12"
+            className="grid gap-8 px-5 py-6 sm:px-8 sm:py-8 lg:min-h-[630px] lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:gap-12"
           >
             <section className="min-w-0 lg:pt-1">
               <h1 className="font-heading text-[28px] font-semibold leading-[1.15] tracking-tight sm:text-[32px]">
