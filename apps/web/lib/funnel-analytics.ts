@@ -12,6 +12,10 @@ export const FUNNEL_EVENTS = {
   demoGateViewed: "demo_gate_viewed",
   demoGateSubmitted: "demo_gate_submitted",
   demoRoleSelected: "demo_role_selected",
+  demoWelcomeViewed: "demo_welcome_viewed",
+  demoWorkflowSelected: "demo_workflow_selected",
+  demoWorkflowStarted: "demo_workflow_started",
+  demoWelcomeSkipped: "demo_welcome_skipped",
   demoToolOpened: "demo_tool_opened",
   demoCtaStartClinic: "demo_cta_start_clinic",
   signupLand: "signup_land",
@@ -40,6 +44,7 @@ export type FunnelToolId =
   | "client_portal"
   | "patients"
   | "clients"
+  | "lab_results"
   | "records"
   | "billing"
   | "inbox"
@@ -56,6 +61,7 @@ const PATH_TOOL_MAP: Array<{ prefix: string; tool: FunnelToolId }> = [
   { prefix: "/portal", tool: "client_portal" },
   { prefix: "/patients", tool: "patients" },
   { prefix: "/clients", tool: "clients" },
+  { prefix: "/lab-results", tool: "lab_results" },
   { prefix: "/records", tool: "records" },
   { prefix: "/billing", tool: "billing" },
   { prefix: "/inbox", tool: "inbox" },

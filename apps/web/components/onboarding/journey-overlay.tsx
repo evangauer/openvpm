@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { firstRunMode } from "@/lib/welcome/first-run";
-import { FUNNEL_EVENTS } from "@/lib/funnel-analytics";
+import { FUNNEL_EVENTS, isDemoMode } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import {
   DEFAULT_ONBOARDING_INTENT,
@@ -127,6 +127,8 @@ export function OnboardingJourneyProvider({
     // greeting; the wizard opens on demand (welcome footer, first-win
     // offer, activation checklist). The personalized builder is the default;
     // NEXT_PUBLIC_FIRST_RUN_MODE=welcome remains the rollback path.
+    // The shared demo has its own short entry flow, never clinic setup.
+    if (isDemoMode()) return;
     if (firstRunMode() === "welcome") return;
     // Wait until the setup state is loaded so the resume point is stable.
     if (!onboardingStatus.data || !onboardingState.data) {

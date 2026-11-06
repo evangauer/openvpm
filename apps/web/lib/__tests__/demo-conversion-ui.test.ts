@@ -27,7 +27,7 @@ describe("demo conversion bridge UI", () => {
     expect(demoAccessRoute).toContain("await recordAcceptedDemoGate");
     expect(login).toContain("FUNNEL_EVENTS.demoCtaStartClinic");
     expect(login).toContain("buildCloudSignupUrl");
-    expect(login).toContain("Open the live demo");
+    expect(login).toContain("Explore the demo");
     expect(login).not.toContain("password123");
     expect(login).not.toContain("View raw credentials");
     expect(login.match(/min-h-11/g)?.length).toBeGreaterThanOrEqual(2);
