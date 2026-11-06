@@ -2,6 +2,11 @@ import * as React from "react";
 import { render } from "@react-email/render";
 import { WelcomeEmail, type WelcomeEmailProps } from "./templates/WelcomeEmail";
 import {
+  BuildFollowupEmail,
+  buildFollowupSubject,
+  type BuildFollowupEmailProps,
+} from "./templates/BuildFollowupEmail";
+import {
   TeamInviteEmail,
   teamInviteSubject,
   type TeamInviteEmailProps,
@@ -166,5 +171,14 @@ export async function renderNpsSurveyEmail(
   return {
     subject: npsSurveySubject(),
     html: await render(<NpsSurveyEmail {...p} />),
+  };
+}
+
+export async function renderBuildFollowupEmail(
+  p: BuildFollowupEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: buildFollowupSubject(p.step, p.clinicName),
+    html: await render(<BuildFollowupEmail {...p} />),
   };
 }

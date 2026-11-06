@@ -3,6 +3,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   timestamp,
   uniqueIndex,
@@ -42,6 +43,11 @@ export const growthLeads = pgTable(
     disclosureVersion: varchar("disclosure_version", { length: 32 }).notNull(),
     /** Set when a person takes over; automated follow-up stops. */
     pausedAt: timestamp("paused_at", { withTimezone: true }),
+    /**
+     * "Build your clinic" progress the person chose to save: the draft, the
+     * scene reached, when, and the disclosure shown when they saved it.
+     */
+    buildProgress: jsonb("build_progress"),
   },
   (table) => ({
     emailHashUq: uniqueIndex("growth_leads_email_hash_uq").on(table.emailHash),
@@ -55,7 +61,7 @@ export const growthLeads = pgTable(
     ),
     sourceCheck: check(
       "growth_leads_source_check",
-      sql`${table.source} in ('demo', 'newsletter')`,
+      sql`${table.source} in ('demo', 'newsletter', 'build')`,
     ),
   }),
 );

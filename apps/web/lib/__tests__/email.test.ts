@@ -894,6 +894,33 @@ describe("lifecycle email branding", () => {
     expect(payload.html).toContain("/settings?tab=staff");
   });
 
+  it("sends the build follow-up with a signed link back into the saved build", async () => {
+    stubGrowthEmailEnv();
+    const { sendBuildFollowupEmail } = await loadEmail();
+
+    await sendBuildFollowupEmail({
+      to: "dr.ray@harborview.test",
+      leadId: "00000000-0000-4000-8000-0000000000aa",
+      step: 1,
+      state: {
+        practiceType: "companion",
+        currentSystem: "avimark",
+        clinicName: "Harbor View Animal Clinic",
+        brandColor: "#e8590c",
+        services: [],
+      },
+      anonymousId: "11111111-1111-4111-8111-111111111111",
+      idempotencyKey: "lead:build-followup:v1:x:1",
+    });
+
+    const [payload] = mocks.resendSend.mock.calls[0] ?? [];
+    expect(payload.subject).toBe("Harbor View Animal Clinic is saved");
+    expect(payload.html).toContain("https://app.openvpm.com/start?resume=");
+    expect(payload.html).toContain("utm_campaign=build_followup_1");
+    expect(payload.html).toContain("funnel_id=11111111-1111-4111-8111-111111111111");
+    expect(payload.html).toContain("#e8590c");
+  });
+
   it("sends demo follow-up with tool copy and attributed signup links", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv(

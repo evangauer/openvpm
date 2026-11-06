@@ -607,6 +607,72 @@ dedupe key, and an eligibility re-check under the send lock. Self-hosted
 deployments never run these campaigns. Apply migration `0113_practice_nps`
 and `pnpm db:rls` before enabling.
 
+### Build your clinic
+
+`/start` is a guided signup for the hosted service. The clinic picks how it
+practices and the system it uses today, names the clinic, chooses a brand
+color, and picks from recommended services or adds its own, with prices. It
+then watches its own clinic in
+action, in mockups that carry its name and color: a client booking online,
+reminders going out, a visit with an AI-drafted note, and an invoice paid by
+card. Each moment comes with a few lines on what it means for the clinic, its
+team, and its clients. It sees what an import of its records looks like, and
+how to ask for anything it is missing. Nothing is created
+until the last step, the card gate: the clinic picks monthly or annual billing
+(annual is offered only when `STRIPE_PRICE_CLOUD_LOCATION_ANNUAL` is set), and
+email, password, and country create the account and send it to Stripe Checkout
+for the 14-day trial on that plan. Choices are kept in the browser until then.
+
+Every mockup is drawn on one fixed canvas that scales to the screen, so the
+windows and phones keep the same size from step to step.
+
+Story scenes run as a day at the clinic, with a clock and, at the end of each
+moment, what the client gained and what the vet gained. The clinic can upload
+its logo: it is resized in the browser, its main color becomes the brand
+color, and it travels with the build. After checkout, the workspace uploads
+it through the regular logo upload on the first visit with an active trial,
+and never replaces a logo the clinic already has.
+
+On the booking scene the clinic can save its build by email ("We'll send a
+link to pick up where you left off. You'll only hear from us when it's worth
+your time."). The field is focused on arrival on devices with a keyboard, an
+address typed but not submitted is saved on Continue, and continuing with an
+empty field asks once whether to skip saving. Saved
+builds live in `growth_leads.build_progress` (migration `0114_build_progress`)
+and stay current as the person moves through scenes. The hourly
+`/api/cron/build-followup` sweep, default-off behind `BUILD_FOLLOWUP_ENABLED`
+and a prospective `BUILD_FOLLOWUP_ROLLOUT_AT`, sends at most two personal notes
+counted from the last save: a resume link after 2 hours and an offer of help
+after 3 days. Each note shows the clinic's name in its color and links to
+`/start?resume=<signed token>`, which restores the saved build in any browser.
+Creating an account with that address, or pausing the lead, ends the notes.
+An address already known from the demo keeps its demo consent and gains the
+build alongside.
+
+On registration the workspace opens built:
+
+- the brand color is applied;
+- the chosen services are added to the catalog at the chosen prices, or
+  reprice matching starter services;
+- an unpublished online booking page is created from the clinic's name, with
+  every starter visit type bookable and the brand color, ready to review and
+  publish from settings;
+- guided setup starts at the import step for clinics moving from another
+  system;
+- the practice records `settings.buildFlow` and the experiment arm.
+
+`HOSTED_BUILDER_PERCENT` (0-100, default 0) sends that share of card-required
+visitors from `/register` to `/start`. Assignment is a stable hash of the
+funnel visitor id, separate from the preview experiment. Builder signups always
+gate on the card, even when `HOSTED_PREVIEW_PERCENT` is set. Self-hosted
+deployments redirect `/start` to `/register`.
+
+Each scene sends `build_scene_viewed` and `build_scene_completed` funnel events
+(scene, practice type, current system, service count, and time on the scene;
+no contact details), and the gate sends `build_gate_submitted`. The
+platform-admin page shows how many visitors reached each scene in the last 30
+days, the median time per scene, gate submissions, and cards added.
+
 ### Preview before card
 
 `HOSTED_PREVIEW_PERCENT` (0-100, default 0) sends that share of card-required
@@ -789,6 +855,7 @@ set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_CHECKOUT_RECOVERY_URL`,
 `CRON_HEARTBEAT_DEMO_FOLLOWUP_URL`,
 `CRON_HEARTBEAT_CUSTOMER_LIFECYCLE_URL`,
+`CRON_HEARTBEAT_BUILD_FOLLOWUP_URL`,
 `CRON_HEARTBEAT_WELLNESS_BILLING_URL`,
 `CRON_HEARTBEAT_RATE_LIMIT_CLEANUP_URL`,
 `CRON_HEARTBEAT_AUTH_CLEANUP_URL`,

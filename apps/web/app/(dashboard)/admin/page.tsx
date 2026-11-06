@@ -17,6 +17,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { PageLoading } from "@/components/common/loading";
 import { SmsRecoveryConsole } from "@/components/admin/sms-recovery-console";
 import { ClinicPilotConsole } from "@/components/admin/clinic-pilot-console";
+import { BUILD_SCENE_LABELS } from "@/lib/build/catalog";
 import { DEMO_DISCLOSURE_FOLLOWUP_V2 } from "@/lib/growth/demo-disclosure";
 
 const EMPTY_UUID = "00000000-0000-4000-8000-000000000000";
@@ -111,6 +112,9 @@ export default function AdminPage() {
   const { data: demoLeads, error: demoLeadsError } =
     trpc.admin.demoLeads.useQuery(undefined, { retry: false });
   const { data: nps } = trpc.admin.nps.useQuery(undefined, { retry: false });
+  const { data: buildFunnel } = trpc.admin.buildFunnel.useQuery(undefined, {
+    retry: false,
+  });
   const { data: previewExperiment } = trpc.admin.previewExperiment.useQuery(
     undefined,
     { retry: false },
@@ -705,6 +709,55 @@ export default function AdminPage() {
           </p>
         )}
       </div>
+
+      {/* Build your clinic: where visitors leave */}
+      {buildFunnel && buildFunnel.scenes[0]!.reached > 0 ? (
+        <div className="mt-6 rounded-lg border border-border bg-card p-5">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <TrendingUp className="h-4 w-4" />
+            <span className="text-sm">Build your clinic</span>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Visitors who reached each scene in the last 30 days, with the
+            median time spent before continuing.
+          </p>
+          <div className="mt-4 space-y-1.5">
+            {buildFunnel.scenes.map((step) => {
+              const first = buildFunnel.scenes[0]!.reached || 1;
+              const share = Math.round((step.reached / first) * 100);
+              return (
+                <div
+                  key={step.scene}
+                  className="grid grid-cols-[110px_1fr_110px] items-center gap-3 text-sm"
+                >
+                  <span className="text-muted-foreground">
+                    {BUILD_SCENE_LABELS[step.scene]}
+                  </span>
+                  <div className="h-2.5 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-primary"
+                      style={{ width: `${share}%` }}
+                    />
+                  </div>
+                  <span className="tabular-nums">
+                    {step.reached}{" "}
+                    <span className="text-xs text-muted-foreground">
+                      {share}%
+                      {step.medianSeconds != null
+                        ? ` · ${step.medianSeconds}s`
+                        : ""}
+                    </span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-sm tabular-nums">
+            {buildFunnel.submitted} submitted the card step ·{" "}
+            {buildFunnel.addedCard} added a card
+          </p>
+        </div>
+      ) : null}
 
       {/* Net Promoter Score */}
       {nps && nps.responses > 0 ? (

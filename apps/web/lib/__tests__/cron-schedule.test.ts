@@ -20,6 +20,7 @@ describe("Vercel cron schedule", () => {
         "/api/cron/checkout-recovery",
         "/api/cron/demo-followup",
         "/api/cron/customer-lifecycle",
+        "/api/cron/build-followup",
         "/api/cron/wellness-billing",
         "/api/cron/rate-limit-cleanup",
         "/api/cron/auth-cleanup",
@@ -50,6 +51,11 @@ describe("Vercel cron schedule", () => {
       config.crons?.find((cron) => cron.path === "/api/cron/demo-followup")
         ?.schedule,
     ).toBe("40 * * * *");
+
+    expect(
+      config.crons?.find((cron) => cron.path === "/api/cron/build-followup")
+        ?.schedule,
+    ).toBe("50 * * * *");
 
     // Personal notes go out once a day in North American business hours.
     expect(

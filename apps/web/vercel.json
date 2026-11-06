@@ -43,6 +43,10 @@
       "schedule": "40 * * * *"
     },
     {
+      "path": "/api/cron/build-followup",
+      "schedule": "50 * * * *"
+    },
+    {
       "path": "/api/cron/customer-lifecycle",
       "schedule": "0 16 * * *"
     },

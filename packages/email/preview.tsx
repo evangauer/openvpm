@@ -16,6 +16,7 @@ import {
   renderTrialWinbackEmail,
   renderAdoptionEmail,
   renderNpsSurveyEmail,
+  renderBuildFollowupEmail,
   type RenderedEmail,
 } from "./src/render";
 
@@ -109,6 +110,24 @@ async function main() {
       ],
       unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
     }),
+    ...Object.fromEntries<RenderedEmail>(
+      await Promise.all(
+        ([1, 2] as const).map(async (step): Promise<[string, RenderedEmail]> => [
+          `build-followup-${step}`,
+          await renderBuildFollowupEmail({
+            brand,
+            step,
+            clinicName: "Farmstead Equine",
+            brandColor: "#16a34a",
+            currentSystem: "DaySmart",
+            senderName: "Alex",
+            resumeUrl: `${brand.appUrl}/start?resume=preview`,
+            bookingUrl: null,
+            unsubscribeUrl: `${brand.appUrl}/email-preferences?token=preview`,
+          }),
+        ]),
+      ),
+    ),
     nps: await renderNpsSurveyEmail({
       brand,
       practiceName,

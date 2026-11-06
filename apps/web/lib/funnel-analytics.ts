@@ -27,6 +27,9 @@ export const FUNNEL_EVENTS = {
   onboardingStepCompleted: "onboarding_step_completed",
   onboardingCompleted: "onboarding_completed",
   firstActionSelected: "first_action_selected",
+  buildSceneViewed: "build_scene_viewed",
+  buildSceneCompleted: "build_scene_completed",
+  buildGateSubmitted: "build_gate_submitted",
 } as const;
 
 export type FunnelEventName =
