@@ -39,6 +39,7 @@ export async function disposableClinic() {
     for (const command of [
       "db:migrate",
       "db:rls",
+      "db:drift",
       "db:migrations:conformance",
     ]) {
       execFileSync("pnpm", ["--filter", "@openpims/db", command], {

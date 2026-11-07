@@ -1000,6 +1000,10 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
         required_absence.privilege_type
       )
     from (values
+      ('lab_report_receipts'::text, 'UPDATE'::text),
+      ('lab_report_receipts'::text, 'DELETE'::text),
+      ('lab_report_decisions'::text, 'UPDATE'::text),
+      ('lab_report_decisions'::text, 'DELETE'::text),
       ('file_storage_events'::text, 'UPDATE'::text),
       ('file_storage_events'::text, 'DELETE'::text),
       ('sms_provider_events'::text, 'DELETE'::text),
