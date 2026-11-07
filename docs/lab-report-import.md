@@ -13,10 +13,13 @@ false by default. Deployments from a different migration lineage must reconcile
 that history through the normal release process; do not copy this migration's
 journal entry into a different branch.
 
-Open **Lab Inbox → Import and review lab PDFs**:
+Open **Lab Inbox → Report PDFs**. **Results & follow-up** returns to the existing
+ordered-results queue. Report filters and patient chart sections are preserved
+in the URL, so refreshing or using the back button keeps the selected view.
 
-1. Upload the original PDF (maximum 4 MB). A server-computed SHA-256 checksum
+1. Choose **Upload PDF** and upload the original PDF (maximum 4 MB). A server-computed SHA-256 checksum
    deduplicates identical bytes within the clinic, including simultaneous imports.
+   Uploading opens that report directly, including when the PDF already exists.
 2. Open the original document. Search for the patient or owner and check both
    against the report before confirming the match.
 3. A veterinarian or administrator reviews the matched document. Record any
@@ -28,9 +31,13 @@ accounts cannot access this intake or its original lab PDFs. The existing hosted
 subscription and recovery-hold write restrictions apply. Current membership and
 role are checked at the server, including original-file downloads.
 
-Patient **Documents → View imported lab reports** opens that patient's current
+Patient **Documents → View lab reports** opens that patient's current
 matches. The clinic inbox has separate needs-match, needs-review and all-report
 views. All reports includes dismissed documents and earlier versions.
+Each queue item opens a focused report view. Use **More actions & history** for
+revision imports, patient corrections, dismissal/reopening, and decision history.
+The selected report stays visible after clearing a patient match; returning to
+the patient's list shows only the remaining current matches.
 
 ## Corrections, revisions and retries
 
@@ -38,13 +45,13 @@ Use **Correct patient match** to remove an incorrect match with a reason. This
 also clears the current review status. Rematch and review again; earlier decisions
 remain in history. Dismissal requires a reason and can be reopened.
 
-Use **Import revision** on the earlier report to link a different PDF. Both files
+Use **Import revision** under **More actions & history** on the earlier report to link a different PDF. Both files
 remain available and the new report starts unmatched and unreviewed. A revision
 link is supplied by the importing staff member, not inferred from filenames or
 report contents. It is not proof of provider authenticity. Identical bytes cannot
 be imported as their own revision.
 
-Retry an interrupted upload using **Retry import**. The attempt retains its
+Retry an interrupted upload using **Retry upload**. The attempt retains its
 idempotency key. Provider writes are read back and verified before creating a
 receipt. A failed or ambiguous write cannot create a reviewable report. Separate
 uploads of identical bytes converge on one receipt; their managed storage
@@ -81,6 +88,16 @@ job also runs `server/__tests__/lab-report-intake.integration.test.ts` with
 PostgreSQL databases and uses the restricted application role. The test covers
 concurrent deduplication and matching, cross-clinic denial, role changes, review,
 correction history, revision links, immutable storage records and export/restore.
+
+The opt-in browser drill in `e2e/lab-report-intake.spec.ts` covers the complete
+PDF workflow, patient-chart navigation, filter reloads, duplicates, revisions,
+corrections, dismissal/reopening, original-file access, and phone layout. Run
+only against a disposable local clinic with the feature enabled. Set
+`LAB_REPORT_DRILL_EMAIL`, `LAB_REPORT_DRILL_PASSWORD`, and
+`LAB_REPORT_DRILL_PATIENT` for its synthetic veterinarian and patient, plus
+`LAB_REPORT_DRILL_PATIENT_NAME` and `LAB_REPORT_DRILL_OWNER_NAME` when they differ
+from the fixture defaults. Then run
+`pnpm exec playwright test e2e/lab-report-intake.spec.ts --workers=1`.
 
 ## Interface examples
 

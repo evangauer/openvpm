@@ -13,6 +13,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { FormField } from "@/components/ui/form-field";
+import { LabNavigation } from "@/components/labs/lab-navigation";
+import { ArrowLeft, FileText, Upload } from "lucide-react";
 import {
   selectManagedUploadFile,
   type ManagedUploadAttempt,
@@ -21,17 +25,25 @@ import {
 type Report =
   inferRouterOutputs<AppRouter>["labReports"]["list"]["items"][number];
 
+const REPORT_STATES = {
+  unmatched: "Needs patient match",
+  matched: "Needs review",
+  reviewed: "Reviewed",
+  dismissed: "Dismissed",
+};
+
 function UploadReport({
   previous,
   onDone,
+  onCancel,
 }: {
   previous: Report | null;
-  onDone: () => void;
+  onDone: (reportId: string) => void;
+  onCancel: () => void;
 }) {
   const [attempt, setAttempt] = useState<ManagedUploadAttempt | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const inFlight = useRef(false);
   async function upload() {
@@ -45,7 +57,6 @@ function UploadReport({
     inFlight.current = true;
     setBusy(true);
     setError("");
-    setMessage("");
     try {
       const body = new FormData();
       body.set("file", attempt.file);
@@ -68,14 +79,14 @@ function UploadReport({
         throw new Error(
           "Import outcome is unclear. Retry this upload to verify it.",
         );
-      setMessage(
+      toast.success(
         data.duplicate
           ? "This PDF is already in the inbox. No duplicate report was added."
-          : "Report saved. Match it to a patient below.",
+          : "PDF uploaded. Confirm the patient next.",
       );
       setAttempt(null);
       if (fileInput.current) fileInput.current.value = "";
-      onDone();
+      onDone(data.reportId);
     } catch (error) {
       setError(
         error instanceof Error
@@ -91,14 +102,13 @@ function UploadReport({
     <Card id="import-report">
       <CardHeader>
         <CardTitle className="text-lg">
-          {previous ? "Import a revised report" : "Import a lab report"}
+          {previous ? "Upload revised PDF" : "Upload a lab PDF"}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-muted-foreground">
-          Download a PDF from your lab portal, then upload it here. The original
-          stays intact. Values are not extracted or added to the chart
-          automatically.
+          Choose the original report from your lab portal. You’ll confirm the
+          patient before review.
         </p>
         {previous ? (
           <p className="break-words text-sm">
@@ -111,6 +121,7 @@ function UploadReport({
           Report PDF (up to 4 MB)
           <Input
             ref={fileInput}
+            autoFocus
             className="mt-2"
             type="file"
             accept="application/pdf,.pdf"
@@ -119,21 +130,20 @@ function UploadReport({
               const file = e.target.files?.[0];
               setAttempt(file ? selectManagedUploadFile(null, file) : null);
               setError("");
-              setMessage("");
             }}
           />
         </label>
-        <Button onClick={upload} disabled={!attempt || busy}>
-          {busy ? "Importing…" : error ? "Retry import" : "Import PDF"}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={upload} disabled={!attempt || busy}>
+            {busy ? "Uploading…" : error ? "Retry upload" : "Upload PDF"}
+          </Button>
+          <Button variant="ghost" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
         {error ? (
           <p role="alert" className="text-sm text-destructive">
             {error}
-          </p>
-        ) : null}
-        {message ? (
-          <p role="status" className="text-sm">
-            {message}
           </p>
         ) : null}
       </CardContent>
@@ -146,11 +156,15 @@ function ReportCard({
   canManage,
   canReview,
   revise,
+  detailHref,
+  expanded,
 }: {
   report: Report;
   canManage: boolean;
   canReview: boolean;
   revise: (report: Report) => void;
+  detailHref: (id: string) => string;
+  expanded: boolean;
 }) {
   const utils = trpc.useUtils();
   const [search, setSearch] = useState("");
@@ -169,7 +183,10 @@ function ReportCard({
     { query: search },
     {
       enabled:
-        canManage && report.state === "unmatched" && search.trim().length >= 2,
+        expanded &&
+        canManage &&
+        report.state === "unmatched" &&
+        search.trim().length >= 2,
     },
   );
   const history = trpc.labReports.history.useQuery(
@@ -220,14 +237,7 @@ function ReportCard({
           <Badge
             variant={report.state === "reviewed" ? "secondary" : "outline"}
           >
-            {
-              {
-                unmatched: "Needs patient match",
-                matched: "Needs review",
-                reviewed: "Reviewed",
-                dismissed: "Dismissed",
-              }[report.state]
-            }
+            {REPORT_STATES[report.state]}
           </Badge>
         </div>
         <p className="text-sm text-muted-foreground">
@@ -239,10 +249,7 @@ function ReportCard({
         {report.supersedesId ? (
           <p className="text-sm">
             Revised report ·{" "}
-            <Link
-              className="underline"
-              href={`/lab-reports?reportId=${report.supersedesId}`}
-            >
+            <Link className="underline" href={detailHref(report.supersedesId)}>
               Previous version
             </Link>
           </p>
@@ -251,11 +258,7 @@ function ReportCard({
           <p className="text-sm font-medium">
             A newer report was imported.{" "}
             {report.revisionIds.map((id) => (
-              <Link
-                key={id}
-                className="mr-2 underline"
-                href={`/lab-reports?reportId=${id}`}
-              >
+              <Link key={id} className="mr-2 underline" href={detailHref(id)}>
                 Open revision
               </Link>
             ))}
@@ -264,30 +267,29 @@ function ReportCard({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-2">
+          {!expanded ? (
+            <Button asChild size="sm">
+              <Link href={detailHref(report.id)}>
+                {canManage && report.state === "unmatched"
+                  ? "Match patient"
+                  : canReview && report.state === "matched"
+                    ? "Review report"
+                    : "View report"}
+              </Link>
+            </Button>
+          ) : null}
           <Button asChild variant="outline" size="sm">
             <a href={report.fileUrl} target="_blank" rel="noopener noreferrer">
               Open original PDF
             </a>
           </Button>
-          {report.patientId ? (
+          {expanded && report.patientId ? (
             <Button asChild variant="ghost" size="sm">
               <Link href={`/patients/${report.patientId}?tab=records`}>
                 Patient chart
               </Link>
             </Button>
           ) : null}
-          {canManage ? (
-            <Button variant="ghost" size="sm" onClick={() => revise(report)}>
-              Import revision
-            </Button>
-          ) : null}
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setHistoryOpen(!historyOpen)}
-          >
-            {historyOpen ? "Hide history" : "Decision history"}
-          </Button>
         </div>
         {unavailable ? (
           <p role="alert" className="text-sm text-destructive">
@@ -295,11 +297,17 @@ function ReportCard({
             the original is available.
           </p>
         ) : null}
-        {canManage && report.state === "unmatched" ? (
+        {expanded && canManage && report.state === "unmatched" ? (
           <div className="space-y-3 rounded-md border p-3">
-            <label className="block text-sm font-medium">
-              Find patient or owner
+            <p className="text-sm">
+              Open the PDF, then check the patient and owner.
+            </p>
+            <FormField
+              label="Find patient or owner"
+              htmlFor={`patient-search-${report.id}`}
+            >
               <Input
+                id={`patient-search-${report.id}`}
                 className="mt-1"
                 value={search}
                 maxLength={100}
@@ -310,7 +318,7 @@ function ReportCard({
                   setChecked(false);
                 }}
               />
-            </label>
+            </FormField>
             {people.isError ? (
               <p role="alert" className="text-sm text-destructive">
                 Patient search failed. Change the search to retry.
@@ -333,6 +341,7 @@ function ReportCard({
                         chosen?.id === patient.id ? "secondary" : "ghost"
                       }
                       className="h-auto justify-start whitespace-normal text-left"
+                      aria-pressed={chosen?.id === patient.id}
                       onClick={() => {
                         setChosen({ id: patient.id, label });
                         setChecked(false);
@@ -348,8 +357,8 @@ function ReportCard({
               <>
                 <p className="text-sm font-medium">Selected: {chosen.label}</p>
                 <label className="flex items-start gap-2 text-sm">
-                  <input
-                    type="checkbox"
+                  <Checkbox
+                    className="mt-0.5 shrink-0"
                     checked={checked}
                     onChange={(e) => setChecked(e.target.checked)}
                   />
@@ -367,45 +376,27 @@ function ReportCard({
               >
                 Confirm patient match
               </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setCorrection("dismissed")}
-              >
-                Dismiss report
-              </Button>
             </div>
           </div>
         ) : null}
-        {report.state === "matched" ? (
+        {expanded && report.state === "matched" ? (
           <p className="text-sm text-muted-foreground">
-            Matched documents still need clinical review. Review does not add
-            structured values, mark a lab order complete, or close follow-up
-            tasks.
+            {canReview
+              ? "Ready for clinical review."
+              : "A veterinarian or administrator needs to review this report."}
           </p>
         ) : null}
         <div className="flex flex-wrap gap-2">
-          {canReview && report.state === "matched" ? (
+          {expanded &&
+          canReview &&
+          report.state === "matched" &&
+          !reviewOpen ? (
             <Button
               size="sm"
               disabled={unavailable || decide.isPending}
               onClick={() => setReviewOpen(true)}
             >
               Review report
-            </Button>
-          ) : null}
-          {canManage &&
-          (report.state === "matched" ||
-            report.state === "reviewed" ||
-            report.state === "dismissed") ? (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setCorrection("unmatched")}
-            >
-              {report.state === "dismissed"
-                ? "Reopen report"
-                : "Correct patient match"}
             </Button>
           ) : null}
         </div>
@@ -418,7 +409,7 @@ function ReportCard({
             </p>
             <Button
               size="sm"
-              disabled={decide.isPending}
+              disabled={decide.isPending || unavailable}
               onClick={() => save("reviewed", report.patientId)}
             >
               Confirm clinical review
@@ -432,12 +423,62 @@ function ReportCard({
             </Button>
           </div>
         ) : null}
+        {expanded ? (
+          <details className="border-t pt-3">
+            <summary className="cursor-pointer text-sm font-medium">
+              More actions &amp; history
+            </summary>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-expanded={historyOpen}
+                onClick={() => setHistoryOpen(!historyOpen)}
+              >
+                {historyOpen ? "Hide history" : "Decision history"}
+              </Button>
+              {canManage ? (
+                <>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => revise(report)}
+                  >
+                    Import revision
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={decide.isPending}
+                    onClick={() => {
+                      setReason("");
+                      setReviewOpen(false);
+                      setCorrection(
+                        report.state === "unmatched"
+                          ? "dismissed"
+                          : "unmatched",
+                      );
+                    }}
+                  >
+                    {report.state === "unmatched"
+                      ? "Dismiss report"
+                      : report.state === "dismissed"
+                        ? "Reopen report"
+                        : "Correct patient match"}
+                  </Button>
+                </>
+              ) : null}
+            </div>
+          </details>
+        ) : null}
         {correction ? (
           <div className="space-y-2 rounded-md border p-3">
             <label className="block text-sm font-medium">
               {correction === "dismissed"
                 ? "Reason for dismissal"
-                : "Reason for correction"}
+                : report.state === "dismissed"
+                  ? "Reason for reopening"
+                  : "Reason for correction"}
               <Input
                 maxLength={500}
                 value={reason}
@@ -447,7 +488,7 @@ function ReportCard({
             <p className="text-sm text-muted-foreground">
               The original document and all previous decisions remain in
               history.
-              {correction === "unmatched"
+              {correction === "unmatched" && report.state !== "dismissed"
                 ? " This removes the current match and clears its review status."
                 : ""}
             </p>
@@ -456,7 +497,11 @@ function ReportCard({
               disabled={!reason.trim() || decide.isPending}
               onClick={() => save(correction, null, reason.trim())}
             >
-              Save correction
+              {correction === "dismissed"
+                ? "Dismiss report"
+                : report.state === "dismissed"
+                  ? "Reopen report"
+                  : "Clear patient match"}
             </Button>
             <Button
               size="sm"
@@ -488,7 +533,7 @@ function ReportCard({
             ) : history.data?.length ? (
               history.data.map((event) => (
                 <p key={event.id} className="break-words text-sm">
-                  {event.version}. {event.state} · {event.actorName}
+                  {REPORT_STATES[event.state]} · {event.actorName}
                   {event.patientName ? ` · ${event.patientName}` : ""} ·{" "}
                   {new Date(event.createdAt).toLocaleString()}
                   {event.reason ? ` — ${event.reason}` : ""}
@@ -509,13 +554,24 @@ function ReportCard({
 function ReportInbox() {
   const params = useSearchParams();
   const router = useRouter();
-  const { data: session } = useSession();
+  const { data: session, status: sessionStatus } = useSession();
   const patientId = params.get("patientId") ?? undefined;
   const reportId = params.get("reportId") ?? undefined;
-  const [filter, setFilter] = useState<"unmatched" | "unreviewed" | "all">(
-    params.get("filter") === "all" || patientId ? "all" : "unmatched",
-  );
-  const [offset, setOffset] = useState(0);
+  const filterParam = params.get("filter");
+  const filter =
+    filterParam === "all" || filterParam === "unreviewed"
+      ? filterParam
+      : patientId
+        ? "all"
+        : "unmatched";
+  const parsedOffset = Number(params.get("offset") ?? 0);
+  const offset =
+    Number.isInteger(parsedOffset) &&
+    parsedOffset >= 0 &&
+    parsedOffset <= 100000
+      ? parsedOffset
+      : 0;
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [previous, setPrevious] = useState<Report | null>(null);
   const role = session?.user.role;
   const enabled = process.env.NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED === "true";
@@ -527,124 +583,204 @@ function ReportInbox() {
     {
       filter: reportId ? "all" : filter,
       offset: reportId ? 0 : offset,
-      patientId,
+      // Keep a selected report visible after correcting its patient match.
+      patientId: reportId ? undefined : patientId,
       reportId,
     },
     { enabled: enabled && canRead },
   );
+  const patient = trpc.patients.getById.useQuery(
+    { id: patientId! },
+    { enabled: enabled && canRead && !!patientId },
+  );
   const utils = trpc.useUtils();
+  function inboxHref(
+    options: { reportId?: string; filter?: string; offset?: number } = {},
+  ) {
+    const query = new URLSearchParams();
+    if (patientId) query.set("patientId", patientId);
+    query.set("filter", options.filter ?? filter);
+    if (options.reportId) query.set("reportId", options.reportId);
+    if (options.offset) query.set("offset", String(options.offset));
+    return `/lab-reports?${query}`;
+  }
+  function closeUpload() {
+    setUploadOpen(false);
+    setPrevious(null);
+  }
   if (!enabled)
     return <p>Lab report import is not enabled for this installation.</p>;
+  if (sessionStatus === "loading")
+    return <p role="status">Loading lab reports…</p>;
   if (!canRead)
     return <p>Clinical report access is unavailable for this account.</p>;
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
-      {reportId ? (
-        <Link className="text-sm underline" href="/lab-reports">
-          Show all reports
-        </Link>
-      ) : null}
-      <div>
-        <Link href="/lab-results" className="text-sm underline">
-          Back to lab inbox
-        </Link>
-        <h1 className="mt-3 font-heading text-2xl font-semibold">
-          Lab reports
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Import the report. Check the patient. Review the results.
-        </p>
-      </div>
-      {patientId ? (
-        <p className="text-sm">
-          Showing this patient’s matched reports.{" "}
-          <Link className="underline" href="/lab-reports">
-            Open the clinic inbox
-          </Link>
-        </p>
-      ) : null}
-      {canManage && !patientId ? (
-        <>
-          <UploadReport
-            key={previous?.id ?? "new"}
-            previous={previous}
-            onDone={() => {
-              if (reportId) router.replace("/lab-reports?filter=all");
-              setFilter("all");
-              setOffset(0);
-              void utils.labReports.list.invalidate();
+    <div className="mx-auto flex max-w-4xl flex-col gap-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-heading text-2xl font-semibold">Lab Inbox</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Upload a PDF, confirm the patient, and review the report.
+          </p>
+        </div>
+        {canManage && !uploadOpen ? (
+          <Button
+            onClick={() => {
+              setPrevious(null);
+              setUploadOpen(true);
             }}
-          />
-          {previous ? (
-            <Button variant="ghost" onClick={() => setPrevious(null)}>
-              Import an unrelated report instead
-            </Button>
-          ) : null}
-        </>
+          >
+            <Upload
+              data-icon="inline-start"
+              className="mr-2 size-4"
+              aria-hidden="true"
+            />
+            Upload PDF
+          </Button>
+        ) : null}
+      </div>
+      <LabNavigation active="reports" />
+      {patientId ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <Link
+            className="inline-flex items-center gap-2 underline"
+            href={`/patients/${patientId}?tab=documents`}
+          >
+            <ArrowLeft className="size-4" aria-hidden="true" />
+            {patient.data
+              ? `${patient.data.name}’s documents`
+              : "Patient documents"}
+          </Link>
+          <Link className="underline" href="/lab-reports">
+            All clinic reports
+          </Link>
+        </div>
+      ) : null}
+      {reportId ? (
+        <Link
+          className="inline-flex items-center gap-2 text-sm underline"
+          href={inboxHref({ offset })}
+        >
+          <ArrowLeft className="size-4" aria-hidden="true" /> Back to reports
+        </Link>
+      ) : null}
+      {uploadOpen && canManage ? (
+        <UploadReport
+          key={previous?.id ?? "new"}
+          previous={previous}
+          onCancel={closeUpload}
+          onDone={(id) => {
+            closeUpload();
+            void utils.labReports.list.invalidate();
+            router.push(inboxHref({ reportId: id }));
+          }}
+        />
       ) : null}
       {!reportId ? (
-        <div className="flex flex-wrap gap-2" aria-label="Report filters">
-          {(
-            [
-              ["unmatched", "Needs match"],
-              ["unreviewed", "Needs review"],
-              ["all", "All reports"],
-            ] as const
-          ).map(([value, label]) => (
-            <Button
-              key={value}
-              variant={filter === value ? "default" : "outline"}
-              size="sm"
-              onClick={() => {
-                setFilter(value);
-                setOffset(0);
-              }}
-            >
-              {label}
-            </Button>
-          ))}
-          <Button variant="ghost" size="sm" onClick={() => reports.refetch()}>
-            Refresh
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <nav className="flex flex-wrap gap-2" aria-label="Report filters">
+            {(
+              (patientId
+                ? [
+                    ["all", "All reports"],
+                    ["unreviewed", "Needs review"],
+                  ]
+                : [
+                    ["unmatched", "Needs match"],
+                    ["unreviewed", "Needs review"],
+                    ["all", "All reports"],
+                  ]) as Array<[string, string]>
+            ).map(([value, label]) => (
+              <Button
+                key={value}
+                asChild
+                variant={filter === value ? "secondary" : "ghost"}
+                size="sm"
+              >
+                <Link
+                  href={inboxHref({ filter: value })}
+                  aria-current={filter === value ? "page" : undefined}
+                >
+                  {label}
+                </Link>
+              </Button>
+            ))}
+          </nav>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={reports.isFetching}
+            onClick={() => reports.refetch()}
+          >
+            {reports.isFetching ? "Refreshing…" : "Refresh"}
           </Button>
         </div>
       ) : null}
       {reports.isLoading ? (
-        <p>Loading reports…</p>
+        <p role="status">Loading reports…</p>
       ) : reports.error ? (
-        <p role="alert" className="text-destructive">
-          Reports could not be loaded. Please refresh.
-        </p>
+        <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">
+          <p>Reports could not be loaded.</p>
+          <Button variant="outline" size="sm" onClick={() => reports.refetch()}>
+            Try again
+          </Button>
+        </div>
       ) : !reports.data?.items.length ? (
-        <p className="rounded-lg border p-6 text-sm text-muted-foreground">
-          No reports in this view.
-        </p>
+        <Card>
+          <CardHeader>
+            <FileText
+              className="mb-2 size-6 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <CardTitle>
+              {reportId
+                ? "Report unavailable"
+                : patientId
+                  ? "No reports in this view"
+                  : filter === "unmatched"
+                    ? "No PDFs waiting for a match"
+                    : filter === "unreviewed"
+                      ? "No reports waiting for review"
+                      : "No lab PDFs yet"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              {reportId
+                ? "Return to the reports list or refresh to try again."
+                : patientId
+                  ? "Reports appear here after the patient match is confirmed."
+                  : filter === "unreviewed"
+                    ? "Matched reports appear here for a veterinarian or administrator to review."
+                    : "Upload a report from your lab portal, or choose another view to find existing reports."}
+            </p>
+          </CardContent>
+        </Card>
       ) : (
         reports.data.items.map((report) => (
           <ReportCard
-            key={`${report.id}:${report.version}`}
+            key={`${report.id}:${report.version}:${!!reportId}`}
             report={report}
+            expanded={!!reportId}
             canManage={canManage}
             canReview={canReview}
+            detailHref={(id) => inboxHref({ reportId: id, offset })}
             revise={(report) => {
-              if (patientId) {
-                window.location.assign(`/lab-reports?reportId=${report.id}`);
-                return;
-              }
               setPrevious(report);
-              document
-                .getElementById("import-report")
-                ?.scrollIntoView({ behavior: "smooth" });
+              setUploadOpen(true);
             }}
           />
         ))
       )}
-      {!reportId ? (
-        <div className="flex gap-2">
+      {!reportId && (offset > 0 || reports.data?.hasMore) ? (
+        <nav className="flex gap-2" aria-label="Report pages">
           <Button
             variant="outline"
             size="sm"
             disabled={offset === 0}
-            onClick={() => setOffset(Math.max(0, offset - 25))}
+            onClick={() =>
+              router.push(inboxHref({ offset: Math.max(0, offset - 25) }))
+            }
           >
             Previous
           </Button>
@@ -652,19 +788,28 @@ function ReportInbox() {
             variant="outline"
             size="sm"
             disabled={!reports.data?.hasMore}
-            onClick={() => setOffset(offset + 25)}
+            onClick={() => router.push(inboxHref({ offset: offset + 25 }))}
           >
             Next
           </Button>
-        </div>
+        </nav>
       ) : null}
+      <p className="text-xs text-muted-foreground">
+        Original PDFs stay intact. Record lab values and follow-up separately in
+        the patient chart.
+      </p>
     </div>
   );
 }
+function LabReportsRoute() {
+  const params = useSearchParams();
+  return <ReportInbox key={params.toString()} />;
+}
+
 export default function LabReportsPage() {
   return (
     <Suspense fallback={<p>Loading lab reports…</p>}>
-      <ReportInbox />
+      <LabReportsRoute />
     </Suspense>
   );
 }

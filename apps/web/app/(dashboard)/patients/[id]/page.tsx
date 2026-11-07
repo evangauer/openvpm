@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { Fragment, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
   ArrowLeft,
@@ -316,9 +316,16 @@ function PatientDetailLoadingPanel({ label }: { label: string }) {
 export default function PatientDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
-  const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [fieldVisitLocationId, setFieldVisitLocationId] = useState("");
+  const activeTab =
+    tabs.find((tab) => tab.id === searchParams.get("tab"))?.id ?? "overview";
+  function setActiveTab(tab: Tab) {
+    const query = new URLSearchParams(searchParams.toString());
+    query.set("tab", tab);
+    router.push(`/patients/${params.id}?${query}`, { scroll: false });
+  }
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoUploadAttemptRef = useRef<ManagedUploadAttempt | null>(null);
@@ -1750,7 +1757,21 @@ export default function PatientDetailPage() {
 
         {activeTab === "documents" && (
           <div className="space-y-4">
-            {process.env.NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED === "true" && session?.user.role !== "front_desk" ? <Button asChild variant="outline"><Link href={`/lab-reports?patientId=${patient.id}`}>View imported lab reports</Link></Button> : null}
+            {process.env.NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED === "true" && session?.user.role !== "front_desk" ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-medium">Lab report PDFs</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Original reports and clinical review status.
+                  </p>
+                </div>
+                <Button asChild variant="outline" size="sm">
+                  <Link href={`/lab-reports?patientId=${patient.id}`}>
+                    View lab reports
+                  </Link>
+                </Button>
+              </div>
+            ) : null}
             <DocumentsTab patientId={patient.id} timeZone={recordsTimeZone} />
           </div>
         )}
