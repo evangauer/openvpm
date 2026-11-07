@@ -489,3 +489,10 @@ describe("file proxy response headers", () => {
     expect(ROUTE_SOURCE).toContain("isNull(users.deletedAt)");
   });
 });
+
+it("rejects direct lab PDF downloads after a clinical role is revoked", async () => {
+  mocks.selectResults.push([{ id: mocks.userId, role: "front_desk" }]);
+  const path = [mocks.practiceId, "lab-results", "report"];
+  expect((await GET(fileRequest(path.join("/")), routeContext(path))).status).toBe(403);
+  expect(mocks.readPrimaryObject).not.toHaveBeenCalled();
+});

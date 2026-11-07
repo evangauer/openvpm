@@ -47,6 +47,8 @@ import {
   insurancePolicies,
   historicalAppointments,
   historicalDocuments,
+  labReportReceipts,
+  labReportDecisions,
   labResults,
   labResultEvents,
   labResultReplacements,
@@ -217,6 +219,8 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "vaccinationRecords",
   "labResults",
   "labResultEvents",
+  "labReportReceipts",
+  "labReportDecisions",
   "externalLabReports",
   "externalLabObservations",
   "procedures",
@@ -288,6 +292,8 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   // Backward compatibility for backups created before the lab result safety
   // ledger and clinic-wide review inbox were introduced.
   "labResultEvents",
+  "labReportReceipts",
+  "labReportDecisions",
   "labResultReplacements",
   // Backward compatibility for backups created before the immutable client
   // treatment-plan decision ledger.
@@ -534,6 +540,12 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("labResults", "reviewedBy", "users"),
   optionalRef("labResults", "followUpAssignedTo", "users"),
   optionalRef("labResults", "followUpCompletedBy", "users"),
+  requiredRef("labReportReceipts", "fileId", "files"),
+  requiredRef("labReportReceipts", "receivedBy", "users"),
+  optionalRef("labReportReceipts", "supersedesId", "labReportReceipts"),
+  requiredRef("labReportDecisions", "reportId", "labReportReceipts"),
+  requiredRef("labReportDecisions", "actorId", "users"),
+  optionalRef("labReportDecisions", "patientId", "patients"),
   requiredRef("labResultEvents", "labResultId", "labResults"),
   requiredRef("labResultEvents", "patientId", "patients"),
   optionalRef("labResultEvents", "appointmentId", "appointments"),
@@ -1358,6 +1370,78 @@ export function validatePracticeExportRestore(data: unknown): {
           `${section}[${rowLabel(row, index)}].appointmentId must reference an appointment for the same patient.`,
         );
       }
+    });
+  }
+
+  const receiptRows = rowsById("labReportReceipts");
+  const receiptFiles = rowsById("files");
+  const receiptDigests = new Set<unknown>();
+  for (const receipt of receiptRows.values()) {
+    const file = receiptFiles.get(String(receipt.fileId));
+    if (
+      !file ||
+      file.category !== "lab-results" ||
+      file.mimeType !== "application/pdf" ||
+      file.checksumSha256 !== receipt.checksumSha256 ||
+      !/^[0-9a-f]{64}$/.test(String(receipt.checksumSha256))
+    ) {
+      pushError(
+        "Lab report receipt must identify its original PDF and exact checksum.",
+      );
+    }
+    if (receiptDigests.has(receipt.checksumSha256))
+      pushError("Lab report receipts must have unique checksums.");
+    receiptDigests.add(receipt.checksumSha256);
+    const seen = new Set<string>();
+    let cursor: Row | undefined = receipt;
+    while (cursor) {
+      const id = String(cursor.id);
+      if (seen.has(id)) {
+        pushError("Lab report revisions must not contain a cycle.");
+        break;
+      }
+      seen.add(id);
+      cursor =
+        cursor.supersedesId == null
+          ? undefined
+          : receiptRows.get(String(cursor.supersedesId));
+    }
+  }
+  const reportHistories = new Map<string, Row[]>();
+  for (const decision of rowsFor(data, "labReportDecisions")) {
+    const id = String(decision.reportId);
+    reportHistories.set(id, [...(reportHistories.get(id) ?? []), decision]);
+  }
+  for (const history of reportHistories.values()) {
+    history.sort((a, b) => Number(a.version) - Number(b.version));
+    let state: unknown = "unmatched";
+    let patientId: unknown = null;
+    history.forEach((decision, index) => {
+      const reason =
+        typeof decision.reason === "string" &&
+        decision.reason.trim().length > 0;
+      const valid =
+        decision.version === index + 1 &&
+        ((decision.state === "matched" &&
+          state === "unmatched" &&
+          typeof decision.patientId === "string") ||
+          (decision.state === "reviewed" &&
+            state === "matched" &&
+            decision.patientId === patientId) ||
+          (decision.state === "unmatched" &&
+            state !== "unmatched" &&
+            decision.patientId == null &&
+            reason) ||
+          (decision.state === "dismissed" &&
+            state === "unmatched" &&
+            decision.patientId == null &&
+            reason));
+      if (!valid)
+        pushError(
+          "Lab report decision history must have consecutive versions and valid patient/review transitions.",
+        );
+      state = decision.state;
+      patientId = decision.patientId;
     });
   }
 
@@ -2638,6 +2722,8 @@ export async function exportPracticeData(
     allVaccinationRows,
     labRows,
     labResultEventRows,
+    labReportReceiptRows,
+    labReportDecisionRows,
     externalLabReportRows,
     externalLabObservationRows,
     procedureRows,
@@ -2707,6 +2793,8 @@ export async function exportPracticeData(
     allPracticeRows(db, vaccinationRecords, practiceId),
     allPracticeRows(db, labResults, practiceId),
     allPracticeRows(db, labResultEvents, practiceId),
+    allPracticeRows(db, labReportReceipts, practiceId),
+    allPracticeRows(db, labReportDecisions, practiceId),
     allPracticeRows(db, externalLabReports, practiceId),
     allPracticeRows(db, externalLabObservations, practiceId),
     activeRows(db, procedures, practiceId),
@@ -2738,6 +2826,7 @@ export async function exportPracticeData(
   ]);
 
   const referencedHistoricalFileIds = [
+    ...labReportReceiptRows.map((report) => report.fileId as string),
     ...historicalDocumentRows.map((document) => document.fileId as string),
     ...visitTreatmentPlanResponseRows.map(
       (response) => response.signedFileId as string,
@@ -2833,6 +2922,7 @@ export async function exportPracticeData(
       ...vaccinationRows.map((vaccination) => vaccination.patientId),
       ...labRows.map((result) => result.patientId),
       ...labResultEventRows.map((event) => event.patientId),
+      ...labReportDecisionRows.map((event) => event.patientId),
       ...historicalAppointmentRows.map((appointment) => appointment.patientId),
       ...externalPrescriptionRows.map((prescription) => prescription.patientId),
       ...externalLabReportRows.map((report) => report.patientId),
@@ -3100,6 +3190,8 @@ export async function exportPracticeData(
     vaccinationRecords: vaccinationRows,
     labResults: labRows,
     labResultEvents: labResultEventRows,
+    labReportReceipts: labReportReceiptRows,
+    labReportDecisions: labReportDecisionRows,
     externalLabReports: externalLabReportRows,
     externalLabObservations: externalLabObservationRows,
     procedures: procedureRows,
@@ -3628,6 +3720,30 @@ async function restorePracticeDataRows(
     })),
     { practiceId },
   );
+  // Revision receipts are restored in dependency order, independent of JSON order.
+  const pendingReports = [...rowsFor(data, "labReportReceipts")];
+  const restoredReportIds = new Set<unknown>();
+  restored.labReportReceipts = 0;
+  while (pendingReports.length) {
+    const index = pendingReports.findIndex(
+      (row) =>
+        row.supersedesId == null || restoredReportIds.has(row.supersedesId),
+    );
+    if (index < 0)
+      throw new Error(
+        "Backup lab report revisions contain a cycle or missing predecessor.",
+      );
+    const [row] = pendingReports.splice(index, 1);
+    restored.labReportReceipts += await restoreRows(
+      db,
+      labReportReceipts,
+      "labReportReceipts",
+      [row!],
+      { practiceId },
+    );
+    restoredReportIds.add(row!.id);
+  }
+  await restorePracticeRows("labReportDecisions", labReportDecisions);
   await restorePracticeRows("visitTreatmentPlans", visitTreatmentPlans);
   await restorePracticeRows(
     "visitTreatmentPlanRevisions",

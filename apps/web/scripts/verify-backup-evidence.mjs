@@ -56,6 +56,8 @@ const PRACTICE_EXPORT_SECTIONS = [
   "vaccinationRecords",
   "labResults",
   "labResultEvents",
+  "labReportReceipts",
+  "labReportDecisions",
   "externalLabReports",
   "externalLabObservations",
   "procedures",
@@ -88,6 +90,7 @@ const PRACTICE_EXPORT_SECTIONS = [
   "controlledSubstanceLog",
   "communications",
 ];
+const ADDITIVE_REPORT_SECTIONS = ["labReportReceipts", "labReportDecisions"];
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_PATTERN =
@@ -133,6 +136,12 @@ function validateCanonicalCounts(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
   }
+  value = {
+    ...Object.fromEntries(
+      ADDITIVE_REPORT_SECTIONS.map((section) => [section, 0]),
+    ),
+    ...value,
+  };
   const keys = Object.keys(value);
   const missing = PRACTICE_EXPORT_SECTIONS.filter(
     (section) => !Object.hasOwn(value, section),
@@ -283,6 +292,12 @@ export function verifyBackupEvidence(input) {
     throw new Error("backup object counts do not match the catalog");
   }
   for (const section of PRACTICE_EXPORT_SECTIONS) {
+    if (
+      ADDITIVE_REPORT_SECTIONS.includes(section) &&
+      backup[section] === undefined &&
+      backupCounts[section] === 0
+    )
+      continue;
     if (!Array.isArray(backup[section])) {
       throw new Error(`backup object section ${section} must be an array`);
     }

@@ -1,3 +1,5 @@
+// Leave room for multipart overhead within hosted function payload limits.
+export const LAB_REPORT_MAX_BYTES = 4_000_000;
 export const UPLOAD_FILE_MAX_BYTES = 10 * 1024 * 1024;
 export const UPLOAD_REQUEST_MAX_BYTES = UPLOAD_FILE_MAX_BYTES + 512 * 1024;
 

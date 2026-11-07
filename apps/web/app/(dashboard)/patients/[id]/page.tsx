@@ -1307,7 +1307,10 @@ export default function PatientDetailPage() {
         )}
 
         {activeTab === "documents" && (
-          <DocumentsTab patientId={patient.id} timeZone={recordsTimeZone} />
+          <div className="space-y-4">
+            {process.env.NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED === "true" && session?.user.role !== "front_desk" ? <Button asChild variant="outline"><Link href={`/lab-reports?patientId=${patient.id}`}>View imported lab reports</Link></Button> : null}
+            <DocumentsTab patientId={patient.id} timeZone={recordsTimeZone} />
+          </div>
         )}
 
         {activeTab === "appointments" && (

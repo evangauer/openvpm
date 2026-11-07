@@ -1,3 +1,7 @@
+import {
+  labReportIntakeEnabled,
+  receiveLabReport,
+} from "@/lib/lab-report-intake";
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -14,6 +18,7 @@ import {
 } from "@/lib/upload-security";
 import {
   UPLOAD_REQUEST_MAX_BYTES,
+  LAB_REPORT_MAX_BYTES,
   UPLOAD_FILE_MAX_BYTES,
   uploadRequestContentLengthTooLarge,
 } from "@/lib/upload-limits";
@@ -35,7 +40,11 @@ import {
 } from "@/lib/recovery-hold";
 
 const MAX_FILE_NAME_LENGTH = 255;
-const DASHBOARD_UPLOAD_CATEGORIES = ["branding", "patient-photos"] as const;
+const DASHBOARD_UPLOAD_CATEGORIES = [
+  "branding",
+  "patient-photos",
+  "lab-results",
+] as const;
 const IDEMPOTENCY_KEY_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const USER_UPLOAD_LIMIT = 30;
@@ -201,6 +210,16 @@ export async function POST(req: NextRequest) {
       const file = formData.get("file");
       const category = formData.get("category");
       const patientIdValue = formData.get("patientId");
+      const supersedesValue = formData.get("supersedesId");
+      const supersedesId =
+        typeof supersedesValue === "string" && supersedesValue
+          ? supersedesValue
+          : null;
+      if (supersedesId && !IDEMPOTENCY_KEY_PATTERN.test(supersedesId))
+        return NextResponse.json(
+          { error: "Invalid previous report" },
+          { status: 400 },
+        );
       const idempotencyKey = req.headers.get("idempotency-key")?.trim() ?? "";
 
       if (!IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
@@ -238,6 +257,16 @@ export async function POST(req: NextRequest) {
         );
       }
       const dashboardCategory = category as DashboardUploadCategory;
+      if (
+        dashboardCategory === "lab-results" &&
+        (!labReportIntakeEnabled() ||
+          !["admin", "veterinarian", "technician"].includes(activeAccount.role))
+      ) {
+        return NextResponse.json(
+          { error: "Lab report import is unavailable for this account" },
+          { status: 403 },
+        );
+      }
       if (dashboardCategory === "branding" && activeAccount.role !== "admin") {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       }
@@ -264,14 +293,31 @@ export async function POST(req: NextRequest) {
           { status: 400 },
         );
       }
-      if (!mimeType.startsWith("image/")) {
+      if (
+        dashboardCategory === "lab-results"
+          ? mimeType !== "application/pdf"
+          : !mimeType.startsWith("image/")
+      ) {
         return NextResponse.json(
-          { error: "Dashboard uploads must be image files" },
+          {
+            error:
+              dashboardCategory === "lab-results"
+                ? "Lab reports must be PDF files"
+                : "Dashboard uploads must be image files",
+          },
           { status: 400 },
         );
       }
 
       // ---------- Validate size ----------
+      if (
+        dashboardCategory === "lab-results" &&
+        file.size > LAB_REPORT_MAX_BYTES
+      )
+        return NextResponse.json(
+          { error: "Lab reports must be 4 MB or smaller" },
+          { status: 413 },
+        );
       if (file.size > UPLOAD_FILE_MAX_BYTES) {
         return NextResponse.json(
           { error: "File exceeds maximum size of 10 MB" },
@@ -316,9 +362,13 @@ export async function POST(req: NextRequest) {
           source:
             dashboardCategory === "branding"
               ? "practice_logo"
-              : "profile_photo",
-          entityType: dashboardCategory === "branding" ? "practice" : "patient",
-          entityId: dashboardCategory === "branding" ? practiceId : patientId!,
+              : dashboardCategory === "lab-results"
+                ? "lab_report_upload"
+                : "profile_photo",
+          entityType:
+            dashboardCategory === "patient-photos" ? "patient" : "practice",
+          entityId:
+            dashboardCategory === "patient-photos" ? patientId! : practiceId,
           patientId: dashboardCategory === "patient-photos" ? patientId : null,
         });
       });
@@ -331,7 +381,13 @@ export async function POST(req: NextRequest) {
 
       if (reservation.storageStatus === "available") {
         return NextResponse.json(
-          { url: reservation.fileUrl, key: reservation.fileKey },
+          {
+            url: reservation.fileUrl,
+            key: reservation.fileKey,
+            ...(dashboardCategory === "lab-results"
+              ? await receiveLabReport(leaseTx, reservation, supersedesId)
+              : {}),
+          },
           { status: 200 },
         );
       }
@@ -376,7 +432,7 @@ export async function POST(req: NextRequest) {
           .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
           .returning({ id: practices.id });
         if (!linked) throw new Error("Practice disappeared during upload");
-      } else {
+      } else if (dashboardCategory === "patient-photos") {
         const [linked] = await leaseTx
           .update(patients)
           .set({ photoUrl: reservation.fileUrl, updatedAt: new Date() })
@@ -395,7 +451,13 @@ export async function POST(req: NextRequest) {
         queueManagedUploadReplication(reservation, writeResult.evidence);
 
       return NextResponse.json(
-        { url: reservation.fileUrl, key: reservation.fileKey },
+        {
+          url: reservation.fileUrl,
+          key: reservation.fileKey,
+          ...(dashboardCategory === "lab-results"
+            ? await receiveLabReport(leaseTx, reservation, supersedesId)
+            : {}),
+        },
         { status: reservation.created ? 201 : 200 },
       );
     });

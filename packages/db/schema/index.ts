@@ -44,3 +44,5 @@ export * from "./visit-work-items";
 export * from "./clinic-pilots";
 export * from "./care-reminders";
 export * from "./migration-records";
+
+export * from "./lab-report-intake";

@@ -140,7 +140,7 @@ export async function GET(
 
     const [activeUser] = await withSystem(db, (tx) =>
       tx
-        .select({ id: users.id })
+        .select({ id: users.id, role: users.role })
         .from(users)
         .innerJoin(
           practices,
@@ -155,7 +155,13 @@ export async function GET(
         )
         .limit(1),
     );
-    if (!activeUser) {
+    if (
+      !activeUser ||
+      (category === "lab-results" &&
+        !["admin", "veterinarian", "technician", "viewer"].includes(
+          activeUser.role,
+        ))
+    ) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
   }
