@@ -243,6 +243,11 @@ local build is not, by itself, a production-readiness assessment.
 
 ### Deploy with Docker
 
+Allocate at least 4 GiB of memory to the Docker builder. The image build gives
+Node a 3 GiB heap for compilation and type checking; the running application
+keeps Node's default memory settings. On a larger builder, the heap can be
+adjusted with `--build-arg BUILD_NODE_OPTIONS=--max-old-space-size=4096`.
+
 ```bash
 docker compose -f docker/docker-compose.yml up -d
 ```
