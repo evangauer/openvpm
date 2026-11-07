@@ -620,6 +620,7 @@ describe("patient document uploads", () => {
       practiceId: mocks.practiceId, uploadedBy: mocks.userId, mimeType: "application/pdf",
       fileName: "Referral report.pdf", source: category === "lab-results" ? "lab_report" : "external_record",
     }));
+    expect(mocks.receiveLabReport).not.toHaveBeenCalled();
     expect(mocks.putAndVerifyManagedUpload).toHaveBeenCalledOnce();
     expect(mocks.finalizeManagedUploadManifest).toHaveBeenCalledOnce();
     expect(mocks.queueManagedUploadReplication).toHaveBeenCalledOnce();

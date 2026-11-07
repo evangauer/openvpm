@@ -54,7 +54,9 @@ describe("CSV repair summaries", () => {
     const parsed = parseCsv(report!);
     expect(parsed.headers).toContain("OpenVPM data row_report");
     expect(parsed.headers).toContain("'=header");
-    expect(parsed.rows[0]).toMatchObject({ "OpenVPM data row": "'=CMD()", "'=header": "'+123", Other: "'@SUM(A1)", "OpenVPM issues": "'=DANGEROUS()" });
+    expect(report).toContain('"1","\'=DANGEROUS()","\'=CMD()","\'+123","\'@SUM(A1)"');
+    // Re-import removes the spreadsheet escape without altering source values.
+    expect(parsed.rows[0]).toMatchObject({ "OpenVPM data row": "=CMD()", "\'=header": "+123", Other: "@SUM(A1)", "OpenVPM issues": "=DANGEROUS()" });
   });
 
   it("does not fabricate rows from malformed CSV or invalid row positions", () => {
