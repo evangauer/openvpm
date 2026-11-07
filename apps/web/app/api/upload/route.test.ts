@@ -74,6 +74,10 @@ const mocks = vi.hoisted(() => {
 
   return {
     tx,
+    receiveLabReport: vi.fn(async () => ({
+      reportId: fileId,
+      duplicate: false,
+    })),
     practiceId,
     userId,
     patientId,
@@ -117,6 +121,12 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+vi.mock("@/lib/lab-report-intake", () => ({
+  labReportIntakeEnabled: () =>
+    process.env.NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED === "true",
+  receiveLabReport: mocks.receiveLabReport,
+}));
+
 vi.mock("next-auth", () => ({
   getServerSession: mocks.getServerSession,
 }));
@@ -147,8 +157,7 @@ vi.mock("@/lib/managed-file-upload", () => ({
 }));
 vi.mock("@/lib/recovery-hold", () => ({
   RECOVERY_HOLD_BLOCK_MESSAGE: "Practice recovery is in progress.",
-  lockPracticeForExternalSideEffects:
-    mocks.lockPracticeForExternalSideEffects,
+  lockPracticeForExternalSideEffects: mocks.lockPracticeForExternalSideEffects,
 }));
 
 const { POST } = await import("./route");
@@ -671,4 +680,101 @@ describe("hosted patient document size limits", () => {
       expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
     }
   });
+});
+
+describe("lab report uploads", () => {
+  const pdf = () =>
+    new File(["%PDF-1.7\nSynthetic test report"], "report.pdf", {
+      type: "application/pdf",
+    });
+  it("requires explicit enablement and a current clinical role", async () => {
+    expect(
+      (await POST(uploadRequest({ category: "lab-results", file: pdf() })))
+        .status,
+    ).toBe(403);
+    vi.stubEnv("NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED", "true");
+    mocks.selectResults.push([mocks.activeAccount({ role: "front_desk" })]);
+    expect(
+      (await POST(uploadRequest({ category: "lab-results", file: pdf() })))
+        .status,
+    ).toBe(403);
+    expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+  });
+  it("accepts only verified PDFs and registers a receipt without changing a patient photo", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED", "true");
+    expect(
+      (await POST(uploadRequest({ category: "lab-results" }))).status,
+    ).toBe(400);
+    expect(
+      (
+        await POST(
+          uploadRequest({
+            category: "lab-results",
+            file: new File(["not a PDF"], "fake.pdf", {
+              type: "application/pdf",
+            }),
+          }),
+        )
+      ).status,
+    ).toBe(400);
+    const response = await POST(
+      uploadRequest({ category: "lab-results", file: pdf() }),
+    );
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      reportId: expect.any(String),
+      duplicate: false,
+    });
+    expect(mocks.reserveManagedUpload).toHaveBeenCalledWith(
+      mocks.tx,
+      expect.objectContaining({
+        category: "lab-results",
+        entityType: "practice",
+        patientId: null,
+      }),
+    );
+    expect(mocks.finalizeManagedUploadManifest).toHaveBeenCalledOnce();
+    expect(mocks.receiveLabReport).toHaveBeenCalledOnce();
+    expect(mocks.updateSets).toEqual([]);
+  });
+  it("recovers an already verified upload without a second storage write", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED", "true");
+    mocks.reserveManagedUpload.mockResolvedValue(
+      mocks.reservation({
+        storageStatus: "available",
+        category: "lab-results",
+      }),
+    );
+    expect(
+      (await POST(uploadRequest({ category: "lab-results", file: pdf() })))
+        .status,
+    ).toBe(200);
+    expect(mocks.receiveLabReport).toHaveBeenCalledOnce();
+    expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
+  });
+  it("does not register an ambiguous or corrupt object", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED", "true");
+    mocks.putAndVerifyManagedUpload.mockResolvedValue({
+      status: "unavailable",
+    } as never);
+    expect(
+      (await POST(uploadRequest({ category: "lab-results", file: pdf() })))
+        .status,
+    ).toBe(503);
+    expect(mocks.receiveLabReport).not.toHaveBeenCalled();
+  });
+});
+
+it("rejects lab PDFs larger than the hosted intake limit before storage writes", async () => {
+  vi.stubEnv("NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED", "true");
+  const file = new File(
+    ["%PDF-1.7\n", new Uint8Array(4_000_000)],
+    "large.pdf",
+    { type: "application/pdf" },
+  );
+  expect(
+    (await POST(uploadRequest({ category: "lab-results", file }))).status,
+  ).toBe(413);
+  expect(mocks.reserveManagedUpload).not.toHaveBeenCalled();
+  expect(mocks.putAndVerifyManagedUpload).not.toHaveBeenCalled();
 });

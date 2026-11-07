@@ -1,3 +1,4 @@
+import { labReportsRouter } from "./lab-reports";
 import { createRouter } from "../trpc";
 import { authRouter } from "./auth";
 import { clientsRouter } from "./clients";
@@ -45,6 +46,7 @@ export const appRouter = createRouter({
   appointments: appointmentsRouter,
   recentClinicalItems: recentClinicalItemsRouter,
   records: recordsRouter,
+  labReports: labReportsRouter,
   patientNotes: patientNotesRouter,
   offline: offlineRouter,
   billing: billingRouter,

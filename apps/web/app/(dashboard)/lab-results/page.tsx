@@ -303,6 +303,9 @@ function LabResultsInboxContent() {
         </Badge>
       </div>
 
+      {!isFrontDesk && process.env.NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED === "true" ? (
+        <Button asChild variant="outline"><Link href="/lab-reports">Import and review lab PDFs</Link></Button>
+      ) : null}
       {selectedResultId ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 p-4 text-sm">
           <span className="font-medium">Showing selected result</span>

@@ -538,7 +538,8 @@ export const protectedProcedure = t.procedure.use(
         });
 
         if (
-          ["patientNotes.create", "offline.saveSoapDraft"].includes(path) &&
+          (["patientNotes.create", "offline.saveSoapDraft"].includes(path) ||
+            path.startsWith("labReports.")) &&
           !result.ok
         ) {
           // tRPC returns errors as values; force rollback of the note and audit.
@@ -592,7 +593,8 @@ export const protectedProcedure = t.procedure.use(
     if (
       type === "mutation" &&
       result.ok &&
-      !["patientNotes.create", "offline.saveSoapDraft"].includes(path)
+      !["patientNotes.create", "offline.saveSoapDraft"].includes(path) &&
+      !path.startsWith("labReports.")
     ) {
       const rawInput = await getRawInput().catch(() => undefined);
       void withSystem(db, (sysTx) =>
