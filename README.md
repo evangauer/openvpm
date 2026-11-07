@@ -127,7 +127,7 @@ Structured data models queryable by AI agents. Signed webhook events for agent s
 | **Events**       | Signed webhook delivery for integrations                           |
 | **Email/SMS**    | Resend + Telnyx SMS (Twilio fallback)                              |
 | **Payments**     | Stripe                                                             |
-| **File Storage** | S3-compatible (MinIO for self-hosted)                              |
+| **File Storage** | S3-compatible (PGSTY Silo for self-hosted)                        |
 | **Monorepo**     | Turborepo + pnpm workspaces                                        |
 | **Testing**      | Vitest + Playwright                                                |
 | **Deployment**   | Docker Compose (self-host) or Vercel (cloud)                       |
@@ -190,7 +190,7 @@ cd openvpm
 # Copy environment config
 cp .env.example .env
 
-# Start PostgreSQL and MinIO
+# Start PostgreSQL and S3-compatible storage
 docker compose -f docker/docker-compose.yml up -d
 
 # Install dependencies
@@ -224,7 +224,9 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with the demo cr
 
 The seed data creates a complete demo practice — "Neighborhood Veterinary" — with 8 staff, 25 clients, 40 patients, 2 weeks of appointments, SOAP notes, vaccination records, invoices, and 50 inventory products.
 
-The Docker Compose stack includes a one-shot MinIO bootstrap container that creates the `openpims` bucket used by `S3_BUCKET`. When using an external S3-compatible store, create that bucket yourself and grant the app credentials read/write/delete/head access before uploads, backups, or file previews run.
+The Docker Compose stack uses [PGSTY Silo](https://github.com/pgsty/silo), a maintained MinIO-compatible server, pinned to a release and image digest for both AMD64 and ARM64 hosts. Its bundled `mcli` client creates the `openpims` bucket used by `S3_BUCKET`; the bootstrap exits with an error if storage cannot be reached after 60 attempts. When using an external S3-compatible store, create that bucket yourself and grant the app credentials read/write/delete/head access before uploads, backups, or file previews run.
+
+The Compose service name `minio`, volume name `minio_data`, S3 endpoint, and `MINIO_*` settings remain compatible with existing configuration. Before upgrading an existing MinIO installation, keep an independent backup and follow the [Silo migration guide](https://silo.pgsty.com/compatibility/migration/). Do not delete the existing storage volume to upgrade.
 
 Before using a self-hosted installation with real clinic data, complete the
 [open-source release checklist](docs/open-source-release-checklist.md) and the
@@ -237,7 +239,7 @@ local build is not, by itself, a production-readiness assessment.
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-The Docker setup includes PostgreSQL 16 with health checks, MinIO for S3-compatible file storage, automatic MinIO bucket bootstrap, and a multi-stage production build of the web application. For production, run `pnpm db:migrate`, then `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls`, verify with `OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test`, and point the app at the generated least-privilege `openpims_app` database role before serving traffic.
+The Docker setup includes PostgreSQL 16 with health checks, PGSTY Silo for S3-compatible file storage, automatic bucket bootstrap, and a multi-stage production build of the web application. For production, run `pnpm db:migrate`, then `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls`, verify with `OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test`, and point the app at the generated least-privilege `openpims_app` database role before serving traffic.
 
 ## API
 
