@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import * as schema from "../../../../packages/db/schema/index";
+import { findSchemaDrift, driftIsClean } from "../../../../packages/db/schema-drift";
 import { createRouter, type TRPCContext } from "../trpc";
 import { labReportsRouter } from "../routers/lab-reports";
 import { patientsRouter } from "../routers/patients";
@@ -31,6 +32,13 @@ integration("Lab report intake on restricted PostgreSQL", () => {
     let target: DisposableClinic | undefined;
     vi.stubEnv("NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED", "true");
     try {
+      expect(driftIsClean(await findSchemaDrift(fixture.ownerDb))).toBe(true);
+      await fixture.owner`grant update on lab_report_receipts to openpims_app`;
+      expect((await findSchemaDrift(fixture.ownerDb)).invalidObjects).toContainEqual({
+        kind: "forbidden_table_privilege", table: "lab_report_receipts", name: "UPDATE",
+      });
+      await fixture.owner`revoke update on lab_report_receipts from openpims_app`;
+      expect(driftIsClean(await findSchemaDrift(fixture.ownerDb))).toBe(true);
       process.env.DATABASE_URL = fixture.appUrl;
       const [clinic, foreign] = await fixture.ownerDb
         .insert(schema.practices)
