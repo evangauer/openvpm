@@ -199,7 +199,6 @@ cd openvpm
 
 # Copy environment config
 cp .env.example .env
-# In the root .env, set NEXTAUTH_SECRET using: openssl rand -base64 32
 
 # Replace the placeholder NEXTAUTH_SECRET in .env with a generated one
 # (or paste the output of `openssl rand -base64 32` into .env yourself)
@@ -256,6 +255,11 @@ Before using a self-hosted installation with real clinic data, complete the
 local build is not, by itself, a production-readiness assessment.
 
 ### Deploy with Docker
+
+Allocate at least 4 GiB of memory to the Docker builder. The image build gives
+Node a 3 GiB heap for compilation and type checking; the running application
+keeps Node's default memory settings. On a larger builder, the heap can be
+adjusted with `--build-arg BUILD_NODE_OPTIONS=--max-old-space-size=4096`.
 
 ```bash
 # One time: create .env with a unique session secret
