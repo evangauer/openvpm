@@ -23,6 +23,7 @@ const routeLabels: Record<string, string> = {
   "/schedule": "Schedule",
   "/records": "Records",
   "/lab-results": "Lab Inbox",
+  "/lab-reports": "Lab Inbox",
   "/billing": "Billing",
   "/inventory": "Inventory",
   "/inbox": "Inbox",
