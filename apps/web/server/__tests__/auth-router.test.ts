@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
     remaining: 4,
     resetAt: new Date(),
   })),
+  clearRateLimit: vi.fn(async () => undefined),
+  clearRateLimitPrefix: vi.fn(async () => undefined),
   createAuthToken: vi.fn(async () => "token-123"),
   consumeAuthToken: vi.fn(),
   sendPasswordResetEmail: vi.fn(async () => ({ success: true })),
@@ -35,15 +37,23 @@ const mocks = vi.hoisted(() => ({
   createSubscriptionCheckoutSession: vi.fn(async () => ({
     url: "https://checkout.stripe.com/signup-checkout",
   })),
+  applyBuildServices: vi.fn(async () => undefined),
   seedPractice: vi.fn(async () => undefined),
   seedDemoData: vi.fn(async () => ({})),
   billingEnforced: vi.fn(() => false),
   noCardTrialEnabled: vi.fn(() => false),
   recordAuditLog: vi.fn(async () => undefined),
+  setCookie: vi.fn(),
+}));
+
+vi.mock("next/headers", () => ({
+  cookies: async () => ({ set: mocks.setCookie }),
 }));
 
 vi.mock("@/lib/rate-limit", () => ({
   rateLimit: mocks.rateLimit,
+  clearRateLimit: mocks.clearRateLimit,
+  clearRateLimitPrefix: mocks.clearRateLimitPrefix,
 }));
 
 vi.mock("@/lib/auth-tokens", () => ({
@@ -64,24 +74,22 @@ vi.mock("@/lib/email-lifecycle", () => ({
   sendOptionalPlatformEmail: mocks.sendOptionalPlatformEmail,
 }));
 
+vi.mock("@/lib/build/apply", () => ({
+  applyBuildServices: mocks.applyBuildServices,
+  setUpBuildBookingPage: vi.fn(async () => "cedar-mobile-vet"),
+}));
+
 vi.mock("@/lib/onboarding/defaults", () => ({
   seedPractice: mocks.seedPractice,
   seedDemoData: mocks.seedDemoData,
 }));
 
-vi.mock("@/lib/billing/plans", () => ({
+vi.mock("@/lib/billing/plans", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/billing/plans")>(),
   billingEnforced: mocks.billingEnforced,
   noCardTrialEnabled: mocks.noCardTrialEnabled,
   trialEndsAtFrom: (from = new Date()) =>
     new Date(from.getTime() + 14 * 24 * 60 * 60 * 1000),
-  cloudCheckoutPriceIds: () => ({
-    locationPriceId: process.env.STRIPE_PRICE_CLOUD_LOCATION || undefined,
-  }),
-  cloudMeteredPriceIds: () => ({
-    aiOveragePriceId: process.env.STRIPE_PRICE_AI_OVERAGE || undefined,
-    smsOveragePriceId: process.env.STRIPE_PRICE_SMS_OVERAGE || undefined,
-  }),
-  TRIAL_DAYS: 14,
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -131,11 +139,16 @@ function sqlIncludesValue(
   );
 }
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(
+  db: Record<string, unknown>,
+  extra: { verifiedIp?: string | null; knownDeviceCookie?: string | null } = {},
+) {
   return authRouter.createCaller({
     db,
     session: null,
     ip: "198.51.100.20",
+    verifiedIp: "198.51.100.20",
+    ...extra,
   } as never);
 }
 
@@ -735,7 +748,223 @@ describe("auth router input validation", () => {
       to: "owner@example.com",
       practiceName: "Neighborhood Veterinary",
       trialDays: 14,
+      billingRequired: false,
+      previewEndsAt: null,
     });
+  });
+
+  it("opens a preview before card for the preview arm, with no checkout", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.stubEnv("HOSTED_PREVIEW_PERCENT", "100");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues, updateSet } = createRegistrationDb();
+    const before = Date.now();
+
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+        country: "US",
+        acquisition: { funnelId: "11111111-1111-4111-8111-111111111111" },
+      }),
+    ).resolves.toMatchObject({
+      checkoutUrl: undefined,
+      onboardingRequired: true,
+    });
+
+    const practiceInsert = insertValues.mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    // No trial and no subscription: the card still starts the trial.
+    expect(practiceInsert).not.toHaveProperty("billingStatus");
+    expect(practiceInsert).not.toHaveProperty("trialEndsAt");
+    const previewEndsAt = practiceInsert.previewEndsAt as Date;
+    expect(previewEndsAt).toBeInstanceOf(Date);
+    expect(previewEndsAt.getTime() - before).toBeGreaterThanOrEqual(
+      72 * 60 * 60 * 1000 - 1000,
+    );
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
+    expect(updateSet).toHaveBeenCalledWith({
+      settings: expect.objectContaining({
+        growthExperiments: {
+          previewBeforeCard: { arm: "preview", assignedAt: expect.any(String) },
+        },
+      }),
+    });
+    expect(mocks.sendWelcomeEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        billingRequired: true,
+        previewEndsAt,
+      }),
+    );
+  });
+
+  it("builds the workspace from Build your clinic and always gates on the card", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.stubEnv("HOSTED_PREVIEW_PERCENT", "100");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues, updateSet } = createRegistrationDb();
+    const build = {
+      practiceType: "mobile" as const,
+      currentSystem: "shepherd" as const,
+      brandColor: "#7C3AED",
+      services: [
+        { name: "House-Call Exam", price: 120 },
+        { name: "Trip Fee", price: 45 },
+      ],
+    };
+
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Cedar Mobile Vet",
+        country: "US",
+        acquisition: { funnelId: "11111111-1111-4111-8111-111111111111" },
+        build,
+      }),
+    ).resolves.toMatchObject({
+      checkoutUrl: "https://checkout.stripe.com/signup-checkout",
+      onboardingRequired: false,
+    });
+
+    // Even at a 100% preview share, the builder signup goes to Checkout.
+    expect(insertValues.mock.calls[0]?.[0]).not.toHaveProperty("previewEndsAt");
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalled();
+    expect(mocks.applyBuildServices).toHaveBeenCalledWith(
+      expect.anything(),
+      "practice-1",
+      build.services,
+    );
+    expect(updateSet).toHaveBeenCalledWith({
+      settings: expect.objectContaining({
+        brandColor: "#7c3aed",
+        buildFlow: expect.objectContaining({
+          version: 1,
+          practiceType: "mobile",
+          currentSystem: "shepherd",
+          serviceCount: 2,
+        }),
+        growthExperiments: {
+          signupFlow: { arm: "builder", assignedAt: expect.any(String) },
+        },
+        onboardingState: expect.objectContaining({
+          clinicModel: "mobile",
+          firstGoal: "import_records",
+        }),
+      }),
+    });
+  });
+
+  it("starts the trial on the annual plan when the clinic picks it", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "price_location_annual");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db } = createRegistrationDb();
+
+    await callerWithDb(db).register({
+      email: "owner@example.com",
+      password: "password123",
+      practiceName: "Cedar Mobile Vet",
+      country: "US",
+      billingCadence: "year",
+    });
+
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lineItems: [{ priceId: "price_location_annual", quantity: 1 }],
+        billingCadence: "year",
+      }),
+    );
+  });
+
+  it("refuses an annual signup before account writes when annual isn't configured", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION_ANNUAL", "");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues } = createRegistrationDb();
+
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Cedar Mobile Vet",
+        country: "US",
+        billingCadence: "year",
+      }),
+    ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed build before any account writes", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues } = createRegistrationDb();
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Cedar Mobile Vet",
+        country: "US",
+        build: {
+          practiceType: "mobile",
+          currentSystem: "shepherd",
+          brandColor: "purple",
+          services: [],
+        } as never,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("keeps checkout first for the control arm and records the assignment", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    vi.stubEnv("HOSTED_PREVIEW_PERCENT", "50");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues, updateSet } = createRegistrationDb();
+
+    // No funnel id: unattributable signups always stay on the control path.
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+        country: "US",
+      }),
+    ).resolves.toMatchObject({
+      checkoutUrl: "https://checkout.stripe.com/signup-checkout",
+      onboardingRequired: false,
+    });
+    expect(insertValues.mock.calls[0]?.[0]).not.toHaveProperty("previewEndsAt");
+    expect(updateSet).toHaveBeenCalledWith({
+      settings: expect.objectContaining({
+        growthExperiments: {
+          previewBeforeCard: { arm: "control", assignedAt: expect.any(String) },
+        },
+      }),
+    });
+  });
+
+  it("assigns no experiment arm while the preview share is unset", async () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, updateSet } = createRegistrationDb();
+
+    await callerWithDb(db).register({
+      email: "owner@example.com",
+      password: "password123",
+      practiceName: "Neighborhood Veterinary",
+      country: "US",
+      acquisition: { funnelId: "11111111-1111-4111-8111-111111111111" },
+    });
+    expect(updateSet).toHaveBeenCalledWith({
+      settings: expect.not.objectContaining({
+        growthExperiments: expect.anything(),
+      }),
+    });
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalled();
   });
 
   it("reports a console verification preview without claiming registration email delivery", async () => {
@@ -873,6 +1102,50 @@ describe("auth router email normalization", () => {
     ).toBe(true);
   });
 
+  it("skips the per-address daily reset cap for a browser that has signed in to the account", async () => {
+    vi.stubEnv("NEXTAUTH_SECRET", "test-secret-at-least-32-characters-long");
+    const { issueKnownDeviceCookie } = await import("@/lib/known-device");
+    const device = issueKnownDeviceCookie(null, "admin@example.com")!;
+    const { db } = createSelectDb([
+      [{ id: "user-1", email: "admin@example.com", name: "Admin" }],
+    ]);
+
+    await expect(
+      callerWithDb(db, { knownDeviceCookie: device.value }).requestPasswordReset({
+        email: "Admin@Example.COM",
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(mocks.rateLimit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "pwreset:admin@example.com:net:198.51.100.20",
+      }),
+    );
+    expect(mocks.rateLimit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ key: "pwreset:admin@example.com:day" }),
+    );
+    vi.unstubAllEnvs();
+  });
+
+  it("keys the per-network reset bucket only on a verified public address, by /64 for IPv6", async () => {
+    const { db } = createSelectDb([[], [], []]);
+    await callerWithDb(db, { verifiedIp: null }).requestPasswordReset({
+      email: "a@example.com",
+    });
+    await callerWithDb(db, { verifiedIp: "10.0.0.5" }).requestPasswordReset({
+      email: "a@example.com",
+    });
+    expect(mocks.rateLimit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ key: expect.stringContaining(":net:") }),
+    );
+    await callerWithDb(db, {
+      verifiedIp: "2001:db8:1:2:aaaa::1",
+    }).requestPasswordReset({ email: "a@example.com" });
+    expect(mocks.rateLimit).toHaveBeenCalledWith(
+      expect.objectContaining({ key: "pwreset:a@example.com:net:2001:db8:1:2::/64" }),
+    );
+  });
+
   it("normalizes password-reset rate-limit keys and account lookups", async () => {
     const { db, selectWhere } = createSelectDb([
       [{ id: "user-1", email: "admin@example.com", name: "Admin" }],
@@ -882,10 +1155,16 @@ describe("auth router email normalization", () => {
       callerWithDb(db).requestPasswordReset({ email: "Admin@Example.COM" }),
     ).resolves.toEqual({ ok: true });
 
+    // Per address and network, plus a daily per-address cap on reset emails.
     expect(mocks.rateLimit).toHaveBeenCalledWith({
-      key: "pwreset:admin@example.com",
+      key: "pwreset:admin@example.com:net:198.51.100.20",
       limit: 5,
       windowMs: 3600000,
+    });
+    expect(mocks.rateLimit).toHaveBeenCalledWith({
+      key: "pwreset:admin@example.com:day",
+      limit: 20,
+      windowMs: 24 * 3600000,
     });
     expect(
       sqlIncludesValue(selectWhere.mock.calls[0]?.[0], "admin@example.com"),
@@ -1172,8 +1451,8 @@ describe("auth router token validation", () => {
     const { db, updateWhere } = createAuthUpdateDb({
       returningRows: [
         [{ id: "user-1" }],
-        [{ id: "user-1" }],
-        [{ id: "user-1" }],
+        [{ id: "user-1", email: "Owner@Example.com" }],
+        [{ id: "user-1", email: "invitee@example.com" }],
       ],
     });
     mocks.consumeAuthToken.mockResolvedValue({
@@ -1192,6 +1471,18 @@ describe("auth router token validation", () => {
       caller.acceptInvite({ token: validToken, password: "password123" }),
     ).resolves.toEqual({ ok: true });
 
+    // A completed reset or accepted invite lifts any sign-in lock.
+    expect(mocks.clearRateLimit).toHaveBeenCalledTimes(2);
+    expect(mocks.clearRateLimit).toHaveBeenCalledWith(
+      "login:account:owner@example.com",
+    );
+    expect(mocks.clearRateLimit).toHaveBeenCalledWith(
+      "login:account:invitee@example.com",
+    );
+    expect(mocks.clearRateLimitPrefix).toHaveBeenCalledTimes(2);
+    expect(mocks.clearRateLimitPrefix).toHaveBeenCalledWith(
+      expect.stringMatching(/^login:account-dev:[0-9a-f]{32}:$/),
+    );
     expect(mocks.consumeAuthToken).toHaveBeenCalledWith(
       validToken,
       "email_verify",
@@ -1208,6 +1499,61 @@ describe("auth router token validation", () => {
     for (const call of updateWhere.mock.calls) {
       expect(sqlIncludesValue(call[0], users.deletedAt)).toBe(true);
     }
+  });
+
+  it("makes the browser a known device after a reset or accepted invite", async () => {
+    vi.stubEnv("NEXTAUTH_SECRET", "test-secret-at-least-32-characters-long");
+    const { issueKnownDeviceCookie, knownDeviceForAccount } = await import(
+      "@/lib/known-device"
+    );
+    const existing = issueKnownDeviceCookie(null, "front-desk@example.com")!;
+    const { db } = createAuthUpdateDb({
+      returningRows: [
+        [{ id: "user-1", email: "Owner@Example.com" }],
+        [{ id: "user-2", email: "invitee@example.com" }],
+      ],
+    });
+    mocks.consumeAuthToken.mockResolvedValue({
+      userId: "user-1",
+      email: "owner@example.com",
+    });
+    const caller = callerWithDb(db, { knownDeviceCookie: existing.value });
+
+    await caller.resetPassword({ token: validToken, password: "password123" });
+    await caller.acceptInvite({ token: validToken, password: "password123" });
+
+    expect(mocks.setCookie).toHaveBeenCalledTimes(2);
+    const [reset, invite] = mocks.setCookie.mock.calls as [
+      string,
+      string,
+      Record<string, unknown>,
+    ][];
+    expect(reset![0]).toBe(existing.name);
+    expect(reset![2]).toEqual(existing.options);
+    expect(knownDeviceForAccount(reset![1], "owner@example.com")).not.toBeNull();
+    expect(knownDeviceForAccount(invite![1], "invitee@example.com")).not.toBeNull();
+    // Merged into the browser's existing device, keeping its other accounts.
+    expect(
+      knownDeviceForAccount(reset![1], "front-desk@example.com")?.deviceId,
+    ).toBe(knownDeviceForAccount(existing.value, "front-desk@example.com")?.deviceId);
+  });
+
+  it("doesn't issue a known-device cookie when the reset or invite fails", async () => {
+    const { db } = createAuthUpdateDb({ returningRows: [[], []] });
+    mocks.consumeAuthToken.mockResolvedValueOnce(null);
+    mocks.consumeAuthToken.mockResolvedValue({
+      userId: "user-1",
+      email: "owner@example.com",
+    });
+    const caller = callerWithDb(db);
+
+    await expect(
+      caller.resetPassword({ token: validToken, password: "password123" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      caller.acceptInvite({ token: validToken, password: "password123" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(mocks.setCookie).not.toHaveBeenCalled();
   });
 
   it("rejects issued auth tokens when the target user is deleted", async () => {
@@ -1242,5 +1588,23 @@ describe("auth router token validation", () => {
     for (const call of updateWhere.mock.calls) {
       expect(sqlIncludesValue(call[0], users.deletedAt)).toBe(true);
     }
+  });
+});
+
+
+describe("dedicated OpenVPM signup billing", () => {
+  it("pins new trials to OpenVPM without granting access before checkout", async () => {
+    vi.stubEnv("STRIPE_OPENVPM_ACCOUNT_ID", "acct_openvpm");
+    vi.stubEnv("STRIPE_OPENVPM_PRICE_CLOUD_LOCATION", "price_openvpm");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_legacy");
+    mocks.billingEnforced.mockReturnValue(true);
+    const { db, insertValues } = createRegistrationDb();
+    await callerWithDb(db).register({ email: "owner@example.com", password: "password123", practiceName: "Neighborhood Veterinary", country: "US" });
+    const inserted = insertValues.mock.calls[0]?.[0];
+    expect(inserted).toMatchObject({ stripeBillingAccount: "openvpm" });
+    expect(inserted).not.toHaveProperty("trialEndsAt");
+    expect(inserted).not.toHaveProperty("billingStatus");
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenCalledWith(expect.objectContaining({ billingAccount: "openvpm", lineItems: [{ priceId: "price_openvpm", quantity: 1 }], trialPeriodDays: 14 }));
+    expect(mocks.sendWelcomeEmail).toHaveBeenCalledWith(expect.objectContaining({ billingRequired: true }));
   });
 });

@@ -24,7 +24,7 @@ const errorReportSchema = z.object({
   errorFamily: z.enum(CLIENT_ERROR_FAMILIES).optional().default("Error"),
   digest: z.string().max(120).optional().nullable(),
   path: z.string().max(500).startsWith("/").optional().nullable(),
-  anonymousId: z.string().uuid().optional().nullable(),
+  anonymousId: z.string().guid().optional().nullable(),
 });
 
 function errorReportRateLimitResponse(result: {

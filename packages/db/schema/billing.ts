@@ -230,7 +230,7 @@ export const invoiceItems = pgTable(
       .notNull()
       .references(() => invoices.id),
     description: varchar("description", { length: 500 }).notNull(),
-    quantity: integer("quantity").notNull().default(1),
+    quantity: numeric("quantity", { precision: 13, scale: 3, mode: "number" }).notNull().default(1),
     unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(),
     total: numeric("total", { precision: 10, scale: 2 }).notNull(),
     // Immutable tax treatment captured when the invoice line is written.
@@ -331,7 +331,7 @@ export const products = pgTable(
     taxable: boolean("taxable").notNull().default(true),
     costPrice: numeric("cost_price", { precision: 10, scale: 2 }),
     inventoryTracked: boolean("inventory_tracked").notNull().default(true),
-    stockQuantity: integer("stock_quantity").notNull().default(0),
+    stockQuantity: numeric("stock_quantity", { precision: 13, scale: 3, mode: "number" }).notNull().default(0),
     reorderPoint: integer("reorder_point").default(10),
     lotNumber: varchar("lot_number", { length: 64 }),
     expirationDate: date("expiration_date"),

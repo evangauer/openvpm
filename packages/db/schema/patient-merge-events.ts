@@ -26,6 +26,12 @@ export type PatientMergeIdentitySnapshot = {
     | "rabbit"
     | "reptile"
     | "equine"
+    | "bovine"
+    | "ovine"
+    | "caprine"
+    | "porcine"
+    | "poultry"
+    | "camelid"
     | "other";
   breed: string | null;
   sex: "male" | "female" | "male_neutered" | "female_spayed" | null;

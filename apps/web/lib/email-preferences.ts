@@ -17,6 +17,7 @@ type EmailPreferencePayload = {
 
 type IdentityOptions = {
   identitySecret?: string;
+  previousIdentitySecret?: string;
 };
 
 type SigningOptions = {
@@ -69,6 +70,12 @@ function validSecret(value: unknown): string | null {
 
 function identitySecret(explicit?: string): string | null {
   return validSecret(explicit ?? process.env.EMAIL_PREFERENCE_IDENTITY_SECRET);
+}
+
+function previousIdentitySecret(explicit?: string): string | null {
+  const raw = explicit ?? process.env.EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS;
+  if (raw === undefined || raw === "") return null;
+  return validSecret(raw);
 }
 
 function signingSecret(explicit?: string): string | null {
@@ -189,7 +196,31 @@ export function verifyEmailPreferenceToken(
   const identityKeyFingerprint = emailPreferenceIdentityKeyFingerprint({
     identitySecret: options.identitySecret,
   });
-  if (!secrets || !identityKeyFingerprint || !token) return null;
+  const configuredPreviousIdentitySecret =
+    options.previousIdentitySecret ??
+    process.env.EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS;
+  const previousIdentityKeyFingerprint = previousIdentitySecret(
+    options.previousIdentitySecret,
+  )
+    ? emailPreferenceIdentityKeyFingerprint({
+        identitySecret: configuredPreviousIdentitySecret,
+      })
+    : null;
+  if (
+    !secrets ||
+    !identityKeyFingerprint ||
+    (configuredPreviousIdentitySecret !== undefined &&
+      configuredPreviousIdentitySecret !== "" &&
+      !previousIdentityKeyFingerprint) ||
+    !token
+  ) {
+    return null;
+  }
+  const allowedIdentityKeyFingerprints = new Set(
+    [identityKeyFingerprint, previousIdentityKeyFingerprint].filter(
+      (fingerprint): fingerprint is string => Boolean(fingerprint),
+    ),
+  );
 
   const [encoded, signature, extra] = token.split(".");
   if (!encoded || !signature || extra) return null;
@@ -209,7 +240,8 @@ export function verifyEmailPreferenceToken(
     payload.purpose !== "unsubscribe_marketing" ||
     typeof payload.kid !== "string" ||
     !KEY_ID_PATTERN.test(payload.kid) ||
-    payload.identityKeyFingerprint !== identityKeyFingerprint ||
+    typeof payload.identityKeyFingerprint !== "string" ||
+    !allowedIdentityKeyFingerprints.has(payload.identityKeyFingerprint) ||
     !validTarget(payload.target) ||
     typeof payload.iat !== "number" ||
     payload.iat > nowSeconds + 300

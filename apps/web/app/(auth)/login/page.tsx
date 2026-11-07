@@ -19,6 +19,8 @@ import {
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import { getFunnelVisitorId, useFunnelVisitorId } from "@/lib/funnel-visitor";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
+import { loginErrorMessage } from "@/lib/login-error-message";
+import { CURRENT_DEMO_DISCLOSURE_TEXT } from "@/lib/growth/demo-disclosure";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
@@ -40,9 +42,10 @@ function LoginPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const visitorId = useFunnelVisitorId();
+  const checkoutState = searchParams.get("checkout");
   const nextPath = safeAuthNextPath(
     searchParams.get("next"),
-    "/post-login",
+    checkoutState === "cancelled" ? "/settings?tab=billing" : DEMO_MODE ? "/demo-start" : "/post-login",
   );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -74,7 +77,7 @@ function LoginPageInner() {
     setLoading(false);
 
     if (result?.error) {
-      setError("Invalid email or password");
+      setError(loginErrorMessage(result.error));
     } else {
       router.push(nextPath);
       router.refresh();
@@ -141,20 +144,27 @@ function LoginPageInner() {
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {DEMO_MODE
-              ? "Explore the live product"
+              ? "Try a day in your clinic"
               : "Sign in to your practice"}
           </p>
         </div>
 
+        {!DEMO_MODE && (checkoutState === "success" || checkoutState === "cancelled") && (
+          <div role="status" className="mb-6 rounded-md border border-primary/20 bg-primary/5 p-4 text-sm leading-6">
+            {checkoutState === "success"
+              ? "Checkout completed. Sign in to open your clinic workspace. Your billing status updates after Stripe confirms checkout."
+              : "Your account is saved, but your trial has not started. Sign in to resume secure checkout in Plan & Billing. No subscription charge was made."}
+          </div>
+        )}
+
         {DEMO_MODE && (
           <div className="mb-6 rounded-md border border-primary/20 bg-primary/5 p-4">
             <p className="mb-1 text-sm font-semibold text-foreground">
-              Immediate access to the live demo
+              A sample clinic, ready to explore
             </p>
             <p className="text-xs leading-5 text-muted-foreground">
-              No call, sales form, or credit card. We use your email to protect
-              this shared sandbox from automated abuse. We may send one brief
-              email asking what you thought; unsubscribe anytime.
+              Open a patient chart, follow a lab result, or explore billing.
+              No credit card or setup needed.
             </p>
           </div>
         )}
@@ -217,9 +227,14 @@ function LoginPageInner() {
                 ? "Opening demo..."
                 : "Signing in..."
               : DEMO_MODE
-                ? "Open the live demo"
+                ? "Explore the demo"
                 : "Sign in"}
           </button>
+          {DEMO_MODE && (
+            <p className="text-xs leading-5 text-muted-foreground">
+              {CURRENT_DEMO_DISCLOSURE_TEXT}
+            </p>
+          )}
         </form>
 
         {!DEMO_MODE && (
@@ -233,7 +248,7 @@ function LoginPageInner() {
           </p>
         )}
         <p className="mt-2 text-center text-sm text-muted-foreground">
-          Don&apos;t have an account?{" "}
+          {DEMO_MODE ? "Ready for your own workspace?" : "Don't have an account?"}{" "}
           {DEMO_MODE ? (
             <a
               href={buildCloudSignupUrl({

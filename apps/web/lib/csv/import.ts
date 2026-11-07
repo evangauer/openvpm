@@ -42,6 +42,12 @@ export interface PatientImportRecord {
     | "rabbit"
     | "reptile"
     | "equine"
+    | "bovine"
+    | "ovine"
+    | "caprine"
+    | "porcine"
+    | "poultry"
+    | "camelid"
     | "other";
   breed?: string;
   sex?: "male" | "female" | "male_neutered" | "female_spayed";
@@ -100,6 +106,98 @@ export interface ServiceImportRecord {
 export interface ParseResult<T> {
   records: T[];
   errors: string[];
+  /** One-based data-row positions for records that passed parsing. */
+  sourceRows?: number[];
+}
+
+/** Planner positions index valid records, not the original uploaded rows. */
+export function remapRowIssues(
+  errors: readonly string[],
+  sourceRows?: readonly number[],
+): string[] {
+  return errors.map((error) =>
+    error.replace(/^Row (\d+):/, (prefix, value: string) => {
+      const sourceRow = sourceRows?.[Number(value) - 1];
+      return sourceRow == null ? prefix : `Row ${sourceRow}:`;
+    }),
+  );
+}
+
+export interface RowIssueGroup {
+  message: string;
+  count: number;
+  /** First 20 distinct data-row positions, sorted ascending. */
+  rows: number[];
+  remaining: number;
+}
+
+/** Groups identical issues without conflating warning rows with skipped rows. */
+export function summarizeRowIssues(errors: readonly string[]): {
+  groups: RowIssueGroup[];
+  fileIssues: string[];
+  affectedRows: number;
+} {
+  const groups = new Map<string, Set<number>>();
+  const allRows = new Set<number>();
+  const fileIssues = new Set<string>();
+  for (const error of errors) {
+    const match = /^Row ([1-9]\d*):\s*(.+)$/s.exec(error);
+    const row = match ? Number(match[1]) : NaN;
+    if (!match || !Number.isSafeInteger(row)) {
+      fileIssues.add(error);
+      continue;
+    }
+    const message = match[2]!;
+    const rows = groups.get(message) ?? new Set<number>();
+    rows.add(row);
+    allRows.add(row);
+    groups.set(message, rows);
+  }
+  return {
+    groups: [...groups].map(([message, values]) => {
+      const rows = [...values].sort((a, b) => a - b);
+      return { message, count: rows.length, rows: rows.slice(0, 20), remaining: Math.max(0, rows.length - 20) };
+    }),
+    fileIssues: [...fileIssues],
+    affectedRows: allRows.size,
+  };
+}
+
+/** A local repair worksheet, never an import or an automatic retry. */
+export function rowIssuesCsv(csv: string, errors: readonly string[]): string | null {
+  const parsed = parseCsv(csv);
+  // Never guess at columns or rows when the source file could not be parsed.
+  if (parsed.errors.length || !parsed.rows.length) return null;
+  const issues = new Map<number, Set<string>>();
+  for (const error of errors) {
+    const match = /^Row ([1-9]\d*):\s*(.+)$/s.exec(error);
+    if (!match) continue;
+    const row = Number(match[1]);
+    if (!Number.isSafeInteger(row) || row > parsed.rows.length) continue;
+    const messages = issues.get(row) ?? new Set<string>();
+    messages.add(match[2]!);
+    issues.set(row, messages);
+  }
+  if (!issues.size) return null;
+  const uniqueHeader = (base: string) => {
+    let name = base;
+    while (parsed.headers.some((header) => normalizeKey(header) === normalizeKey(name))) name += "_report";
+    return name;
+  };
+  // Quote every field and neutralize spreadsheet formulas, including headers.
+  const cell = (value: string) => {
+    const safe = /^[\s\uFEFF]*[=+@-]/.test(value) || /^[\t\r\n]/.test(value) ? `'${value}` : value;
+    return `"${safe.replace(/"/g, '""')}"`;
+  };
+  const records = [
+    [uniqueHeader("OpenVPM data row"), uniqueHeader("OpenVPM issues"), ...parsed.headers],
+    ...[...issues].sort(([a], [b]) => a - b).map(([row, messages]) => [
+      String(row),
+      [...messages].join("; "),
+      ...parsed.headers.map((header) => parsed.rows[row - 1]![header] ?? ""),
+    ]),
+  ];
+  return records.map((record) => record.map(cell).join(",")).join("\r\n");
 }
 
 const SPECIES = [
@@ -109,6 +207,12 @@ const SPECIES = [
   "rabbit",
   "reptile",
   "equine",
+  "bovine",
+  "ovine",
+  "caprine",
+  "porcine",
+  "poultry",
+  "camelid",
   "other",
 ];
 
@@ -541,6 +645,7 @@ export function csvToClientRecords(
   const { headers, rows, errors: parseErrors } = parseCsv(csv);
   const records: ClientImportRecord[] = [];
   const errors: string[] = [...parseErrors];
+  const sourceRows: number[] = [];
 
   if (parseErrors.length > 0) {
     return { records, errors };
@@ -586,6 +691,7 @@ export function csvToClientRecords(
       errors.push(`Row ${i + 1}: external client ID is too long.`);
       return;
     }
+    sourceRows.push(i + 1);
     records.push({
       externalClientId,
       firstName,
@@ -599,7 +705,7 @@ export function csvToClientRecords(
     });
   });
 
-  return { records, errors };
+  return { records, errors, sourceRows };
 }
 
 export function csvToPatientRecords(
@@ -608,6 +714,7 @@ export function csvToPatientRecords(
   const { headers, rows, errors: parseErrors } = parseCsv(csv);
   const records: PatientImportRecord[] = [];
   const errors: string[] = [...parseErrors];
+  const sourceRows: number[] = [];
 
   if (parseErrors.length > 0) {
     return { records, errors };
@@ -680,6 +787,7 @@ export function csvToPatientRecords(
       return;
     }
 
+    sourceRows.push(i + 1);
     records.push({
       clientEmail,
       externalClientId,
@@ -695,7 +803,7 @@ export function csvToPatientRecords(
     });
   });
 
-  return { records, errors };
+  return { records, errors, sourceRows };
 }
 
 export function csvToVaccinationRecords(
@@ -704,6 +812,7 @@ export function csvToVaccinationRecords(
   const { headers, rows, errors: parseErrors } = parseCsv(csv);
   const records: VaccinationImportRecord[] = [];
   const errors: string[] = [...parseErrors];
+  const sourceRows: number[] = [];
 
   if (parseErrors.length > 0) {
     return { records, errors };
@@ -786,6 +895,7 @@ export function csvToVaccinationRecords(
       );
     }
 
+    sourceRows.push(i + 1);
     records.push({
       clientEmail,
       externalClientId,
@@ -799,7 +909,7 @@ export function csvToVaccinationRecords(
     });
   });
 
-  return { records, errors };
+  return { records, errors, sourceRows };
 }
 
 /**
@@ -814,6 +924,7 @@ export function csvToSoapNoteRecords(
   const { headers, rows, errors: parseErrors } = parseCsv(csv);
   const records: SoapNoteImportRecord[] = [];
   const errors: string[] = [...parseErrors];
+  const sourceRows: number[] = [];
 
   if (parseErrors.length > 0) {
     return { records, errors };
@@ -944,6 +1055,7 @@ export function csvToSoapNoteRecords(
       return;
     }
 
+    sourceRows.push(i + 1);
     records.push({
       clientEmail,
       externalClientId,
@@ -957,7 +1069,7 @@ export function csvToSoapNoteRecords(
     });
   });
 
-  return { records, errors };
+  return { records, errors, sourceRows };
 }
 
 /**
@@ -970,6 +1082,7 @@ export function csvToCareReminderRecords(
   const { headers, rows, errors: parseErrors } = parseCsv(csv);
   const records: CareReminderImportRecord[] = [];
   const errors: string[] = [...parseErrors];
+  const sourceRows: number[] = [];
 
   if (parseErrors.length > 0) return { records, errors };
 
@@ -1066,6 +1179,7 @@ export function csvToCareReminderRecords(
       return;
     }
 
+    sourceRows.push(index + 1);
     records.push({
       externalReminderId,
       externalPatientId,
@@ -1078,7 +1192,7 @@ export function csvToCareReminderRecords(
     });
   });
 
-  return { records, errors };
+  return { records, errors, sourceRows };
 }
 
 /** Generic service-catalog import. Inventory products use a separate safety
@@ -1089,6 +1203,7 @@ export function csvToServiceRecords(
   const { headers, rows, errors: parseErrors } = parseCsv(csv);
   const records: ServiceImportRecord[] = [];
   const errors: string[] = [...parseErrors];
+  const sourceRows: number[] = [];
 
   if (parseErrors.length > 0) return { records, errors };
   const preflightErrors = preflightCsvHeaders(headers, rows, [
@@ -1160,6 +1275,7 @@ export function csvToServiceRecords(
       return;
     }
 
+    sourceRows.push(index + 1);
     records.push({
       externalServiceId,
       name,
@@ -1170,5 +1286,5 @@ export function csvToServiceRecords(
     });
   });
 
-  return { records, errors };
+  return { records, errors, sourceRows };
 }

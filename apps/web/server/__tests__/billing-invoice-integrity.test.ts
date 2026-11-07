@@ -167,7 +167,7 @@ describe("billing invoice integrity", () => {
         items: [
           {
             ...productLine,
-            quantity: 1.5,
+            quantity: 1.0001,
           },
         ],
         isEstimate: false,

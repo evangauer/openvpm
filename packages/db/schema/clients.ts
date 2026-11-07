@@ -54,7 +54,17 @@ export const clients = pgTable(
     smsConsentSource: varchar("sms_consent_source", { length: 32 }),
     smsConsentDisclosure: text("sms_consent_disclosure"),
     notes: text("notes"),
+    /**
+     * SHA-256 digest of the current single-use portal bootstrap credential.
+     * The raw credential is returned only once when staff issues the link.
+     */
     accessToken: varchar("access_token", { length: 64 }).unique(),
+    portalAccessTokenExpiresAt: timestamp("portal_access_token_expires_at", {
+      withTimezone: true,
+    }),
+    portalAccessTokenUsedAt: timestamp("portal_access_token_used_at", {
+      withTimezone: true,
+    }),
   },
   (table) => ({
     practiceIdUq: uniqueIndex("clients_practice_id_uq").on(
@@ -92,6 +102,17 @@ export const clients = pgTable(
     externalIdentityPairCheck: check(
       "clients_external_identity_pair_check",
       sql`(${table.externalSource} is null) = (${table.externalId} is null)`,
+    ),
+    portalAccessTokenStateCheck: check(
+      "clients_portal_access_token_state_check",
+      sql`(
+        ${table.accessToken} is null
+        and ${table.portalAccessTokenExpiresAt} is null
+        and ${table.portalAccessTokenUsedAt} is null
+      ) or (
+        ${table.accessToken} ~ '^[0-9a-f]{64}$'
+        and ${table.portalAccessTokenExpiresAt} is not null
+      )`,
     ),
   }),
 );

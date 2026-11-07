@@ -14,6 +14,10 @@ import { withSystem } from "@/lib/tenant-db";
 import { reportCronHeartbeat } from "@/lib/cron-heartbeat";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { billingContactEmail } from "@/lib/billing/contact";
+import {
+  practiceUsageByIds,
+  type PracticeUsage,
+} from "@/lib/growth/practice-usage";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -92,6 +96,20 @@ export async function GET(request: Request) {
     let failed = 0;
     let skipped = 0;
 
+    // A recap of real trial activity makes the reminder personal. Optional:
+    // without it the reminder still goes out.
+    let usage = new Map<string, PracticeUsage>();
+    try {
+      usage = await withSystem(db, (tx) =>
+        practiceUsageByIds(
+          tx,
+          trialingPractices.map((practice) => practice.id),
+        ),
+      );
+    } catch (error) {
+      console.error("[billing-lifecycle] trial usage unavailable:", error);
+    }
+
     for (const practice of trialingPractices) {
       const trialEndsAt = practice.trialEndsAt
         ? new Date(practice.trialEndsAt)
@@ -149,6 +167,7 @@ export async function GET(request: Request) {
             ),
             monthlyPrice: `$${CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD}`,
             billingConnected,
+            usage: usage.get(practice.id) ?? null,
             idempotencyKey: dedupeKey,
           }),
       });

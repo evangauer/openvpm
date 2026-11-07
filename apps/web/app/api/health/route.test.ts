@@ -145,6 +145,7 @@ function stubHostedRequiredEnvs() {
     "EMAIL_PREFERENCE_IDENTITY_SECRET",
     "stable-identity-secret-at-least-32-bytes",
   );
+  vi.stubEnv("EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS", "");
   vi.stubEnv(
     "EMAIL_PREFERENCE_SIGNING_SECRET",
     "current-signing-secret-at-least-32-bytes",
@@ -242,6 +243,99 @@ afterEach(() => {
   });
 });
 
+describe("health route auth secret", () => {
+  it("fails readiness in production with the published compose secret without echoing it", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "docker-dev-secret-change-in-production");
+
+    const response = await GET();
+    const body = await response.text();
+    const json = JSON.parse(body);
+
+    expect(response.status).toBe(503);
+    expect(json.checks.authSecret.ok).toBe(false);
+    expect(json.checks.authSecret.detail).toContain("published placeholder");
+    expect(json.checks.authSecret.detail).toContain("openssl rand -base64 32");
+    expect(body).not.toContain("docker-dev-secret-change-in-production");
+  });
+
+  it("reports a short secret allowed by OPENVPM_ALLOW_SHORT_AUTH_SECRET as advisory", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "Xk7pQ2mR9vLw");
+    vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
+
+    const response = await GET();
+    const body = await response.text();
+    const json = JSON.parse(body);
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.checks.authSecret).toMatchObject({ ok: false, advisory: true });
+    expect(json.checks.authSecret.detail).toBe("Rotate NEXTAUTH_SECRET; see the server log.");
+    expect(body).not.toMatch(/shorter than|OPENVPM_ALLOW_SHORT_AUTH_SECRET/);
+    expect(body).not.toContain("Xk7pQ2mR9vLw");
+  });
+
+  it("keeps failing readiness for a published secret despite OPENVPM_ALLOW_SHORT_AUTH_SECRET", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "docker-dev-secret-change-in-production");
+    vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.authSecret.advisory).toBeUndefined();
+  });
+
+  it("flags a short PORTAL_SESSION_SECRET as advisory without failing readiness", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv(
+      "NEXTAUTH_SECRET",
+      "q3vV9rJcK0m8yTfLw2ZpXa7Ns4Hd6Bu1Ee5Gi0Ko9Rs=",
+    );
+    vi.stubEnv("PORTAL_SESSION_SECRET", "short-portal");
+
+    const response = await GET();
+    const body = await response.text();
+    const json = JSON.parse(body);
+
+    expect(response.status).toBe(200);
+    expect(json.checks.portalSessionSecret).toMatchObject({
+      ok: false,
+      advisory: true,
+    });
+    expect(json.checks.portalSessionSecret.detail).toBe(
+      "Replace or remove PORTAL_SESSION_SECRET; see the server log.",
+    );
+    expect(body).not.toContain("short-portal");
+  });
+
+  it("omits the check in production with a strong secret", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv(
+      "NEXTAUTH_SECRET",
+      "q3vV9rJcK0m8yTfLw2ZpXa7Ns4Hd6Bu1Ee5Gi0Ko9Rs=",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(json.checks.authSecret).toBeUndefined();
+  });
+
+  it("does not fail development health for a placeholder secret", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("NEXTAUTH_SECRET", "docker-dev-secret-change-in-production");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.authSecret).toBeUndefined();
+  });
+});
+
 describe("health route schema drift", () => {
   it("reports healthy when the database matches the deployed code", async () => {
     const response = await GET();
@@ -327,6 +421,110 @@ describe("health route", () => {
     });
     expect(JSON.stringify(json)).not.toContain("password=secret");
     expect(JSON.stringify(json)).not.toContain("prod-db");
+  });
+
+  it("keeps email preference identity optional in an unconfigured self-host", async () => {
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.emailPreferenceIdentity).toBeUndefined();
+    expect(
+      mocks.platformEmailIdentityConfigurationReady,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("requires preference identity configuration when demo mode exposes the surface", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.emailPreferenceIdentity).toEqual({
+      ok: false,
+      detail: "1 required email preference configuration value is missing",
+    });
+    expect(JSON.stringify(json)).not.toContain(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+    );
+  });
+
+  it("rejects a malformed demo preference identity without exposing it", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+    vi.stubEnv("EMAIL_PREFERENCE_IDENTITY_SECRET", "too-short");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.emailPreferenceIdentity).toEqual({
+      ok: false,
+      detail: "1 required email preference configuration value is invalid",
+    });
+    expect(JSON.stringify(json)).not.toContain("too-short");
+  });
+
+  it("rejects a malformed previous demo identity without exposing it", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    vi.stubEnv("EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS", "too-short");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.emailPreferenceIdentity).toEqual({
+      ok: false,
+      detail: "1 required email preference configuration value is invalid",
+    });
+    expect(JSON.stringify(json)).not.toContain("too-short");
+  });
+
+  it("fails demo readiness when registered rotation requires an unavailable previous key", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+    mocks.platformEmailIdentityConfigurationReady.mockResolvedValueOnce({
+      ready: false,
+      initialized: true,
+    });
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.emailPreferenceIdentity).toEqual({
+      ok: false,
+      detail: "Email preference identity configuration does not match",
+    });
+    expect(JSON.stringify(json)).not.toContain("identityKeyFingerprint");
+  });
+
+  it("accepts a bound demo preference identity without requiring email delivery", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEMO_MODE", "true");
+    vi.stubEnv(
+      "EMAIL_PREFERENCE_IDENTITY_SECRET",
+      "stable-identity-secret-at-least-32-bytes",
+    );
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.checks.emailPreferenceIdentity).toEqual({
+      ok: true,
+      detail: "Email preference identity configuration ready",
+    });
+    expect(json.checks.hostedEmail).toBeUndefined();
+    expect(
+      mocks.platformEmailIdentityConfigurationReady,
+    ).toHaveBeenCalledOnce();
   });
 
   it("reports hosted config readiness without listing env variable names", async () => {
@@ -793,6 +991,22 @@ describe("health route", () => {
     });
     expect(JSON.stringify(json)).not.toContain("valid-previous-signing-secret");
     expect(JSON.stringify(json)).not.toContain("short");
+  });
+
+  it("rejects an invalid previous email preference identity key", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    vi.stubEnv("EMAIL_PREFERENCE_IDENTITY_SECRET_PREVIOUS", "too-short");
+
+    const response = await GET();
+    const json = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(json.checks.hostedEmail).toEqual({
+      ok: false,
+      detail: "1 required hosted configuration value is invalid",
+    });
+    expect(JSON.stringify(json)).not.toContain("too-short");
   });
 
   it("requires the canonical platform preference origin", async () => {

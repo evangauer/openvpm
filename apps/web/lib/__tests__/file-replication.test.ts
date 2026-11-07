@@ -381,6 +381,7 @@ describe("file replica reconciliation", () => {
     mocks.executeResults.push(
       [{ id: "materialized-1" }],
       [claimedReplica()],
+      [],
       [{ backlog: "0", available: "1", activeFiles: "1" }],
     );
     mocks.readPrimaryObject.mockResolvedValue({

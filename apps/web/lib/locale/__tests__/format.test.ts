@@ -21,6 +21,11 @@ describe("formatCurrency", () => {
   it("formats EUR", () => {
     expect(formatCurrency(40, "eur", "IE")).toContain("€");
   });
+  it("formats EUR in it-IT with dot thousands and comma decimals", () => {
+    const s = formatCurrency(1234.5, "eur", "IT");
+    expect(s).toContain("€");
+    expect(s).toContain("1.234,50");
+  });
   it("accepts string amounts from the DB and coerces them", () => {
     const s = formatCurrency("65.00", "gbp", "GB");
     expect(s).toContain("£");
@@ -39,6 +44,9 @@ describe("formatDate", () => {
     const gb = formatDate("2026-06-07", "GB");
     expect(us).toBe("06/07/2026");
     expect(gb).toBe("07/06/2026");
+  });
+  it("uses day/month order for Italy", () => {
+    expect(formatDate("2026-03-05", "IT")).toBe("05/03/2026");
   });
 });
 
@@ -65,6 +73,8 @@ describe("regionDefaults", () => {
 describe("localeForCountry", () => {
   it("maps known countries and falls back to en-US", () => {
     expect(localeForCountry("GB")).toBe("en-GB");
+    expect(localeForCountry("IT")).toBe("it-IT");
+    expect(localeForCountry("it")).toBe("it-IT");
     expect(localeForCountry("xx")).toBe("en-US");
     expect(localeForCountry(null)).toBe("en-US");
   });

@@ -30,6 +30,7 @@ type AppliedFilters = {
 
 const recordTypeLabels: Record<PatientHistoryRecordType, string> = {
   soap_note: "SOAP",
+  chart_note: "Chart notes",
   prescription: "Medications",
   vaccination: "Vaccines",
   lab_result: "Labs",
@@ -161,8 +162,8 @@ export function PatientHistorySearch({
           <div>
             <p className="font-medium">Find in patient history</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Reduce a long chart to matching SOAP, medications, labs, and other
-              clinical records.
+              Reduce a long chart to matching chart notes, SOAP, medications,
+              labs, and other clinical records.
             </p>
           </div>
           <Button

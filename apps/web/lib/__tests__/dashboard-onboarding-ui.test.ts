@@ -174,7 +174,11 @@ describe("dashboard onboarding UI states", () => {
       '{ id: "data", title: "Bring your history with confidence." }',
     );
     expect(journeyProviderSource).toContain(
-      "router.push(\n      state.hasImportedData",
+      "router.push(\n      finishPath ??\n        (state.hasImportedData",
+    );
+    // A preview clinic's last step routes to the card that starts its trial.
+    expect(journeyProviderSource).toContain(
+      "await finish(handleRef.current?.finishPath);",
     );
     expect(journeyProviderSource).toContain('"/clients/new?setup=first-visit"');
     expect(journeyProviderSource).not.toContain("<SetUpTextingStep");

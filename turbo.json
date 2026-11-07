@@ -1,9 +1,12 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": [".env*"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "env": ["NEXT_PUBLIC_OFFLINE_WORKSPACE_ENABLED", "NEXT_PUBLIC_OFFLINE_CHART_DRAFTS_ENABLED"],
+      "outputs": [".next/**", "!.next/cache/**", "public/offline/**", "dist/**"]
     },
     "dev": {
       "cache": false,

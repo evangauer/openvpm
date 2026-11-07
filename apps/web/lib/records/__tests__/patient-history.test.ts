@@ -21,6 +21,7 @@ describe("patient history search policy", () => {
   it("pins the bounded allowlist and response sizes", () => {
     expect(PATIENT_HISTORY_RECORD_TYPES).toEqual([
       "soap_note",
+      "chart_note",
       "prescription",
       "vaccination",
       "lab_result",

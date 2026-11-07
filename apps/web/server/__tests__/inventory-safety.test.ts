@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { products } from "@openpims/db";
 
 const mocks = vi.hoisted(() => ({
   recordAuditLog: vi.fn(async () => undefined),
@@ -49,21 +50,22 @@ function createDb(opts?: {
   updatedRows?: unknown[];
 }) {
   const selectResults = [...(opts?.selectResults ?? [])];
+  const orderBy = vi.fn();
   const select = vi.fn(() => {
     const result = selectResults.shift() ?? [];
-    const afterWhere = {
-      limit: vi.fn(async () => result),
+    const builder = {
+      from: vi.fn(() => builder),
+      where: vi.fn(() => builder),
+      orderBy: vi.fn((...columns: unknown[]) => {
+        orderBy(...columns);
+        return builder;
+      }),
+      limit: vi.fn(() => builder),
+      offset: vi.fn(() => builder),
       then: (
         resolve: (value: unknown[]) => unknown,
         reject?: (error: unknown) => unknown
       ) => Promise.resolve(result).then(resolve, reject),
-    };
-    const builder = {
-      from: vi.fn(() => builder),
-      where: vi.fn(() => afterWhere),
-      orderBy: vi.fn(() => builder),
-      limit: vi.fn(async () => result),
-      offset: vi.fn(() => builder),
     };
     return builder;
   });
@@ -89,7 +91,7 @@ function createDb(opts?: {
     update,
   };
 
-  return { db, select, insertValues, updateSet };
+  return { db, select, orderBy, insertValues, updateSet };
 }
 
 afterEach(() => {
@@ -148,6 +150,82 @@ describe("inventory mutation safety", () => {
       })
     ).resolves.toMatchObject({ id: PRODUCT_ID });
   });
+
+  it.each(["veterinarian", "technician"])(
+    "blocks %s from setting product price, cost, or tax status",
+    async (role) => {
+      const { db, select, insertValues, updateSet } = createDb();
+      const caller = callerWithDb(db, role);
+
+      await expect(
+        caller.create({ name: "Carprofen", unitPrice: "12.50" })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      for (const pricing of [
+        { unitPrice: "0.01" },
+        { taxable: false },
+        { costPrice: "1.00" },
+      ]) {
+        await expect(
+          caller.update({ id: PRODUCT_ID, name: "Carprofen", ...pricing })
+        ).rejects.toMatchObject({
+          code: "FORBIDDEN",
+          message: expect.stringContaining("front desk"),
+        });
+      }
+
+      expect(select).not.toHaveBeenCalled();
+      expect(insertValues).not.toHaveBeenCalled();
+      expect(updateSet).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["veterinarian", "technician"])(
+    "lets %s keep editing product details, lot, and expiry",
+    async (role) => {
+      const { db, updateSet } = createDb({
+        updatedRows: [{ id: PRODUCT_ID }],
+      });
+
+      await expect(
+        callerWithDb(db, role).update({
+          id: PRODUCT_ID,
+          name: "Carprofen 25mg",
+          reorderPoint: 5,
+          lotNumber: "LOT-7",
+          expirationDate: "2027-01-31",
+        })
+      ).resolves.toMatchObject({ id: PRODUCT_ID });
+      expect(updateSet).toHaveBeenCalledWith({
+        name: "Carprofen 25mg",
+        reorderPoint: 5,
+        lotNumber: "LOT-7",
+        expirationDate: "2027-01-31",
+      });
+    }
+  );
+
+  it.each(["admin", "front_desk"])(
+    "lets %s change product price and tax status",
+    async (role) => {
+      const { db, updateSet } = createDb({
+        updatedRows: [{ id: PRODUCT_ID }],
+      });
+
+      await expect(
+        callerWithDb(db, role).update({
+          id: PRODUCT_ID,
+          unitPrice: "14.00",
+          taxable: false,
+          costPrice: "9.00",
+        })
+      ).resolves.toMatchObject({ id: PRODUCT_ID });
+      expect(updateSet).toHaveBeenCalledWith({
+        unitPrice: "14.00",
+        taxable: false,
+        costPrice: "9.00",
+      });
+    }
+  );
 
   it("uses the practice timezone for inventory expiration alert cutoffs", () => {
     const source = readFileSync("server/routers/inventory.ts", "utf8");
@@ -223,6 +301,40 @@ describe("inventory mutation safety", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(select).not.toHaveBeenCalled();
+  });
+
+  it("uses a total product order across duplicate names and multiple pages", async () => {
+    const catalog = Array.from({ length: 60 }, (_, index) => ({
+      id: `00000000-0000-0000-0000-${String(index).padStart(12, "0")}`,
+      name: "Carprofen",
+      inventoryTracked: false,
+      stockQuantity: 0,
+      reorderPoint: null,
+      expirationDate: null,
+    }));
+    const countRows = Array.from({ length: 5 }, () => [{ count: 60 }]);
+    const { db, orderBy } = createDb({
+      selectResults: [
+        [{ timezone: "UTC" }],
+        catalog.slice(0, 50),
+        ...countRows,
+        [{ timezone: "UTC" }],
+        catalog.slice(50),
+        ...countRows,
+      ],
+    });
+    const caller = callerWithDb(db);
+
+    const firstPage = await caller.list({ limit: 50, offset: 0 });
+    const secondPage = await caller.list({ limit: 50, offset: 50 });
+
+    expect(orderBy).toHaveBeenCalledTimes(2);
+    expect(orderBy).toHaveBeenNthCalledWith(1, products.name, products.id);
+    expect(orderBy).toHaveBeenNthCalledWith(2, products.name, products.id);
+    expect(
+      new Set([...firstPage.items, ...secondPage.items].map((item) => item.id))
+        .size
+    ).toBe(60);
   });
 
   it("rejects invalid product list filters before DB work", async () => {
@@ -622,7 +734,7 @@ describe("inventory mutation safety", () => {
   });
 
   it("requires a tenant-owned product before adjusting stock", async () => {
-    const { db, updateSet } = createDb({ selectResults: [[]] });
+    const { db, updateSet } = createDb({ selectResults: [[], []] });
 
     await expect(
       callerWithDb(db).adjustStock({
@@ -669,6 +781,7 @@ describe("inventory mutation safety", () => {
   it("blocks adjustments until imported catalog stock is reviewed", async () => {
     const { db, updateSet } = createDb({
       selectResults: [
+        [],
         [{ id: PRODUCT_ID, inventoryTracked: false, stockQuantity: 0 }],
       ],
     });
@@ -689,7 +802,7 @@ describe("inventory mutation safety", () => {
     await expect(
       callerWithDb(db).adjustStock({
         id: PRODUCT_ID,
-        adjustment: 1.5,
+        adjustment: 1.0001,
         reason: "Correction",
       })
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
@@ -708,7 +821,7 @@ describe("inventory mutation safety", () => {
 
   it("rejects stock adjustments that would make quantity negative", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [[{ id: PRODUCT_ID, stockQuantity: 2 }]],
+      selectResults: [[], [{ id: PRODUCT_ID, stockQuantity: 2 }]],
     });
 
     await expect(
@@ -724,7 +837,7 @@ describe("inventory mutation safety", () => {
 
   it("rejects stock adjustments that would exceed integer storage", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [[{ id: PRODUCT_ID, stockQuantity: POSTGRES_INTEGER_MAX }]],
+      selectResults: [[], [{ id: PRODUCT_ID, stockQuantity: POSTGRES_INTEGER_MAX }]],
     });
 
     await expect(
@@ -740,7 +853,7 @@ describe("inventory mutation safety", () => {
 
   it("rejects stock adjustments that lose the race to another writer", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [[{ id: PRODUCT_ID, stockQuantity: 2 }]],
+      selectResults: [[], [{ id: PRODUCT_ID, stockQuantity: 2 }]],
       updatedRows: [],
     });
 
@@ -761,7 +874,7 @@ describe("inventory mutation safety", () => {
 
   it("adjusts stock for a tenant-owned product", async () => {
     const { db, updateSet } = createDb({
-      selectResults: [[{ id: PRODUCT_ID, stockQuantity: 10 }]],
+      selectResults: [[], [{ id: PRODUCT_ID, stockQuantity: 10 }]],
       updatedRows: [{ id: PRODUCT_ID, stockQuantity: 7 }],
     });
 
@@ -779,4 +892,99 @@ describe("inventory mutation safety", () => {
       })
     );
   });
+  it("replays a repeated stock adjustment instead of moving stock twice", async () => {
+    const operationId = "00000000-0000-4000-8000-000000000004";
+    const recorded = {
+      productId: PRODUCT_ID,
+      adjustment: 3,
+      reason: "Received order",
+    };
+    const { db, insertValues, updateSet } = createDb({
+      selectResults: [
+        [recorded],
+        [{ id: PRODUCT_ID, stockQuantity: 8 }],
+        [recorded],
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).adjustStock({
+        id: PRODUCT_ID,
+        adjustment: 3,
+        reason: "Received order",
+        operationId,
+      })
+    ).resolves.toMatchObject({ id: PRODUCT_ID, stockQuantity: 8 });
+    await expect(
+      callerWithDb(db).adjustStock({
+        id: PRODUCT_ID,
+        adjustment: -3,
+        reason: "Received order",
+        operationId,
+      })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(updateSet).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("records each applied stock adjustment against its operation id", async () => {
+    const operationId = "00000000-0000-4000-8000-000000000005";
+    const { db, insertValues } = createDb({
+      selectResults: [[], [{ id: PRODUCT_ID, stockQuantity: 5 }]],
+      updatedRows: [{ id: PRODUCT_ID, stockQuantity: 8 }],
+    });
+
+    await callerWithDb(db).adjustStock({
+      id: PRODUCT_ID,
+      adjustment: 3,
+      reason: "Received order",
+      operationId,
+    });
+
+    expect(insertValues).toHaveBeenCalledWith({
+      practiceId: PRACTICE_ID,
+      productId: PRODUCT_ID,
+      operationId,
+      adjustment: 3,
+      quantityAfter: 8,
+      reason: "Received order",
+      adjustedBy: USER_ID,
+    });
+  });
+
+  it.each([0.001, 0.125, 1.5, -0.125])(
+    "accepts precise stock adjustment %s",
+    async (adjustment) => {
+      const { db } = createDb({
+        selectResults: [
+        [],
+          [{ id: PRODUCT_ID, inventoryTracked: true, stockQuantity: 2 }],
+        ],
+        updatedRows: [{ id: PRODUCT_ID, stockQuantity: 2 + adjustment }],
+      });
+      await expect(
+        callerWithDb(db).adjustStock({
+          id: PRODUCT_ID,
+          adjustment,
+          reason: "Reviewed count",
+        }),
+      ).resolves.toMatchObject({ stockQuantity: 2 + adjustment });
+    },
+  );
+
+  it.each([0, 0.0001, NaN, Infinity])(
+    "rejects invalid adjustment %s before database work",
+    async (adjustment) => {
+      const { db, select } = createDb();
+      await expect(
+        callerWithDb(db).adjustStock({
+          id: PRODUCT_ID,
+          adjustment,
+          reason: "Reviewed count",
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      expect(select).not.toHaveBeenCalled();
+    },
+  );
 });

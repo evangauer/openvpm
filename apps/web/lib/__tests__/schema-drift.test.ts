@@ -79,6 +79,33 @@ describe("declaredSchema", () => {
 });
 
 describe("findSchemaDrift", () => {
+  it("gates the portal session tenant boundary and lookup controls", () => {
+    expect(criticalDatabaseContract()).toEqual(
+      expect.arrayContaining([
+        {
+          kind: "constraint",
+          table: "clients",
+          name: "clients_portal_access_token_state_check",
+        },
+        {
+          kind: "constraint",
+          table: "portal_sessions",
+          name: "portal_sessions_client_tenant_fk",
+        },
+        {
+          kind: "index",
+          table: "portal_sessions",
+          name: "portal_sessions_token_hash_uq",
+        },
+        {
+          kind: "rls_policy",
+          table: "portal_sessions",
+          name: "tenant_isolation",
+        },
+      ]),
+    );
+  });
+
   it("reports no drift when the database matches the code", async () => {
     const drift = await findSchemaDrift(fakeDb(liveSchemaWithout(() => false)));
     expect(drift).toEqual({
@@ -254,6 +281,40 @@ describe("findSchemaDrift", () => {
       kind: "constraint",
       table: "consent_requests",
       name: "consent_requests_signature_evidence_hash_check",
+    });
+  });
+
+  it("detects app execution on owner-only consent recovery functions", async () => {
+    const protectedFunctions = criticalDatabaseContract().filter(
+      (object) =>
+        object.kind === "forbidden_function_privilege" &&
+        (object.table === "resolve_consent_document_render_version" ||
+          object.table === "restore_signed_consent_evidence"),
+    );
+    expect(protectedFunctions).toEqual([
+      {
+        kind: "forbidden_function_privilege",
+        table: "resolve_consent_document_render_version",
+        name: "EXECUTE",
+      },
+      {
+        kind: "forbidden_function_privilege",
+        table: "restore_signed_consent_evidence",
+        name: "EXECUTE",
+      },
+    ]);
+
+    const rows = liveSchemaWithout(() => false).map((row) =>
+      row.object_type === "forbidden_function_privilege" &&
+      row.table_name === "restore_signed_consent_evidence"
+        ? { ...row, healthy: false }
+        : row,
+    );
+    const drift = await findSchemaDrift(fakeDb(rows));
+    expect(drift.invalidObjects).toContainEqual({
+      kind: "forbidden_function_privilege",
+      table: "restore_signed_consent_evidence",
+      name: "EXECUTE",
     });
   });
 

@@ -7,6 +7,7 @@ import {
   appointments,
   auditLog,
   clients,
+  consentRequests,
   files,
   invoices,
   patients,
@@ -17,6 +18,7 @@ import {
 import type { Database } from "@openpims/db/client";
 import {
   restorePracticeData,
+  practiceBackupContainsSealedConsentEvidence,
   summarizePracticeExport,
   validatePracticeExportRestore,
 } from "../lib/backup/export";
@@ -44,6 +46,7 @@ type ParsedArgs = {
   backupPath?: string;
   practiceName?: string;
   timezone: string;
+  restoreLegalEvidence: boolean;
   releaseFlags: Record<(typeof RELEASE_FLAGS)[number], boolean>;
 };
 
@@ -70,6 +73,7 @@ export function parseRecoveryArgs(args: string[]): ParsedArgs {
     backupPath: flagValue(args, "backup"),
     practiceName: flagValue(args, "practice-name")?.trim(),
     timezone: flagValue(args, "timezone")?.trim() || "America/New_York",
+    restoreLegalEvidence: args.includes("--restore-legal-evidence"),
     releaseFlags: Object.fromEntries(
       RELEASE_FLAGS.map((flag) => [flag, args.includes(`--${flag}`)]),
     ) as ParsedArgs["releaseFlags"],
@@ -186,7 +190,9 @@ async function assertFreshOrHeldShell(
 
 async function restore(database: Database, args: ParsedArgs, backup: unknown) {
   const shell = await assertFreshOrHeldShell(database, args);
-  const result = await restorePracticeData(database, args.practiceId, backup);
+  const result = await restorePracticeData(database, args.practiceId, backup, {
+    allowOwnerLegalEvidenceRestore: args.restoreLegalEvidence,
+  });
   await withSystem(database, (tx) =>
     tx.insert(auditLog).values({
       practiceId: args.practiceId,
@@ -226,7 +232,8 @@ async function release(database: Database, args: ParsedArgs) {
       );
     }
 
-    const [unavailableFiles, activeUsers] = await Promise.all([
+    const [unavailableFiles, activeUsers, invalidSignedConsents] =
+      await Promise.all([
       tx
         .select({ count: sql<number>`count(*)::int` })
         .from(files)
@@ -243,6 +250,33 @@ async function release(database: Database, args: ParsedArgs) {
         .where(
           and(eq(users.practiceId, args.practiceId), isNull(users.deletedAt)),
         ),
+      tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(consentRequests)
+        .where(
+          and(
+            eq(consentRequests.practiceId, args.practiceId),
+            eq(consentRequests.status, "signed"),
+            isNull(consentRequests.deletedAt),
+            sql`not exists (
+              select 1
+              from ${files}
+              where ${files.id} = ${consentRequests.fileId}
+                and ${files.practiceId} = ${consentRequests.practiceId}
+                and ${files.idempotencyKey} = ${consentRequests.id}
+                and ${files.category} = 'consents'
+                and ${files.source} = 'consent_signature'
+                and ${files.mimeType} = 'application/pdf'
+                and ${files.patientId} = ${consentRequests.patientId}
+                and ${files.appointmentId} is not distinct from ${consentRequests.appointmentId}
+                and ${files.fileKey} = ${consentRequests.signedFileKey}
+                and ${files.checksumSha256} = ${consentRequests.signedFileChecksumSha256}
+                and ${files.fileSizeBytes} = ${consentRequests.signedFileSizeBytes}
+                and ${files.storageStatus} = 'available'
+                and ${files.deletedAt} is null
+            )`,
+          ),
+        ),
     ]);
     if ((unavailableFiles[0]?.count ?? 0) > 0) {
       throw new Error(
@@ -252,6 +286,11 @@ async function release(database: Database, args: ParsedArgs) {
     if ((activeUsers[0]?.count ?? 0) < 1) {
       throw new Error(
         "Recovery cannot be released until at least one user identity is restored.",
+      );
+    }
+    if ((invalidSignedConsents[0]?.count ?? 0) > 0) {
+      throw new Error(
+        "Recovery cannot be released until every signed consent is bound to its exact available PDF generation.",
       );
     }
 
@@ -423,6 +462,14 @@ export async function main(argv = process.argv.slice(2)) {
     if (backupPracticeId !== args.practiceId) {
       throw new Error("Backup practiceId does not match --practice-id.");
     }
+    if (
+      practiceBackupContainsSealedConsentEvidence(backup) &&
+      !args.restoreLegalEvidence
+    ) {
+      throw new Error(
+        "This v9 backup contains sealed signed-consent evidence; rerun with --restore-legal-evidence to authorize the database-owner restore path.",
+      );
+    }
     if (!validation.valid || summary.missingSections.length > 0) {
       throw new Error("Backup failed the application restore contract.");
     }
@@ -436,6 +483,7 @@ export async function main(argv = process.argv.slice(2)) {
           formatVersion: backupFormatVersion,
           counts: summary.counts,
           recoveryHold: "will-remain-held",
+          legalEvidenceMode: args.restoreLegalEvidence,
         }),
       );
       return;

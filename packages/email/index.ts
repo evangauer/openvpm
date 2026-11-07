@@ -10,3 +10,11 @@ export type { SetupRecoveryEmailProps } from "./src/templates/SetupRecoveryEmail
 export type { PaymentReceiptEmailProps } from "./src/templates/PaymentReceiptEmail";
 export type { PaymentFailedEmailProps } from "./src/templates/PaymentFailedEmail";
 export type { FirstClinicWinEmailProps } from "./src/templates/FirstClinicWinEmail";
+export type { CheckoutRecoveryEmailProps } from "./src/templates/CheckoutRecoveryEmail";
+export type { DemoFollowupEmailProps } from "./src/templates/DemoFollowupEmail";
+export type { TrialUsage } from "./src/templates/TrialEndingEmail";
+export type { TeamInviteEmailProps } from "./src/templates/TeamInviteEmail";
+export type { TrialWinbackEmailProps } from "./src/templates/TrialWinbackEmail";
+export type { AdoptionEmailProps, AdoptionTip } from "./src/templates/AdoptionEmail";
+export type { NpsSurveyEmailProps } from "./src/templates/NpsSurveyEmail";
+export type { BuildFollowupEmailProps } from "./src/templates/BuildFollowupEmail";

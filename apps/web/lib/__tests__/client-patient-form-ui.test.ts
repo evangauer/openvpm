@@ -378,7 +378,7 @@ describe("client and patient form UI states", () => {
     expect(updateInputSource).toContain(".strict()");
     expect(uploadRouteSource).toContain("finalizeManagedUploadManifest(");
     expect(uploadRouteSource).toContain(
-      ".set({ photoUrl: reservation.fileUrl, updatedAt: new Date() })"
+      'dashboardCategory === "patient-photos"\n              ? { photoUrl: reservation.fileUrl }'
     );
   });
 

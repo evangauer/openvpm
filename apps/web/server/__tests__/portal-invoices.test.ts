@@ -28,7 +28,18 @@ const INVOICE_ID = "00000000-0000-0000-0000-000000000001";
 const ACTIVE_PRACTICE = [{ id: PRACTICE_ID }];
 
 function callerWithDb(db: Record<string, unknown>) {
-  return portalRouter.createCaller({ db } as never);
+  return portalRouter.createCaller({
+    db,
+    portalSessionId: TOKEN,
+    portalClient: {
+      id: CLIENT_ID,
+      practiceId: PRACTICE_ID,
+      firstName: "Portal",
+      lastName: "Client",
+      email: "portal@example.test",
+      phone: null,
+    },
+  } as never);
 }
 
 function createDb(selectResults: unknown[][]) {

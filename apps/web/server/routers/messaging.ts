@@ -979,7 +979,7 @@ export const messagingRouter = createRouter({
 
   /** Existing-number hosting is intentionally closed until it works end-to-end. */
   checkEligibility: adminOnly
-    .input(z.object({ locationId: z.string().uuid() }))
+    .input(z.object({ locationId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
       const [loc] = await ctx.db
@@ -1016,11 +1016,11 @@ export const messagingRouter = createRouter({
     .input(
       z.union([
         z.object({
-          locationId: z.string().uuid(),
+          locationId: z.string().guid(),
           mode: z.literal("host"),
         }),
         z.object({
-          locationId: z.string().uuid(),
+          locationId: z.string().guid(),
           mode: z.literal("buy"),
           action: z.literal("start"),
           phoneNumber: messagingPhoneInput,
@@ -1028,7 +1028,7 @@ export const messagingRouter = createRouter({
           confirmProviderCharges: z.literal(true),
         }),
         z.object({
-          locationId: z.string().uuid(),
+          locationId: z.string().guid(),
           mode: z.literal("buy"),
           action: z.literal("resume"),
         }),
@@ -1605,7 +1605,7 @@ export const messagingRouter = createRouter({
 
   /** Turn sending on/off for a location (independent of registration state). */
   setEnabled: adminOnly
-    .input(z.object({ locationId: z.string().uuid(), enabled: z.boolean() }))
+    .input(z.object({ locationId: z.string().guid(), enabled: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
       const [loc] = await ctx.db
@@ -1796,9 +1796,9 @@ export const messagingRouter = createRouter({
   testSend: adminOnly
     .input(
       z.object({
-        locationId: z.string().uuid(),
+        locationId: z.string().guid(),
         to: messagingPhoneInput,
-        requestId: z.string().uuid(),
+        requestId: z.string().guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {

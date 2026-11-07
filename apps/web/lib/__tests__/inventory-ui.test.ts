@@ -102,7 +102,7 @@ describe("inventory product form UX", () => {
   });
 
   it("keeps stock adjustment controls aligned to shared policy", () => {
-    expect(INVENTORY_ADJUSTMENT_QUANTITY_MIN).toBe(1);
+    expect(INVENTORY_ADJUSTMENT_QUANTITY_MIN).toBe(0.001);
     expect(INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH).toBe(500);
     expect(source).toContain("productStockQuantity");
     expect(source).toContain("const maxAddition = Math.max");
@@ -174,7 +174,11 @@ describe("inventory product form UX", () => {
       "const canManageInventory = canManageInventoryRole(session?.user?.role)"
     );
     expect(source).toContain("{canManageInventory && (");
-    expect(source).toContain("{canManageInventory && showAddProduct && (");
+    expect(source).toContain(
+      "const canManagePricing = canManageProductPricing(session?.user?.role)"
+    );
+    expect(source).toContain("{canManagePricing && showAddProduct && (");
+    expect(source).toContain("canManagePricing={canManagePricing}");
     expect(source).toContain("canManageInventory && editingId === product.id");
     expect(source).toContain("{canManageInventory ? (");
     expect(source).toContain("Read-only");
@@ -185,10 +189,20 @@ describe("inventory product form UX", () => {
     expect(routerSource).toContain(
       'requireRole("admin", "veterinarian", "technician", "front_desk")'
     );
-    expect(routerSource).toContain("create: inventoryManagerProcedure");
+    expect(routerSource).toContain("create: productPricingProcedure");
     expect(routerSource).toContain("update: inventoryManagerProcedure");
     expect(routerSource).toContain("adjustStock: inventoryManagerProcedure");
     expect(routerSource).toContain("createSupplier: inventoryManagerProcedure");
     expect(routerSource).toContain("updateSupplier: inventoryManagerProcedure");
+  });
+
+  it("submits a stock adjustment once per form submission", () => {
+    expect(source).toContain("const submittingRef = useRef(false)");
+    expect(source).toContain("if (submittingRef.current) return;");
+    expect(source).toContain("operationIdRef.current ??= crypto.randomUUID()");
+    expect(source).toContain("operationId: operationIdRef.current");
+    expect(source.indexOf("if (submittingRef.current) return;")).toBeLessThan(
+      source.indexOf("adjustMutation.mutate({")
+    );
   });
 });

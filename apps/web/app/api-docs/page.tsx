@@ -1057,11 +1057,13 @@ const sections: Section[] = [
       {
         name: "inventory.adjustStock",
         method: "POST",
-        description: "Adjust stock quantity (positive or negative).",
+        description:
+          "Adjust stock quantity (positive or negative). Send a new operationId per adjustment; retrying with the same operationId returns the original result instead of adjusting twice.",
         input: `{
   id: string,
   adjustment: number,
-  reason: string
+  reason: string,
+  operationId?: string
 }`,
         response: `InventoryItem`,
       },

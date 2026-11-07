@@ -53,14 +53,31 @@ const securityHeaders = [
   },
 ];
 
-function applySecurityHeaders(response) {
-  for (const { key, value } of securityHeaders) {
+const capabilityHeaders = [
+  { key: "Referrer-Policy", value: "no-referrer" },
+  { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
+  { key: "Cache-Control", value: "private, no-store, max-age=0" },
+];
+
+function applyHeaders(response, headers) {
+  for (const { key, value } of headers) {
     response.headers.set(key, value);
   }
   return response;
 }
 
+function applySecurityHeaders(response) {
+  return applyHeaders(response, securityHeaders);
+}
+
+function applyCapabilitySecurityHeaders(response) {
+  applySecurityHeaders(response);
+  return applyHeaders(response, capabilityHeaders);
+}
+
 module.exports = {
+  applyCapabilitySecurityHeaders,
+  capabilityHeaders,
   contentSecurityPolicy,
   securityHeaders,
   applySecurityHeaders,

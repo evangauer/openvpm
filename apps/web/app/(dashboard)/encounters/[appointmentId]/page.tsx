@@ -1,5 +1,12 @@
 "use client";
 
+import { browserUuid } from "@/lib/browser-uuid";
+
+import { ReconciliationReasonActions } from "@/components/records/reconciliation-reason-actions";
+
+import { isValidSettingsTaxRate } from "@/lib/settings-policy";
+import { isSupportedQuantity, quantityLineTotalCents } from "@/lib/quantity";
+
 import {
   useCallback,
   useDeferredValue,
@@ -21,6 +28,7 @@ import {
   Check,
   ClipboardCheck,
   ClipboardList,
+  Copy,
   Download,
   FileText,
   FlaskConical,
@@ -50,6 +58,11 @@ import { tryCalculateInvoiceTaxTotals } from "@/lib/billing/invoice-tax";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes-guard";
 import { useOnlineStatus } from "@/lib/use-online-status";
+import { providerDisplayName } from "@/lib/provider-display-name";
+import {
+  getChargeCaptureLock,
+  type ChargeCaptureLock,
+} from "@/lib/encounters/charge-capture-access";
 import {
   getVisitCompletionAction,
   requiresPrescriptionInventoryUnitReview,
@@ -62,6 +75,9 @@ import { ServicePicker } from "@/components/billing/service-picker";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
 import { EncounterVitalsCard } from "@/components/records/encounter-vitals-card";
+import { AmbulatorySoapCard } from "@/components/records/ambulatory-soap-card";
+import { AmbulatoryVisitRecordsCard } from "@/components/records/ambulatory-visit-records-card";
+import { RecentClinicalItems } from "@/components/records/recent-clinical-items";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -434,6 +450,7 @@ export default function EncounterWorkspacePage() {
   const { data: session, status: sessionStatus } = useSession();
   const appointmentId = params.appointmentId;
   const utils = trpc.useUtils();
+  const [ambulatorySoapPlan, setAmbulatorySoapPlan] = useState("");
 
   const appointmentQuery = trpc.appointments.getById.useQuery(
     { id: appointmentId },
@@ -455,6 +472,9 @@ export default function EncounterWorkspacePage() {
     { appointmentId },
     { enabled: Boolean(appointmentId) },
   );
+  const recordsSettingsQuery = trpc.records.settings.useQuery(undefined, {
+    staleTime: 5 * 60 * 1000,
+  });
 
   const updateStatus = trpc.appointments.updateStatus.useMutation({
     onSuccess: () => {
@@ -489,12 +509,20 @@ export default function EncounterWorkspacePage() {
 
   const role = session?.user?.role;
   const patient = patientQuery.data;
+  const ambulatoryProfile = recordsSettingsQuery.data?.ambulatoryWorkspace;
+  const isAmbulatoryWorkspace =
+    appointment.origin === "field" && ambulatoryProfile?.enabled === true;
+  const ambulatorySettingsReady =
+    appointment.origin !== "field" ||
+    (Boolean(ambulatoryProfile) && !recordsSettingsQuery.error);
   const clientName = [appointment.clientFirstName, appointment.clientLastName]
     .filter(Boolean)
     .join(" ");
   const nextAction = nextVisitAction(appointment.status);
   const visitClinicalStateReady =
-    Boolean(closeoutQuery.data) && !closeoutQuery.error;
+    Boolean(closeoutQuery.data) &&
+    !closeoutQuery.error &&
+    ambulatorySettingsReady;
   const visitOpenForClinicalEntry =
     visitClinicalStateReady &&
     appointment.status === "in_exam" &&
@@ -518,6 +546,38 @@ export default function EncounterWorkspacePage() {
         </Button>
       </div>
 
+      {appointment.patientId ? (
+        <RecentClinicalItems
+          patientId={appointment.patientId}
+          appointmentId={appointmentId}
+          enabled={isAmbulatoryWorkspace}
+        />
+      ) : null}
+
+      {isAmbulatoryWorkspace && appointment.status === "in_exam" ? (
+        <section
+          className="rounded-lg border border-primary/20 bg-primary/5 p-4"
+          aria-label="Field billing and documentation"
+        >
+          <p className="font-medium">Bill now, finish notes later</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Save any notes you have entered, then prepare charges or take
+            payment. Your clinical record stays unfinished until you return to
+            sign it and complete closeout.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {canManageBilling(role) ? (
+              <Button variant="outline" size="sm" asChild>
+                <a href="#charge-capture">Charges and payment</a>
+              </Button>
+            ) : null}
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/">Unfinished field visits</Link>
+            </Button>
+          </div>
+        </section>
+      ) : null}
+
       <header className="flex flex-col gap-4 rounded-lg border border-border bg-card p-5 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -534,8 +594,10 @@ export default function EncounterWorkspacePage() {
               </Badge>
             </div>
             <p className="mt-1 text-sm text-muted-foreground">
-              {appointment.typeName ?? "Appointment"} ·{" "}
-              {clientName || "No client"}
+              {appointment.origin === "field"
+                ? "Field visit"
+                : (appointment.typeName ?? "Appointment")}{" "}
+              · {clientName || "No client"}
             </p>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted-foreground">
               <span className="inline-flex items-center gap-1.5">
@@ -547,9 +609,7 @@ export default function EncounterWorkspacePage() {
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <UserRound className="h-4 w-4" />
-                {appointment.doctorName
-                  ? `Dr. ${appointment.doctorName}`
-                  : "Unassigned provider"}
+                {providerDisplayName(appointment.doctorName)}
               </span>
               {appointment.locationName || appointment.roomName ? (
                 <span className="inline-flex items-center gap-1.5">
@@ -614,6 +674,14 @@ export default function EncounterWorkspacePage() {
       {appointment.notes ? (
         <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm">
           <span className="font-medium">Visit note:</span> {appointment.notes}
+        </div>
+      ) : null}
+
+      {appointment.origin === "field" &&
+      (recordsSettingsQuery.error || !ambulatoryProfile) ? (
+        <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
+          Ambulatory settings could not be verified. Clinical writes are locked
+          until the practice profile reloads.
         </div>
       ) : null}
 
@@ -697,6 +765,7 @@ export default function EncounterWorkspacePage() {
 
                   <div className="flex flex-wrap gap-2">
                     {canCreateSoap(role) &&
+                    !isAmbulatoryWorkspace &&
                     closeoutQuery.data?.linkedSoapCount === 0 &&
                     !closeoutQuery.data?.soapDraft &&
                     closeoutQuery.data?.missingSoapReplacement ? (
@@ -710,6 +779,7 @@ export default function EncounterWorkspacePage() {
                       </Button>
                     ) : null}
                     {canCreateSoap(role) &&
+                    !isAmbulatoryWorkspace &&
                     appointment.status === "in_exam" &&
                     closeoutQuery.data?.linkedSoapCount === 0 &&
                     !closeoutQuery.data?.missingSoapReplacement &&
@@ -727,7 +797,9 @@ export default function EncounterWorkspacePage() {
                         </a>
                       </Button>
                     ) : null}
-                    {canCreateSoap(role) && visitOpenForClinicalEntry ? (
+                    {canCreateSoap(role) &&
+                    !isAmbulatoryWorkspace &&
+                    visitOpenForClinicalEntry ? (
                       <Button size="sm" variant="outline" asChild>
                         <Link
                           href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=prescriptions&new=1`}
@@ -739,14 +811,16 @@ export default function EncounterWorkspacePage() {
                     ) : null}
                     {canRecordVisitWork(role) && visitOpenForClinicalEntry ? (
                       <>
-                        <Button size="sm" variant="outline" asChild>
-                          <Link
-                            href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=vaccinations&new=1`}
-                          >
-                            <Syringe className="mr-2 h-4 w-4" />
-                            Vaccination
-                          </Link>
-                        </Button>
+                        {!isAmbulatoryWorkspace ? (
+                          <Button size="sm" variant="outline" asChild>
+                            <Link
+                              href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=vaccinations&new=1`}
+                            >
+                              <Syringe className="mr-2 h-4 w-4" />
+                              Vaccination
+                            </Link>
+                          </Button>
+                        ) : null}
                         <Button size="sm" variant="outline" asChild>
                           <Link
                             href={`/records?patientId=${appointment.patientId}&appointmentId=${appointmentId}&tab=labResults&new=1`}
@@ -798,6 +872,17 @@ export default function EncounterWorkspacePage() {
             </CardContent>
           </Card>
 
+          {isAmbulatoryWorkspace && appointment.patientId ? (
+            <AmbulatorySoapCard
+              patientId={appointment.patientId}
+              appointmentId={appointmentId}
+              canWrite={canCreateSoap(role)}
+              visitOpen={visitOpenForClinicalEntry}
+              linkedSoapCount={closeoutQuery.data?.linkedSoapCount ?? 0}
+              onPlanChange={setAmbulatorySoapPlan}
+            />
+          ) : null}
+
           {appointment.patientId ? (
             <EncounterVitalsCard
               patientId={appointment.patientId}
@@ -807,10 +892,43 @@ export default function EncounterWorkspacePage() {
               visitStateReady={visitClinicalStateReady}
               visitOpen={visitOpenForClinicalEntry}
               timeZone={taxConfigQuery.data?.timezone}
+              measurementSystem={
+                isAmbulatoryWorkspace
+                  ? ambulatoryProfile?.measurementSystem
+                  : "metric"
+              }
+              bodyConditionScale={
+                isAmbulatoryWorkspace
+                  ? ambulatoryProfile?.bodyConditionScale
+                  : 9
+              }
             />
           ) : null}
 
-          {canRecordVitals(role) &&
+          {isAmbulatoryWorkspace && appointment.patientId ? (
+            <AmbulatoryVisitRecordsCard
+              patientId={appointment.patientId}
+              appointmentId={appointmentId}
+              role={role}
+              visitOpen={visitOpenForClinicalEntry}
+              timeZone={taxConfigQuery.data?.timezone}
+            />
+          ) : null}
+
+          {isAmbulatoryWorkspace && appointment.patientId ? (
+            <VisitCloseout
+              appointment={appointment}
+              appointmentId={appointmentId}
+              role={role}
+              closeoutQuery={closeoutQuery}
+              invoicesQuery={invoicesQuery}
+              compact={ambulatoryProfile?.compactCloseout === true}
+              soapPlan={ambulatorySoapPlan}
+            />
+          ) : null}
+
+          {!isAmbulatoryWorkspace &&
+          canRecordVitals(role) &&
           appointment.patientId &&
           appointment.clientId ? (
             <TreatmentPlanComposer
@@ -821,13 +939,15 @@ export default function EncounterWorkspacePage() {
             />
           ) : null}
 
-          <VisitCloseout
-            appointment={appointment}
-            appointmentId={appointmentId}
-            role={role}
-            closeoutQuery={closeoutQuery}
-            invoicesQuery={invoicesQuery}
-          />
+          {!isAmbulatoryWorkspace ? (
+            <VisitCloseout
+              appointment={appointment}
+              appointmentId={appointmentId}
+              role={role}
+              closeoutQuery={closeoutQuery}
+              invoicesQuery={invoicesQuery}
+            />
+          ) : null}
 
           <EncounterInvoices
             appointmentId={appointmentId}
@@ -848,6 +968,7 @@ export default function EncounterWorkspacePage() {
                 role === "veterinarian" ||
                 role === "front_desk")
             }
+            canNoCharge={canManageBilling(role)}
             canVoid={role === "admin" || role === "veterinarian"}
           />
         </div>
@@ -857,11 +978,13 @@ export default function EncounterWorkspacePage() {
             appointmentId={appointmentId}
             clientId={appointment.clientId}
             patientId={appointment.patientId}
-            canManage={
-              canManageBilling(role) &&
-              appointment.status === "in_exam" &&
-              closeoutQuery.data?.closeout?.status !== "completed"
-            }
+            lock={getChargeCaptureLock({
+              roleCanManageBilling: canManageBilling(role),
+              appointmentStatus: appointment.status,
+              appointmentStatusLabel:
+                APPOINTMENT_STATUS_LABELS[appointment.status],
+              closeoutStatus: closeoutQuery.data?.closeout?.status,
+            })}
             activeInvoice={
               activeInvoices[0]
                 ? {
@@ -1067,6 +1190,8 @@ function VisitCloseout({
   role,
   closeoutQuery,
   invoicesQuery,
+  compact = false,
+  soapPlan = "",
 }: {
   appointment: {
     status: string;
@@ -1083,9 +1208,12 @@ function VisitCloseout({
   role?: string | null;
   closeoutQuery: CloseoutQueryState;
   invoicesQuery: InvoiceQueryState;
+  compact?: boolean;
+  soapPlan?: string;
 }) {
   const utils = trpc.useUtils();
   const isOnline = useOnlineStatus();
+  const [compactExpanded, setCompactExpanded] = useState(!compact);
   const data = closeoutQuery.data;
   const closeout = data?.closeout ?? null;
   const activeInvoice = data?.invoices[0] ?? null;
@@ -1126,6 +1254,10 @@ function VisitCloseout({
   >("idle");
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState<Date | null>(null);
   const [conflictRevision, setConflictRevision] = useState<number | null>(null);
+  const [copiedPlanSnapshot, setCopiedPlanSnapshot] = useState<{
+    plan: string;
+    instructions: string;
+  } | null>(null);
   const draftInitializedRef = useRef(false);
   const revisionRef = useRef(0);
   const lastSavedFingerprintRef = useRef("");
@@ -1171,6 +1303,7 @@ function VisitCloseout({
     setFollowUpDueDate(fields.followUpDueDate);
     setFollowUpAssignedTo(fields.followUpAssignedTo);
     setDocumentationExceptionReason(fields.documentationExceptionReason);
+    setCopiedPlanSnapshot(null);
     fieldsRef.current = fields;
   }, []);
 
@@ -1311,7 +1444,7 @@ function VisitCloseout({
   const canDraftClinical =
     role === "admin" || role === "veterinarian" || role === "technician";
   const canFinalizeClinical =
-    role === "veterinarian" ||
+    data?.canFinalizeDoctorRequiredVisit === true ||
     (appointment.typeRequiresDoctor === 0 &&
       (role === "admin" || role === "technician"));
   const signedClinical =
@@ -1320,6 +1453,25 @@ function VisitCloseout({
   const amendingClinical = Boolean(closeout?.amendmentDraft);
   const clinicalLocked = signedClinical && !amendingClinical;
   const isCompleted = closeout?.status === "completed";
+  const normalizedSoapPlan = soapPlan.trim();
+  const planCopyState = !copiedPlanSnapshot
+    ? "available"
+    : normalizedSoapPlan !== copiedPlanSnapshot.plan
+      ? "plan_changed"
+      : dischargeInstructions !== copiedPlanSnapshot.instructions
+        ? "instructions_edited"
+        : "copied";
+
+  function copySoapPlanToOwnerInstructions() {
+    if (!normalizedSoapPlan || clinicalLocked || !canDraftClinical) return;
+    setDischargeInstructions(normalizedSoapPlan);
+    setNoInstructionsReason("");
+    setCopiedPlanSnapshot({
+      plan: normalizedSoapPlan,
+      instructions: normalizedSoapPlan,
+    });
+    toast.success("Plan copied to owner instructions for review");
+  }
   const persistCloseoutDraft = useCallback(async () => {
     if (!draftInitializedRef.current || clinicalLocked || !canDraftClinical) {
       return null;
@@ -1495,7 +1647,7 @@ function VisitCloseout({
     };
   };
 
-  async function useServerCloseoutDraft() {
+  async function restoreServerCloseoutDraft() {
     try {
       const latest = await utils.encounters.getCloseout.fetch({
         appointmentId,
@@ -1679,15 +1831,117 @@ function VisitCloseout({
     );
   }
 
+  const compactPendingActions = isCompleted
+    ? []
+    : !signedClinical
+      ? [
+          appointment.status !== "in_exam" && !amendingClinical
+            ? "Start the exam"
+            : null,
+          data.soapDraft
+            ? "Finalize or discard the SOAP draft"
+            : data.linkedSoapCount === 0 && !documentationExceptionReason.trim()
+              ? "Link SOAP documentation or record an exception"
+              : null,
+          !dischargeInstructions.trim() && !noInstructionsReason.trim()
+            ? "Prepare owner home-care instructions"
+            : null,
+          !prescriptionDisposition
+            ? "Confirm prescription disposition"
+            : data.activeMedications.length > 0 &&
+                prescriptionDisposition !== "prescribed"
+              ? "Include linked prescriptions in the handoff"
+              : data.activeMedications.length === 0 &&
+                  prescriptionDisposition !== "not_needed"
+                ? "Confirm that no prescription is needed"
+                : null,
+          !followUpDisposition
+            ? "Confirm follow-up disposition"
+            : followUpDisposition === "scheduled" && !followUpAppointmentId
+              ? "Choose the scheduled follow-up"
+              : followUpDisposition === "needed" &&
+                  (!followUpDueDate || !followUpAssignedTo)
+                ? "Set a due date and accountable follow-up owner"
+                : null,
+        ].filter((action): action is string => Boolean(action))
+      : [
+          !chargeDisposition ? "Resolve billing disposition" : null,
+          !handoffMethod ? "Record the owner handoff method" : null,
+        ].filter((action): action is string => Boolean(action));
+
+  if (compact && !compactExpanded) {
+    return (
+      <Card id="visit-closeout" className="scroll-mt-4" tabIndex={-1}>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <CardTitle>Finish field visit</CardTitle>
+              <CardDescription>
+                Review only the clinical, billing, or owner-handoff decisions
+                still needed before safe checkout.
+              </CardDescription>
+            </div>
+            <Badge variant={isCompleted ? "success" : "outline"}>
+              {isCompleted
+                ? "Completed"
+                : signedClinical
+                  ? "Clinical instructions signed"
+                  : closeout
+                    ? "Draft saved"
+                    : "Ready for review"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {compactPendingActions.length > 0 ? (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+              <p className="text-sm font-medium">
+                {compactPendingActions.length} decision
+                {compactPendingActions.length === 1 ? "" : "s"} still needed
+              </p>
+              <ul className="mt-2 grid gap-1 text-sm text-muted-foreground sm:grid-cols-2">
+                {compactPendingActions.map((action) => (
+                  <li key={action} className="flex items-start gap-2">
+                    <span aria-hidden="true">•</span>
+                    <span>{action}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm">
+              {isCompleted
+                ? "The field visit has a durable clinical and operational closeout."
+                : "Visible field decisions are complete. Review the final server-validated safety checks."}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              SOAP, performed-work reconciliation, and payment controls remain
+              enforced. Only outstanding field decisions are surfaced here.
+            </p>
+            <Button type="button" onClick={() => setCompactExpanded(true)}>
+              <ClipboardCheck className="mr-2 h-4 w-4" />
+              {isCompleted ? "View closeout" : "Review and finish"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card id="visit-closeout" className="scroll-mt-4" tabIndex={-1}>
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <CardTitle>Visit closeout</CardTitle>
+            <CardTitle>
+              {compact ? "Finish field visit" : "Visit closeout"}
+            </CardTitle>
             <CardDescription>
-              Finalize clinical instructions, then verify billing and owner
-              handoff before checkout.
+              {compact
+                ? "Resolve the remaining owner, clinical, and billing decisions without bypassing checkout safeguards."
+                : "Finalize clinical instructions, then verify billing and owner handoff before checkout."}
             </CardDescription>
           </div>
           <Badge variant={isCompleted ? "success" : "outline"}>
@@ -1703,6 +1957,16 @@ function VisitCloseout({
                     ? "Draft saved"
                     : "Not started"}
           </Badge>
+          {compact ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setCompactExpanded(false)}
+            >
+              Collapse
+            </Button>
+          ) : null}
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -1747,6 +2011,10 @@ function VisitCloseout({
             </div>
           ) : canDraftClinical ? (
             <ClinicalCloseoutForm
+              patientName={appointment.patientName}
+              onRefreshAppointments={() => {
+                void utils.encounters.getCloseout.invalidate({ appointmentId });
+              }}
               diagnosisSummary={diagnosisSummary}
               setDiagnosisSummary={setDiagnosisSummary}
               dischargeInstructions={dischargeInstructions}
@@ -1769,6 +2037,10 @@ function VisitCloseout({
               setFollowUpAssignedTo={setFollowUpAssignedTo}
               documentationExceptionReason={documentationExceptionReason}
               setDocumentationExceptionReason={setDocumentationExceptionReason}
+              compact={compact}
+              soapPlan={soapPlan}
+              planCopyState={planCopyState}
+              onCopySoapPlan={copySoapPlanToOwnerInstructions}
               linkedSoapCount={data.linkedSoapCount}
               missingSoapReplacement={data.missingSoapReplacement}
               soapReplacementHref={
@@ -1790,7 +2062,7 @@ function VisitCloseout({
               isFinalizing={finalizeClinical.isPending}
               canFinalize={canFinalizeClinical}
               onSave={() => void persistCloseoutDraft()}
-              onUseServer={() => void useServerCloseoutDraft()}
+              onUseServer={() => void restoreServerCloseoutDraft()}
               onOverwrite={() => void overwriteServerCloseoutDraft()}
               onFinalize={() => void finalizeClinicalHandoff()}
             />
@@ -2091,6 +2363,7 @@ function VisitCloseout({
         {clinicalLocked && !isCompleted && canManageVisit(role) ? (
           <OperationalCloseoutForm
             activeInvoice={activeInvoice}
+            canWaiveCharges={canManageBilling(role)}
             chargeDisposition={chargeDisposition}
             setChargeDisposition={setChargeDisposition}
             invoiceDueDate={invoiceDueDate}
@@ -2153,6 +2426,8 @@ function ReadinessTile({ label, value }: { label: string; value: string }) {
 }
 
 type ClinicalCloseoutFormProps = {
+  onRefreshAppointments: () => void;
+  patientName: string | null;
   diagnosisSummary: string;
   setDiagnosisSummary: (value: string) => void;
   dischargeInstructions: string;
@@ -2175,6 +2450,14 @@ type ClinicalCloseoutFormProps = {
   setFollowUpAssignedTo: (value: string) => void;
   documentationExceptionReason: string;
   setDocumentationExceptionReason: (value: string) => void;
+  compact: boolean;
+  soapPlan: string;
+  planCopyState:
+    | "available"
+    | "copied"
+    | "instructions_edited"
+    | "plan_changed";
+  onCopySoapPlan: () => void;
   linkedSoapCount: number;
   missingSoapReplacement: { sourceNoteId: string } | null;
   soapReplacementHref: string | null;
@@ -2263,17 +2546,35 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
             : props.saveState === "unsaved"
               ? "Changes have not reached the server yet."
               : "Server draft recovery is ready.";
+  const diagnosisField = (
+    <div>
+      <label className="text-sm font-medium" htmlFor="closeout-diagnosis">
+        Diagnosis or visit summary{" "}
+        <span className="text-muted-foreground">(optional)</span>
+      </label>
+      <Textarea
+        id="closeout-diagnosis"
+        value={props.diagnosisSummary}
+        onChange={(event) => props.setDiagnosisSummary(event.target.value)}
+        rows={3}
+        className="mt-1"
+      />
+    </div>
+  );
 
   return (
     <div className="space-y-4 rounded-md border border-border p-4">
       <div>
         <h3 className="font-medium">
-          1. Clinical owner handoff{props.isAmendment ? " amendment" : ""}
+          1. {props.compact ? "Field owner handoff" : "Clinical owner handoff"}
+          {props.isAmendment ? " amendment" : ""}
         </h3>
         <p className="text-sm text-muted-foreground">
           {props.isAmendment
             ? "The current signed discharge remains active until this attributed replacement is finalized."
-            : "Finalized content becomes the durable discharge record and cannot be silently edited."}
+            : props.compact
+              ? "Complete only the outstanding owner-facing decisions. Finalization still creates the same durable discharge record."
+              : "Finalized content becomes the durable discharge record and cannot be silently edited."}
         </p>
       </div>
       <div
@@ -2311,23 +2612,54 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
           </div>
         </div>
       ) : null}
+      {!props.compact ? diagnosisField : null}
       <div>
-        <label className="text-sm font-medium" htmlFor="closeout-diagnosis">
-          Diagnosis or visit summary{" "}
-          <span className="text-muted-foreground">(optional)</span>
-        </label>
-        <Textarea
-          id="closeout-diagnosis"
-          value={props.diagnosisSummary}
-          onChange={(event) => props.setDiagnosisSummary(event.target.value)}
-          rows={3}
-          className="mt-1"
-        />
-      </div>
-      <div>
-        <label className="text-sm font-medium" htmlFor="closeout-instructions">
-          Home-care instructions <span aria-hidden="true">*</span>
-        </label>
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <label
+              className="text-sm font-medium"
+              htmlFor="closeout-instructions"
+            >
+              Home-care instructions <span aria-hidden="true">*</span>
+            </label>
+            <p className="text-xs text-muted-foreground">
+              Internal SOAP content is never added automatically. Copy the Plan
+              only as a starting point, then review the owner-facing wording.
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={!props.soapPlan.trim() || props.isSaving}
+            onClick={props.onCopySoapPlan}
+          >
+            <Copy className="mr-2 h-4 w-4" />
+            Copy from Plan
+          </Button>
+        </div>
+        <div
+          className={`mt-2 rounded-md border px-3 py-2 text-xs ${
+            props.planCopyState === "copied" ||
+            props.planCopyState === "plan_changed"
+              ? "border-amber-500/40 bg-amber-500/10"
+              : props.planCopyState === "instructions_edited"
+                ? "border-emerald-500/40 bg-emerald-500/10"
+                : "border-border bg-muted/20 text-muted-foreground"
+          }`}
+          role="status"
+          aria-live="polite"
+        >
+          {props.planCopyState === "copied"
+            ? "Copied from the current Plan. Review and edit the text below before signing the owner handoff."
+            : props.planCopyState === "instructions_edited"
+              ? "Owner instructions were edited after the Plan was copied. Verify the final wording before signing."
+              : props.planCopyState === "plan_changed"
+                ? "The SOAP Plan changed after the last copy. Review both records and copy again only if the owner instructions should be replaced."
+                : props.soapPlan.trim()
+                  ? "The current Plan is available. Existing owner instructions stay unchanged unless you copy it."
+                  : "Add or load a SOAP Plan before using the copy action."}
+        </div>
         <Textarea
           id="closeout-instructions"
           value={props.dischargeInstructions}
@@ -2371,6 +2703,7 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
           className="mt-1"
         />
       </div>
+      {props.compact ? diagnosisField : null}
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
           <label
@@ -2453,6 +2786,28 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
               </option>
             ))}
           </select>
+          <Button variant="outline" size="sm" className="mt-2" asChild>
+            <Link
+              href={`/schedule?patient=${encodeURIComponent(props.patientName ?? "")}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Schedule follow-up (opens new tab)
+            </Link>
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="mt-2 ml-2"
+            onClick={props.onRefreshAppointments}
+          >
+            Refresh appointments
+          </Button>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Create the appointment, then refresh appointments here and select it
+            to link the follow-up. Your closeout stays open in this tab.
+          </p>
           {props.followUpAppointments.length === 0 ? (
             <p className="mt-1 text-xs text-muted-foreground">
               No future appointment is scheduled. Save this draft, create the
@@ -2792,6 +3147,7 @@ function FollowUpResolutionPanel({
 
 function OperationalCloseoutForm({
   activeInvoice,
+  canWaiveCharges,
   chargeDisposition,
   setChargeDisposition,
   invoiceDueDate,
@@ -2809,9 +3165,13 @@ function OperationalCloseoutForm({
     id: string;
     status: string;
     itemCount: number;
+    total: string;
+    paidAmount: string;
+    adjustedAmount: string;
     balanceDueCents: number;
     dueDate: Date | string | null;
   } | null;
+  canWaiveCharges: boolean;
   chargeDisposition: "" | "paid" | "accounts_receivable" | "no_charge";
   setChargeDisposition: (
     value: "" | "paid" | "accounts_receivable" | "no_charge",
@@ -2841,7 +3201,17 @@ function OperationalCloseoutForm({
     invoiceDueDate >= minimumDueDate &&
     activeInvoice.balanceDueCents > 0,
   );
-  const noChargeReady = !activeInvoice;
+  const zeroDollarInvoiceReady = Boolean(
+    activeInvoice &&
+    activeInvoice.itemCount > 0 &&
+    activeInvoice.status === "draft" &&
+    moneyToCents(activeInvoice.total) === 0 &&
+    moneyToCents(activeInvoice.paidAmount) === 0 &&
+    moneyToCents(activeInvoice.adjustedAmount) === 0 &&
+    activeInvoice.balanceDueCents === 0,
+  );
+  const noChargeReady =
+    canWaiveCharges && (!activeInvoice || zeroDollarInvoiceReady);
   const selectedDispositionReady =
     (chargeDisposition === "paid" && paidReady) ||
     (chargeDisposition === "accounts_receivable" && accountsReceivableReady) ||
@@ -2856,8 +3226,8 @@ function OperationalCloseoutForm({
       <div>
         <h3 className="font-medium">2. Billing and owner handoff</h3>
         <p className="text-sm text-muted-foreground">
-          Resolve payment or explicitly place the invoice in accounts receivable
-          before completing the visit.
+          Confirm the paid, pay-later, or documented no-charge outcome before
+          completing the visit.
         </p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
@@ -2889,7 +3259,13 @@ function OperationalCloseoutForm({
               Pay later — present with due date
             </option>
             <option value="no_charge" disabled={!noChargeReady}>
-              No charge for this visit{noChargeReady ? "" : " — invoice exists"}
+              {!canWaiveCharges
+                ? "No charge — admin or front desk only"
+                : zeroDollarInvoiceReady
+                  ? "No charge — $0 invoice"
+                  : `No charge for this visit${
+                      noChargeReady ? "" : " — invoice has a balance"
+                    }`}
             </option>
           </select>
         </div>
@@ -2956,9 +3332,11 @@ function OperationalCloseoutForm({
           {formatCurrency(activeInvoice.balanceDueCents / 100)}.{" "}
           {paidReady
             ? "Ready for paid checkout. "
-            : accountsReceivableReady
-              ? "Ready for accounts-receivable checkout. "
-              : "Save charges and choose a valid due date before checkout. "}
+            : zeroDollarInvoiceReady
+              ? "Ready for no-charge checkout; the $0 invoice will be finalized without recording a payment. "
+              : accountsReceivableReady
+                ? "Ready for accounts-receivable checkout. "
+                : "Save charges and choose a valid due date before checkout. "}
           <Button variant="link" size="sm" asChild className="h-auto p-0">
             <Link href={`/billing?expand=${activeInvoice.id}`}>
               Open billing
@@ -3107,11 +3485,13 @@ function VisitWorkReconciliation({
   appointmentId,
   canManage,
   canCorrect,
+  canNoCharge,
   canVoid,
 }: {
   appointmentId: string;
   canManage: boolean;
   canCorrect: boolean;
+  canNoCharge: boolean;
   canVoid: boolean;
 }) {
   const utils = trpc.useUtils();
@@ -3197,6 +3577,8 @@ function VisitWorkReconciliation({
               return (
                 <div
                   key={item.id}
+                  role="group"
+                  aria-label={`Performed work ${item.sourceLabel}`}
                   className="rounded-md border border-border p-4"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-2">
@@ -3272,63 +3654,19 @@ function VisitWorkReconciliation({
                               Link confirmed charge
                             </Button>
                           </div>
-                          <div className="flex flex-col gap-2 sm:flex-row">
-                            <Input
-                              value={reason}
-                              maxLength={500}
-                              placeholder="Reason required for no charge or void/correction"
-                              aria-label={`Reconciliation reason for ${item.sourceLabel}`}
-                              disabled={resolve.isPending || reopen.isPending}
-                              onChange={(event) =>
-                                setReasons((current) => ({
-                                  ...current,
-                                  [item.id]: event.target.value,
-                                }))
-                              }
-                            />
-                            <Button
-                              variant="outline"
-                              disabled={
-                                reason.trim().length < 3 ||
-                                resolve.isPending ||
-                                reopen.isPending
-                              }
-                              onClick={() =>
-                                resolve.mutate({
-                                  appointmentId,
-                                  workItemId: item.id,
-                                  resolution: {
-                                    status: "no_charge",
-                                    reason: reason.trim(),
-                                  },
-                                })
-                              }
-                            >
-                              No charge
-                            </Button>
-                            {canVoid ? (
-                              <Button
-                                variant="outline"
-                                disabled={
-                                  reason.trim().length < 3 ||
-                                  resolve.isPending ||
-                                  reopen.isPending
-                                }
-                                onClick={() =>
-                                  resolve.mutate({
-                                    appointmentId,
-                                    workItemId: item.id,
-                                    resolution: {
-                                      status: "voided",
-                                      reason: reason.trim(),
-                                    },
-                                  })
-                                }
-                              >
-                                Void/corrected
-                              </Button>
-                            ) : null}
-                          </div>
+                          <ReconciliationReasonActions
+                            label={item.sourceLabel}
+                            canNoCharge={canNoCharge}
+                            canVoid={canVoid}
+                            disabled={resolve.isPending || reopen.isPending}
+                            onResolve={(resolution) =>
+                              resolve.mutate({
+                                appointmentId,
+                                workItemId: item.id,
+                                resolution,
+                              })
+                            }
+                          />
                         </>
                       ) : staleCharge ? (
                         <p className="text-sm text-destructive">
@@ -3403,7 +3741,7 @@ function ChargeCapture({
   appointmentId,
   clientId,
   patientId,
-  canManage,
+  lock,
   activeInvoice,
   invoiceStateReady,
   invoiceStateLoading,
@@ -3412,7 +3750,7 @@ function ChargeCapture({
   appointmentId: string;
   clientId: string | null;
   patientId: string | null;
-  canManage: boolean;
+  lock: ChargeCaptureLock | null;
   activeInvoice: { id: string; status: string } | null;
   invoiceStateReady: boolean;
   invoiceStateLoading: boolean;
@@ -3430,9 +3768,12 @@ function ChargeCapture({
     dispenseChargeDescription: string | null;
   }>;
 }) {
+  const canManage = lock === null;
   const utils = trpc.useUtils();
   const isOnline = useOnlineStatus();
   const [selectedCatalogId, setSelectedCatalogId] = useState("");
+  const [productSearch, setProductSearch] = useState("");
+  const [selectedProduct, setSelectedProduct] = useState<RouterOutputs["billing"]["searchProducts"]["items"][number] | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [items, setItems] = useState<ChargeItem[]>([]);
   const [loadedInvoiceId, setLoadedInvoiceId] = useState<string | null>(null);
@@ -3458,9 +3799,11 @@ function ChargeCapture({
       invoiceStateReady &&
       (!activeInvoice || (activeInvoiceIsDraft && invoiceDetailReady)),
   });
-  const productsQuery = trpc.billing.listProducts.useQuery(
-    { limit: 100 },
+  const productsQuery = trpc.billing.searchProducts.useInfiniteQuery(
+    { limit: 50, search: productSearch.trim() || undefined },
     {
+      getNextPageParam: (page) => page.nextCursor,
+      retry: false,
       enabled:
         canManage &&
         configReady &&
@@ -3562,7 +3905,10 @@ function ChargeCapture({
         sourcePrescriptionId: undefined as string | undefined,
         sourceDispenseChargeId: prescription.dispenseChargeId!,
       }));
-    const products = (productsQuery.data ?? [])
+    const fetchedProducts = productsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+    const availableProducts = selectedProduct && !fetchedProducts.some((product) => product.id === selectedProduct.id)
+      ? [...fetchedProducts, selectedProduct] : fetchedProducts;
+    const products = availableProducts
       .filter((product) => !linkedProductIds.has(product.id))
       .map((product) => ({
         id: `product:${product.id}`,
@@ -3581,7 +3927,7 @@ function ChargeCapture({
         sourceDispenseChargeId: undefined as string | undefined,
       }));
     return [...prescriptionCharges, ...services, ...products];
-  }, [linkedPrescriptions, productsQuery.data, servicesQuery.data]);
+  }, [linkedPrescriptions, productsQuery.data, servicesQuery.data, selectedProduct]);
 
   const selected = catalog.find((entry) => entry.id === selectedCatalogId);
   const readyVisitPrescriptionCharges = catalog.filter(
@@ -3604,7 +3950,10 @@ function ChargeCapture({
   }, [selected?.id, selected?.quantity]);
   const previewTotals = tryCalculateInvoiceTaxTotals(
     items.map((item) => ({
-      lineTotalCents: item.quantity * moneyToCents(item.unitPrice || "0"),
+      lineTotalCents: quantityLineTotalCents(
+        moneyToCents(item.unitPrice || "0"),
+        item.quantity,
+      ),
       taxable: item.taxable,
     })),
     configQuery.data?.taxRatePercent ?? "0.00",
@@ -3626,7 +3975,7 @@ function ChargeCapture({
     (selected.stockQuantity !== null && quantity <= selected.stockQuantity);
   const canAdd =
     Boolean(selected) &&
-    Number.isInteger(quantity) &&
+    isSupportedQuantity(quantity) &&
     quantity > 0 &&
     selectedHasStock &&
     items.length < BILLING_INVOICE_MAX_ITEMS;
@@ -3701,7 +4050,7 @@ function ChargeCapture({
     setItems((current) => [
       ...current,
       {
-        key: crypto.randomUUID(),
+        key: browserUuid(),
         description: entry.name,
         quantity: itemQuantity,
         unitPrice: entry.defaultPrice,
@@ -3718,6 +4067,7 @@ function ChargeCapture({
     if (!selected || !canAdd) return;
     addCatalogItem(selected, quantity);
     setSelectedCatalogId("");
+    setSelectedProduct(null);
     setQuantity(1);
   }
 
@@ -3771,10 +4121,9 @@ function ChargeCapture({
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {!canManage ? (
+        {lock ? (
           <div className="rounded-md border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-            Charge capture is read-only for your role. An admin or front desk
-            teammate can create the invoice.
+            {lock.message}
           </div>
         ) : invoiceStateLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -3813,33 +4162,21 @@ function ChargeCapture({
             Charge capture is locked because tax and currency settings could not
             be confirmed. Refresh before creating charges.
           </div>
-        ) : !previewTotals ? (
-          <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-            Set the practice tax rate between 0 and 100% and keep the invoice
-            total within the supported currency range before saving charges.
-          </div>
         ) : !clientId || !patientId ? (
           <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
             Add both a client and patient to the appointment before capturing
             charges.
           </div>
-        ) : servicesQuery.error || productsQuery.error ? (
+        ) : servicesQuery.error ? (
           <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
             Unable to load the charge catalog. Refresh before creating an
             invoice.
           </div>
-        ) : servicesQuery.isLoading || productsQuery.isLoading ? (
+        ) : servicesQuery.isLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             Loading services and products...
           </div>
-        ) : catalog.length === 0 && items.length === 0 ? (
-          <EmptyState
-            icon={Package}
-            title="Charge catalog is empty"
-            description="Add services or inventory products before building a visit invoice."
-            className="p-8"
-          />
         ) : (
           <div className="flex flex-col gap-4">
             {!isOnline ? (
@@ -3851,6 +4188,16 @@ function ChargeCapture({
                 creating or updating the visit invoice.
               </div>
             ) : null}
+            {!previewTotals && (
+              <p
+                role="alert"
+                className="rounded-md border border-destructive p-3 text-sm text-destructive"
+              >
+                {isValidSettingsTaxRate(configQuery.data?.taxRatePercent ?? "")
+                  ? "Check charge quantities and prices. Use positive quantities with at most three decimals and valid currency amounts within the supported range."
+                  : "Set the practice tax rate between 0 and 100% in Settings before saving charges."}
+              </p>
+            )}
             {readyVisitPrescriptionCharges.length > 0 ? (
               <div className="rounded-md border border-primary/30 bg-primary/[0.04] p-3">
                 <p className="text-sm font-medium">Ready from this visit</p>
@@ -3928,23 +4275,32 @@ function ChargeCapture({
               </div>
             ) : null}
             <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_90px_auto] lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_80px_auto]">
+              {catalog.length === 0 && !productSearch && !productsQuery.isFetching && !productsQuery.error ? <p className="text-sm text-muted-foreground">Charge catalog is empty. Add services or inventory products to get started.</p> : null}
               <ServicePicker
                 services={catalog}
                 value={selectedCatalogId}
-                onSelect={setSelectedCatalogId}
+                onSelect={(id) => {
+                  setSelectedCatalogId(id);
+                  setSelectedProduct(productsQuery.data?.pages.flatMap((page) => page.items).find((product) => `product:${product.id}` === id) ?? null);
+                }}
+                onSearchChange={setProductSearch}
+                loading={productsQuery.isFetching}
+                searchError={productsQuery.error?.message}
+                onRetry={() => void productsQuery.refetch()}
+                hasMore={productsQuery.hasNextPage}
+                onLoadMore={() => void productsQuery.fetchNextPage()}
                 disabled={isSaving}
                 formatPrice={fmt}
               />
               <Input
                 type="number"
-                min={1}
+                min={0.001}
+                step="0.001"
                 max={selected?.stockQuantity ?? undefined}
                 value={quantity}
                 aria-label="Charge quantity"
                 aria-invalid={!selectedHasStock}
-                onChange={(event) =>
-                  setQuantity(Math.max(1, Number(event.target.value) || 1))
-                }
+                onChange={(event) => setQuantity(Number(event.target.value))}
               />
               <Button
                 type="button"
@@ -3988,7 +4344,8 @@ function ChargeCapture({
                         Qty
                         <Input
                           type="number"
-                          min={1}
+                          min={0.001}
+                          step="0.001"
                           max={10000}
                           value={item.quantity}
                           aria-label={`${item.description} quantity`}
@@ -4000,10 +4357,7 @@ function ChargeCapture({
                                 candidate.key === item.key
                                   ? {
                                       ...candidate,
-                                      quantity: Math.max(
-                                        1,
-                                        Number(event.target.value) || 1,
-                                      ),
+                                      quantity: Number(event.target.value),
                                     }
                                   : candidate,
                               ),

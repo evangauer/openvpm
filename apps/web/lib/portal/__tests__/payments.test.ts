@@ -12,21 +12,19 @@ describe("portal payment helpers", () => {
     expect(
       buildPortalPaymentReturnUrl({
         origin: "https://app.example.com/",
-        token: "abc 123",
         status: "success",
         invoiceId,
       })
     ).toBe(
-      `https://app.example.com/portal/abc%20123/invoices?payment=success&invoice=${invoiceId}`
+      `https://app.example.com/portal/invoices?payment=success&invoice=${invoiceId}`
     );
 
     expect(
       buildPortalPaymentReturnUrl({
         origin: "https://app.example.com",
-        token: "abc",
         status: "cancelled",
       })
-    ).toBe("https://app.example.com/portal/abc/invoices?payment=cancelled");
+    ).toBe("https://app.example.com/portal/invoices?payment=cancelled");
   });
 
   it("maps known payment statuses to client-facing banners", () => {

@@ -52,3 +52,8 @@ package-lock.json
 .mcp.json
 .codex/
 .gstack/
+
+# Local Supabase CLI project linkage and generated state
+/supabase/.temp/
+# Generated public-only offline shell; built from apps/web/offline on build/dev.
+apps/web/public/offline/

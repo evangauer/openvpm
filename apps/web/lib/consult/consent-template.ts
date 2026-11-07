@@ -9,6 +9,14 @@ export const CONSENT_TITLE_MAX_LENGTH = 200;
 export const CONSENT_BODY_MAX_LENGTH = 8_000;
 export const CONSENT_SIGNER_NAME_MAX_LENGTH = 120;
 
+export const CONSENT_SIGNER_AUTHORITY_ATTESTATION =
+  "I confirm that I am this pet's owner or an agent authorized by the owner to make care decisions and sign this record.";
+
+export const CONSENT_ELECTRONIC_SIGNATURE_INTENT =
+  "By selecting Agree and sign, I intend to sign this record electronically.";
+
+export const CONSENT_SIGNER_ATTESTATION_VERSION = "owner-authority-v1";
+
 /**
  * Consent templates intentionally ship with fill-in prompts. They are useful
  * while drafting, but a capability link must never be minted while a material

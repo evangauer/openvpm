@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
 const mocks = vi.hoisted(() => ({
@@ -65,13 +65,13 @@ const WAITLIST_ID = "00000000-0000-0000-0000-000000000006";
 const SCHEDULE_ID = "00000000-0000-0000-0000-000000000007";
 const LOCATION_ID = "00000000-0000-0000-0000-000000000008";
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, role = "admin") {
   const session = {
     user: {
       id: USER_ID,
       email: "admin@example.com",
       name: "Admin",
-      role: "admin",
+      role,
       practiceId: PRACTICE_ID,
     },
   };
@@ -133,9 +133,72 @@ function createDb(opts?: {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("AMBULATORY_WORKSPACE_ENABLED", "true");
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("settings admin stale target safety", () => {
+  it("updates the explicit ambulatory profile without replacing other settings", async () => {
+    const ambulatoryWorkspace = {
+      enabled: true,
+      measurementSystem: "us_customary" as const,
+      bodyConditionScale: 5 as const,
+      compactCloseout: true,
+    };
+    const { db, updateSet } = createDb({
+      updatedRows: [{ settings: { ambulatoryWorkspace } }],
+    });
+
+    await expect(
+      callerWithDb(db).updateAmbulatoryWorkspace(ambulatoryWorkspace),
+    ).resolves.toEqual(ambulatoryWorkspace);
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ settings: expect.anything() }),
+    );
+    expect(SETTINGS_SOURCE).toContain(
+      "settingsMergePatch({ ambulatoryWorkspace: input })",
+    );
+  });
+
+  it("keeps ambulatory configuration admin-only and fails closed on missing practice", async () => {
+    const input = {
+      enabled: true,
+      measurementSystem: "metric" as const,
+      bodyConditionScale: 9 as const,
+      compactCloseout: true,
+    };
+    const forbidden = createDb();
+    await expect(
+      callerWithDb(forbidden.db, "front_desk").updateAmbulatoryWorkspace(input),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(forbidden.updateSet).not.toHaveBeenCalled();
+
+    const missing = createDb({ updatedRows: [] });
+    await expect(
+      callerWithDb(missing.db).updateAmbulatoryWorkspace(input),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("rejects an ambulatory enable attempt before database work while the platform is dark", async () => {
+    vi.stubEnv("AMBULATORY_WORKSPACE_ENABLED", "false");
+    const { db, updateSet } = createDb();
+
+    await expect(
+      callerWithDb(db).updateAmbulatoryWorkspace({
+        enabled: true,
+        measurementSystem: "metric",
+        bodyConditionScale: 9,
+        compactCloseout: true,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
   it("rejects settings strings that exceed storage bounds before writes", async () => {
     const { db, updateSet, insertValues } = createDb();
 
@@ -755,7 +818,10 @@ describe("settings admin stale target safety", () => {
     ).resolves.toMatchObject({ id: STAFF_ID, role: "viewer" });
 
     expect(db.execute).toHaveBeenCalled();
-    expect(updateSet).toHaveBeenCalledWith({ role: "viewer" });
+    expect(updateSet).toHaveBeenCalledWith({
+      role: "viewer",
+      sessionVersion: expect.anything(),
+    });
   });
 
   it("rejects stale staff role demotions", async () => {
@@ -769,7 +835,10 @@ describe("settings admin stale target safety", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(db.execute).toHaveBeenCalled();
-    expect(updateSet).toHaveBeenCalledWith({ role: "viewer" });
+    expect(updateSet).toHaveBeenCalledWith({
+      role: "viewer",
+      sessionVersion: expect.anything(),
+    });
   });
 
   it("rejects self-deactivation before DB work", async () => {
@@ -851,7 +920,10 @@ describe("settings admin stale target safety", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(db.execute).toHaveBeenCalled();
-    expect(updateSet).toHaveBeenCalledWith({ deletedAt: expect.any(Date) });
+    expect(updateSet).toHaveBeenCalledWith({
+      deletedAt: expect.any(Date),
+      sessionVersion: expect.anything(),
+    });
     expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
   });
 
@@ -877,7 +949,10 @@ describe("settings admin stale target safety", () => {
       callerWithDb(db).restoreUser({ id: STAFF_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
-    expect(updateSet).toHaveBeenCalledWith({ deletedAt: null });
+    expect(updateSet).toHaveBeenCalledWith({
+      deletedAt: null,
+      sessionVersion: expect.anything(),
+    });
     expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
   });
 
@@ -1217,5 +1292,21 @@ describe("settings scheduling metadata delete safety", () => {
     expect(updateUserBlock).toContain('eq(users.role, "admin")');
     expect(updateUserBlock).toContain("ne(users.id, id)");
     expect(updateUserBlock).toContain("eq(users.role, targetUser.role)");
+  });
+});
+
+describe("settings staff responses", () => {
+  it("never returns a staff member's password hash or session version", () => {
+    const start = SETTINGS_SOURCE.indexOf("updateUser: adminProcedure");
+    const end = SETTINGS_SOURCE.indexOf("\n  }),\n", start);
+    const updateUser = SETTINGS_SOURCE.slice(start, end);
+    expect(updateUser).not.toMatch(/\.returning\(\s*\)/);
+    expect(updateUser).toContain(".returning(STAFF_USER_COLUMNS)");
+    const columnsStart = SETTINGS_SOURCE.indexOf("const STAFF_USER_COLUMNS = {");
+    const columns = SETTINGS_SOURCE.slice(
+      columnsStart,
+      SETTINGS_SOURCE.indexOf("};", columnsStart),
+    );
+    expect(columns).not.toMatch(/passwordHash|sessionVersion/);
   });
 });

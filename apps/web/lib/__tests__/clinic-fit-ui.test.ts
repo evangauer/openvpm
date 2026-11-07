@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const page = readFileSync("app/clinic-fit/page.tsx", "utf8");
-const register = readFileSync("app/(auth)/register/page.tsx", "utf8");
+const register = readFileSync("app/(auth)/register/register-form.tsx", "utf8");
 const middleware = readFileSync("middleware.ts", "utf8");
 
 describe("public clinic fit guidance", () => {

@@ -28,6 +28,7 @@ const DEFAULT_JOB_BUDGET_MS = 240_000;
 
 type ReplicaStatus = "pending" | "available" | "missing" | "corrupt" | "failed";
 type FileStorageStatus = (typeof files.$inferSelect)["storageStatus"];
+type DatabaseTransaction = Parameters<Parameters<typeof withSystem>[1]>[0];
 
 interface ClaimedReplica {
   replicaId: string;
@@ -252,25 +253,40 @@ export async function schedulePrimaryRepair(input: {
 
   try {
     return await withSystem(db, async (tx) => {
-      const [updatedFile] = await tx
-        .update(files)
-        .set({
-          storageStatus: nextStorageStatus,
+      const signedConsentTransitioned =
+        await transitionSignedConsentFileStorage(tx, {
+          practiceId: input.practiceId,
+          fileId: input.fileId,
+          fileKey: input.fileKey,
+          checksumSha256: input.checksumSha256,
+          fileSizeBytes: input.fileSizeBytes,
+          expectedStatus: input.storageStatus,
+          nextStatus: nextStorageStatus,
           storageVerifiedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(files.id, input.fileId),
-            eq(files.practiceId, input.practiceId),
-            eq(files.fileKey, input.fileKey),
-            sql`${files.checksumSha256} is not distinct from ${input.checksumSha256}`,
-            sql`${files.fileSizeBytes} is not distinct from ${input.fileSizeBytes}`,
-            eq(files.storageStatus, input.storageStatus),
-            isNull(files.deletedAt),
-          ),
-        )
-        .returning({ id: files.id });
+          objectEtag: null,
+          objectVersionId: null,
+        });
+      const [updatedFile] = signedConsentTransitioned
+        ? [{ id: input.fileId }]
+        : await tx
+            .update(files)
+            .set({
+              storageStatus: nextStorageStatus,
+              storageVerifiedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(files.id, input.fileId),
+                eq(files.practiceId, input.practiceId),
+                eq(files.fileKey, input.fileKey),
+                sql`${files.checksumSha256} is not distinct from ${input.checksumSha256}`,
+                sql`${files.fileSizeBytes} is not distinct from ${input.fileSizeBytes}`,
+                eq(files.storageStatus, input.storageStatus),
+                isNull(files.deletedAt),
+              ),
+            )
+            .returning({ id: files.id });
       if (!updatedFile) return false;
 
       await tx
@@ -459,6 +475,43 @@ function claimedPrimaryGenerationExists(item: ClaimedReplica) {
   )`;
 }
 
+/** Signed-consent generations admit only an exact, system-scoped recovery
+ * CAS. Ordinary file updates remain the path for every other category. */
+async function transitionSignedConsentFileStorage(
+  tx: DatabaseTransaction,
+  input: {
+    practiceId: string;
+    fileId: string;
+    fileKey: string;
+    checksumSha256: string | null;
+    fileSizeBytes: number | null;
+    expectedStatus: FileStorageStatus;
+    nextStatus: FileStorageStatus;
+    storageVerifiedAt: Date | null;
+    objectEtag: string | null;
+    objectVersionId: string | null;
+  },
+): Promise<boolean> {
+  if (!input.checksumSha256 || input.fileSizeBytes === null) return false;
+  const result = await tx.execute(sql`
+    select public.transition_signed_consent_file_storage(
+      ${input.practiceId}::uuid,
+      ${input.fileId}::uuid,
+      ${input.fileKey}::text,
+      ${input.checksumSha256}::text,
+      ${input.fileSizeBytes}::integer,
+      ${input.expectedStatus}::public.file_storage_status,
+      ${input.nextStatus}::public.file_storage_status,
+      ${input.storageVerifiedAt}::timestamptz,
+      ${input.objectEtag}::text,
+      ${input.objectVersionId}::text
+    ) as transitioned
+  `);
+  return (
+    rowsFromExecute<{ transitioned: boolean }>(result)[0]?.transitioned === true
+  );
+}
+
 function claimedReplicaGeneration(item: ClaimedReplica) {
   return and(
     eq(fileObjectReplicas.id, item.replicaId),
@@ -559,23 +612,39 @@ async function finalizeReplica(
 
       if (input.primaryTransition) {
         const transition = input.primaryTransition;
-        const [updatedFile] = await tx
-          .update(files)
-          .set({
-            storageStatus: transition.status,
-            ...(transition.checksumSha256
-              ? { checksumSha256: transition.checksumSha256 }
-              : {}),
-            ...(typeof transition.fileSizeBytes === "number"
-              ? { fileSizeBytes: transition.fileSizeBytes }
-              : {}),
+        const signedConsentTransitioned =
+          await transitionSignedConsentFileStorage(tx, {
+            practiceId: item.practiceId,
+            fileId: item.fileId,
+            fileKey: item.fileKey,
+            checksumSha256: item.fileChecksum,
+            fileSizeBytes: item.fileSize,
+            expectedStatus: item.fileStorageStatus,
+            nextStatus: transition.status,
+            storageVerifiedAt:
+              transition.status === "available" ? new Date() : null,
             objectEtag: transition.objectEtag ?? null,
             objectVersionId: transition.objectVersionId ?? null,
-            storageVerifiedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(claimedPrimaryGeneration(item))
-          .returning({ id: files.id });
+          });
+        const [updatedFile] = signedConsentTransitioned
+          ? [{ id: item.fileId }]
+          : await tx
+              .update(files)
+              .set({
+                storageStatus: transition.status,
+                ...(transition.checksumSha256
+                  ? { checksumSha256: transition.checksumSha256 }
+                  : {}),
+                ...(typeof transition.fileSizeBytes === "number"
+                  ? { fileSizeBytes: transition.fileSizeBytes }
+                  : {}),
+                objectEtag: transition.objectEtag ?? null,
+                objectVersionId: transition.objectVersionId ?? null,
+                storageVerifiedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(claimedPrimaryGeneration(item))
+              .returning({ id: files.id });
         if (!updatedFile) throw new StaleClaimedGenerationError();
 
         await appendStorageEvent(tx, {

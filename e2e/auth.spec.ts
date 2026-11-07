@@ -17,8 +17,9 @@ test.describe("Authentication", () => {
   test("register page renders correctly", async ({ page }) => {
     await page.goto("/register");
     await expect(
-      page.getByRole("heading", { name: /create your workspace/i })
+      page.getByRole("heading", { name: /a platform truly built for your clinic/i })
     ).toBeVisible();
+    await page.getByRole("button", { name: "Show my workflows" }).click();
     await expect(page.getByLabel(/practice name/i)).toBeVisible();
   });
 

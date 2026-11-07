@@ -1,0 +1,1 @@
+ALTER TABLE "growth_leads" ADD COLUMN "newsletter_subscription" jsonb;

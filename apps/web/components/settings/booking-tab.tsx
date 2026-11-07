@@ -13,6 +13,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { BookingIntakeSettings } from "@/components/settings/booking-intake-settings";
 import { toast } from "sonner";
 import {
   DEFAULT_BOOKING_PAGE_CONFIG,
@@ -407,6 +408,14 @@ export function BookingTab() {
           </div>
         )}
       </div>
+
+      <BookingIntakeSettings
+        selectedFieldKeys={config.intakeFieldKeys}
+        onChange={(intakeFieldKeys) =>
+          setConfig((current) => ({ ...current, intakeFieldKeys }))
+        }
+        disabled={save.isPending}
+      />
 
       {/* Request rules */}
       <div className="rounded-xl border border-gray-200 p-4 space-y-4">

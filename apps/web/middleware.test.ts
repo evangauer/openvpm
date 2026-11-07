@@ -37,6 +37,21 @@ function expectSecurityHeaders(response: Response) {
   }
 }
 
+function expectCapabilitySecurityHeaders(response: Response) {
+  for (const { key, value } of securityHeaders) {
+    if (key.toLowerCase() !== "referrer-policy") {
+      expect(response.headers.get(key)).toBe(value);
+    }
+  }
+  expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+  expect(response.headers.get("X-Robots-Tag")).toBe(
+    "noindex, nofollow, noarchive",
+  );
+  expect(response.headers.get("Cache-Control")).toBe(
+    "private, no-store, max-age=0",
+  );
+}
+
 beforeEach(() => {
   vi.stubEnv("NEXTAUTH_SECRET", "test-secret");
 });
@@ -47,12 +62,24 @@ afterEach(() => {
 });
 
 describe("middleware security headers", () => {
+  it("allows only the public offline shell without making patient routes public", async () => {
+    mocks.getToken.mockResolvedValue(null);
+    expect((await middleware(request("/offline/index.html"))).headers.get("location")).toBeNull();
+    expect((await middleware(request("/offline/private-chart"))).headers.get("location")).toContain("/login");
+    expect((await middleware(request("/patients/synthetic"))).headers.get("location")).toContain("/login");
+    expect(mocks.getToken).toHaveBeenCalledTimes(2);
+  });
   it("adds security headers to public auth pages without session lookup", async () => {
     const response = await middleware(request("/login"));
 
     expect(mocks.getToken).not.toHaveBeenCalled();
     expect(response.headers.get("location")).toBeNull();
     expectSecurityHeaders(response);
+    expect(response.headers.get("Referrer-Policy")).toBe(
+      "strict-origin-when-cross-origin",
+    );
+    expect(response.headers.get("Cache-Control")).toBeNull();
+    expect(response.headers.get("X-Robots-Tag")).toBeNull();
   });
 
   it("keeps email preference links public without exposing lookalike routes", async () => {
@@ -87,6 +114,18 @@ describe("middleware security headers", () => {
     );
     expectSecurityHeaders(fitResponse);
     expectSecurityHeaders(lookalikeResponse);
+  });
+
+  it("keeps the build-your-clinic signup public without exposing lookalikes", async () => {
+    mocks.getToken.mockResolvedValue(null);
+
+    const startResponse = await middleware(request("/start"));
+    const lookalikeResponse = await middleware(request("/starter"));
+
+    expect(startResponse.headers.get("location")).toBeNull();
+    expect(lookalikeResponse.headers.get("location")).toBe(
+      "https://openvpm.test/login?next=%2Fstarter",
+    );
   });
 
   it("adds security headers to API routes without middleware auth redirects", async () => {
@@ -127,6 +166,43 @@ describe("middleware security headers", () => {
     );
     expectSecurityHeaders(programResponse);
     expectSecurityHeaders(lookalikeResponse);
+  });
+
+  it("allows treatment-plan capabilities without exposing protected lookalike routes", async () => {
+    mocks.getToken.mockResolvedValue(null);
+
+    const capabilityResponse = await middleware(
+      request(`/treatment-plan/${"a".repeat(64)}`),
+    );
+    const protectedResponse = await middleware(request("/treatment-plans"));
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(capabilityResponse.headers.get("location")).toBeNull();
+    expect(protectedResponse.headers.get("location")).toBe(
+      "https://openvpm.test/login?next=%2Ftreatment-plans",
+    );
+    expectCapabilitySecurityHeaders(capabilityResponse);
+    expectSecurityHeaders(protectedResponse);
+  });
+
+  it("enforces capability privacy headers on public page and API prefixes", async () => {
+    const token = "a".repeat(64);
+
+    for (const path of [
+      `/capture/${token}`,
+      `/sign/${token}`,
+      `/treatment-plan/${token}`,
+      `/api/capture/${token}`,
+      `/api/sign/${token}`,
+      `/api/treatment-plan/${token}`,
+    ]) {
+      const response = await middleware(request(path));
+
+      expect(response.headers.get("location")).toBeNull();
+      expectCapabilitySecurityHeaders(response);
+    }
+
+    expect(mocks.getToken).not.toHaveBeenCalled();
   });
 
   it("allows Vercel observability proxy paths without session lookup", async () => {
@@ -178,8 +254,10 @@ describe("middleware security headers", () => {
     const response = await middleware(request("/settings"));
 
     expect(mocks.getToken).not.toHaveBeenCalled();
-    expect(response.headers.get("location")).toBe(
-      "https://openvpm.test/login?next=%2Fsettings",
+    expect(response.status).toBe(503);
+    expect(response.headers.get("location")).toBeNull();
+    await expect(response.text()).resolves.toContain(
+      "NEXTAUTH_SECRET is not set.",
     );
     expectSecurityHeaders(response);
   });
@@ -257,5 +335,175 @@ describe("middleware security headers", () => {
     expect(nextConfigSource).toContain('require("./lib/security-headers.js")');
     expect(middlewareSource).not.toContain("const CONTENT_SECURITY_POLICY");
     expect(nextConfigSource).not.toContain("const contentSecurityPolicy");
+  });
+});
+
+describe("middleware NEXTAUTH_SECRET guard", () => {
+  const PUBLISHED_SECRET = "docker-dev-secret-change-in-production";
+
+  it("refuses sessions and shows setup instructions in production with the published compose secret", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", PUBLISHED_SECRET);
+    // A cookie forged with the public secret would decode successfully.
+    mocks.getToken.mockResolvedValue({ id: "user-1", role: "admin" });
+
+    const page = await middleware(request("/patients"));
+    const login = await middleware(request("/login"));
+    const portal = await middleware(request("/portal"));
+
+    expect(mocks.getToken).not.toHaveBeenCalled();
+    for (const response of [page, login, portal]) {
+      expect(response.status).toBe(503);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("Content-Type")).toContain("text/html");
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expectSecurityHeaders(response);
+    }
+    const html = await page.text();
+    expect(html).toContain("Set NEXTAUTH_SECRET");
+    expect(html).toContain("openssl rand -base64 32");
+    expect(html).not.toContain(PUBLISHED_SECRET);
+  });
+
+  it("returns 503 JSON for API routes, including sign-in, in production with a weak secret", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "short-secret");
+
+    for (const path of [
+      "/api/auth/callback/credentials",
+      "/api/auth/session",
+      "/api/trpc/patient.list",
+      "/api/portal/session",
+      "/api/upload",
+    ]) {
+      const response = await middleware(request(path));
+      expect(response.status).toBe(503);
+      const body = await response.json();
+      expect(body.error).toBe(
+        "Authentication secret is not configured securely",
+      );
+      expect(body.detail).toContain("shorter than 32 characters");
+      expect(JSON.stringify(body)).not.toContain("short-secret");
+    }
+  });
+
+  it("keeps health checks and static assets reachable so operators can diagnose", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", PUBLISHED_SECRET);
+
+    const health = await middleware(request("/api/health"));
+    const favicon = await middleware(request("/favicon.ico"));
+
+    expect(health.status).toBe(200);
+    expect(favicon.status).toBe(200);
+  });
+
+  it("does not treat nested paths with a file extension as static assets", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", PUBLISHED_SECRET);
+
+    for (const path of ["/patients/export.json", "/portal/records.txt"]) {
+      const response = await middleware(request(path));
+      expect(response.status, path).toBe(503);
+    }
+  });
+
+  it("keeps routes with their own credentials running while sign-in is refused", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", PUBLISHED_SECRET);
+
+    for (const path of [
+      "/api/webhooks/stripe",
+      "/api/webhooks/telnyx",
+      "/api/webhooks/resend",
+      "/api/cron/reminders",
+      "/api/v1/patients",
+      "/api/email-preferences/unsubscribe",
+      "/email-preferences",
+      "/feedback/stop-reason",
+      "/api/growth/stop-reason",
+      "/feedback/nps",
+      "/api/growth/nps",
+      "/api/calendar/feed-token",
+      "/sms/practice-1/terms",
+    ]) {
+      const response = await middleware(request(path));
+      expect(response.status, path).toBe(200);
+      expectSecurityHeaders(response);
+    }
+    expect(mocks.getToken).not.toHaveBeenCalled();
+  });
+
+  it("keeps session-backed public routes and lookalikes blocked while sign-in is refused", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", PUBLISHED_SECRET);
+
+    for (const path of [
+      "/book/clinic",
+      "/portal",
+      "/api/webhooksx",
+      "/api/v10/patients",
+      "/sms-admin",
+    ]) {
+      const response = await middleware(request(path));
+      expect(response.status, path).toBe(503);
+    }
+  });
+
+  it("serves on a short secret when OPENVPM_ALLOW_SHORT_AUTH_SECRET is set", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "Xk7pQ2mR9vLw");
+    vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
+    mocks.getToken.mockResolvedValue({ id: "user-1" });
+
+    const req = request("/patients");
+    const response = await middleware(req);
+    const login = await middleware(request("/login"));
+
+    expect(mocks.getToken).toHaveBeenCalledWith({
+      req,
+      secret: "Xk7pQ2mR9vLw",
+    });
+    expect(response.status).toBe(200);
+    expect(login.status).toBe(200);
+  });
+
+  it("still refuses a published or missing secret when OPENVPM_ALLOW_SHORT_AUTH_SECRET is set", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("OPENVPM_ALLOW_SHORT_AUTH_SECRET", "1");
+
+    vi.stubEnv("NEXTAUTH_SECRET", PUBLISHED_SECRET);
+    expect((await middleware(request("/patients"))).status).toBe(503);
+    vi.stubEnv("NEXTAUTH_SECRET", undefined);
+    expect((await middleware(request("/patients"))).status).toBe(503);
+    vi.stubEnv("NEXTAUTH_SECRET", "  ");
+    expect((await middleware(request("/patients"))).status).toBe(503);
+    expect(mocks.getToken).not.toHaveBeenCalled();
+  });
+
+  it("accepts sessions normally in production with a strong secret", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv(
+      "NEXTAUTH_SECRET",
+      "q3vV9rJcK0m8yTfLw2ZpXa7Ns4Hd6Bu1Ee5Gi0Ko9Rs=",
+    );
+    mocks.getToken.mockResolvedValue({ id: "user-1" });
+
+    const response = await middleware(request("/patients"));
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("keeps development usable with the published secret", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("NEXTAUTH_SECRET", PUBLISHED_SECRET);
+    mocks.getToken.mockResolvedValue({ id: "user-1" });
+
+    const response = await middleware(request("/patients"));
+
+    expect(mocks.getToken).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(200);
   });
 });

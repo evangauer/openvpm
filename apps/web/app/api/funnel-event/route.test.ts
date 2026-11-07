@@ -62,6 +62,26 @@ afterEach(() => {
 });
 
 describe("/api/funnel-event", () => {
+  it.each([
+    "demo_welcome_viewed",
+    "demo_workflow_selected",
+    "demo_workflow_started",
+    "demo_welcome_skipped",
+  ])("records %s without contact or patient metadata", async (name) => {
+    const response = await POST(request({
+      ...validEvent,
+      name,
+      path: "/demo-start",
+      props: { tool: "lab_results", email: "test@example.invalid", patientId: "private" },
+    }, "https://demo.openvpm.com"));
+    expect(response.status).toBe(202);
+    expect(mocks.insertFunnelEvent).toHaveBeenCalledWith({}, expect.objectContaining({
+      eventName: name,
+      path: "/demo-start",
+      metadata: { tool: "lab_results" },
+    }));
+  });
+
   it("accepts a privacy-bounded first-party event with CORS", async () => {
     const response = await POST(request(validEvent));
 
@@ -87,6 +107,61 @@ describe("/api/funnel-event", () => {
           placement: "hero",
         },
       }),
+    );
+  });
+
+  it("keeps only known build-your-clinic scene metadata", async () => {
+    const response = await POST(
+      request(
+        {
+          ...validEvent,
+          name: "build_scene_completed",
+          path: "/start",
+          props: {
+            scene: "records",
+            system: "shepherd",
+            model: "mobile",
+            ms: 12_345,
+            services: 5,
+          },
+        },
+        "https://app.openvpm.com",
+      ),
+    );
+    expect(response.status).toBe(202);
+    expect(mocks.insertFunnelEvent).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        eventName: "build_scene_completed",
+        metadata: {
+          scene: "records",
+          system: "shepherd",
+          model: "mobile",
+          ms: 12_345,
+          services: 5,
+        },
+      }),
+    );
+
+    await POST(
+      request(
+        {
+          ...validEvent,
+          eventId: "323e4567-e89b-42d3-a456-426614174000",
+          name: "build_scene_viewed",
+          props: {
+            scene: "not-a-scene",
+            system: "made-up",
+            ms: -5,
+            services: 1.5,
+          },
+        },
+        "https://app.openvpm.com",
+      ),
+    );
+    expect(mocks.insertFunnelEvent).toHaveBeenLastCalledWith(
+      {},
+      expect.objectContaining({ metadata: {} }),
     );
   });
 

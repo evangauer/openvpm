@@ -2,7 +2,12 @@ import { randomBytes, createHash } from "crypto";
 import { and, eq, gt, isNull, lt } from "drizzle-orm";
 import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
-import { authTokens, sessions, verificationTokens } from "@openpims/db";
+import {
+  authTokens,
+  portalSessions,
+  sessions,
+  verificationTokens,
+} from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 
 export type AuthTokenType = "email_verify" | "password_reset" | "invite";
@@ -109,6 +114,7 @@ export async function cleanupExpiredAuthArtifacts(options: {
   authTokensDeleted: number;
   sessionsDeleted: number;
   verificationTokensDeleted: number;
+  portalSessionsDeleted: number;
   deleted: number;
   cutoff: Date;
 }> {
@@ -126,11 +132,16 @@ export async function cleanupExpiredAuthArtifacts(options: {
       .delete(verificationTokens)
       .where(lt(verificationTokens.expires, cutoff))
       .returning({ expires: verificationTokens.expires });
+    const deletedPortalSessions = await tx
+      .delete(portalSessions)
+      .where(lt(portalSessions.expiresAt, cutoff))
+      .returning({ id: portalSessions.id });
 
     return {
       authTokensDeleted: deletedAuthTokens.length,
       sessionsDeleted: deletedSessions.length,
       verificationTokensDeleted: deletedVerificationTokens.length,
+      portalSessionsDeleted: deletedPortalSessions.length,
     };
   };
 
@@ -142,7 +153,8 @@ export async function cleanupExpiredAuthArtifacts(options: {
     deleted:
       counts.authTokensDeleted +
       counts.sessionsDeleted +
-      counts.verificationTokensDeleted,
+      counts.verificationTokensDeleted +
+      counts.portalSessionsDeleted,
     cutoff,
   };
 }

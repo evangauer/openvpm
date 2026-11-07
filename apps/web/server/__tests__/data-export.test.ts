@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
     valid: true,
     errors: [] as string[],
   })),
+  practiceBackupContainsSealedConsentEvidence: vi.fn(() => false),
   isPracticeBackupJsonSizeValid: vi.fn(() => true),
   recordAuditLog: vi.fn(async () => undefined),
   recordActivationAfterAppointmentCreated: vi.fn(async () => true),
@@ -38,6 +39,8 @@ vi.mock("@/lib/backup/export", () => ({
   summarizePracticeExport: mocks.summarizePracticeExport,
   validatePracticeFileRestoreTarget: mocks.validatePracticeFileRestoreTarget,
   validatePracticeExportRestore: mocks.validatePracticeExportRestore,
+  practiceBackupContainsSealedConsentEvidence:
+    mocks.practiceBackupContainsSealedConsentEvidence,
 }));
 
 vi.mock("@/lib/backup/policy", () => ({
@@ -234,6 +237,57 @@ describe("data full backup restore", () => {
     });
 
     expect(select).toHaveBeenCalledTimes(1);
+    expect(mocks.restorePracticeData).not.toHaveBeenCalled();
+  });
+
+  it("rejects sealed signed-consent evidence from the web restore path", async () => {
+    const { db, select } = createRestoreDb();
+    mocks.practiceBackupContainsSealedConsentEvidence.mockReturnValueOnce(true);
+
+    await expect(
+      callerWithDb(db).restoreBackup({
+        backup: { signedConsentEvidence: [{ id: "sealed-consent" }] },
+        dryRun: false,
+        confirmFreshPractice: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("database-owner recovery workflow"),
+    });
+
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(mocks.restorePracticeData).not.toHaveBeenCalled();
+  });
+
+  it("rejects legacy consent-signature manifests before web restore starts", async () => {
+    const { db, select } = createRestoreDb();
+    mocks.validatePracticeExportRestore.mockReturnValueOnce({
+      valid: false,
+      errors: [
+        "This legacy backup contains signed-consent files or dependent treatment-plan decisions without their signed consent evidence; a format v9 export or full database recovery is required.",
+      ],
+    });
+
+    await expect(
+      callerWithDb(db).restoreBackup({
+        backup: {
+          formatVersion: 8,
+          files: [{ source: "consent_signature" }],
+        },
+        dryRun: false,
+        confirmFreshPractice: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining(
+        "format v9 export or full database recovery",
+      ),
+    });
+
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.practiceBackupContainsSealedConsentEvidence,
+    ).toHaveBeenCalled();
     expect(mocks.restorePracticeData).not.toHaveBeenCalled();
   });
 

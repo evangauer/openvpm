@@ -193,9 +193,9 @@ describe("consumeAuthToken", () => {
 });
 
 describe("cleanupExpiredAuthArtifacts", () => {
-  it("deletes expired auth tokens, sessions, and verification tokens", async () => {
+  it("deletes expired auth and portal session artifacts", async () => {
     const cutoff = new Date("2026-06-28T04:45:00Z");
-    const fake = cleanupDb([2, 3, 1]);
+    const fake = cleanupDb([2, 3, 1, 4]);
 
     await expect(
       cleanupExpiredAuthArtifacts({ now: cutoff, db: fake.db as never })
@@ -203,12 +203,13 @@ describe("cleanupExpiredAuthArtifacts", () => {
       authTokensDeleted: 2,
       sessionsDeleted: 3,
       verificationTokensDeleted: 1,
-      deleted: 6,
+      portalSessionsDeleted: 4,
+      deleted: 10,
       cutoff,
     });
 
-    expect(fake.deleteTable).toHaveBeenCalledTimes(3);
-    expect(fake.returningMocks).toHaveLength(3);
+    expect(fake.deleteTable).toHaveBeenCalledTimes(4);
+    expect(fake.returningMocks).toHaveLength(4);
     for (const where of fake.whereMocks) {
       expect(includesValue(where.mock.calls[0]?.[0], cutoff)).toBe(true);
     }

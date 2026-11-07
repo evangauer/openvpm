@@ -60,7 +60,19 @@ const LOCATION_ID = "00000000-0000-0000-0000-000000000004";
 const ACTIVE_PRACTICE = [{ id: PRACTICE_ID }];
 
 function callerWithDb(db: Record<string, unknown>, ip?: string) {
-  return portalRouter.createCaller({ db, ip } as never);
+  return portalRouter.createCaller({
+    db,
+    ip,
+    portalSessionId: TOKEN,
+    portalClient: {
+      id: CLIENT_ID,
+      practiceId: PRACTICE_ID,
+      firstName: "Portal",
+      lastName: "Client",
+      email: "portal@example.test",
+      phone: null,
+    },
+  } as never);
 }
 
 function createDb(opts?: {

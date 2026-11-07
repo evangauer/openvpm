@@ -24,6 +24,7 @@ import {
   type SoapNoteImportRecord,
   type CareReminderImportRecord,
   type ServiceImportRecord,
+  remapRowIssues,
   csvToClientRecords,
   csvToPatientRecords,
   csvToVaccinationRecords,
@@ -38,6 +39,7 @@ import {
 import { finalizedSoapInsertValues } from "@/lib/records/soap-lifecycle";
 import {
   exportPracticeData,
+  practiceBackupContainsSealedConsentEvidence,
   restorePracticeData,
   summarizePracticeExport,
   validatePracticeFileRestoreTarget,
@@ -111,6 +113,12 @@ const importSpeciesInput = z.enum([
   "rabbit",
   "reptile",
   "equine",
+  "bovine",
+  "ovine",
+  "caprine",
+  "porcine",
+  "poultry",
+  "camelid",
   "other",
 ]);
 const importSexInput = z
@@ -329,7 +337,7 @@ const importCsvInput = z.object({
   // tab loaded before this deploy does not silently switch a commit to preview.
   dryRun: z.boolean().optional().default(false),
   source: importSourceInput,
-  previewToken: z.string().uuid().optional(),
+  previewToken: z.string().guid().optional(),
   migrationProtocol: z.literal("reviewed-v1").optional(),
   // Accepted only so a pre-deploy onboarding tab receives an explicit refresh
   // instruction instead of a misleading pet preview.
@@ -1400,6 +1408,7 @@ async function loadClientCsvPlan(
   records: ClientImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   const existing = await db
     .select({
@@ -1422,7 +1431,10 @@ async function loadClientCsvPlan(
     .orderBy(clients.id)
     .for("update");
   const plan = planClientCsvImport(records, source, existing);
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -1444,6 +1456,7 @@ async function loadPatientCsvPlan(
   records: PatientImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   // Keep the lock order practice -> clients -> patients for every migration.
   const clientRows = await db
@@ -1498,7 +1511,10 @@ async function loadPatientCsvPlan(
     clientLookup,
     existingPatients,
   );
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -1830,6 +1846,7 @@ async function loadVaccinationCsvPlan(
   records: VaccinationImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   const patientRows = await loadMigrationPatientReferences(db, practiceId);
   const patientLookup = createPatientReferenceLookup(patientRows);
@@ -1856,7 +1873,10 @@ async function loadVaccinationCsvPlan(
     source,
     existingDoses,
   );
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -2044,6 +2064,7 @@ async function loadCareReminderCsvPlan(
   records: CareReminderImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   const patientRows = await loadMigrationPatientReferences(db, practiceId);
   const patientLookup = createPatientReferenceLookup(patientRows);
@@ -2071,7 +2092,10 @@ async function loadCareReminderCsvPlan(
     source,
     existingReminders,
   );
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -2254,6 +2278,7 @@ async function loadServiceCsvPlan(
   records: ServiceImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   await database.execute(
     sql`select pg_advisory_xact_lock(hashtext(${`service-catalog:${practiceId}`}::text))`,
@@ -2273,7 +2298,10 @@ async function loadServiceCsvPlan(
     .orderBy(services.id)
     .for("update");
   const plan = planServiceImport(records, source, existingServices);
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -2459,6 +2487,7 @@ async function loadSoapNoteCsvPlan(
   records: SoapNoteImportRecord[],
   source: string,
   parseErrors: string[],
+  sourceRows?: readonly number[],
 ) {
   const patientRows = await loadMigrationPatientReferences(db, practiceId);
   const patientLookup = createPatientReferenceLookup(patientRows);
@@ -2489,7 +2518,10 @@ async function loadSoapNoteCsvPlan(
     source,
     existingNotes,
   );
-  const combinedErrors = [...parseErrors, ...plan.errors];
+  const combinedErrors = [
+    ...parseErrors,
+    ...remapRowIssues(plan.errors, sourceRows),
+  ];
   const summary: MigrationPreviewSummary = {
     sourceRowCount: records.length,
     plannedInsertCount: plan.rows.length,
@@ -2790,7 +2822,7 @@ export const dataRouter = createRouter({
     .input(
       z.object({
         backup: z
-          .record(z.unknown())
+          .record(z.string(), z.unknown())
           .refine(
             isPracticeBackupJsonSizeValid,
             PRACTICE_BACKUP_JSON_SIZE_MESSAGE,
@@ -2807,6 +2839,11 @@ export const dataRouter = createRouter({
         ctx.practiceId,
       );
       const restoreErrors = [...validation.errors, ...targetValidation.errors];
+      if (practiceBackupContainsSealedConsentEvidence(input.backup)) {
+        restoreErrors.push(
+          "This backup contains sealed signed-consent evidence. Use the database-owner recovery workflow; the web restore cannot import legal evidence.",
+        );
+      }
       await assertActivePractice(ctx);
 
       if (input.dryRun) {
@@ -3037,7 +3074,7 @@ export const dataRouter = createRouter({
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
       requireValidImportIntent(input);
-      const { records, errors } = csvToClientRecords(input.csv);
+      const { records, errors, sourceRows } = csvToClientRecords(input.csv);
       const validRecords = parseClientImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
@@ -3126,6 +3163,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {
@@ -3234,7 +3272,7 @@ export const dataRouter = createRouter({
             "This onboarding import session is out of date. Refresh OpenVPM to check clients before pets.",
         });
       }
-      const { records, errors } = csvToPatientRecords(input.csv);
+      const { records, errors, sourceRows } = csvToPatientRecords(input.csv);
       const validRecords = parsePatientImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
@@ -3321,6 +3359,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {
@@ -3420,7 +3459,7 @@ export const dataRouter = createRouter({
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
       requireValidImportIntent(input);
-      const { records, errors } = csvToVaccinationRecords(input.csv);
+      const { records, errors, sourceRows } = csvToVaccinationRecords(input.csv);
       const validRecords = parseVaccinationImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
@@ -3504,6 +3543,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {
@@ -3575,7 +3615,7 @@ export const dataRouter = createRouter({
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
       requireValidImportIntent(input);
-      const { records, errors } = csvToSoapNoteRecords(input.csv);
+      const { records, errors, sourceRows } = csvToSoapNoteRecords(input.csv);
       const validRecords = parseSoapNoteImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
@@ -3659,6 +3699,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {
@@ -3733,7 +3774,7 @@ export const dataRouter = createRouter({
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
       requireValidImportIntent(input);
-      const { records, errors } = csvToCareReminderRecords(input.csv);
+      const { records, errors, sourceRows } = csvToCareReminderRecords(input.csv);
       const validRecords = parseCareReminderImportRecords(records);
 
       if (validRecords.length === 0 && errors.length > 0) {
@@ -3815,6 +3856,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {
@@ -3878,7 +3920,7 @@ export const dataRouter = createRouter({
     .input(importCsvInput)
     .mutation(async ({ ctx, input }) => {
       requireValidImportIntent(input);
-      const { records, errors } = csvToServiceRecords(input.csv);
+      const { records, errors, sourceRows } = csvToServiceRecords(input.csv);
       const validRecords = parseServiceImportRecords(records);
 
       await assertActivePractice(ctx);
@@ -3892,6 +3934,7 @@ export const dataRouter = createRouter({
             validRecords,
             input.source,
             errors,
+            sourceRows,
           );
 
         if (input.dryRun) {

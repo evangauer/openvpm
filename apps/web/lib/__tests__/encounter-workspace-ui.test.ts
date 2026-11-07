@@ -17,6 +17,10 @@ const encounterVitalsSource = readFileSync(
   "components/records/encounter-vitals-card.tsx",
   "utf8",
 );
+const ambulatorySoapSource = readFileSync(
+  "components/records/ambulatory-soap-card.tsx",
+  "utf8",
+);
 const patientChartSource = readFileSync(
   "app/(dashboard)/patients/[id]/page.tsx",
   "utf8",
@@ -35,6 +39,22 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("Clinical work");
     expect(workspaceSource).toContain("Invoice state");
     expect(workspaceSource).toContain("Charge capture");
+  });
+
+  it("requires the effective rollout gate for field visits and falls back to the standard workspace", () => {
+    expect(workspaceSource).toContain(
+      'appointment.origin === "field" && ambulatoryProfile?.enabled === true',
+    );
+    expect(workspaceSource).not.toContain(
+      'ambulatoryProfile?.enabled === true || appointment.origin === "field"',
+    );
+    expect(workspaceSource).not.toContain(
+      'const isAmbulatoryWorkspace = appointment.origin === "field";',
+    );
+    expect(workspaceSource).toContain(
+      "{isAmbulatoryWorkspace && appointment.patientId ? (",
+    );
+    expect(workspaceSource).toContain("{!isAmbulatoryWorkspace ? (");
   });
 
   it("repairs patientless appointments before allowing an exam to start", () => {
@@ -241,6 +261,12 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("Documented exception");
     expect(workspaceSource).toContain("linkedMedicationCount");
     expect(workspaceSource).toContain("disabled={!canFinalizeNow}");
+    expect(workspaceSource).toContain(
+      "data?.canFinalizeDoctorRequiredVisit === true",
+    );
+    expect(workspaceSource).not.toContain(
+      'role === "veterinarian" ||\n    (appointment.typeRequiresDoctor',
+    );
   });
 
   it("keeps the signed owner handoff reviewable and mobile billing reachable", () => {
@@ -251,6 +277,48 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain('id="charge-capture"');
     expect(workspaceSource).toContain('href="#charge-capture"');
     expect(workspaceSource).toContain("tabIndex={-1}");
+  });
+
+  it("copies the ambulatory SOAP Plan into owner instructions only on explicit action", () => {
+    expect(ambulatorySoapSource).toContain("onPlanChange?.(sections.plan)");
+    expect(ambulatorySoapSource).toContain(
+      "onPlanChange?.(finalizedVisitPlan)",
+    );
+    expect(ambulatorySoapSource).toContain(
+      "note.appointmentId === appointmentId",
+    );
+    expect(workspaceSource).toContain(
+      'const [ambulatorySoapPlan, setAmbulatorySoapPlan] = useState("")',
+    );
+    expect(workspaceSource).toContain("onPlanChange={setAmbulatorySoapPlan}");
+    expect(workspaceSource).toContain("Copy from Plan");
+    expect(workspaceSource).toContain("copySoapPlanToOwnerInstructions");
+    expect(workspaceSource).toContain(
+      "setDischargeInstructions(normalizedSoapPlan)",
+    );
+    expect(workspaceSource).toContain('setNoInstructionsReason("")');
+    expect(workspaceSource).toContain(
+      "Internal SOAP content is never added automatically",
+    );
+    expect(workspaceSource).toContain(
+      "The SOAP Plan changed after the last copy",
+    );
+    for (const source of [workspaceSource, ambulatorySoapSource]) {
+      expect(source).not.toContain("localStorage");
+      expect(source).not.toContain("sessionStorage");
+    }
+  });
+
+  it("makes compact field closeout exception-driven without weakening safeguards", () => {
+    expect(workspaceSource).toContain("compactPendingActions");
+    expect(workspaceSource).toContain("still needed");
+    expect(workspaceSource).toContain(
+      "Only outstanding field decisions are surfaced here",
+    );
+    expect(workspaceSource).toContain("without bypassing checkout safeguards");
+    expect(workspaceSource).toContain("persistCloseoutDraft");
+    expect(workspaceSource).toContain("expectedRevision: revisionRef.current");
+    expect(workspaceSource).toContain("getVisitCompletionAction");
   });
 
   it("links prescriptions to the visit and preserves their inventory ownership", () => {
@@ -271,7 +339,12 @@ describe("clinic encounter workspace", () => {
     expect(workspaceSource).toContain("Performed work reconciliation");
     expect(workspaceSource).toContain("Link confirmed charge");
     expect(workspaceSource).toContain("No charge");
-    expect(workspaceSource).toContain("Void/corrected");
+    expect(
+      readFileSync(
+        "components/records/reconciliation-reason-actions.tsx",
+        "utf8",
+      ),
+    ).toContain("Void/corrected");
     expect(workspaceSource).toContain("never bills a suggestion automatically");
   });
 

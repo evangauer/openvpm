@@ -2,17 +2,53 @@ import { Resend } from "resend";
 import {
   openvpmBrand,
   renderWelcomeEmail,
+  renderNewsletterEmail,
   renderSetupRecoveryEmail,
   renderTrialEndingEmail,
   renderPaymentReceiptEmail,
   renderPaymentFailedEmail,
   renderFirstClinicWinEmail,
+  renderCheckoutRecoveryEmail,
+  renderDemoFollowupEmail,
+  renderTeamInviteEmail,
+  renderTrialWinbackEmail,
+  renderAdoptionEmail,
+  renderNpsSurveyEmail,
+  renderBuildFollowupEmail,
+  type AdoptionTip,
+  type TrialUsage,
 } from "@openpims/email";
 import {
   createEmailPreferenceLinks,
   emailPreferenceRecipientHash,
 } from "@/lib/email-preferences";
-import { billingEnforced } from "@/lib/billing/plans";
+import { billingEnforced, TRIAL_DAYS } from "@/lib/billing/plans";
+import { PREVIEW_HOURS } from "@/lib/billing/preview";
+import {
+  greetingName,
+  STOP_REASON_LABELS,
+  STOP_REASONS,
+  type CheckoutRecoveryStep,
+} from "@/lib/growth/checkout-recovery";
+import { growthSender } from "@/lib/growth/sender";
+import {
+  demoToolCopy,
+  type DemoFollowupStep,
+} from "@/lib/growth/demo-followup";
+import { buildCloudSignupUrl } from "@/lib/funnel-analytics";
+import { createStopReasonToken } from "@/lib/growth/stop-reason-token";
+import { createNpsToken } from "@/lib/growth/nps-token";
+import { createBuildResumeToken } from "@/lib/build/progress";
+import type { BuildFollowupStep } from "@/lib/build/followup";
+import {
+  BUILD_SYSTEM_LABELS,
+  type BuildSavedState,
+} from "@/lib/build/catalog";
+import {
+  TRIAL_WINBACK_REASONS,
+  type AdoptionGap,
+  type TrialWinbackStep,
+} from "@/lib/growth/customer-lifecycle";
 import {
   defaultEmailFrom,
   emailDemoMode,
@@ -57,9 +93,13 @@ export interface EmailProviderEvidence {
   failureCode?:
     | "provider_not_configured"
     | "provider_rejected"
+    | "provider_unavailable"
     | "send_timeout"
     | "provider_exception"
-    | "missing_provider_id";
+    | "missing_provider_id"
+    | "idempotency_conflict";
+  /** HTTP status of a provider error answer, when there was one. */
+  providerStatus?: number;
 }
 
 function emailSendTimeoutMessage(): string {
@@ -229,12 +269,39 @@ async function dispatchEmail(
           : error,
       );
       const timedOut = controller.signal.aborted;
+      // An idempotency conflict means an earlier request with this key exists
+      // (or is still running), so the email may already have been sent.
+      const idempotencyConflict =
+        error.name === "invalid_idempotent_request" ||
+        error.name === "concurrent_idempotent_requests";
+      // Only a changed payload under a reused key means "can't be resent
+      // safely"; a concurrent request is still in flight and will settle.
+      const payloadConflict = error.name === "invalid_idempotent_request";
+      // The SDK turns network errors, unreadable success bodies, and gateway
+      // failures into an error result instead of throwing. Without a 4xx
+      // answer the request may have been accepted, so only a 4xx (including
+      // 429, which Resend rejects before sending) is a definite failure.
+      const statusCode = (error as { statusCode?: number | null }).statusCode;
+      const noDefiniteAnswer =
+        typeof statusCode !== "number" || statusCode >= 500 || statusCode < 400;
       return {
         success: false,
         provider,
+        ...(typeof statusCode === "number" ? { providerStatus: statusCode } : {}),
         error: timedOut ? emailSendTimeoutMessage() : error.message,
-        outcome: timedOut ? "outcome_unknown" : "definite_failure",
-        failureCode: timedOut ? "send_timeout" : "provider_rejected",
+        outcome:
+          timedOut || idempotencyConflict || noDefiniteAnswer
+            ? "outcome_unknown"
+            : "definite_failure",
+        failureCode: timedOut
+          ? "send_timeout"
+          : payloadConflict
+            ? "idempotency_conflict"
+            : idempotencyConflict
+              ? "provider_unavailable"
+            : noDefiniteAnswer
+              ? "provider_unavailable"
+              : "provider_rejected",
       };
     }
 
@@ -310,7 +377,19 @@ export async function sendAppointmentReminder(data: {
   practiceName: string;
   practicePhone?: string;
   practiceAddress?: string;
-}): Promise<{ success: boolean; id?: string; error?: string }> {
+  /** Stable per send attempt, so a replayed request never emails twice. */
+  idempotencyKey: string;
+}): Promise<{
+  success: boolean;
+  id?: string;
+  error?: string;
+  outcome: EmailProviderOutcome;
+  /**
+   * The provider refused this idempotency key: an earlier request under it
+   * exists (or is still running) and may have sent the email.
+   */
+  idempotencyConflict?: boolean;
+}> {
   const body = `
     <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${data.clientName},</p>
     <p style="margin:0 0 24px;color:#111827;font-size:15px;line-height:1.6;">This is a friendly reminder about an upcoming appointment for <strong>${data.patientName}</strong>.</p>
@@ -336,13 +415,30 @@ export async function sendAppointmentReminder(data: {
 
   const html = emailLayout(data.practiceName, body, footer);
 
-  const result = await sendEmail({
+  // Callers must know when the provider may have accepted the email, so the
+  // reminder is never retried after a timeout or idempotency conflict.
+  const result = await dispatchEmail({
     to: data.to,
     subject: `Appointment Reminder for ${data.patientName} – ${data.appointmentDate}`,
     html,
+    idempotencyKey: data.idempotencyKey,
   });
 
-  return { success: result.success, id: result.id, error: result.error };
+  return {
+    success: result.success,
+    id: result.id,
+    error: result.error,
+    ...(result.failureCode === "idempotency_conflict"
+      ? { idempotencyConflict: true }
+      : {}),
+    // A 429 rejects this request only. It says nothing about an earlier
+    // request under the same key, so calling it a failure would invite a
+    // retry under a new key; a retry under this same key is safe.
+    outcome:
+      result.outcome === "definite_failure" && result.providerStatus === 429
+        ? "outcome_unknown"
+        : result.outcome,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -562,7 +658,7 @@ interface VerificationEmailData {
 function verificationEmailContent(data: VerificationEmailData) {
   const body = `
     <p style="margin:0 0 16px;color:#111827;font-size:15px;line-height:1.6;">Hi ${data.name},</p>
-    <p style="margin:0 0 8px;color:#111827;font-size:15px;line-height:1.6;">Welcome to OpenVPM! Your trial is already active. Please confirm your email address to secure your workspace and keep important account messages deliverable.</p>
+    <p style="margin:0 0 8px;color:#111827;font-size:15px;line-height:1.6;">Welcome to OpenVPM! Please confirm your email address to secure your workspace and keep important account messages deliverable.</p>
     ${ctaButton("Confirm email", data.verifyUrl)}
     <p style="margin:0;color:#6b7280;font-size:13px;line-height:1.5;">This link expires in 24 hours. If you didn't create an OpenVPM account, you can ignore this email.</p>
   `;
@@ -652,6 +748,9 @@ export async function sendWelcomeEmail(data: {
   to: string;
   practiceName: string;
   trialDays?: number;
+  billingRequired?: boolean;
+  /** Set when the clinic starts in a preview before adding a card. */
+  previewEndsAt?: Date | null;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
   const recipientHash = emailPreferenceRecipientHash(data.to);
@@ -675,6 +774,8 @@ export async function sendWelcomeEmail(data: {
     brand,
     practiceName: data.practiceName,
     trialDays: data.trialDays ?? 14,
+    billingRequired: data.billingRequired,
+    previewDays: data.previewEndsAt ? PREVIEW_HOURS / 24 : null,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
   return sendEmail({
@@ -737,6 +838,127 @@ export async function sendSetupRecoveryEmail(data: {
   });
 }
 
+/**
+ * Personal follow-up for a clinic that registered but never started its
+ * trial. Sent from a named person with replies going to a real inbox.
+ */
+export async function sendCheckoutRecoveryEmail(data: {
+  to: string;
+  practiceId: string;
+  practiceName: string;
+  adminName: string | null;
+  step: CheckoutRecoveryStep;
+  /** Still inside the preview before card: invite back into the workspace. */
+  previewActive?: boolean;
+  idempotencyKey: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const recipientHash = emailPreferenceRecipientHash(data.to);
+  const preferenceLinks = recipientHash
+    ? createEmailPreferenceLinks({ kind: "recipient", id: recipientHash })
+    : null;
+  if (!preferenceLinks) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
+  const token = createStopReasonToken(data.practiceId);
+  if (!token) {
+    return { success: false, error: "Feedback link signing is not configured." };
+  }
+  const feedbackUrl = new URL("/feedback/stop-reason", brand.appUrl);
+  feedbackUrl.searchParams.set("token", token);
+  const reasonLinks = STOP_REASONS.map((reason) => {
+    const url = new URL(feedbackUrl);
+    url.searchParams.set("reason", reason);
+    return { label: STOP_REASON_LABELS[reason], url: url.toString() };
+  });
+  const sender = growthSender(brand.supportEmail);
+  const { subject, html } = await renderCheckoutRecoveryEmail({
+    brand,
+    step: data.step,
+    practiceName: data.practiceName,
+    greetingName: greetingName(data.adminName),
+    senderName: sender.name,
+    trialDays: TRIAL_DAYS,
+    resumeUrl: data.previewActive
+      ? brand.appUrl
+      : `${brand.appUrl}/settings?tab=billing`,
+    reasonLinks,
+    feedbackUrl: feedbackUrl.toString(),
+    bookingUrl: sender.bookingUrl,
+    previewActive: data.previewActive ?? false,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    from: sender.from,
+    replyTo: sender.replyTo,
+    headers: {
+      "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+    idempotencyKey: data.idempotencyKey,
+  });
+}
+
+/**
+ * Follow-up for someone who tried the hosted demo. Signup links carry the
+ * visitor's anonymous funnel id so a resulting registration is attributed to
+ * the demo and to this email.
+ */
+export async function sendDemoFollowupEmail(data: {
+  to: string;
+  step: DemoFollowupStep;
+  topTool: string | null;
+  anonymousId: string | null;
+  idempotencyKey: string;
+}): Promise<{ success: boolean; id?: string; error?: string }> {
+  const brand = openvpmBrand();
+  const recipientHash = emailPreferenceRecipientHash(data.to);
+  const preferenceLinks = recipientHash
+    ? createEmailPreferenceLinks({ kind: "recipient", id: recipientHash })
+    : null;
+  if (!preferenceLinks) {
+    return {
+      success: false,
+      error: "Email preference signing is not configured.",
+    };
+  }
+  const sender = growthSender(brand.supportEmail);
+  const { subject, html } = await renderDemoFollowupEmail({
+    brand,
+    step: data.step,
+    senderName: sender.name,
+    tool: demoToolCopy(data.topTool),
+    trialDays: TRIAL_DAYS,
+    signupUrl: buildCloudSignupUrl({
+      appOrigin: brand.appUrl,
+      source: "demo",
+      medium: "email",
+      campaign: `demo_followup_${data.step}`,
+      visitorId: data.anonymousId,
+    }),
+    bookingUrl: sender.bookingUrl,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendEmail({
+    to: data.to,
+    subject,
+    html,
+    from: sender.from,
+    replyTo: sender.replyTo,
+    headers: {
+      "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+    idempotencyKey: data.idempotencyKey,
+  });
+}
+
 /** Trial-ending nudge (T-7 / T-3 / T-1). Promotional → carries unsubscribe. */
 export async function sendTrialEndingEmail(data: {
   to: string;
@@ -746,6 +968,8 @@ export async function sendTrialEndingEmail(data: {
   monthlyPrice?: string;
   billingUrl?: string;
   billingConnected?: boolean;
+  /** Real trial activity for a personal recap; omitted when unavailable. */
+  usage?: TrialUsage | null;
   idempotencyKey?: string;
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const brand = openvpmBrand();
@@ -775,6 +999,7 @@ export async function sendTrialEndingEmail(data: {
     monthlyPrice: data.monthlyPrice ?? "$79",
     billingUrl,
     billingConnected: data.billingConnected,
+    usage: data.usage ?? null,
     unsubscribeUrl: preferenceLinks.preferencesUrl,
   });
   return sendEmail({
@@ -888,4 +1113,264 @@ export async function sendPaymentFailedEmail(data: {
     replyTo: brand.supportEmail,
     idempotencyKey: data.idempotencyKey,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Customer lifecycle: team invite, trial win-back, adoption, NPS
+// ---------------------------------------------------------------------------
+
+type SendOutcome = { success: boolean; id?: string; error?: string };
+
+function recipientPreferenceLinks(to: string) {
+  const recipientHash = emailPreferenceRecipientHash(to);
+  return recipientHash
+    ? createEmailPreferenceLinks({ kind: "recipient", id: recipientHash })
+    : null;
+}
+
+const PREFERENCES_UNAVAILABLE: SendOutcome = {
+  success: false,
+  error: "Email preference signing is not configured.",
+};
+
+/** Send a personal growth note from the named sender with one-click unsubscribe. */
+function sendGrowthNote(
+  data: { to: string; idempotencyKey: string },
+  rendered: { subject: string; html: string },
+  preferenceLinks: { oneClickUrl: string },
+  sender: ReturnType<typeof growthSender>,
+): Promise<SendOutcome> {
+  return sendEmail({
+    to: data.to,
+    subject: rendered.subject,
+    html: rendered.html,
+    from: sender.from,
+    replyTo: sender.replyTo,
+    headers: {
+      "List-Unsubscribe": `<${preferenceLinks.oneClickUrl}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    },
+    idempotencyKey: data.idempotencyKey,
+  });
+}
+
+export async function sendTeamInviteNudgeEmail(data: {
+  to: string;
+  practiceName: string;
+  adminName: string | null;
+  appointments: number;
+  idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  const sender = growthSender(brand.supportEmail);
+  const rendered = await renderTeamInviteEmail({
+    brand,
+    practiceName: data.practiceName,
+    greetingName: greetingName(data.adminName),
+    senderName: sender.name,
+    appointments: data.appointments,
+    inviteUrl: `${brand.appUrl}/settings?tab=staff`,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
+}
+
+export async function sendTrialWinbackEmail(data: {
+  to: string;
+  practiceId: string;
+  practiceName: string;
+  adminName: string | null;
+  step: TrialWinbackStep;
+  usageSummary: string | null;
+  idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  let reasonLinks: Array<{ label: string; url: string }> = [];
+  if (data.step === 2) {
+    const token = createStopReasonToken(data.practiceId);
+    if (!token) {
+      return { success: false, error: "Feedback link signing is not configured." };
+    }
+    const feedbackUrl = new URL("/feedback/stop-reason", brand.appUrl);
+    feedbackUrl.searchParams.set("token", token);
+    reasonLinks = TRIAL_WINBACK_REASONS.map((reason) => {
+      const url = new URL(feedbackUrl);
+      url.searchParams.set("reason", reason);
+      return { label: STOP_REASON_LABELS[reason], url: url.toString() };
+    });
+  }
+  const sender = growthSender(brand.supportEmail);
+  const rendered = await renderTrialWinbackEmail({
+    brand,
+    step: data.step,
+    practiceName: data.practiceName,
+    greetingName: greetingName(data.adminName),
+    senderName: sender.name,
+    usageSummary: data.usageSummary,
+    reactivateUrl: `${brand.appUrl}/settings?tab=billing`,
+    reasonLinks,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
+}
+
+const ADOPTION_TIPS: Record<
+  AdoptionGap,
+  Omit<AdoptionTip, "url"> & { path: string }
+> = {
+  reminders: {
+    title: "Appointment reminders",
+    body: "Clients get an email or text before each visit, which cuts no-shows without anyone picking up the phone.",
+    linkLabel: "Turn on reminders",
+    path: "/settings?tab=messaging",
+  },
+  team: {
+    title: "Your team",
+    body: "Staff accounts are free and unlimited, and the shared schedule and whiteboard only pay off when everyone is in them.",
+    linkLabel: "Invite your team",
+    path: "/settings?tab=staff",
+  },
+  portal: {
+    title: "The client portal",
+    body: "Every client has a private link to see their pets, visits, and invoices, so fewer calls come to the front desk.",
+    linkLabel: "Share a portal link",
+    path: "/clients",
+  },
+};
+
+export async function sendAdoptionEmail(data: {
+  to: string;
+  practiceName: string;
+  adminName: string | null;
+  gaps: AdoptionGap[];
+  idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  if (data.gaps.length === 0) {
+    return { success: false, error: "No adoption tips to send." };
+  }
+  const sender = growthSender(brand.supportEmail);
+  const rendered = await renderAdoptionEmail({
+    brand,
+    practiceName: data.practiceName,
+    greetingName: greetingName(data.adminName),
+    senderName: sender.name,
+    tips: data.gaps.map((gap) => {
+      const { path, ...tip } = ADOPTION_TIPS[gap];
+      return { ...tip, url: `${brand.appUrl}${path}` };
+    }),
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
+}
+
+export async function sendNpsSurveyEmail(data: {
+  to: string;
+  practiceId: string;
+  practiceName: string;
+  adminName: string | null;
+  survey: string;
+  idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  const token = createNpsToken(data.practiceId, data.survey);
+  if (!token) {
+    return { success: false, error: "Feedback link signing is not configured." };
+  }
+  const surveyUrl = new URL("/feedback/nps", brand.appUrl);
+  surveyUrl.searchParams.set("token", token);
+  const scoreUrls = Array.from({ length: 11 }, (_, score) => {
+    const url = new URL(surveyUrl);
+    url.searchParams.set("score", String(score));
+    return url.toString();
+  });
+  const sender = growthSender(brand.supportEmail);
+  const rendered = await renderNpsSurveyEmail({
+    brand,
+    practiceName: data.practiceName,
+    greetingName: greetingName(data.adminName),
+    senderName: sender.name,
+    scoreUrls,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
+}
+
+/**
+ * Follow-up for someone who saved "Build your clinic" and left. The link
+ * restores their saved build; signups from it are attributed to the step.
+ */
+export async function sendBuildFollowupEmail(data: {
+  to: string;
+  leadId: string;
+  step: BuildFollowupStep;
+  state: BuildSavedState;
+  anonymousId: string | null;
+  idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  const token = createBuildResumeToken(data.leadId);
+  if (!token) {
+    return { success: false, error: "Resume link signing is not configured." };
+  }
+  const resume = new URL("/start", brand.appUrl);
+  resume.searchParams.set("resume", token);
+  resume.searchParams.set("utm_source", "email");
+  resume.searchParams.set("utm_medium", "email");
+  resume.searchParams.set("utm_campaign", `build_followup_${data.step}`);
+  if (data.anonymousId) resume.searchParams.set("funnel_id", data.anonymousId);
+  const sender = growthSender(brand.supportEmail);
+  const system = data.state.currentSystem;
+  const rendered = await renderBuildFollowupEmail({
+    brand,
+    step: data.step,
+    clinicName: data.state.clinicName.trim() || "Your clinic",
+    brandColor: data.state.brandColor,
+    currentSystem:
+      system === "paper" || system === "other"
+        ? null
+        : BUILD_SYSTEM_LABELS[system],
+    senderName: sender.name,
+    resumeUrl: resume.toString(),
+    bookingUrl: sender.bookingUrl,
+    unsubscribeUrl: preferenceLinks.preferencesUrl,
+  });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
+}
+
+/** Confirmed newsletter subscribers have their own consent and unsubscribe path. */
+export async function sendNewsletterEmail(data: {
+  to: string; step: 0 | 1 | 2 | 3; token?: string;
+  interest: "general" | "offline" | "labs" | "migration";
+  anonymousId: string | null; idempotencyKey: string;
+}): Promise<SendOutcome> {
+  const brand = openvpmBrand();
+  const preferenceLinks = recipientPreferenceLinks(data.to);
+  if (!preferenceLinks) return PREFERENCES_UNAVAILABLE;
+  if (data.step === 0 && !data.token) return { success: false, error: "Confirmation link missing." };
+  const url = data.step === 0 ? new URL("/newsletter/confirm", brand.appUrl)
+    : data.step === 1 ? new URL("https://demo.openvpm.com/login")
+    : new URL(data.step === 2 ? "/clinic-fit" : "/start", brand.appUrl);
+  // A fragment keeps the confirmation capability out of request URLs and referrers.
+  if (data.step === 0) url.hash = new URLSearchParams({ token: data.token! }).toString();
+  else {
+    url.searchParams.set("utm_source", "email");
+    url.searchParams.set("utm_medium", "email");
+    url.searchParams.set("utm_campaign", `newsletter_welcome_${data.step}`);
+    if (data.anonymousId) url.searchParams.set("funnel_id", data.anonymousId);
+  }
+  const sender = growthSender(brand.supportEmail);
+  const rendered = await renderNewsletterEmail({ brand, step: data.step, interest: data.interest,
+    senderName: sender.name, actionUrl: url.toString(), unsubscribeUrl: preferenceLinks.preferencesUrl });
+  return sendGrowthNote(data, rendered, preferenceLinks, sender);
 }

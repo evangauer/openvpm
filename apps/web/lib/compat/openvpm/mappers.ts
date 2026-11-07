@@ -27,6 +27,12 @@ const SPECIES_TO_API: Record<PatientRow["species"], ApiPatient["species"]> = {
   rabbit: "rabbit",
   reptile: "reptile",
   equine: "horse",
+  bovine: "other",
+  ovine: "other",
+  caprine: "other",
+  porcine: "other",
+  poultry: "bird",
+  camelid: "other",
   other: "other",
 };
 
@@ -134,7 +140,7 @@ export function toApiSoapNote(row: SoapNoteRow, source: string): ApiSoapNote {
  * `practiceId` is added by the handler from the authenticated key, never the body.
  */
 export function fromApiAppointmentCreate(
-  body: AppointmentCreate
+  body: AppointmentCreate,
 ): Omit<typeof appointments.$inferInsert, "practiceId"> {
   return {
     startTime: new Date(body.start_time),

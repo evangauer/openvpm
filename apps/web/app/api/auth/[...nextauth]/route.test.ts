@@ -54,4 +54,32 @@ describe("NextAuth route secret configuration", () => {
     await expect(response.text()).resolves.toBe("ok");
     expect(mocks.nextAuthHandler).toHaveBeenCalledWith(request, context);
   });
+
+  it("refuses to sign anyone in with the published compose secret in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXTAUTH_SECRET", "docker-dev-secret-change-in-production");
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/auth/callback/credentials", {
+        method: "POST",
+      }) as never,
+      context
+    );
+
+    expect(response.status).toBe(503);
+    expect(mocks.nextAuthHandler).not.toHaveBeenCalled();
+  });
+
+  it("allows a placeholder secret in development", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("NEXTAUTH_SECRET", "docker-dev-secret-change-in-production");
+
+    const response = await GET(
+      new Request("https://openvpm.test/api/auth/session") as never,
+      context
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.nextAuthHandler).toHaveBeenCalledTimes(1);
+  });
 });

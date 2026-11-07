@@ -4,6 +4,7 @@ import { createRouter, protectedProcedure } from "../trpc";
 import {
   appointments,
   invoices,
+  payments,
   patients,
   practices,
   users,
@@ -13,6 +14,12 @@ import {
   dateInputDayUtcRange,
   dateInputUtcRangeForTimeZone,
 } from "@/lib/date-input";
+import { PATIENT_SPECIES_LABELS } from "@/lib/patients/species";
+import { z } from "zod";
+import {
+  effectiveAmbulatoryWorkspaceSettings,
+  ambulatoryWorkspaceRolloutEnabled,
+} from "@/server/ambulatory-rollout";
 
 type DashboardContext = {
   db: Database;
@@ -55,7 +62,7 @@ function addDateInputDays(dateInput: string, days: number): string {
   const date = new Date(Date.UTC(year, month - 1, day + days));
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
     2,
-    "0"
+    "0",
   )}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
 
@@ -75,6 +82,60 @@ function sqlStringLiteral(value: string) {
 }
 
 export const dashboardRouter = createRouter({
+  unfinishedFieldVisits: protectedProcedure
+    .input(
+      z
+        .object({ offset: z.number().int().min(0).max(100000).default(0) })
+        .prefault({}),
+    )
+    .query(async ({ ctx, input }) => {
+      if (!ambulatoryWorkspaceRolloutEnabled())
+        return { enabled: false, items: [], hasMore: false };
+      const [practice] = await ctx.db
+        .select({ settings: practices.settings })
+        .from(practices)
+        .where(
+          and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)),
+        )
+        .limit(1);
+      if (!practice) throw practiceNotFound();
+      if (!effectiveAmbulatoryWorkspaceSettings(practice.settings).enabled) {
+        return { enabled: false, items: [], hasMore: false };
+      }
+      // Payment never closes the clinical encounter. Include older visits and
+      // visits with no SOAP yet, not just the current user's recent history.
+      const rows = await ctx.db
+        .select({
+          id: appointments.id,
+          patientName: patients.name,
+          startTime: appointments.startTime,
+        })
+        .from(appointments)
+        .innerJoin(
+          patients,
+          and(
+            eq(patients.id, appointments.patientId),
+            eq(patients.practiceId, ctx.practiceId),
+            isNull(patients.deletedAt),
+          ),
+        )
+        .where(
+          and(
+            eq(appointments.practiceId, ctx.practiceId),
+            isNull(appointments.deletedAt),
+            eq(appointments.origin, "field"),
+            eq(appointments.status, "in_exam"),
+          ),
+        )
+        .orderBy(appointments.startTime, appointments.id)
+        .limit(21)
+        .offset(input.offset);
+      return {
+        enabled: true,
+        items: rows.slice(0, 20),
+        hasMore: rows.length > 20,
+      };
+    }),
   getStats: protectedProcedure.query(async ({ ctx }) => {
     const timezone = await practiceTimeZone(ctx);
     const today = dateInputUtcRangeForTimeZone(new Date(), timezone);
@@ -118,20 +179,22 @@ export const dashboardRouter = createRouter({
           )
         ),
 
-      // Revenue MTD (paid invoices this month)
+      // Net collections MTD (payments less refunds received this month)
       ctx.db
         .select({
-          total: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+          total: sql<string>`coalesce(sum(${payments.amount}::numeric), 0)`,
         })
-        .from(invoices)
+        .from(payments)
+        .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
         .where(
           and(
             eq(invoices.practiceId, ctx.practiceId),
             activePracticePredicate(ctx.practiceId),
             isNull(invoices.deletedAt),
-            eq(invoices.status, "paid"),
-            gte(invoices.createdAt, monthStart),
-            lt(invoices.createdAt, today.end)
+            isNull(payments.deletedAt),
+            eq(invoices.isEstimate, false),
+            gte(payments.receivedAt, monthStart),
+            lt(payments.receivedAt, today.end)
           )
         ),
 
@@ -238,28 +301,30 @@ export const dashboardRouter = createRouter({
       timezone
     ).start;
     const revenueDay = sql`
-      date_trunc('day', timezone(${reportTimeZone}, ${invoices.createdAt}))
+      date_trunc('day', timezone(${reportTimeZone}, ${payments.receivedAt}))
     `;
 
     const revenueByDayRows = await ctx.db
       .select({
         day: sql<string>`to_char(${revenueDay}, 'Mon DD')`,
         dayOrder: sql<string>`to_char(${revenueDay}, 'YYYY-MM-DD')`,
-        revenue: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+        revenue: sql<string>`coalesce(sum(${payments.amount}::numeric), 0)`,
       })
-      .from(invoices)
+      .from(payments)
+      .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
       .where(
         and(
           eq(invoices.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
           isNull(invoices.deletedAt),
-          eq(invoices.status, "paid"),
-          gte(invoices.createdAt, thirtyDaysAgo),
-          lt(invoices.createdAt, today.end)
+          isNull(payments.deletedAt),
+          eq(invoices.isEstimate, false),
+          gte(payments.receivedAt, thirtyDaysAgo),
+          lt(payments.receivedAt, today.end)
         )
       )
       .groupBy(revenueDay)
-      .orderBy(sql`min(${invoices.createdAt})`);
+      .orderBy(sql`min(${payments.receivedAt})`);
 
     const revenueByDay = revenueByDayRows.map((r) => ({
       date: r.day,
@@ -284,29 +349,22 @@ export const dashboardRouter = createRouter({
       .groupBy(patients.species)
       .orderBy(sql`count(*) desc`);
 
-    const speciesLabels: Record<string, string> = {
-      canine: "Canine",
-      feline: "Feline",
-      avian: "Avian",
-      rabbit: "Rabbit",
-      reptile: "Reptile",
-      equine: "Equine",
-      other: "Other",
-    };
+    const speciesLabels: Record<string, string> = PATIENT_SPECIES_LABELS;
 
     const speciesDistribution = speciesRows.map((r) => ({
       name: speciesLabels[r.species] ?? r.species,
       value: Number(r.count),
     }));
 
-    // --- Production by doctor (month to date paid invoices) ---
+    // --- Net collections by doctor (month to date payments less refunds) ---
     const doctorProductionName = sql<string>`coalesce(${users.name}, 'Unassigned')`;
     const productionByDoctorRows = await ctx.db
       .select({
         doctorName: doctorProductionName,
-        production: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+        production: sql<string>`coalesce(sum(${payments.amount}::numeric), 0)`,
       })
-      .from(invoices)
+      .from(payments)
+      .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
       .leftJoin(
         appointments,
         and(
@@ -329,13 +387,14 @@ export const dashboardRouter = createRouter({
           eq(invoices.practiceId, ctx.practiceId),
           activePracticePredicate(ctx.practiceId),
           isNull(invoices.deletedAt),
-          eq(invoices.status, "paid"),
-          gte(invoices.createdAt, monthStart),
-          lt(invoices.createdAt, today.end)
+          isNull(payments.deletedAt),
+          eq(invoices.isEstimate, false),
+          gte(payments.receivedAt, monthStart),
+          lt(payments.receivedAt, today.end)
         )
       )
       .groupBy(doctorProductionName)
-      .orderBy(sql`coalesce(sum(${invoices.total}::numeric), 0) desc`);
+      .orderBy(sql`coalesce(sum(${payments.amount}::numeric), 0) desc`);
 
     const productionByDoctor = productionByDoctorRows.slice(0, 8).map((r) => ({
       doctorName: r.doctorName,

@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { MarkupInput } from "@/components/inventory/markup-input";
+
+import { useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import {
   Search,
@@ -39,13 +41,15 @@ import {
   INVENTORY_SUPPLIER_NAME_MAX_LENGTH,
   INVENTORY_SUPPLIER_NOTES_MAX_LENGTH,
   INVENTORY_SUPPLIER_PHONE_MAX_LENGTH,
+  PRODUCT_PRICING_FORBIDDEN_MESSAGE,
+  canManageProductPricing,
   isInventoryCurrencyAmountInputValid,
   isInventoryNonnegativeIntegerInputValid,
   isInventoryOptionalCurrencyAmountInputValid,
   isInventoryOptionalEmailInputValid,
   isInventoryOptionalExpirationDateInputValid,
   isInventoryOptionalTextInputValid,
-  isInventoryPositiveIntegerInputValid,
+  isInventoryStockQuantityInputValid,
   isInventoryRequiredTextInputValid,
 } from "@/lib/inventory/policy";
 
@@ -153,7 +157,7 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
     ) &&
     isInventoryCurrencyAmountInputValid(form.unitPrice) &&
     isInventoryOptionalCurrencyAmountInputValid(form.costPrice) &&
-    isInventoryNonnegativeIntegerInputValid(form.stockQuantity) &&
+    isInventoryStockQuantityInputValid(form.stockQuantity) &&
     isInventoryNonnegativeIntegerInputValid(form.reorderPoint) &&
     isInventoryOptionalTextInputValid(
       form.lotNumber,
@@ -240,19 +244,20 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
           min={INVENTORY_MONEY_AMOUNT_MIN}
           max={INVENTORY_MONEY_AMOUNT_MAX}
           step="0.01"
-          placeholder="Cost Price"
+          placeholder="Cost per unit"
           value={form.costPrice}
           onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
         />
+        <MarkupInput cost={form.costPrice} onApply={(unitPrice) => setForm({ ...form, unitPrice })} />
         <Input
           type="number"
           min={INVENTORY_STOCK_QUANTITY_MIN}
           max={INVENTORY_STOCK_QUANTITY_MAX}
-          step={1}
+          step="0.001"
           placeholder="Stock units"
           value={form.stockQuantity}
           onChange={(e) =>
-            setForm({ ...form, stockQuantity: parseInt(e.target.value) || 0 })
+            setForm({ ...form, stockQuantity: Number(e.target.value) })
           }
         />
         <Input
@@ -310,6 +315,7 @@ function AddProductForm({ onClose }: { onClose: () => void }) {
 
 function EditProductRow({
   product,
+  canManagePricing,
   onClose,
 }: {
   product: {
@@ -326,9 +332,11 @@ function EditProductRow({
     lotNumber: string | null;
     expirationDate: string | null;
   };
+  canManagePricing: boolean;
   onClose: () => void;
 }) {
   const utils = trpc.useUtils();
+  const formatCurrency = useCurrencyFormatter();
   const updateMutation = trpc.inventory.update.useMutation({
     onSuccess: () => {
       utils.inventory.list.invalidate();
@@ -365,8 +373,9 @@ function EditProductRow({
       form.category,
       INVENTORY_PRODUCT_CATEGORY_MAX_LENGTH
     ) &&
-    isInventoryCurrencyAmountInputValid(form.unitPrice) &&
-    isInventoryOptionalCurrencyAmountInputValid(form.costPrice) &&
+    (!canManagePricing ||
+      (isInventoryCurrencyAmountInputValid(form.unitPrice) &&
+        isInventoryOptionalCurrencyAmountInputValid(form.costPrice))) &&
     (!product.inventoryTracked ||
       (isInventoryNonnegativeIntegerInputValid(form.reorderPoint) &&
         isInventoryOptionalTextInputValid(
@@ -382,9 +391,13 @@ function EditProductRow({
       name: form.name.trim(),
       sku: trimmedOrUndefined(form.sku),
       category: trimmedOrUndefined(form.category),
-      unitPrice: form.unitPrice.trim(),
-      taxable: form.taxable,
-      costPrice: trimmedOrUndefined(form.costPrice),
+      ...(canManagePricing
+        ? {
+            unitPrice: form.unitPrice.trim(),
+            taxable: form.taxable,
+            costPrice: trimmedOrUndefined(form.costPrice),
+          }
+        : {}),
       ...(product.inventoryTracked
         ? {
             reorderPoint: form.reorderPoint,
@@ -431,40 +444,64 @@ function EditProductRow({
           ))}
         </select>
       </td>
-      <td className="px-4 py-2">
-        <Input
-          type="number"
-          min={INVENTORY_MONEY_AMOUNT_MIN}
-          max={INVENTORY_MONEY_AMOUNT_MAX}
-          step="0.01"
-          value={form.unitPrice}
-          onChange={(e) => setForm({ ...form, unitPrice: e.target.value })}
-          className="h-8 text-sm text-right"
-        />
-      </td>
-      <td className="px-4 py-2">
-        <label className="flex items-center justify-center gap-2 text-xs">
-          <input
-            type="checkbox"
-            checked={form.taxable}
-            onChange={(event) =>
-              setForm({ ...form, taxable: event.target.checked })
-            }
-          />
-          Taxable
-        </label>
-      </td>
-      <td className="px-4 py-2">
-        <Input
-          type="number"
-          min={INVENTORY_MONEY_AMOUNT_MIN}
-          max={INVENTORY_MONEY_AMOUNT_MAX}
-          step="0.01"
-          value={form.costPrice}
-          onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
-          className="h-8 text-sm text-right"
-        />
-      </td>
+      {canManagePricing ? (
+        <>
+          <td className="px-4 py-2">
+            <Input
+              type="number"
+              min={INVENTORY_MONEY_AMOUNT_MIN}
+              max={INVENTORY_MONEY_AMOUNT_MAX}
+              step="0.01"
+              value={form.unitPrice}
+              onChange={(e) => setForm({ ...form, unitPrice: e.target.value })}
+              className="h-8 text-sm text-right"
+            />
+          </td>
+          <td className="px-4 py-2">
+            <label className="flex items-center justify-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={form.taxable}
+                onChange={(event) =>
+                  setForm({ ...form, taxable: event.target.checked })
+                }
+              />
+              Taxable
+            </label>
+          </td>
+          <td className="px-4 py-2">
+            <Input
+              type="number"
+              min={INVENTORY_MONEY_AMOUNT_MIN}
+              max={INVENTORY_MONEY_AMOUNT_MAX}
+              step="0.01"
+              value={form.costPrice}
+              onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
+              className="h-8 text-sm text-right"
+            />
+            <MarkupInput cost={form.costPrice} onApply={(unitPrice) => setForm({ ...form, unitPrice })} />
+          </td>
+        </>
+      ) : (
+        <>
+          <td
+            className="px-4 py-2 text-right tabular-nums"
+            title={PRODUCT_PRICING_FORBIDDEN_MESSAGE}
+          >
+            {formatCurrency(product.unitPrice)}
+          </td>
+          <td className="px-4 py-2 text-xs text-muted-foreground">
+            {product.taxable ? "Taxable" : "Not taxable"}
+          </td>
+          <td className="px-4 py-2 text-right text-xs text-muted-foreground">
+            {product.costPrice ? formatCurrency(product.costPrice) : "\u2014"}
+            <p className="mt-1 text-left">
+              Price and tax changes need an administrator or front desk
+              teammate.
+            </p>
+          </td>
+        </>
+      )}
       <td className="px-4 py-2 text-right tabular-nums">
         {product.inventoryTracked ? product.stockQuantity : "—"}
       </td>
@@ -515,6 +552,7 @@ function EditProductRow({
             size="sm"
             variant="ghost"
             className="h-7 w-7 p-0"
+            aria-label="Save product"
             onClick={handleSave}
             disabled={!canSave || updateMutation.isPending}
           >
@@ -557,7 +595,7 @@ function StartTrackingPopover({
     onError: (error) => toast.error(error.message),
   });
   const valid =
-    isInventoryNonnegativeIntegerInputValid(stockQuantity) &&
+    isInventoryStockQuantityInputValid(stockQuantity) &&
     isInventoryNonnegativeIntegerInputValid(reorderPoint);
 
   return (
@@ -573,10 +611,10 @@ function StartTrackingPopover({
           <Input
             type="number"
             min={0}
-            step={1}
+            step="0.001"
             value={stockQuantity}
             onChange={(event) =>
-              setStockQuantity(Number.parseInt(event.target.value, 10) || 0)
+              setStockQuantity(Number(event.target.value))
             }
             className="mt-1"
           />
@@ -628,8 +666,17 @@ function StockAdjustPopover({
   onClose: () => void;
 }) {
   const utils = trpc.useUtils();
+  // The ref blocks a second click before React re-renders the disabled
+  // buttons, and the operation id lets the server replay a retried
+  // submission instead of moving stock twice.
+  const submittingRef = useRef(false);
+  const operationIdRef = useRef<string | null>(null);
   const adjustMutation = trpc.inventory.adjustStock.useMutation({
+    onSettled: () => {
+      submittingRef.current = false;
+    },
     onSuccess: () => {
+      operationIdRef.current = null;
       utils.inventory.list.invalidate();
       onClose();
       toast.success("Stock adjusted");
@@ -649,7 +696,7 @@ function StockAdjustPopover({
     reason,
     INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH
   );
-  const hasValidAdjustmentQuantity = isInventoryPositiveIntegerInputValid(qty);
+  const hasValidAdjustmentQuantity = (isInventoryStockQuantityInputValid(qty) && qty > 0);
   const canAddStock =
     hasValidAdjustmentQuantity &&
     qty <= maxAddition &&
@@ -663,7 +710,11 @@ function StockAdjustPopover({
 
   const handleAdjust = (direction: 1 | -1) => {
     if (direction === 1 ? !canAddStock : !canRemoveStock) return;
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    operationIdRef.current ??= crypto.randomUUID();
     adjustMutation.mutate({
+      operationId: operationIdRef.current,
       id: productId,
       adjustment: qty * direction,
       reason: reason.trim(),
@@ -679,19 +730,10 @@ function StockAdjustPopover({
         type="number"
         min={INVENTORY_ADJUSTMENT_QUANTITY_MIN}
         max={INVENTORY_STOCK_QUANTITY_MAX}
-        step={1}
+        step="0.001"
+        aria-label="Stock adjustment quantity"
         value={qty}
-        onChange={(e) => {
-          const next = parseInt(e.target.value, 10);
-          setQty(
-            Number.isFinite(next)
-              ? Math.min(
-                  INVENTORY_STOCK_QUANTITY_MAX,
-                  Math.max(INVENTORY_ADJUSTMENT_QUANTITY_MIN, next)
-                )
-              : INVENTORY_ADJUSTMENT_QUANTITY_MIN
-          );
-        }}
+        onChange={(e) => setQty(Number(e.target.value))}
         className="h-8 text-sm mb-2"
         placeholder="Quantity"
       />
@@ -1018,6 +1060,7 @@ export default function InventoryPage() {
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const searchFilter = search.trim();
   const canManageInventory = canManageInventoryRole(session?.user?.role);
+  const canManagePricing = canManageProductPricing(session?.user?.role);
 
   const productsQuery = trpc.inventory.list.useQuery(
     {
@@ -1125,7 +1168,7 @@ export default function InventoryPage() {
                 {productsQuery.data.total !== 1 ? "s" : ""}
               </p>
             )}
-            {canManageInventory && (
+            {canManagePricing && (
               <Button
                 size="sm"
                 onClick={() => setShowAddProduct(true)}
@@ -1136,7 +1179,7 @@ export default function InventoryPage() {
             )}
           </div>
 
-          {canManageInventory && showAddProduct && (
+          {canManagePricing && showAddProduct && (
             <AddProductForm onClose={() => setShowAddProduct(false)} />
           )}
 
@@ -1257,6 +1300,7 @@ export default function InventoryPage() {
                         <EditProductRow
                           key={product.id}
                           product={product}
+                          canManagePricing={canManagePricing}
                           onClose={() => setEditingId(null)}
                         />
                       );
@@ -1418,7 +1462,7 @@ export default function InventoryPage() {
                     : "Add medications, supplies, food, and other inventory before dispensing or invoicing stock-backed items."
               }
               action={
-                canManageInventory &&
+                canManagePricing &&
                 alertFilter === "all" &&
                 !search &&
                 !category

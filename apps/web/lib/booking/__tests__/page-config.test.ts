@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   bookingWindowForDate,
+  bookingPageConfigInput,
   DEFAULT_BOOKING_PAGE_CONFIG,
+  DEFAULT_PREVISIT_INTAKE_FIELD_KEYS,
   DEFAULT_WEEKLY_HOURS,
   isDateWithinBookingWindow,
   isValidBookingSlug,
@@ -16,7 +18,7 @@ describe("parseBookingPageConfig", () => {
     expect(parseBookingPageConfig({})).toEqual(DEFAULT_BOOKING_PAGE_CONFIG);
     expect(parseBookingPageConfig(null)).toEqual(DEFAULT_BOOKING_PAGE_CONFIG);
     expect(parseBookingPageConfig(undefined)).toEqual(
-      DEFAULT_BOOKING_PAGE_CONFIG
+      DEFAULT_BOOKING_PAGE_CONFIG,
     );
   });
 
@@ -34,24 +36,88 @@ describe("parseBookingPageConfig", () => {
     expect(parsed.bookableTypeIds).toEqual([]);
     expect(parsed.autoConfirm).toBe(false);
     expect(parsed.leadTimeMinutes).toBe(
-      DEFAULT_BOOKING_PAGE_CONFIG.leadTimeMinutes
+      DEFAULT_BOOKING_PAGE_CONFIG.leadTimeMinutes,
     );
     expect(parsed.bookingWindowDays).toBe(
-      DEFAULT_BOOKING_PAGE_CONFIG.bookingWindowDays
+      DEFAULT_BOOKING_PAGE_CONFIG.bookingWindowDays,
     );
     expect(parsed.welcomeText).toBe("Hi there");
     expect(parsed.accentColor).toBe(DEFAULT_BOOKING_PAGE_CONFIG.accentColor);
   });
 
   it("makes legacy auto-confirm settings inert", () => {
-    expect(parseBookingPageConfig({ autoConfirm: true }).autoConfirm).toBe(false);
-    expect(parseBookingPageConfig({ autoConfirm: false }).autoConfirm).toBe(false);
+    expect(parseBookingPageConfig({ autoConfirm: true }).autoConfirm).toBe(
+      false,
+    );
+    expect(parseBookingPageConfig({ autoConfirm: false }).autoConfirm).toBe(
+      false,
+    );
   });
 
   it("normalizes the legacy null requestable-type setting to fail closed", () => {
-    expect(parseBookingPageConfig({ bookableTypeIds: null }).bookableTypeIds).toEqual(
-      []
-    );
+    expect(
+      parseBookingPageConfig({ bookableTypeIds: null }).bookableTypeIds,
+    ).toEqual([]);
+  });
+
+  it("defaults legacy configs to zero optional sensitive intake fields", () => {
+    expect(
+      parseBookingPageConfig({ welcomeText: "Legacy page" }).intakeFieldKeys,
+    ).toEqual(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS);
+    expect(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS).toEqual([]);
+  });
+
+  it("preserves an explicit empty intake selection", () => {
+    expect(
+      parseBookingPageConfig({ intakeFieldKeys: [] }).intakeFieldKeys,
+    ).toEqual([]);
+  });
+
+  it("deduplicates and normalizes intake selections to catalog order", () => {
+    expect(
+      parseBookingPageConfig({
+        intakeFieldKeys: [
+          "handlingNotes",
+          "symptoms",
+          "serviceAddress",
+          "handlingNotes",
+          "diet",
+        ],
+      }).intakeFieldKeys,
+    ).toEqual(["serviceAddress", "symptoms", "diet", "handlingNotes"]);
+  });
+
+  it("repairs malformed intake selections to the legacy-safe default", () => {
+    expect(
+      parseBookingPageConfig({
+        intakeFieldKeys: ["serviceAddress", "not-a-field"],
+      }).intakeFieldKeys,
+    ).toEqual(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS);
+    expect(
+      parseBookingPageConfig({ intakeFieldKeys: "serviceAddress" })
+        .intakeFieldKeys,
+    ).toEqual(DEFAULT_PREVISIT_INTAKE_FIELD_KEYS);
+  });
+
+  it("rejects malformed intake fields on admin writes", () => {
+    expect(
+      bookingPageConfigInput.safeParse({
+        intakeFieldKeys: ["serviceAddress", "not-a-field"],
+      }).success,
+    ).toBe(false);
+    expect(
+      bookingPageConfigInput.safeParse({
+        intakeFieldKeys: "serviceAddress",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts an explicit catalog selection on admin writes", () => {
+    expect(
+      bookingPageConfigInput.parse({
+        intakeFieldKeys: ["handlingNotes", "serviceAddress"],
+      }).intakeFieldKeys,
+    ).toEqual(["serviceAddress", "handlingNotes"]);
   });
 
   it("rejects hours where open is not before close", () => {
@@ -91,7 +157,7 @@ describe("suggestBookingSlug", () => {
   it("slugifies practice names", () => {
     expect(suggestBookingSlug("Sunny Paws Vet!")).toBe("sunny-paws-vet");
     expect(suggestBookingSlug("  Côte d'Azur Vétérinaire ")).toBe(
-      "cote-d-azur-veterinaire"
+      "cote-d-azur-veterinaire",
     );
   });
 
@@ -110,7 +176,7 @@ describe("weekly hours windows", () => {
 
   it("returns null for closed days", () => {
     expect(
-      bookingWindowForDate(DEFAULT_BOOKING_PAGE_CONFIG, "2026-07-19", "UTC")
+      bookingWindowForDate(DEFAULT_BOOKING_PAGE_CONFIG, "2026-07-19", "UTC"),
     ).toBeNull();
   });
 
@@ -119,7 +185,7 @@ describe("weekly hours windows", () => {
     const window = bookingWindowForDate(
       DEFAULT_BOOKING_PAGE_CONFIG,
       "2026-07-20",
-      "America/New_York"
+      "America/New_York",
     );
     expect(window).not.toBeNull();
     expect(window!.dayStart.toISOString()).toBe("2026-07-20T12:00:00.000Z");
@@ -128,7 +194,7 @@ describe("weekly hours windows", () => {
 
   it("throws on malformed dates", () => {
     expect(() =>
-      bookingWindowForDate(DEFAULT_BOOKING_PAGE_CONFIG, "2026-13-40", "UTC")
+      bookingWindowForDate(DEFAULT_BOOKING_PAGE_CONFIG, "2026-13-40", "UTC"),
     ).toThrow();
   });
 });
@@ -138,26 +204,26 @@ describe("booking window and lead time", () => {
 
   it("rejects past dates and dates beyond the horizon", () => {
     expect(
-      isDateWithinBookingWindow(DEFAULT_BOOKING_PAGE_CONFIG, "2026-07-10", now)
+      isDateWithinBookingWindow(DEFAULT_BOOKING_PAGE_CONFIG, "2026-07-10", now),
     ).toBe(false);
     expect(
-      isDateWithinBookingWindow(DEFAULT_BOOKING_PAGE_CONFIG, "2026-07-20", now)
+      isDateWithinBookingWindow(DEFAULT_BOOKING_PAGE_CONFIG, "2026-07-20", now),
     ).toBe(true);
     // Default window is 60 days; 100 days out is too far.
     expect(
-      isDateWithinBookingWindow(DEFAULT_BOOKING_PAGE_CONFIG, "2026-10-24", now)
+      isDateWithinBookingWindow(DEFAULT_BOOKING_PAGE_CONFIG, "2026-10-24", now),
     ).toBe(false);
   });
 
   it("computes the earliest bookable instant from lead time", () => {
     expect(
-      minimumBookableInstant(DEFAULT_BOOKING_PAGE_CONFIG, now).toISOString()
+      minimumBookableInstant(DEFAULT_BOOKING_PAGE_CONFIG, now).toISOString(),
     ).toBe("2026-07-16T13:00:00.000Z");
     expect(
       minimumBookableInstant(
         { ...DEFAULT_BOOKING_PAGE_CONFIG, leadTimeMinutes: 0 },
-        now
-      ).toISOString()
+        now,
+      ).toISOString(),
     ).toBe(now.toISOString());
   });
 });

@@ -3,6 +3,8 @@
  * embedded commas/newlines, and escaped double-quotes (""). Returns the header
  * row plus rows keyed by header. Pure — no I/O.
  */
+import { unescapeCsvFormulaPrefix } from "./serialize";
+
 export interface ParsedCsv {
   headers: string[];
   rows: Record<string, string>[];
@@ -117,7 +119,9 @@ export function parseCsv(text: string): ParsedCsv {
   const rows = nonEmpty.slice(1).map((r) => {
     const obj: Record<string, string> = {};
     headers.forEach((h, idx) => {
-      obj[h] = (r[idx] ?? "").trim();
+      // OpenVPM exports (and many spreadsheet tools) prefix formula-like text
+      // with a single quote; drop it so a round-tripped "=Smith" stays intact.
+      obj[h] = unescapeCsvFormulaPrefix(r[idx] ?? "").trim();
     });
     return obj;
   });

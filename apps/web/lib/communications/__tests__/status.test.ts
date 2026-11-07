@@ -61,6 +61,22 @@ describe("communicationStatusLabel", () => {
         channel: "sms",
       })
     ).toBe("Delivered");
+    expect(
+      communicationStatusLabel({
+        status: "pending",
+        direction: "outbound",
+        channel: "email",
+        reminderOutcome: "outcome_unknown",
+      })
+    ).toBe("Delivery unknown");
+    expect(
+      communicationStatusLabel({
+        status: "sent",
+        direction: "outbound",
+        channel: "sms",
+        reminderOutcome: "outcome_unknown",
+      })
+    ).toBe("Sent");
     expect(communicationStatusLabel({ status: "queued" })).toBe("queued");
     expect(communicationStatusLabel({ status: "" })).toBe("");
   });

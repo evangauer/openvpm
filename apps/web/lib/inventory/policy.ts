@@ -1,3 +1,4 @@
+import { isSupportedQuantity } from "@/lib/quantity";
 import { isValidClinicalDateInput } from "@/lib/records/date-input";
 
 export const INVENTORY_PRODUCT_NAME_MAX_LENGTH = 255;
@@ -11,7 +12,7 @@ export const INVENTORY_MONEY_AMOUNT_MAX = 99999999.99;
 export const INVENTORY_MONEY_AMOUNT_PATTERN = /^\d{1,8}(?:\.\d{1,2})?$/;
 export const INVENTORY_STOCK_QUANTITY_MIN = 0;
 export const INVENTORY_STOCK_QUANTITY_MAX = 2_147_483_647;
-export const INVENTORY_ADJUSTMENT_QUANTITY_MIN = 1;
+export const INVENTORY_ADJUSTMENT_QUANTITY_MIN = 0.001;
 export const INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH = 500;
 export const INVENTORY_SUPPLIER_NAME_MAX_LENGTH = 255;
 export const INVENTORY_SUPPLIER_EMAIL_MAX_LENGTH = 255;
@@ -45,6 +46,10 @@ export function isInventoryNonnegativeIntegerInputValid(
     value >= INVENTORY_STOCK_QUANTITY_MIN &&
     value <= INVENTORY_STOCK_QUANTITY_MAX
   );
+}
+
+export function isInventoryStockQuantityInputValid(value: number): boolean {
+  return isSupportedQuantity(value) && value >= 0 && value <= INVENTORY_STOCK_QUANTITY_MAX;
 }
 
 export function isInventoryPositiveIntegerInputValid(value: number): boolean {
@@ -85,3 +90,15 @@ export function isInventoryOptionalExpirationDateInputValid(
   const trimmed = value.trim();
   return trimmed.length === 0 || isValidClinicalDateInput(trimmed);
 }
+
+// Selling price, cost, and tax status flow straight onto invoices, so only the
+// roles that manage billing may set them. Clinical roles keep stock, lot, and
+// expiry edits.
+export const PRODUCT_PRICING_FIELDS = ["unitPrice", "taxable", "costPrice"] as const;
+
+export function canManageProductPricing(role?: string | null): boolean {
+  return role === "admin" || role === "front_desk";
+}
+
+export const PRODUCT_PRICING_FORBIDDEN_MESSAGE =
+  "Only an administrator or front desk teammate can add products or change product prices and tax status.";

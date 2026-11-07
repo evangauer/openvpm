@@ -4,6 +4,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   numeric,
   pgEnum,
   pgTable,
@@ -21,6 +22,7 @@ import { appointments } from "./scheduling";
 import { users } from "./users";
 import { products, services } from "./billing";
 import { files } from "./files";
+import { consentRequests } from "./consents";
 
 export const visitTreatmentPlanStatusEnum = pgEnum(
   "visit_treatment_plan_status",
@@ -36,6 +38,13 @@ export const visitTreatmentPlanDecisionEnum = pgEnum(
   "visit_treatment_plan_decision",
   ["accepted", "declined"],
 );
+
+export type VisitTreatmentPlanPresentationDecision = {
+  revisionLineId: string;
+  decision: "accepted" | "declined";
+  acceptedQuantity: string;
+  declineReason: string | null;
+};
 
 /**
  * Visit-scoped client treatment-plan identity. This is deliberately separate
@@ -273,6 +282,92 @@ export const visitTreatmentPlanRevisionLines = pgTable(
     catalogTargetCheck: check(
       "visit_treatment_plan_revision_lines_catalog_target_check",
       sql`(${table.itemType} = 'service' and ${table.serviceId} is not null and ${table.productId} is null) or (${table.itemType} = 'product' and ${table.productId} is not null and ${table.serviceId} is null)`,
+    ),
+  }),
+);
+
+/**
+ * Short-lived capability that presents one exact sealed revision to a client.
+ * Only a SHA-256 digest of the bearer token is persisted. Decisions are held
+ * here until the existing consent signer produces durable signature/file
+ * evidence, after which they are copied into the immutable response spine.
+ */
+export const visitTreatmentPlanPresentations = pgTable(
+  "visit_treatment_plan_presentations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+    practiceId: uuid("practice_id").notNull(),
+    planId: uuid("plan_id").notNull(),
+    revisionId: uuid("revision_id").notNull(),
+    responseId: uuid("response_id").notNull(),
+    createdBy: uuid("created_by").notNull(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    status: varchar("status", { length: 24 }).notNull().default("pending"),
+    decisions:
+      jsonb("decisions").$type<VisitTreatmentPlanPresentationDecision[]>(),
+    responseSha256: varchar("response_sha256", { length: 64 }),
+    consentRequestId: uuid("consent_request_id"),
+  },
+  (table) => ({
+    tokenHashUq: uniqueIndex(
+      "visit_treatment_plan_presentations_token_hash_uq",
+    ).on(table.tokenHash),
+    responseUq: uniqueIndex(
+      "visit_treatment_plan_presentations_response_uq",
+    ).on(table.responseId),
+    consentUq: uniqueIndex("visit_treatment_plan_presentations_consent_uq").on(
+      table.consentRequestId,
+    ),
+    revisionStatusIdx: index(
+      "visit_treatment_plan_presentations_revision_status_idx",
+    ).on(table.practiceId, table.revisionId, table.status, table.expiresAt),
+    revisionTenantFk: foreignKey({
+      columns: [table.practiceId, table.revisionId, table.planId],
+      foreignColumns: [
+        visitTreatmentPlanRevisions.practiceId,
+        visitTreatmentPlanRevisions.id,
+        visitTreatmentPlanRevisions.planId,
+      ],
+      name: "visit_treatment_plan_presentations_revision_tenant_fk",
+    }),
+    planTenantFk: foreignKey({
+      columns: [table.practiceId, table.planId],
+      foreignColumns: [visitTreatmentPlans.practiceId, visitTreatmentPlans.id],
+      name: "visit_treatment_plan_presentations_plan_tenant_fk",
+    }),
+    creatorTenantFk: foreignKey({
+      columns: [table.practiceId, table.createdBy],
+      foreignColumns: [users.practiceId, users.id],
+      name: "visit_treatment_plan_presentations_creator_tenant_fk",
+    }),
+    consentTenantFk: foreignKey({
+      columns: [table.practiceId, table.consentRequestId],
+      foreignColumns: [consentRequests.practiceId, consentRequests.id],
+      name: "visit_treatment_plan_presentations_consent_tenant_fk",
+    }),
+    statusCheck: check(
+      "visit_treatment_plan_presentations_status_check",
+      sql`${table.status} in ('pending', 'awaiting_signature', 'completed', 'superseded')`,
+    ),
+    tokenHashCheck: check(
+      "visit_treatment_plan_presentations_token_hash_check",
+      sql`${table.tokenHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    responseHashCheck: check(
+      "visit_treatment_plan_presentations_response_hash_check",
+      sql`${table.responseSha256} is null or ${table.responseSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    stateCheck: check(
+      "visit_treatment_plan_presentations_state_check",
+      sql`(${table.status} in ('pending', 'superseded') and ${table.decisions} is null and ${table.responseSha256} is null and ${table.consentRequestId} is null) or (${table.status} in ('awaiting_signature', 'completed') and ${table.decisions} is not null and ${table.responseSha256} is not null and ${table.consentRequestId} is not null)`,
     ),
   }),
 );

@@ -13,6 +13,15 @@ describe("consent signature persistence schema", () => {
     expect(columns.get("signature_sha256")).toBe("varchar(64)");
     expect(consentRequests.signaturePngBytes.notNull).toBe(false);
     expect(consentRequests.signatureSha256.notNull).toBe(false);
+    expect(columns.get("token_hash")).toBe("varchar(64)");
+    expect(columns.get("signer_attestation_version")).toBe("varchar(64)");
+    expect(columns.get("document_render_version")).toBe("varchar(32)");
+    expect(columns.get("storage_lease_token")).toBe("uuid");
+    expect(columns.get("storage_lease_expires_at")).toBe(
+      "timestamp with time zone",
+    );
+    expect(consentRequests.token.notNull).toBe(false);
+    expect(consentRequests.tokenHash.notNull).toBe(false);
   });
 
   it("registers paired, bounded, content-hash integrity constraints", () => {
@@ -24,13 +33,15 @@ describe("consent signature persistence schema", () => {
         "consent_requests_signature_evidence_pair_check",
         "consent_requests_signature_evidence_size_check",
         "consent_requests_signature_evidence_hash_check",
+        "consent_requests_credential_storage_check",
+        "consent_requests_token_hash_format_check",
+        "consent_requests_document_render_version_check",
+        "consent_requests_storage_lease_pair_check",
+        "consent_requests_storage_lease_state_check",
       ]),
     );
 
-    const source = readFileSync(
-      "../../packages/db/schema/consents.ts",
-      "utf8",
-    );
+    const source = readFileSync("../../packages/db/schema/consents.ts", "utf8");
     expect(source).toContain("octet_length(${table.signaturePngBytes})");
     expect(source).toContain("pg_catalog.sha256(${table.signaturePngBytes})");
     expect(source).toContain("'^[0-9a-f]{64}$'");

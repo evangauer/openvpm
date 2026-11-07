@@ -1,9 +1,13 @@
+import { labReportsRouter } from "./lab-reports";
 import { createRouter } from "../trpc";
 import { authRouter } from "./auth";
 import { clientsRouter } from "./clients";
 import { patientsRouter } from "./patients";
 import { appointmentsRouter } from "./appointments";
+import { recentClinicalItemsRouter } from "./recent-clinical-items";
 import { recordsRouter } from "./records";
+import { patientNotesRouter } from "./patient-notes";
+import { offlineRouter } from "./offline";
 import { billingRouter } from "./billing";
 import { dashboardRouter } from "./dashboard";
 import { whiteboardRouter } from "./whiteboard";
@@ -40,7 +44,11 @@ export const appRouter = createRouter({
   clients: clientsRouter,
   patients: patientsRouter,
   appointments: appointmentsRouter,
+  recentClinicalItems: recentClinicalItemsRouter,
   records: recordsRouter,
+  labReports: labReportsRouter,
+  patientNotes: patientNotesRouter,
+  offline: offlineRouter,
   billing: billingRouter,
   dashboard: dashboardRouter,
   whiteboard: whiteboardRouter,

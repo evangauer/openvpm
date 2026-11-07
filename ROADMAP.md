@@ -4,19 +4,22 @@ OpenVPM is building the modern, open, API-first foundation for veterinary softwa
 
 This roadmap is a living document. The fastest way to influence it: [open an issue](https://github.com/evangauer/openvpm/issues), [start a discussion](https://github.com/evangauer/openvpm/discussions), or 👍 the ones that matter to you. ⭐ the repo to follow along.
 
+_Last reviewed: September 2, 2026._
+
 For the operational boundary used in clinic evaluations, see the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md). "Shipped" means the workflow exists in the product; external delivery, payment, and AI services still require the configuration called out below.
 
 ## ✅ Shipped
 
-- Core PIMS: patients, clients, scheduling, medical records (SOAP, manually entered or in-house lab results, vaccinations, prescriptions), billing and invoicing, inventory, controlled-substance records, reporting, client portal, and an auto-refreshing shared whiteboard
+- Core PIMS: patients, clients, scheduling, medical records (SOAP, manually entered or in-house lab results, vaccinations, prescriptions), structured visit closeout, billing and invoicing, inventory, controlled-substance records, reporting, client portal, and an auto-refreshing shared whiteboard
 - **Public REST API** (`/api/v1`) with scoped, per-practice API keys
 - **OpenVPM Agent** — a typed tool layer with explicit write opt-in, available in-app or over `POST /api/v1/agent` when a supported model provider is configured
 - **Scheduling engine** — strict conflict detection (doctor _and_ room), reschedule, open-slot availability
-- **Clinical depth** — weight-based drug dosing calculator, vital signs, treatment plans linked to the problem list
+- **Clinical depth** — weight-based drug dosing, vital signs, treatment plans, and an attributable closeout connecting clinical handoff, follow-up, charges, and checkout
 - **Wellness plans / recurring billing**
 - **Online appointment requests** via the client portal and public booking page; clinic staff confirm the final time
-- **CSV import** for migrating clients & patients (pairs with full JSON export)
+- **Reviewed CSV import** for clients, patients, vaccine history, and visit notes (pairs with full JSON export)
 - **Appointment and vaccination reminder workflows** with administrator opt-in and configured delivery providers
+- **Account security controls** — optional TOTP MFA, recovery codes, session revocation, and confirmation for sensitive actions
 
 ## 🧪 Configuration-dependent / controlled pilot
 
@@ -29,15 +32,16 @@ For the operational boundary used in clinic evaluations, see the [Clinic Pilot R
 ## 🔜 Next (no external dependencies — community PRs very welcome)
 
 - Staff calendar UX: drag-to-reschedule on the live calendar (the API already supports it)
-- Appointment waitlist
-- Deeper agent tools and an audit trail for agent actions
+- Staff-facing appointment waitlist (the tenant-scoped backend exists)
+- Deeper agent tools and clearer review history for agent actions
 - Embeddable online-booking widget for clinic websites
 
 ## 🌅 Later (needs integrations or larger design)
 
 - Lab integrations (IDEXX, Antech, Zoetis) — order + auto-result matching
 - **PIMS-compatibility connectors** — mirror an incumbent's public API so existing integrations work against OpenVPM, and so a clinic can keep a live, owned copy of their data
-- Imaging / DICOM, electronic prescribing, card-present payment terminals, production multi-location operations, general-purpose bulk marketing campaigns, FHIR-inspired veterinary data standard, and a native mobile companion app
+- Field and house-call workflows, herd/group medicine, and offline-capable mobile use
+- Imaging / DICOM, electronic prescribing, card-present payment terminals, production multi-location operations, general-purpose bulk marketing campaigns, localization, and a FHIR-inspired veterinary data standard
 
 ## How we prioritize
 

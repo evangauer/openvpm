@@ -12,8 +12,14 @@ import {
   vaccinationRecords,
   visitCloseouts,
   visitWorkItems,
+  appointments,
+  practices,
 } from "@openpims/db";
 import { rowsFromExecute } from "@/lib/db/execute-rows";
+import {
+  ambulatoryWorkspaceRolloutEnabled,
+  effectiveAmbulatoryWorkspaceSettings,
+} from "@/server/ambulatory-rollout";
 
 type VisitBillingDb = Pick<
   Database,
@@ -239,8 +245,9 @@ export async function assertNoUnresolvedVisitWork(
 }
 
 /**
- * Financial actions are stable only after the clinical handoff is signed and
- * all performed work has an explicit billing disposition.
+ * Standard visits require a signed clinical handoff before payment. Enabled
+ * field visits can bill while notes remain unfinished; both paths require
+ * an explicit billing disposition for every performed item.
  */
 export async function assertVisitInvoiceReadyForFinancialAction(
   ctx: VisitBillingContext,
@@ -260,14 +267,44 @@ export async function assertVisitInvoiceReadyForFinancialAction(
     )
     .limit(1);
 
-  if (closeout?.status !== "clinical_finalized" && closeout?.status !== "completed") {
+  let fieldBillingBeforeNotes = false;
+  if (
+    (!closeout || closeout.status === "draft") &&
+    ambulatoryWorkspaceRolloutEnabled()
+  ) {
+    const [fieldVisit] = await ctx.db
+      .select({ settings: practices.settings })
+      .from(appointments)
+      .innerJoin(
+        practices,
+        and(eq(practices.id, appointments.practiceId), isNull(practices.deletedAt))
+      )
+      .where(
+        and(
+          eq(appointments.id, appointmentId),
+          eq(appointments.practiceId, ctx.practiceId),
+          eq(appointments.origin, "field"),
+          eq(appointments.status, "in_exam"),
+          isNull(appointments.deletedAt)
+        )
+      )
+      .limit(1);
+    fieldBillingBeforeNotes = Boolean(
+      fieldVisit && effectiveAmbulatoryWorkspaceSettings(fieldVisit.settings).enabled
+    );
+  }
+  if (
+    !fieldBillingBeforeNotes &&
+    closeout?.status !== "clinical_finalized" &&
+    closeout?.status !== "completed"
+  ) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: "Finalize the clinical handoff before sending or collecting this visit invoice.",
     });
   }
 
-  if (closeout.status === "clinical_finalized") {
+  if (fieldBillingBeforeNotes || closeout?.status === "clinical_finalized") {
     await syncVisitWorkItems(ctx, appointmentId);
   }
   await assertNoUnresolvedVisitWork(

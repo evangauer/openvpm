@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
 import { CalendarSubscribe } from "@/components/schedule/calendar-subscribe";
 import { cn } from "@/lib/utils";
+import { providerDisplayName } from "@/lib/provider-display-name";
 import { dateInputTimeUtcInstant } from "@/lib/date-input";
 import {
   addCalendarDays,
@@ -703,9 +704,10 @@ function PhoneAgenda({
                 ]
                   .filter(Boolean)
                   .join(" ");
-                const careTeam = appointment.doctorName
-                  ? `Dr. ${appointment.doctorName}`
-                  : "Team";
+                const careTeam = providerDisplayName(
+                  appointment.doctorName,
+                  "Team",
+                );
                 const place = [
                   appointment.locationName,
                   appointment.roomName,
@@ -1039,6 +1041,8 @@ function AppointmentDetailPopover({
   onStatusChange,
   onReschedule,
   onCancelRecurringSeries,
+  onDelete,
+  isDeleting,
   canUpdateStatus,
   canManageSchedule,
   canSendReminders,
@@ -1063,6 +1067,8 @@ function AppointmentDetailPopover({
     roomId: string | null;
   }) => void;
   onCancelRecurringSeries: (seriesId: string) => void;
+  onDelete: (id: string, reason: string) => void;
+  isDeleting: boolean;
   canUpdateStatus: boolean;
   canManageSchedule: boolean;
   canSendReminders: boolean;
@@ -1070,6 +1076,8 @@ function AppointmentDetailPopover({
   isRescheduling: boolean;
   isCancellingSeries: boolean;
 }) {
+  const [deleteReason, setDeleteReason] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   const restoreFocusRef = useRef(true);
@@ -1357,7 +1365,7 @@ function AppointmentDetailPopover({
             {appointment.doctorName && (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <User className="h-3.5 w-3.5" />
-                <span>Dr. {appointment.doctorName}</span>
+                <span>{providerDisplayName(appointment.doctorName)}</span>
               </div>
             )}
             {appointment.locationName && (
@@ -1507,7 +1515,7 @@ function AppointmentDetailPopover({
                   <option value="">Unassigned</option>
                   {eligibleRescheduleDoctors.map((doctor) => (
                     <option key={doctor.id} value={doctor.id}>
-                      Dr. {doctor.name}
+                      {providerDisplayName(doctor.name)}
                     </option>
                   ))}
                 </select>
@@ -1741,6 +1749,17 @@ function AppointmentDetailPopover({
                 )}
                 Cancel Future Series
               </Button>
+            )}
+            {canManageSchedule && ["scheduled", "confirmed", "cancelled", "no_show"].includes(current) && (
+              <div className="w-full space-y-2">
+                <Button size="sm" variant="destructive" disabled={isDeleting} onClick={() => setConfirmDelete(true)}>Delete appointment</Button>
+                {confirmDelete && <div className="space-y-2 rounded-md border p-3">
+                  <p className="text-sm">Remove this appointment from the schedule? Appointments with clinical or billing records must be corrected in the visit workspace.</p>
+                  <Input aria-label="Reason for deleting appointment" placeholder="Reason for deleting (required)" value={deleteReason} maxLength={500} onChange={(event) => setDeleteReason(event.target.value)} />
+                  <Button size="sm" variant="destructive" disabled={isDeleting || deleteReason.trim().length < 3} onClick={() => onDelete(appointment.id, deleteReason.trim())}>Confirm deletion</Button>
+                  <Button size="sm" variant="outline" onClick={() => setConfirmDelete(false)}>Keep appointment</Button>
+                </div>}
+              </div>
             )}
             {visibleStatusActions.map((action) => (
               <Button
@@ -2252,7 +2271,7 @@ function BookingForm({
               </option>
               {eligibleDoctors?.map((doc) => (
                 <option key={doc.id} value={doc.id}>
-                  Dr. {doc.name}
+                  {providerDisplayName(doc.name)}
                 </option>
               ))}
             </select>
@@ -2598,6 +2617,16 @@ function SchedulePageContent() {
 
   const utils = trpc.useUtils();
 
+  const deleteAppointment = trpc.appointments.delete.useMutation({
+    onSuccess: () => {
+      toast.success("Appointment deleted from the schedule");
+      setSelectedAppointment(null);
+      utils.appointments.list.invalidate();
+      utils.dashboard.invalidate();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
   const rescheduleAppointment = trpc.appointments.reschedule.useMutation({
     onSuccess: (result) => {
       toast.success(
@@ -2859,7 +2888,7 @@ function SchedulePageContent() {
               <option value="all">All Doctors</option>
               {doctors?.map((doc) => (
                 <option key={doc.id} value={doc.id}>
-                  Dr. {doc.name}
+                  {providerDisplayName(doc.name)}
                 </option>
               ))}
             </select>
@@ -3012,6 +3041,8 @@ function SchedulePageContent() {
             onClose={() => setSelectedAppointment(null)}
             onStatusChange={handleStatusChange}
             onReschedule={handleRescheduleAppointment}
+            onDelete={(id, reason) => deleteAppointment.mutate({ id, reason })}
+            isDeleting={deleteAppointment.isPending}
             onCancelRecurringSeries={handleCancelRecurringSeries}
             canUpdateStatus={canUpdateAppointmentStatus}
             canManageSchedule={canCreateAppointments}

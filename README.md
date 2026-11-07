@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://openvpm.com/logo.svg" alt="OpenVPM" width="80" height="80" />
+  <img src="apps/web/public/favicon.svg" alt="OpenVPM paw mark" width="88" height="88" />
 </p>
 
 <h1 align="center">OpenVPM</h1>
@@ -11,9 +11,11 @@
 <p align="center">
   <a href="https://demo.openvpm.com/login">Live Demo</a> &middot;
   <a href="https://openvpm.com">Website</a> &middot;
+  <a href="https://docs.openvpm.com">Guides</a> &middot;
   <a href="#features">Features</a> &middot;
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#api">API Docs</a> &middot;
+  <a href="#roadmap">Roadmap</a> &middot;
   <a href="#contributing">Contributing</a>
 </p>
 
@@ -28,7 +30,7 @@
 ---
 
 <p align="center">
-  <strong>▶ <a href="https://demo.openvpm.com/login">Try the live demo</a></strong> — one-click logins, no signup. &nbsp;|&nbsp; If you believe veterinary software should be open, <strong><a href="https://github.com/evangauer/openvpm">give us a ⭐</a></strong> — it helps other clinics and builders find the project.
+  <strong>▶ <a href="https://demo.openvpm.com/login">Try the live demo</a></strong> — instant email access, no account or credit card. &nbsp;|&nbsp; If you believe veterinary software should be open, <strong><a href="https://github.com/evangauer/openvpm">give us a ⭐</a></strong> — it helps other clinics and builders find the project.
 </p>
 
 ---
@@ -61,13 +63,20 @@ That's the bar we're building to.
 
 ## Screenshots
 
-| Dashboard                                    | Schedule                                   | Patient Record                           |
-| -------------------------------------------- | ------------------------------------------ | ---------------------------------------- |
-| ![Dashboard](docs/screenshots/dashboard.png) | ![Schedule](docs/screenshots/schedule.png) | ![Patient](docs/screenshots/patient.png) |
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="OpenVPM dashboard with clinic metrics, follow-up queue, and upcoming appointments" width="100%" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/schedule.png" alt="OpenVPM multi-doctor appointment schedule" width="49%" />
+  <img src="docs/screenshots/patient.png" alt="OpenVPM patient record with allergy alert" width="49%" />
+</p>
+
+<p align="center"><sub>Current application UI rendered from the repository's seeded demo practice. The reproducible capture flow lives in <a href="e2e/demo-screenshots.spec.ts">e2e/demo-screenshots.spec.ts</a>.</sub></p>
 
 ## Help & Guides
 
-Short, plain-language guides live in [docs/help](docs/help/README.md): getting started, the day sheet, the AI helper, client portals, calendar sync, and owning your data. Before evaluating OpenVPM for live clinic use, read the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md) for the current supported, configuration-dependent, and not-yet-supported boundaries. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
+[OpenVPM Help](https://docs.openvpm.com) has step-by-step guides with real screens for the front desk, clinical team, and practice managers, a tour of every screen, and a training path for each role. The site lives in [apps/docs](apps/docs), and its screenshots are captured from the seeded demo clinic ([how](apps/docs/capture/README.md)). Self-hosting setup guides stay in [docs/help](docs/help/README.md). Before evaluating OpenVPM for live clinic use, read the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md) for the current supported, configuration-dependent, and not-yet-supported boundaries. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
 
 ## Features
 
@@ -77,13 +86,13 @@ Short, plain-language guides live in [docs/help](docs/help/README.md): getting s
 Complete patient records with species, breed, weight history with trend charts, microchip tracking, photo uploads, and allergy/reaction alerts. Multi-pet households linked to single clients. Instant fuzzy search across all records via Cmd+K.
 
 **Appointment Scheduling**
-Visual calendar with day/week views and column-per-doctor layout. Configurable appointment types with durations and colors. Doctor-specific vs. any-doctor scheduling. Full status flow: Scheduled > Checked In > In Exam > Checked Out. Recurring appointments and block scheduling.
+Visual calendar with day/week views and column-per-doctor layout. Configurable appointment types with durations and colors. Doctor-specific vs. any-doctor scheduling, with doctor and room conflict detection. Full status flow: Scheduled > Checked In > In Exam > Checked Out. Recurring appointments and block scheduling.
 
 **Electronic Medical Records (EMR)**
 SOAP notes with rich text editing. Problem lists (active/resolved/chronic). Vaccination records with reminders and certificate generation. Lab results viewer with reference ranges and trend graphs. Prescription management with dosing calculator and refill tracking. Document and image attachments.
 
 **Billing & Invoicing**
-Treatment templates can populate draft invoices, with itemized manual service/product line items, tax calculation, estimates that convert to invoices, payment tracking, account balances, and revenue reporting.
+Structured visit closeout keeps the clinical handoff, follow-up plan, invoice or no-charge disposition, and checkout connected. Treatment templates can populate draft invoices, with itemized manual service/product line items, tax calculation, estimates that convert to invoices, payment tracking, account balances, and revenue reporting.
 
 **Inventory Management**
 Product catalog with stock levels, reorder point alerts, lot/batch tracking, and expiration dates. Auto-deduction when products are dispensed from invoices or EMR prescriptions. Supplier contact management for reorder workflows.
@@ -123,11 +132,11 @@ Structured data models queryable by AI agents. Signed webhook events for agent s
 | **UI**           | shadcn/ui + Radix UI + Tailwind CSS                                |
 | **API**          | tRPC dashboard API + versioned `/api/v1` REST                      |
 | **Database**     | PostgreSQL 16 + Drizzle ORM                                        |
-| **Auth**         | NextAuth.js (role-based clinic access, including read-only Viewer) |
+| **Auth**         | NextAuth.js, role-based access, optional TOTP MFA, recovery codes  |
 | **Events**       | Signed webhook delivery for integrations                           |
 | **Email/SMS**    | Resend + Telnyx SMS (Twilio fallback)                              |
 | **Payments**     | Stripe                                                             |
-| **File Storage** | S3-compatible (MinIO for self-hosted)                              |
+| **File Storage** | S3-compatible or Vercel Blob (MinIO for self-hosted)               |
 | **Monorepo**     | Turborepo + pnpm workspaces                                        |
 | **Testing**      | Vitest + Playwright                                                |
 | **Deployment**   | Docker Compose (self-host) or Vercel (cloud)                       |
@@ -145,12 +154,13 @@ openvpm/
 │   │   ├── components/         # UI component library
 │   │   ├── lib/                # Utilities and integrations
 │   │   └── server/             # tRPC routers and server services
-│   └── docs/                   # Documentation workspace metadata
+│   └── docs/                   # Searchable Next.js staff-guide site
 ├── docs/                        # Help, API, deployment, and safety guides
 ├── packages/
 │   ├── db/                     # Modular schema, migrations, RLS, seed data
 │   ├── api/                    # Shared Zod validators
 │   ├── config/                 # TypeScript, Tailwind config
+│   ├── docs-content/           # Shared guide content and metadata
 │   └── email/                  # Email templates
 ├── docker/                     # Docker Compose (PostgreSQL + MinIO)
 └── e2e/                        # Playwright E2E tests
@@ -168,7 +178,7 @@ Dashboard tRPC routers cover the product's clinic workflows, including patients,
 
 - **Multi-tenancy:** Tenant-scoped application queries plus database row-level security for clinic-owned data
 - **RBAC:** Admin, Veterinarian, Technician, Front Desk, and read-only Viewer roles enforced at the API layer
-- **Auth:** NextAuth.js with bcrypt password hashing and database sessions
+- **Auth:** NextAuth.js with bcrypt password hashing, database sessions, optional TOTP MFA, recovery codes, and privileged-action confirmation
 - **Headers:** CSP, HSTS, Permissions-Policy, X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy
 - **Audit:** Audit records for security-sensitive and high-risk clinical and financial workflows; coverage is expanded as workflows mature
 
@@ -176,7 +186,7 @@ Dashboard tRPC routers cover the product's clinic workflows, including patients,
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 24.22.1 or a newer Node.js 24 patch (`nvm use`)
 - pnpm 9+
 - Docker (for PostgreSQL and MinIO)
 
@@ -190,8 +200,12 @@ cd openvpm
 # Copy environment config
 cp .env.example .env
 
-# Start PostgreSQL and MinIO
-docker compose -f docker/docker-compose.yml up -d
+# Replace the placeholder NEXTAUTH_SECRET in .env with a generated one
+# (or paste the output of `openssl rand -base64 32` into .env yourself)
+sed -i.bak "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=\"$(openssl rand -base64 32)\"|" .env && rm .env.bak
+
+# Start the local PostgreSQL and MinIO dependencies
+docker compose --env-file .env -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
 
 # Install dependencies
 pnpm install --frozen-lockfile
@@ -199,12 +213,12 @@ pnpm install --frozen-lockfile
 # Verify this clone contains only public release material
 pnpm verify:oss-release
 
-# Apply database schema
-pnpm db:push
+# Apply the committed database migrations
+pnpm db:migrate
 
 # Apply and verify row-level security policies
-pnpm db:rls
-pnpm db:rls:test
+OPENPIMS_APP_DB_PASSWORD='local-openpims-app' pnpm db:rls
+OPENPIMS_APP_DB_PASSWORD='local-openpims-app' pnpm db:rls:test
 
 # Seed with realistic demo data
 pnpm db:seed
@@ -234,10 +248,73 @@ local build is not, by itself, a production-readiness assessment.
 ### Deploy with Docker
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+# One time: create .env with a unique session secret
+cp .env.example .env
+sed -i.bak "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=\"$(openssl rand -base64 32)\"|" .env && rm .env.bak
+
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
+`NEXTAUTH_SECRET` signs every staff session, so it must be unique to your
+installation. Compose refuses to start the app without it, and a production
+build refuses to sign anyone in while it is a placeholder published in this
+repository or shorter than 32 characters: every page shows a setup notice, API
+routes return `503`, and `/api/health` reports the `authSecret` check as
+failing. PostgreSQL and MinIO are published on `127.0.0.1` only; their default
+credentials are for this single-host setup and must not be exposed to a network.
+
+> **Upgrading an existing Docker install:** earlier versions of
+> `docker/docker-compose.yml` shipped a fixed `NEXTAUTH_SECRET`. Anyone who knows
+> that public value can forge a staff session on an install still using it.
+> Generate a new secret as above, put it in `.env`, and restart with
+> `docker compose --env-file .env -f docker/docker-compose.yml up -d`. Changing
+> the secret signs everyone out once; staff sign in again with their usual
+> password. Invoice payment links signed with the old secret also stop working
+> and should be re-sent. Patient-portal sign-in links are not affected.
+>
+> The same upgrade binds PostgreSQL (`5432`) and the MinIO API and console
+> (`9000`, `9001`) to `127.0.0.1` on the Docker host, so they are no longer
+> reachable from other machines. If you administered them remotely, use an SSH
+> tunnel instead, for example
+> `ssh -N -L 5432:127.0.0.1:5432 -L 9001:127.0.0.1:9001 you@your-server`, then
+> connect to `localhost:5432` or open `http://localhost:9001`.
+
 The Docker setup includes PostgreSQL 16 with health checks, MinIO for S3-compatible file storage, automatic MinIO bucket bootstrap, and a multi-stage production build of the web application. For production, run `pnpm db:migrate`, then `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls`, verify with `OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test`, and point the app at the generated least-privilege `openpims_app` database role before serving traffic.
+
+#### Reverse proxies and sign-in limits
+
+Sign-in is limited per account: 5 free failures, then a lock that doubles from 1 minute up to 1 hour. That applies the same way whether or not the account exists, and it is the main defense against password guessing.
+
+So that someone else's failed guesses can't keep staff out, each successful sign-in also sets a signed, HttpOnly "known device" cookie for 90 days. While an account is locked, a browser that has signed in to it before isn't held by that lock; it gets its own backoff (the same 5 failures, then 1 minute doubling to 1 hour). The correct password from a browser that has never signed in to the account still waits for the lock. Completing a password reset or accepting an invite proves control of the mailbox, so it lifts the account's lock and marks that browser as known too. One browser remembers up to 10 accounts; on a shared front-desk computer used by more staff than that, the accounts that signed in least recently drop off and wait for a lock like a new browser until they sign in again. The cookie is signed with a key derived from `NEXTAUTH_SECRET`, so changing that secret forgets every device. Password reset requests from a known device also skip the per-address daily cap.
+
+Per-IP limits apply only when OpenVPM can verify the client's address: 50 failed sign-ins per 15 minutes, plus 600 sign-in requests per 15 minutes, and never to a known device. An address OpenVPM can't verify could be forged by anyone, so limiting it would only let an attacker lock out the address they claim, such as your clinic's. Without a verified address, per-IP sign-in limits are off and per-account limits do the work. On Vercel the platform's client address is used automatically; nothing to configure. OpenVPM Cloud assumes nothing sits in front of Vercel.
+
+If you self-host behind a reverse proxy and want per-IP limits, set `OPENVPM_TRUSTED_PROXY_HOPS` to the number of proxies in front of the app (`1` for a single nginx, Caddy, or Traefik). A CDN or load balancer in front of your proxy (Cloudflare, an AWS ALB) is a hop too: Cloudflare in front of nginx is `2`. Three things must also be true, or a client can choose its own IP:
+
+1. **Each proxy writes `X-Forwarded-For`.** The client is read from the entry `OPENVPM_TRUSTED_PROXY_HOPS` places from the right.
+   - **nginx** doesn't send it by default. Add it to every `location` that proxies to OpenVPM:
+
+     ```nginx
+     proxy_set_header Host              $host;
+     proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+     proxy_set_header X-Forwarded-Proto $scheme;
+     ```
+
+     Without the `X-Forwarded-For` line, the app sees nginx's own address. OpenVPM then skips per-IP limits (see below) and shows administrators a Settings notice that the proxy isn't forwarding client addresses.
+   - **Caddy** (`reverse_proxy`) sends it by default. It replaces any client-supplied value unless the client is listed in the global `servers { trusted_proxies ... }` option, in which case it appends. Leave `trusted_proxies` unset when Caddy faces the internet directly. If Caddy sits behind a load balancer or CDN, list that hop's addresses in `trusted_proxies` and count both hops (`2`). Caddy behind Cloudflare without `trusted_proxies` is a common mistake: Caddy discards Cloudflare's entry and records the Cloudflare edge server as the client, so every visitor is limited under a handful of shared Cloudflare addresses and one person's failures can hold back everyone routed through the same edge. Those are public addresses, so OpenVPM can't tell anything is wrong and no Settings notice appears.
+   - **Traefik** sends it by default and drops client-supplied forwarded headers unless the entry point's `forwardedHeaders.trustedIPs` includes the client. Same rule as Caddy: leave it unset when Traefik faces the internet, or list the upstream hop and count it.
+2. **With a CDN or load balancer in front, your proxy accepts connections only from it.** Otherwise a client can skip the CDN, connect to your proxy directly, and put a forged entry exactly where OpenVPM expects the CDN's. Allow only the CDN's published address ranges to reach the proxy (a firewall or security group), or have nginx take the client address from the CDN with `set_real_ip_from <CDN ranges>;` and `real_ip_header CF-Connecting-IP;` (Cloudflare), forwarding `$remote_addr` and counting one hop.
+3. **The app port is reachable only through the proxy.** This is required whenever `OPENVPM_TRUSTED_PROXY_HOPS` is set. If the port is reachable directly, anyone can connect to it, forge `X-Forwarded-For`, and spend another network's sign-in limits, including your clinic's own public address. In `docker/docker-compose.yml`:
+   - If the proxy runs in a container, put it on the same Compose network as `web`, point it at `http://web:3000`, and remove the `ports:` entry from `web`. Inside a container, `127.0.0.1` is the container itself, not the host.
+   - If the proxy runs directly on the host, publish the app on loopback only: `"127.0.0.1:3000:3000"`.
+
+   Docker-published ports bypass host firewalls such as `ufw`, so a firewall rule alone is not enough.
+
+When OpenVPM sees signs of a proxy without `OPENVPM_TRUSTED_PROXY_HOPS`, administrators get a notice in Settings and the server logs a warning. Leave it unset if clients connect to OpenVPM directly.
+
+Per-IP limits never apply to loopback, private, carrier-grade NAT, or link-local addresses (for example `127.0.0.1`, `10.x`, `172.16-31.x`, `192.168.x`, `fd00::/8`). Requests appear to come from one of those when a proxy or container gateway isn't forwarding the client's address, and limiting it would let one client lock out everyone. Clinics whose staff sign in over a LAN are covered by per-account limits.
+
+Administrators can lift a staff member's lock, including any per-device backoff, from **Settings → Staff**; the action is recorded in the audit log. Expired limit records are pruned by the server itself at most once an hour, so self-hosts don't need to schedule `/api/cron/rate-limit-cleanup`.
 
 ## API
 
@@ -297,7 +374,7 @@ OpenVPM ships with a built-in AI agent that operates on practice data through a 
 
 Self-hosting stays fully unlocked and free. Leave `HOSTED_BILLING_ENABLED` unset and OpenVPM runs without Stripe gates, hosted metering, or paid-plan limits.
 
-OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day free trial with no credit card required — clinics land in the product immediately and add a card only to convert, then bills one simple plan:
+OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day free trial that starts after secure Stripe checkout collects payment details. There is no subscription charge today; billing starts automatically after the trial unless the clinic cancels in Plan & Billing. One simple plan:
 
 - $79/month per active, non-deleted location, with unlimited staff (all roles included)
 - $790/year per active location (two months free), with unlimited staff
@@ -307,6 +384,8 @@ OpenVPM Cloud is the hosted service for clinics that do not want to run infrastr
 Hosted Stripe setup uses monthly and annual recurring per-location prices in `STRIPE_PRICE_CLOUD_LOCATION` and `STRIPE_PRICE_CLOUD_LOCATION_ANNUAL`. Checkout contains one customer-facing OpenVPM Cloud line item. `STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only for existing subscriptions and are not used for new checkout.
 
 For hosted deployment details, see [docs/hosted-cloud-production.md](docs/hosted-cloud-production.md).
+
+For self-hosted clinic integrations, follow [Stripe payment setup](docs/help/self-hosted-payments.md) and [SMS setup](docs/help/self-hosted-sms.md). For a practice owner handling care and checkout alone, see [Run a solo practice](https://docs.openvpm.com/guides/run-a-solo-practice).
 
 ## Why Open Source Matters for Veterinary Medicine
 
@@ -331,44 +410,23 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, 
 
 - **Veterinary domain expertise** — Help us get the clinical workflows right
 - **UI/UX design** — Help us make every screen intuitive
-- **Integrations** — Lab equipment (IDEXX, Abaxis), payment processors, telemedicine
+- **Integrations** — IDEXX, Antech, Zoetis, e-prescribing, imaging, and accounting
 - **Internationalization** — Help us support practices worldwide
 - **Testing** — E2E tests, integration tests, accessibility audits
 - **Documentation** — API guides, deployment tutorials, user manuals
 
 ## Roadmap
 
-See **[ROADMAP.md](ROADMAP.md)** for what's shipping now, next, and later — and how to influence it.
+**[ROADMAP.md](ROADMAP.md)** is the source of truth for shipped, configuration-dependent, next, and later work.
 
-- [x] Patient & client management
-- [x] Appointment scheduling with calendar views
-- [x] Electronic medical records (SOAP, manual/in-house lab results, vaccinations, prescriptions)
-- [x] Billing & invoicing
-- [x] Inventory management with reorder alerts
-- [x] Controlled substance tracking
-- [x] Client communication history, portal requests, and configured email workflows
-- [x] Auto-refreshing shared practice whiteboard
-- [x] Reporting & analytics dashboard
-- [x] Client portal
-- [x] Open API with webhooks
-- [x] AI integration points
-- [x] Public REST API (`/api/v1`) with scoped API keys
-- [x] OpenVPM Agent — query practice data and make supported, explicitly opted-in writes
-- [x] Drug dosing calculator, vital signs, treatment plans
-- [x] Wellness plans / recurring billing
-- [x] Online appointment requests with staff confirmation (client portal and public booking page)
-- [x] CSV import for migrating clients & patients
-- [ ] Online booking widget (embeddable)
-- [ ] Hosted SMS rollout beyond the controlled, one-location clinic pilot
-- [ ] FHIR-inspired veterinary data standard
-- [ ] Multi-language support
-- [ ] Mobile companion app
-- [ ] Telemedicine integration
-- [ ] Advanced AI features (auto-coding, predictive analytics)
+- **Available now:** the connected clinic-day workflows above, reviewed CSV migration for clients, patients, vaccine history, and visit notes, full data export, scoped REST endpoints, signed webhooks, and the bounded OpenVPM Agent
+- **Next:** drag-to-reschedule, the staff-facing appointment waitlist, deeper agent tools with clearer review history, and an embeddable appointment-request widget
+- **Later:** direct lab and incumbent-PIMS integrations, field and herd workflows, validated multi-location operations, imaging, e-prescribing, card-present payments, localization, and offline-capable mobile experiences
 
 ## Community
 
 - **Website:** [openvpm.com](https://openvpm.com)
+- **Guides:** [docs.openvpm.com](https://docs.openvpm.com)
 - **GitHub Discussions:** [Join the conversation](https://github.com/evangauer/openvpm/discussions)
 - **Email:** hello@openvpm.com
 

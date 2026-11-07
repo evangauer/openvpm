@@ -41,9 +41,9 @@ import {
   PRESCRIPTION_QUANTITY_MIN,
   PRESCRIPTION_REFILLS_MIN,
   isPrescriptionNonnegativeIntegerInputValid,
-  isPrescriptionOptionalPositiveIntegerInputValid,
+  isPrescriptionOptionalQuantityInputValid,
   isPrescriptionOptionalTextInputValid,
-  isPrescriptionPositiveIntegerInputValid,
+  isPrescriptionQuantityInputValid,
   isPrescriptionRequiredTextInputValid,
 } from "../records/prescription-policy";
 import {
@@ -68,7 +68,12 @@ describe("SOAP note editor UX", () => {
     expect(source).toContain("pointer-events-none");
     expect(source).toContain("{placeholder}");
     expect(source).toContain("useEffect");
-    expect(source).toContain("editor.commands.setContent(nextValue, false)");
+    expect(source).toContain(
+      "editor.commands.setContent(nextValue, { emitUpdate: false })"
+    );
+    expect(source).toContain('import StarterKit from "@tiptap/starter-kit"');
+    expect(source).not.toContain("@tiptap/extension-underline");
+    expect(source).not.toMatch(/^\s*Underline,\s*$/m);
     expect(source).not.toContain("`<p>${placeholder}</p>`");
   });
 
@@ -273,21 +278,25 @@ describe("SOAP note editor UX", () => {
 describe("records prescription form UX", () => {
   it("keeps prescription form controls aligned to shared policy", () => {
     const source = readFileSync("app/(dashboard)/records/page.tsx", "utf8");
+    const inventoryPicker = readFileSync(
+      "components/records/prescription-inventory-product-picker.tsx",
+      "utf8"
+    );
 
     expect(PRESCRIPTION_MEDICATION_NAME_MAX_LENGTH).toBe(255);
     expect(PRESCRIPTION_DOSAGE_MAX_LENGTH).toBe(128);
     expect(PRESCRIPTION_FREQUENCY_MAX_LENGTH).toBe(128);
     expect(PRESCRIPTION_INSTRUCTIONS_MAX_LENGTH).toBe(5000);
-    expect(PRESCRIPTION_QUANTITY_MIN).toBe(1);
+    expect(PRESCRIPTION_QUANTITY_MIN).toBe(0.001);
     expect(PRESCRIPTION_REFILLS_MIN).toBe(0);
     expect(PRESCRIPTION_COUNT_MAX).toBe(2147483647);
     expect(isPrescriptionRequiredTextInputValid(" Carprofen ", 255)).toBe(true);
     expect(isPrescriptionRequiredTextInputValid(" ", 255)).toBe(false);
     expect(isPrescriptionOptionalTextInputValid("", 5000)).toBe(true);
-    expect(isPrescriptionPositiveIntegerInputValid("30")).toBe(true);
-    expect(isPrescriptionPositiveIntegerInputValid("0")).toBe(false);
-    expect(isPrescriptionPositiveIntegerInputValid("1.5")).toBe(false);
-    expect(isPrescriptionOptionalPositiveIntegerInputValid("")).toBe(true);
+    expect(isPrescriptionQuantityInputValid("30")).toBe(true);
+    expect(isPrescriptionQuantityInputValid("0")).toBe(false);
+    expect(isPrescriptionQuantityInputValid("1.5")).toBe(true);
+    expect(isPrescriptionOptionalQuantityInputValid("")).toBe(true);
     expect(isPrescriptionNonnegativeIntegerInputValid("0")).toBe(true);
     expect(isPrescriptionNonnegativeIntegerInputValid("-1")).toBe(false);
     expect(source).toMatch(
@@ -301,27 +310,41 @@ describe("records prescription form UX", () => {
     expect(source).toContain("max={PRESCRIPTION_COUNT_MAX}");
     expect(source).toContain("const canSubmitPrescription =");
     expect(source).toContain("hasValidPrescriptionQuantityForInventory");
-    expect(source).toContain("const inventoryProductsMissing =");
-    expect(source).toContain("const verifiedInventoryProducts =");
-    expect(source).toContain("verifiedInventoryProducts.items.find");
-    expect(source).toContain("verifiedInventoryProducts.items.map");
-    expect(source).toContain("Inventory unavailable");
-    expect(source).toContain("Unable to load inventory products. Please retry.");
-    expect(source).toContain("prescriptionQuantity <= selectedPrescriptionProduct.stockQuantity");
+    expect(source).toContain("<PrescriptionInventoryProductPicker");
+    expect(inventoryPicker).toContain("search: normalizedSearch || undefined");
+    expect(inventoryPicker).toContain("limit: PAGE_SIZE");
+    expect(inventoryPicker).toContain("offset: pageOffset");
+    expect(inventoryPicker).toContain("Search inventory by name or SKU...");
+    expect(inventoryPicker).toContain("onScroll={(event) => {");
+    expect(inventoryPicker).toContain("loadNextPage();");
+    expect(inventoryPicker).toContain(
+      "advancePrescriptionProductPagination(current, currentPage)"
+    );
+    expect(inventoryPicker).toContain("Load more inventory items");
+    expect(inventoryPicker).toMatch(/Scroll for more or\s+use search/);
+    expect(inventoryPicker).toContain("Inventory unavailable. Please retry.");
+    expect(inventoryPicker).toContain('role="status"');
+    expect(inventoryPicker).toContain('aria-live="polite"');
+    expect(inventoryPicker).toContain("Refresh inventory items");
+    expect(inventoryPicker).toContain(
+      "trpcUtils.inventory.list.invalidate()"
+    );
+    expect(inventoryPicker).toContain('contentVisibility: "auto"');
+    expect(source).not.toContain("{ limit: 100, offset: 0 }");
+    expect(source).toContain("prescriptionQuantity <= linkedPrescriptionProduct.stockQuantity");
     expect(source).toContain("Quantity (inventory units)");
-    expect(source).toMatch(
-      /\{product\.stockQuantity\} units\s+on hand · \{product\.unitPrice\} each/
+    expect(inventoryPicker).toContain("{product.stockQuantity} units on hand");
+    expect(inventoryPicker).toMatch(
+      /\{product\.unitPrice\}\s*(?:\{" "\})?\s*each/
     );
     expect(source).toContain("The prescription quantity will be");
     expect(source).toContain("charged in that same unit.");
-    expect(source).toContain("isPrescriptionOptionalPositiveIntegerInputValid");
+    expect(source).toContain("isPrescriptionOptionalQuantityInputValid");
     expect(source).toContain("isPrescriptionNonnegativeIntegerInputValid");
     expect(source).toContain(
       "prescriptionForm.instructions.trim() || undefined"
     );
     expect(source).toContain("disabled={!canSubmitPrescription}");
-    expect(source).not.toContain("inventoryProducts.data?.items.find");
-    expect(source).not.toContain("inventoryProducts.data?.items.map");
     expect(source).not.toContain(
       "disabled={createPrescription.isPending}"
     );

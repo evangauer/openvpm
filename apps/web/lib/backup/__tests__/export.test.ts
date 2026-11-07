@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
   backupKey,
   coerceRowDates,
+  LEGACY_SIGNED_CONSENT_RECOVERY_MESSAGE,
   PRACTICE_RECOVERY_HOLD_REASON,
   PRACTICE_EXPORT_SECRET_REPLACEMENTS,
   PRACTICE_EXPORT_AUDIT_ONLY_SECTIONS,
@@ -11,6 +12,7 @@ import {
   PRACTICE_EXPORT_SYSTEM_EXCLUSIONS,
   PRACTICE_EXPORT_SECTIONS,
   prepareLegacySmsConsentRestore,
+  practiceBackupContainsSealedConsentEvidence,
   restorePracticeData,
   sanitizePracticeExportRows,
   summarizePracticeExport,
@@ -298,12 +300,401 @@ function withCanonicalCounts<T extends Record<string, unknown>>(backup: T) {
   };
 }
 
+function dispenseInvoiceHistoryBackup(status: "pending" | "waived" | "invoiced") {
+  const resolved = status !== "pending";
+  return {
+    ...emptyBackup(),
+    users: [{ id: "user-1" }],
+    clients: [{ id: "client-1" }],
+    patients: [{ id: "patient-1", clientId: "client-1" }],
+    products: [{ id: "product-1" }],
+    prescriptions: [{
+      id: "prescription-1", patientId: "patient-1", productId: "product-1",
+      prescribedBy: "user-1", quantity: 1,
+    }],
+    prescriptionEvents: [{
+      id: "event-1", prescriptionId: "prescription-1", patientId: "patient-1",
+      productId: "product-1", quantity: 1, eventType: "created", actorId: "user-1",
+    }],
+    invoices: [
+      { id: "void-invoice", clientId: "client-1", patientId: "patient-1", status: "void", isEstimate: false },
+      ...(status === "invoiced" ? [{ id: "active-invoice", clientId: "client-1", patientId: "patient-1", status: "draft", isEstimate: false }] : []),
+    ],
+    invoiceItems: [
+      { id: "void-line", invoiceId: "void-invoice", sourceDispenseChargeId: "dispense-1" },
+      ...(status === "invoiced" ? [{ id: "active-line", invoiceId: "active-invoice", sourceDispenseChargeId: "dispense-1" }] : []),
+    ],
+    dispenseChargeQueue: [{
+      id: "dispense-1", prescriptionEventId: "event-1", prescriptionId: "prescription-1",
+      patientId: "patient-1", clientId: "client-1", productId: "product-1", status,
+      invoiceId: status === "invoiced" ? "active-invoice" : null,
+      invoiceItemId: status === "invoiced" ? "active-line" : null,
+      resolvedBy: resolved ? "user-1" : null,
+      resolvedByName: resolved ? "Synthetic staff" : null,
+      resolvedAt: resolved ? "2026-10-29T00:00:00.000Z" : null,
+      resolutionReason: status === "waived" ? "Synthetic waiver reason" : null,
+    }],
+  };
+}
+
+function signedConsentBackup() {
+  const practiceId = "00000000-0000-4000-8000-000000000101";
+  const userId = "00000000-0000-4000-8000-000000000102";
+  const clientId = "00000000-0000-4000-8000-000000000103";
+  const patientId = "00000000-0000-4000-8000-000000000104";
+  const formId = "00000000-0000-4000-8000-000000000105";
+  const requestId = "00000000-0000-4000-8000-000000000106";
+  const fileId = "00000000-0000-4000-8000-000000000107";
+  const signaturePngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const signatureSha256 = createHash("sha256")
+    .update(Buffer.from(signaturePngBase64, "base64"))
+    .digest("hex");
+  const checksumSha256 = createHash("sha256")
+    .update("signed-pdf-v2")
+    .digest("hex");
+  const fileKey = `${practiceId}/consents/${fileId}.pdf`;
+  const timestamp = "2026-09-03T12:00:00.000Z";
+  const sections = {
+    ...emptyBackup(),
+    users: [{ id: userId, practiceId }],
+    clients: [{ id: clientId, practiceId }],
+    patients: [{ id: patientId, practiceId, clientId }],
+    consentForms: [
+      {
+        id: formId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deletedAt: "2026-09-03T12:30:00.000Z",
+        practiceId,
+        slug: "historical-surgery",
+        title: "Historical surgery consent",
+        body: "Frozen source template.",
+        sortOrder: 1,
+        isActive: false,
+      },
+    ],
+    files: [
+      {
+        id: fileId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deletedAt: null,
+        practiceId,
+        uploadedBy: userId,
+        fileName: "signed-consent.pdf",
+        fileKey,
+        fileUrl: `/api/files/${fileKey}`,
+        mimeType: "application/pdf",
+        fileSizeBytes: 13,
+        checksumSha256,
+        storageStatus: "available",
+        storageVerifiedAt: timestamp,
+        category: "consents",
+        source: "consent_signature",
+        idempotencyKey: requestId,
+        entityType: "patient",
+        entityId: patientId,
+        patientId,
+        appointmentId: null,
+      },
+    ],
+    signedConsentEvidence: [
+      {
+        evidenceProfile: "attested-signature-v1",
+        id: requestId,
+        createdAt: timestamp,
+        updatedAt: "2026-09-03T12:05:00.000Z",
+        practiceId,
+        patientId,
+        createdBy: userId,
+        appointmentId: null,
+        formId,
+        expiresAt: "2026-09-03T12:15:00.000Z",
+        title: "Historical surgery consent",
+        bodyText: "Frozen signed disclosure.",
+        signerName: "Owner Example",
+        signedAt: "2026-09-03T12:04:00.000Z",
+        signaturePngBase64,
+        signatureSha256,
+        signatureMethod: "typed",
+        signerAttestationVersion: "owner-authority-v1",
+        documentRenderVersion: "consent-pdf-v2",
+        fileId,
+        signedFileKey: fileKey,
+        signedFileChecksumSha256: checksumSha256,
+        signedFileSizeBytes: 13,
+      },
+    ],
+  };
+  return withCanonicalCounts({
+    formatVersion: PRACTICE_EXPORT_FORMAT_VERSION,
+    practiceId,
+    exportedAt: timestamp,
+    practice: { id: practiceId, name: "Sealed Evidence Clinic" },
+    ...sections,
+  });
+}
+
+describe("sealed signed-consent backup v9", () => {
+  it("validates signed evidence, exact referenced form/file, and canonical counts", () => {
+    const backup = signedConsentBackup();
+
+    expect(PRACTICE_EXPORT_FORMAT_VERSION).toBe(9);
+    expect(practiceBackupContainsSealedConsentEvidence(backup)).toBe(true);
+    expect(validatePracticeExportRestore(backup)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const missingCount = {
+      ...backup,
+      counts: { ...backup.counts },
+    };
+    delete (missingCount.counts as Record<string, unknown>).signedConsentEvidence;
+    expect(validatePracticeExportRestore(missingCount).errors).toContain(
+      "backup counts are missing canonical sections: signedConsentEvidence.",
+    );
+  });
+
+  it("rejects capabilities, provider identities, and altered byte evidence", () => {
+    const backup = signedConsentBackup();
+    const evidence = backup.signedConsentEvidence[0]!;
+    const file = backup.files[0]!;
+    const tampered = withCanonicalCounts({
+      ...backup,
+      files: [{ ...file, objectEtag: "provider-secret" }],
+      signedConsentEvidence: [
+        {
+          ...evidence,
+          tokenHash: "a".repeat(64),
+          signatureSha256: "b".repeat(64),
+        },
+      ],
+    });
+
+    expect(validatePracticeExportRestore(tampered).errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("unsupported or secret fields: tokenHash"),
+        expect.stringContaining("exact modern PNG signature evidence"),
+        expect.stringContaining("exact portable consent PDF manifest"),
+      ]),
+    );
+  });
+
+  it("keeps legacy signed evidence without a frozen PDF manifest fail-closed", () => {
+    const backup = signedConsentBackup();
+    const evidence = backup.signedConsentEvidence[0]!;
+    Object.assign(evidence, {
+      evidenceProfile: "legacy-pre-attestation-v1",
+      signaturePngBase64: null,
+      signatureSha256: null,
+      signatureMethod: null,
+      signerAttestationVersion: null,
+      documentRenderVersion: null,
+      signedFileKey: null,
+      signedFileChecksumSha256: null,
+      signedFileSizeBytes: null,
+    });
+    const before = JSON.stringify(backup);
+    const result = validatePracticeExportRestore(backup);
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContainEqual(
+      expect.stringContaining("legacy_frozen_pdf_manifest_missing"),
+    );
+    expect(JSON.stringify(backup)).toBe(before);
+    expect(backup.signedConsentEvidence).toHaveLength(1);
+  });
+
+  it.each([
+    ["practiceId", "other-practice", "practiceId"],
+    ["deletedAt", "2026-09-04T00:00:00.000Z", "deletedAt"],
+    ["idempotencyKey", "other-request", "idempotencyKey"],
+    ["mimeType", "text/plain", "mimeType"],
+    ["category", "documents", "category"],
+    ["source", "upload", "source"],
+    ["entityType", "client", "entityType"],
+    ["entityId", "other-patient", "entityId"],
+    ["patientId", "other-patient", "patientId"],
+    ["appointmentId", "other-appointment", "appointmentId"],
+    ["fileKey", "other/key.pdf", "fileKey"],
+    ["checksumSha256", "b".repeat(64), "checksumSha256"],
+    ["fileSizeBytes", 14, "fileSizeBytes"],
+    ["objectEtag", "synthetic-provider-identity", "objectEtag_forbidden"],
+    ["objectVersionId", "synthetic-provider-version", "objectVersionId_forbidden"],
+  ])("identifies a %s consent PDF binding mismatch without exposing its value", (field, value, diagnostic) => {
+    const backup = signedConsentBackup();
+    Object.assign(backup.files[0]!, { [field]: value });
+    const result = validatePracticeExportRestore(backup);
+    const bindingError = result.errors.find((error) =>
+      error.includes("exact portable consent PDF manifest"),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(bindingError).toContain(`mismatches: ${diagnostic}`);
+    expect(bindingError).not.toContain(String(value));
+  });
+
+  it("distinguishes an absent referenced consent PDF manifest", () => {
+    const backup = signedConsentBackup();
+    backup.files = [];
+    const result = validatePracticeExportRestore(withCanonicalCounts(backup));
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContainEqual(
+      expect.stringContaining("mismatches: file_missing"),
+    );
+  });
+
+  it("preserves bounded pre-attestation evidence without inventing provenance", () => {
+    const current = signedConsentBackup();
+    const modern = current.signedConsentEvidence[0]!;
+    const legacy = withCanonicalCounts({
+      ...current,
+      signedConsentEvidence: [
+        {
+          ...modern,
+          evidenceProfile: "legacy-pre-attestation-v1",
+          signatureMethod: null,
+          signerAttestationVersion: null,
+          documentRenderVersion: null,
+        },
+      ],
+    });
+    expect(validatePracticeExportRestore(legacy)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const withoutRetainedPng = withCanonicalCounts({
+      ...legacy,
+      signedConsentEvidence: [
+        {
+          ...legacy.signedConsentEvidence[0]!,
+          signaturePngBase64: null,
+          signatureSha256: null,
+        },
+      ],
+    });
+    expect(validatePracticeExportRestore(withoutRetainedPng)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const fabricated = withCanonicalCounts({
+      ...legacy,
+      signedConsentEvidence: [
+        {
+          ...legacy.signedConsentEvidence[0]!,
+          signerAttestationVersion: "owner-authority-v1",
+        },
+      ],
+    });
+    expect(validatePracticeExportRestore(fabricated).errors).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          "legacy provenance fields must remain explicitly null",
+        ),
+      ]),
+    );
+  });
+
+  it("rejects clinic-role restore and requires explicit owner legal-evidence mode", async () => {
+    const backup = signedConsentBackup();
+    const rootDb = { transaction: vi.fn() };
+
+    await expect(
+      restorePracticeData(rootDb as never, backup.practiceId, backup),
+    ).rejects.toThrow("explicit database-owner recovery workflow");
+    expect(rootDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it("accepts pre-v9 backups only when they do not contain dangling consent references", () => {
+    const current = signedConsentBackup();
+    const {
+      consentForms: _consentForms,
+      signedConsentEvidence: _signedConsentEvidence,
+      counts: _counts,
+      practice: _practice,
+      ...legacyBase
+    } = current;
+    const legacy = {
+      ...legacyBase,
+      formatVersion: 8,
+      files: [],
+      users: [],
+      clients: [],
+      patients: [],
+    };
+    expect(validatePracticeExportRestore(legacy)).toEqual({
+      valid: true,
+      errors: [],
+    });
+
+    const dangling = {
+      ...legacy,
+      visitTreatmentPlanResponses: [
+        {
+          id: "response-1",
+          consentRequestId: "missing-consent",
+        },
+      ],
+    };
+    expect(validatePracticeExportRestore(dangling).errors).toContain(
+      LEGACY_SIGNED_CONSENT_RECOVERY_MESSAGE,
+    );
+  });
+
+  it("fails preflight before restore mutates state for a legacy consent-signature manifest", async () => {
+    const current = signedConsentBackup();
+    const {
+      consentForms: _consentForms,
+      signedConsentEvidence: _signedConsentEvidence,
+      counts: _counts,
+      practice: _practice,
+      ...legacyBase
+    } = current;
+    const legacy = {
+      ...legacyBase,
+      formatVersion: 8,
+    };
+    const rootDb = {
+      transaction: vi.fn(),
+      update: vi.fn(),
+    };
+
+    expect(validatePracticeExportRestore(legacy).errors).toContain(
+      LEGACY_SIGNED_CONSENT_RECOVERY_MESSAGE,
+    );
+    expect(practiceBackupContainsSealedConsentEvidence(legacy)).toBe(false);
+    await expect(
+      restorePracticeData(rootDb as never, legacy.practiceId, legacy),
+    ).rejects.toThrow(LEGACY_SIGNED_CONSENT_RECOVERY_MESSAGE);
+    expect(rootDb.update).not.toHaveBeenCalled();
+    expect(rootDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it("keeps restore order and projection explicit in source", () => {
+    const source = readFileSync("lib/backup/export.ts", "utf8");
+    expect(source).toContain("async function sealedSignedConsentEvidenceRows");
+    expect(source).not.toContain("token: consentRequests.token");
+    expect(source).not.toContain("tokenHash: consentRequests.tokenHash");
+    expect(source.indexOf('restorePracticeRows("consentForms"')).toBeLessThan(
+      source.indexOf("restored.files = await restoreRows"),
+    );
+    expect(source.indexOf("restoreSignedConsentEvidence(")).toBeLessThan(
+      source.indexOf('restorePracticeRows("visitTreatmentPlans"'),
+    );
+  });
+});
+
 function restoreDb(executeResults: unknown[][] = []) {
   const inserted: { rows: Record<string, unknown>[] }[] = [];
   const updates: Record<string, unknown>[] = [];
   const executed: unknown[] = [];
   const timeline: string[] = [];
   const pendingExecuteResults = [...executeResults];
+  let recoverySelectCount = 0;
   const db = {
     execute: vi.fn(async (query: unknown) => {
       executed.push(query);
@@ -319,6 +710,17 @@ function restoreDb(executeResults: unknown[][] = []) {
           },
         ]
       );
+    }),
+    select: vi.fn(() => {
+      const result =
+        recoverySelectCount++ === 0 ? [{ id: "target-practice" }] : [];
+      const builder = {
+        from: vi.fn(() => builder),
+        where: vi.fn(() => builder),
+        for: vi.fn(() => builder),
+        limit: vi.fn(async () => result),
+      };
+      return builder;
     }),
     insert: vi.fn(() => ({
       values: vi.fn((values: Record<string, unknown>[]) => ({
@@ -1351,6 +1753,56 @@ describe("practice backup secret handling", () => {
 });
 
 describe("restorePracticeData", () => {
+  it("preserves explicit chart-note visibility without promoting legacy internal notes", async () => {
+    const backup = {
+      ...emptyBackup(),
+      practiceId: "source-practice",
+      users: [
+        {
+          id: "note-author",
+          practiceId: "source-practice",
+          name: "Synthetic Doctor",
+        },
+      ],
+      clients: [{ id: "note-client", practiceId: "source-practice" }],
+      patients: [
+        {
+          id: "note-patient",
+          practiceId: "source-practice",
+          clientId: "note-client",
+        },
+      ],
+      clinicalNotes: [
+        {
+          id: "chart-note",
+          practiceId: "source-practice",
+          patientId: "note-patient",
+          authorId: "note-author",
+          content: "Pasted\n<script>literal text</script>",
+          isChartNote: true,
+        },
+        {
+          id: "legacy-note",
+          practiceId: "source-practice",
+          patientId: "note-patient",
+          authorId: "note-author",
+          content: "Internal note",
+        },
+      ],
+    };
+    const { db, inserted } = restoreDb();
+    await restorePracticeData(db as never, "target-practice", backup);
+    const rows = inserted.flatMap(({ rows }) => rows);
+    expect(rows.find((row) => row.id === "chart-note")).toMatchObject({
+      practiceId: "target-practice",
+      isChartNote: true,
+      content: "Pasted\n<script>literal text</script>",
+    });
+    expect(rows.find((row) => row.id === "legacy-note")).not.toHaveProperty(
+      "isChartNote",
+    );
+  });
+
   it("rejects an oversized restore before opening a transaction", async () => {
     const rootDb = {
       transaction: vi.fn(),
@@ -2505,6 +2957,74 @@ describe("restorePracticeData", () => {
     );
   });
 
+  it.each(["pending", "waived", "invoiced"] as const)(
+    "preserves voided invoice history for a %s dispense charge",
+    (status) => {
+      const backup = dispenseInvoiceHistoryBackup(status);
+      expect(validatePracticeExportRestore(JSON.parse(JSON.stringify(backup))))
+        .toEqual({ valid: true, errors: [] });
+    },
+  );
+
+  it.each(["pending", "waived"] as const)(
+    "still rejects an active invoice line for a %s dispense charge",
+    (status) => {
+      const backup = dispenseInvoiceHistoryBackup(status);
+      backup.invoices[0]!.status = "draft";
+      expect(validatePracticeExportRestore(backup).valid).toBe(false);
+    },
+  );
+
+  it.each(["estimate", "deleted_line"] as const)(
+    "does not count retained %s history as an active dispense charge",
+    (kind) => {
+      const backup = dispenseInvoiceHistoryBackup("waived");
+      Object.assign(backup.invoices[0]!, { status: "draft" });
+      if (kind === "estimate") Object.assign(backup.invoices[0]!, { isEstimate: true });
+      if (kind === "deleted_line") Object.assign(backup.invoiceItems[0]!, { deletedAt: "2026-10-29T00:00:00Z" });
+      expect(validatePracticeExportRestore(backup)).toEqual({ valid: true, errors: [] });
+    },
+  );
+
+  it.each(["draft", "void", "estimate"] as const)(
+    "rejects a non-deleted dispense line on a soft-deleted %s invoice before accessing the database",
+    async (kind) => {
+      const backup = dispenseInvoiceHistoryBackup("waived");
+      Object.assign(backup.invoices[0]!, {
+        status: kind === "void" ? "void" : "draft",
+        isEstimate: kind === "estimate",
+        deletedAt: "2026-10-29T00:00:00Z",
+      });
+      const serialized = JSON.parse(JSON.stringify(backup));
+      const message =
+        "invoiceItems[void-line] non-deleted dispense line cannot reference a soft-deleted invoice.";
+      expect(validatePracticeExportRestore(serialized)).toEqual({
+        valid: false,
+        errors: [message],
+      });
+
+      const { db } = restoreDb();
+      await expect(
+        restorePracticeData(db as never, "target-practice", serialized),
+      ).rejects.toThrow(`Backup contains invalid restore data: ${message}`);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["", "four", " ".repeat(5), "x".repeat(1001)])(
+    "still rejects an invalid waiver reason (%s)",
+    (reason) => {
+      const backup = dispenseInvoiceHistoryBackup("waived");
+      backup.dispenseChargeQueue[0]!.resolutionReason = reason;
+      expect(validatePracticeExportRestore(backup).errors).toContain(
+        "dispenseChargeQueue[dispense-1] waived state requires one bounded reason and no invoice.",
+      );
+    },
+  );
+
   it("rejects a present prescription ledger that omits a created event", () => {
     const backup = {
       ...emptyBackup(),
@@ -3008,14 +3528,14 @@ describe("restorePracticeData", () => {
     );
     const restoredRows = inserted.flatMap(({ rows }) => rows);
 
-    expect(rootDb.transaction).toHaveBeenCalledTimes(1);
+    expect(rootDb.transaction).toHaveBeenCalledTimes(2);
     expect(updates[0]).toMatchObject({
       recoveryHold: true,
       recoveryHoldReason: PRACTICE_RECOVERY_HOLD_REASON,
       recoveryHoldSetAt: expect.any(Date),
       recoveryHoldReleasedAt: null,
     });
-    expect(timeline[0]).toBe("recovery-hold");
+    expect(timeline).toContain("recovery-hold");
     expect(timeline.indexOf("recovery-hold")).toBeLessThan(
       timeline.indexOf("insert:client-1"),
     );
@@ -3088,6 +3608,40 @@ describe("restorePracticeData", () => {
     );
   });
 
+  it("refuses to start recovery while a bounded consent storage lease is active", async () => {
+    let selectCount = 0;
+    const select = vi.fn(() => {
+      const result =
+        selectCount++ === 0
+          ? [{ id: "target-practice" }]
+          : [{ id: "active-consent" }];
+      const builder = {
+        from: vi.fn(() => builder),
+        where: vi.fn(() => builder),
+        for: vi.fn(() => builder),
+        limit: vi.fn(async () => result),
+      };
+      return builder;
+    });
+    const update = vi.fn();
+    const recoveryDb = {
+      transaction: vi.fn(async (fn: (tx: unknown) => unknown) =>
+        fn({ execute: vi.fn(async () => []), select, update }),
+      ),
+    };
+    const bulkDb = { transaction: vi.fn() };
+
+    await expect(
+      restorePracticeData(bulkDb as never, "target-practice", emptyBackup(), {
+        recoveryHoldDb: recoveryDb as never,
+      }),
+    ).rejects.toThrow(
+      "Recovery cannot begin while a signed-document storage operation is in flight",
+    );
+    expect(update).not.toHaveBeenCalled();
+    expect(bulkDb.transaction).not.toHaveBeenCalled();
+  });
+
   it("commits the recovery hold before bulk restore and leaves it set on failure", async () => {
     const backup = emptyBackup();
     const holdValues: Record<string, unknown>[] = [];
@@ -3097,9 +3651,28 @@ describe("restorePracticeData", () => {
       holdValues.push(values);
       return { where };
     });
-    const transaction = vi.fn(async () => {
-      throw new Error("bulk restore failed");
+    let selectCount = 0;
+    const select = vi.fn(() => {
+      const result = selectCount++ === 0 ? [{ id: "target-practice" }] : [];
+      const builder = {
+        from: vi.fn(() => builder),
+        where: vi.fn(() => builder),
+        for: vi.fn(() => builder),
+        limit: vi.fn(async () => result),
+      };
+      return builder;
     });
+    const holdTx = {
+      execute: vi.fn(async () => []),
+      select,
+      update: vi.fn(() => ({ set })),
+    };
+    const transaction = vi
+      .fn()
+      .mockImplementationOnce(async (fn: (tx: unknown) => unknown) =>
+        fn(holdTx),
+      )
+      .mockRejectedValueOnce(new Error("bulk restore failed"));
     const rootDb = {
       update: vi.fn(() => ({ set })),
       transaction,
@@ -3117,8 +3690,7 @@ describe("restorePracticeData", () => {
       }),
     ]);
     expect(returning).toHaveBeenCalledOnce();
-    expect(transaction).toHaveBeenCalledOnce();
-    expect(rootDb.update).toHaveBeenCalledOnce();
+    expect(transaction).toHaveBeenCalledTimes(2);
   });
 
   it("rewrites practice-scoped rows and leaves parent-scoped child rows intact", async () => {

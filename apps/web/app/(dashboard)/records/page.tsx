@@ -34,6 +34,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
+import {
+  PrescriptionInventoryProductPicker,
+  type PrescriptionInventoryProduct,
+} from "@/components/records/prescription-inventory-product-picker";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
@@ -51,9 +55,9 @@ import {
   PRESCRIPTION_QUANTITY_MIN,
   PRESCRIPTION_REFILLS_MIN,
   isPrescriptionNonnegativeIntegerInputValid,
-  isPrescriptionOptionalPositiveIntegerInputValid,
+  isPrescriptionOptionalQuantityInputValid,
   isPrescriptionOptionalTextInputValid,
-  isPrescriptionPositiveIntegerInputValid,
+  isPrescriptionQuantityInputValid,
   isPrescriptionRequiredTextInputValid,
 } from "@/lib/records/prescription-policy";
 import {
@@ -635,6 +639,8 @@ function RecordsPageContent() {
   const [prescriptionForm, setPrescriptionForm] = useState<PrescriptionFormState>(
     () => initialPrescriptionForm()
   );
+  const [selectedPrescriptionProduct, setSelectedPrescriptionProduct] =
+    useState<PrescriptionInventoryProduct | null>(null);
   const trimmedSearchQuery = searchQuery.trim();
   const canSearchPatients = isPatientSearchInputValid(searchQuery);
   const canSearchReplacementPatients =
@@ -985,36 +991,23 @@ function RecordsPageContent() {
     prescriptionSafety.data
       ? prescriptionSafety.data
       : null;
-  const inventoryProducts = trpc.inventory.list.useQuery(
-    { limit: 100, offset: 0 },
-    {
-      enabled: canPrescribe && showPrescriptionForm,
-    }
+  const linkedProductQuery = trpc.inventory.getById.useQuery(
+    { id: prescriptionForm.productId || "00000000-0000-0000-0000-000000000000" },
+    { enabled: Boolean(prescriptionForm.productId), staleTime: 0 },
   );
-  const inventoryProductsMissing =
-    canPrescribe &&
-    showPrescriptionForm &&
-    !inventoryProducts.isLoading &&
-    !inventoryProducts.error &&
-    !inventoryProducts.data;
-  const verifiedInventoryProducts =
-    inventoryProducts.error ||
-    inventoryProductsMissing ||
-    !inventoryProducts.data
-      ? null
-      : inventoryProducts.data;
-  const selectedPrescriptionProduct = verifiedInventoryProducts
-    ? verifiedInventoryProducts.items.find(
-        (product) => product.id === prescriptionForm.productId
-      )
-    : undefined;
+  const linkedPrescriptionProduct = prescriptionForm.productId
+    ? selectedPrescriptionProduct && { ...selectedPrescriptionProduct, ...linkedProductQuery.data }
+    : null;
   const prescriptionQuantity = optionalNumber(prescriptionForm.quantity);
   const hasValidPrescriptionQuantityForInventory =
     !prescriptionForm.productId ||
-    (isPrescriptionPositiveIntegerInputValid(prescriptionForm.quantity) &&
-      selectedPrescriptionProduct !== undefined &&
+    (isPrescriptionQuantityInputValid(prescriptionForm.quantity) &&
+      linkedPrescriptionProduct !== null &&
+      linkedPrescriptionProduct.inventoryTracked &&
+      !linkedProductQuery.isError &&
+      !linkedProductQuery.isFetching &&
       prescriptionQuantity !== undefined &&
-      prescriptionQuantity <= selectedPrescriptionProduct.stockQuantity);
+      prescriptionQuantity <= linkedPrescriptionProduct.stockQuantity);
   const visibleTabs = tabs.filter(
     (tab) =>
       userRole !== "front_desk" || !frontDeskRestrictedTabs.includes(tab.id)
@@ -1219,7 +1212,7 @@ function RecordsPageContent() {
       prescriptionForm.frequency,
       PRESCRIPTION_FREQUENCY_MAX_LENGTH
     ) &&
-    isPrescriptionOptionalPositiveIntegerInputValid(
+    isPrescriptionOptionalQuantityInputValid(
       prescriptionForm.quantity
     ) &&
     isPrescriptionNonnegativeIntegerInputValid(
@@ -2160,15 +2153,12 @@ function RecordsPageContent() {
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
                           Inventory Item
                         </label>
-                        <select
+                        <PrescriptionInventoryProductPicker
                           value={prescriptionForm.productId}
-                          onChange={(e) => {
-                            const productId = e.target.value;
-                            const selectedProduct = verifiedInventoryProducts
-                              ? verifiedInventoryProducts.items.find(
-                                  (product) => product.id === productId
-                                )
-                              : undefined;
+                          selectedProduct={linkedPrescriptionProduct}
+                          onChange={(selectedProduct) => {
+                            const productId = selectedProduct?.id ?? "";
+                            setSelectedPrescriptionProduct(selectedProduct);
                             setPrescriptionForm((current) => ({
                               ...current,
                               productId,
@@ -2179,34 +2169,12 @@ function RecordsPageContent() {
                               acknowledgeSafetyWarnings: false,
                             }));
                           }}
-                          className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        >
-                          <option value="">Not dispensed from inventory</option>
-                          {inventoryProducts.isLoading ? (
-                            <option disabled>Loading inventory...</option>
-                          ) : null}
-                          {inventoryProducts.error || inventoryProductsMissing ? (
-                            <option disabled>Inventory unavailable</option>
-                          ) : null}
-                          {verifiedInventoryProducts
-                            ? verifiedInventoryProducts.items.map((product) => (
-                                <option key={product.id} value={product.id}>
-                                  {product.name} ({product.stockQuantity} units
-                                  on hand · {product.unitPrice} each)
-                                </option>
-                              ))
-                            : null}
-                        </select>
-                        {inventoryProducts.error || inventoryProductsMissing ? (
-                          <p className="mt-1 text-xs text-destructive">
-                            {inventoryProducts.error?.message ??
-                              "Unable to load inventory products. Please retry."}
-                          </p>
-                        ) : prescriptionForm.productId &&
-                          selectedPrescriptionProduct ? (
+                        />
+                        {prescriptionForm.productId &&
+                        linkedPrescriptionProduct ? (
                           <p className="mt-1 text-xs text-muted-foreground">
                             Stock and billing both use individual units at{" "}
-                            {selectedPrescriptionProduct.unitPrice} per unit.
+                            {linkedPrescriptionProduct.unitPrice} per unit.
                             The prescription quantity will be deducted and
                             charged in that same unit.
                           </p>
@@ -2248,7 +2216,7 @@ function RecordsPageContent() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-muted-foreground mb-1">
-                          {selectedPrescriptionProduct
+                          {linkedPrescriptionProduct
                             ? "Quantity (inventory units)"
                             : "Quantity"}
                         </label>
@@ -2256,7 +2224,10 @@ function RecordsPageContent() {
                           type="number"
                           min={PRESCRIPTION_QUANTITY_MIN}
                           max={PRESCRIPTION_COUNT_MAX}
-                          step={1}
+                          step="0.001"
+                          aria-label="Prescription quantity"
+                          aria-describedby={linkedPrescriptionProduct ? "prescription-stock-feedback" : undefined}
+                          aria-invalid={Boolean(prescriptionForm.productId) && !hasValidPrescriptionQuantityForInventory}
                           value={prescriptionForm.quantity}
                           onChange={(e) =>
                             setPrescriptionForm((current) => ({
@@ -2266,6 +2237,22 @@ function RecordsPageContent() {
                           }
                           placeholder="e.g. 30"
                         />
+                        {linkedPrescriptionProduct ? (
+                          <div id="prescription-stock-feedback" className="mt-2 text-xs" role="status">
+                            <p>{linkedPrescriptionProduct.inventoryTracked
+                              ? `${linkedPrescriptionProduct.stockQuantity} inventory units available. Quantity is the total amount dispensed, in the same units as stock and price.`
+                              : "Stock tracking has not been set up for this item. Enter a reviewed opening quantity before dispensing."}</p>
+                            {!hasValidPrescriptionQuantityForInventory && !linkedProductQuery.isFetching && linkedPrescriptionProduct.inventoryTracked ? (
+                              <p className="mt-1 text-destructive">{linkedProductQuery.isError
+                                ? "Unable to verify stock. Refresh stock before saving."
+                                : "Cannot save this quantity against the recorded stock. Review the stock balance and dispensing units before continuing."}</p>
+                            ) : null}
+                            <a className="mt-1 inline-block underline" href="/inventory" target="_blank" rel="noopener noreferrer">Review inventory in a new tab</a>
+                            <button type="button" className="ml-3 underline" disabled={linkedProductQuery.isFetching} onClick={() => void linkedProductQuery.refetch()}>
+                              {linkedProductQuery.isFetching ? "Checking stock…" : "Refresh stock"}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-muted-foreground mb-1">

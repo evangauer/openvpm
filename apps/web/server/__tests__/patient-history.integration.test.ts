@@ -408,6 +408,36 @@ describeWithPatientHistoryPostgres(
           noteType: "general",
           content: "PRIVATE_WORKLIST_SENTINEL carprofen",
         });
+        const [chartNote] = await ownerDb
+          .insert(schema.clinicalNotes)
+          .values({
+            practiceId: practiceA.id,
+            patientId: patientA.id,
+            authorId: userA.id,
+            noteType: "phone_call",
+            isChartNote: true,
+            content:
+              "Unified surface marker chart note\nLiteral <script>pasted text</script> & 50%",
+            createdAt: new Date("2026-08-05T02:00:00.000Z"),
+          })
+          .returning();
+        await ownerDb.insert(schema.clinicalNotes).values([
+          {
+            practiceId: practiceA.id,
+            patientId: patientA.id,
+            authorId: userA.id,
+            isChartNote: true,
+            content: "PRIVATE_DELETED_CHART_NOTE",
+            deletedAt: new Date(),
+          },
+          {
+            practiceId: practiceB.id,
+            patientId: patientB.id,
+            authorId: userB.id,
+            isChartNote: true,
+            content: "PRIVATE_FOREIGN_CHART_NOTE",
+          },
+        ]);
         await ownerDb.insert(schema.soapNotes).values({
           practiceId: practiceB.id,
           patientId: patientB.id,
@@ -527,12 +557,13 @@ describeWithPatientHistoryPostgres(
           patientId: patientA.id,
           query: "unified surface marker",
         });
-        expect(unifiedSurface.total).toBe(8);
+        expect(unifiedSurface.total).toBe(9);
         expect(
           new Set(unifiedSurface.items.map(({ recordType }) => recordType)),
         ).toEqual(
           new Set([
             "soap_note",
+            "chart_note",
             "prescription",
             "vaccination",
             "lab_result",
@@ -552,6 +583,23 @@ describeWithPatientHistoryPostgres(
           query: "PRIVATE_FOLLOW_UP_SENTINEL",
         });
         expect(privateLabWork.total).toBe(0);
+        const chartNotes = await caller().searchPatientHistory({
+          patientId: patientA.id,
+          recordTypes: ["chart_note"],
+          query: "<script>",
+        });
+        expect(chartNotes.total).toBe(1);
+        expect(chartNotes.items[0]).toMatchObject({
+          id: chartNote!.id,
+          recordType: "chart_note",
+          authorName: "Synthetic Clinician A",
+          summary: "Literal <script>pasted text</script> & 50%",
+        });
+        const privateNotes = await caller().searchPatientHistory({
+          patientId: patientA.id,
+          query: "PRIVATE_",
+        });
+        expect(privateNotes.total).toBe(0);
 
         const literal = await caller().searchPatientHistory({
           patientId: patientA.id,

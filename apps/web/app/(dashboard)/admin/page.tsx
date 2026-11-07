@@ -17,6 +17,8 @@ import { EmptyState } from "@/components/common/empty-state";
 import { PageLoading } from "@/components/common/loading";
 import { SmsRecoveryConsole } from "@/components/admin/sms-recovery-console";
 import { ClinicPilotConsole } from "@/components/admin/clinic-pilot-console";
+import { BUILD_SCENE_LABELS } from "@/lib/build/catalog";
+import { DEMO_DISCLOSURE_FOLLOWUP_V2 } from "@/lib/growth/demo-disclosure";
 
 const EMPTY_UUID = "00000000-0000-4000-8000-000000000000";
 const MESSAGING_HISTORY_LIMIT = 50;
@@ -79,6 +81,14 @@ const recoveryTrialStyles: Record<string, string> = {
   no_trial: "bg-gray-100 text-gray-600",
 };
 
+const leadTierStyles: Record<string, string> = {
+  hot: "bg-red-100 text-red-700",
+  warm: "bg-amber-100 text-amber-800",
+  nurture: "bg-gray-100 text-gray-600",
+  self_host: "bg-indigo-100 text-indigo-700",
+  customer: "bg-green-100 text-green-700",
+};
+
 function recoveryLabel(value: string) {
   return value.replaceAll("_", " ");
 }
@@ -99,6 +109,19 @@ export default function AdminPage() {
     trpc.admin.activationFunnel.useQuery({ days: 30 }, { retry: false });
   const { data: recoveryQueue, error: recoveryError } =
     trpc.admin.activationRecovery.useQuery(undefined, { retry: false });
+  const { data: demoLeads, error: demoLeadsError } =
+    trpc.admin.demoLeads.useQuery(undefined, { retry: false });
+  const { data: nps } = trpc.admin.nps.useQuery(undefined, { retry: false });
+  const { data: buildFunnel } = trpc.admin.buildFunnel.useQuery(undefined, {
+    retry: false,
+  });
+  const { data: previewExperiment } = trpc.admin.previewExperiment.useQuery(
+    undefined,
+    { retry: false },
+  );
+  const setDemoLeadPaused = trpc.admin.setDemoLeadPaused.useMutation({
+    onSuccess: () => utils.admin.demoLeads.invalidate(),
+  });
   const { data: journey, error: journeyError } =
     trpc.admin.journeyFunnel.useQuery({ days: 30 }, { retry: false });
   const { data: messagingQueue, error: messagingQueueError } =
@@ -531,8 +554,10 @@ export default function AdminPage() {
           <span className="text-sm">Clinic activation recovery</span>
         </div>
         <p className="mt-2 text-xs text-muted-foreground">
-          Ranked by the next operator action, then by days since a real clinic
-          milestone. Internal/test workspaces and sample data are excluded.
+          Ranked by the next operator action, then by lead score, then by days
+          since a real clinic milestone. Lead score is fit (clinic type and
+          goal) plus intent (what they did); hover a score for its reasons.
+          Internal/test workspaces and sample data are excluded.
         </p>
         {recoveryQueue ? (
           <div className="mt-4 overflow-x-auto rounded-md border border-border">
@@ -541,6 +566,7 @@ export default function AdminPage() {
                 <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
                   <th className="px-3 py-2 font-medium">Rank</th>
                   <th className="px-3 py-2 font-medium">Clinic contact</th>
+                  <th className="px-3 py-2 font-medium">Lead</th>
                   <th className="px-3 py-2 font-medium">Trial</th>
                   <th className="px-3 py-2 font-medium">Setup</th>
                   <th className="px-3 py-2 font-medium">Real activity</th>
@@ -576,6 +602,25 @@ export default function AdminPage() {
                         </p>
                       )}
                     </td>
+                    <td className="px-3 py-2" title={clinic.lead.reasons.join("\n")}>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
+                          leadTierStyles[clinic.lead.tier] ??
+                          leadTierStyles.nurture
+                        }`}
+                      >
+                        {recoveryLabel(clinic.lead.tier)}
+                      </span>
+                      <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+                        {clinic.lead.total} · fit {clinic.lead.fit} · intent{" "}
+                        {clinic.lead.intent}
+                      </p>
+                      {clinic.lead.reasons[0] ? (
+                        <p className="mt-0.5 max-w-[14rem] text-xs text-muted-foreground">
+                          {clinic.lead.reasons[0]}
+                        </p>
+                      ) : null}
+                    </td>
                     <td className="px-3 py-2">
                       <span
                         className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
@@ -593,6 +638,13 @@ export default function AdminPage() {
                     </td>
                     <td className="px-3 py-2 text-muted-foreground">
                       <p>{clinic.setupStage}</p>
+                      {clinic.previewArm ? (
+                        <p className="mt-0.5 text-xs">
+                          {clinic.previewArm === "preview"
+                            ? "Signup: preview before card"
+                            : "Signup: card first"}
+                        </p>
+                      ) : null}
                       {clinic.setupHelpRequestedAt ? (
                         <p className="mt-0.5 text-xs font-medium text-emerald-700">
                           Help requested{" "}
@@ -600,6 +652,14 @@ export default function AdminPage() {
                             clinic.setupHelpRequestedAt,
                             clinic.timezone,
                           )}
+                        </p>
+                      ) : null}
+                      {clinic.stopReason ? (
+                        <p className="mt-0.5 max-w-[16rem] text-xs font-medium text-emerald-700">
+                          Stopped: {recoveryLabel(clinic.stopReason)}
+                          {clinic.stopReasonNote
+                            ? ` — “${clinic.stopReasonNote}”`
+                            : ""}
                         </p>
                       ) : null}
                     </td>
@@ -631,7 +691,7 @@ export default function AdminPage() {
                 {recoveryQueue.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={7}
+                      colSpan={8}
                       className="px-3 py-6 text-center text-muted-foreground"
                     >
                       No clinic workspaces need activation recovery.
@@ -646,6 +706,267 @@ export default function AdminPage() {
             {recoveryError
               ? "Could not load activation recovery."
               : "Loading activation recovery…"}
+          </p>
+        )}
+      </div>
+
+      {/* Build your clinic: where visitors leave */}
+      {buildFunnel && buildFunnel.scenes[0]!.reached > 0 ? (
+        <div className="mt-6 rounded-lg border border-border bg-card p-5">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <TrendingUp className="h-4 w-4" />
+            <span className="text-sm">Build your clinic</span>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Visitors who reached each scene in the last 30 days, with the
+            median time spent before continuing.
+          </p>
+          <div className="mt-4 space-y-1.5">
+            {buildFunnel.scenes.map((step) => {
+              const first = buildFunnel.scenes[0]!.reached || 1;
+              const share = Math.round((step.reached / first) * 100);
+              return (
+                <div
+                  key={step.scene}
+                  className="grid grid-cols-[110px_1fr_110px] items-center gap-3 text-sm"
+                >
+                  <span className="text-muted-foreground">
+                    {BUILD_SCENE_LABELS[step.scene]}
+                  </span>
+                  <div className="h-2.5 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-primary"
+                      style={{ width: `${share}%` }}
+                    />
+                  </div>
+                  <span className="tabular-nums">
+                    {step.reached}{" "}
+                    <span className="text-xs text-muted-foreground">
+                      {share}%
+                      {step.medianSeconds != null
+                        ? ` · ${step.medianSeconds}s`
+                        : ""}
+                    </span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-sm tabular-nums">
+            {buildFunnel.submitted} submitted the card step ·{" "}
+            {buildFunnel.addedCard} added a card
+          </p>
+        </div>
+      ) : null}
+
+      {/* Net Promoter Score */}
+      {nps && nps.responses > 0 ? (
+        <div className="mt-6 rounded-lg border border-border bg-card p-5">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <TrendingUp className="h-4 w-4" />
+            <span className="text-sm">Net Promoter Score</span>
+          </div>
+          <div className="mt-3 flex flex-wrap items-baseline gap-x-6 gap-y-1">
+            <p className="font-heading text-3xl font-semibold tabular-nums">
+              {nps.score}
+            </p>
+            <p className="text-sm text-muted-foreground tabular-nums">
+              {nps.responses} clinic{nps.responses === 1 ? "" : "s"} ·{" "}
+              {nps.promoters} promoter{nps.promoters === 1 ? "" : "s"} ·{" "}
+              {nps.passives} passive · {nps.detractors} detractor
+              {nps.detractors === 1 ? "" : "s"} (latest answer per clinic, 180
+              days)
+            </p>
+          </div>
+          <ul className="mt-4 divide-y divide-border rounded-md border border-border text-sm">
+            {nps.recent.map((response) => (
+              <li
+                key={response.practiceId}
+                className="flex gap-3 px-3 py-2"
+              >
+                <span
+                  className={`w-7 shrink-0 text-center font-semibold tabular-nums ${
+                    response.category === "promoter"
+                      ? "text-emerald-700"
+                      : response.category === "detractor"
+                        ? "text-destructive"
+                        : "text-muted-foreground"
+                  }`}
+                >
+                  {response.score}
+                </span>
+                <div className="min-w-0">
+                  <p className="font-medium">
+                    {response.practiceName}
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      {formatDate(response.answeredAt)}
+                    </span>
+                  </p>
+                  {response.comment ? (
+                    <p className="mt-0.5 text-muted-foreground">
+                      “{response.comment}”
+                    </p>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* Preview before card experiment */}
+      {previewExperiment?.some((arm) => arm.registered > 0) ? (
+        <div className="mt-6 rounded-lg border border-border bg-card p-5">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <TrendingUp className="h-4 w-4" />
+            <span className="text-sm">Preview before card</span>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Card-required signups split between exploring a preview first and
+            adding a card first. Card and payment come from Stripe webhooks.
+          </p>
+          <div className="mt-4 overflow-x-auto rounded-md border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Signup</th>
+                  <th className="px-3 py-2 font-medium">Registered</th>
+                  <th className="px-3 py-2 font-medium">Finished setup</th>
+                  <th className="px-3 py-2 font-medium">Added card</th>
+                  <th className="px-3 py-2 font-medium">Paying</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border tabular-nums">
+                {previewExperiment.map((arm) => (
+                  <tr key={arm.arm}>
+                    <td className="px-3 py-2 font-medium">
+                      {arm.arm === "preview" ? "Preview first" : "Card first"}
+                    </td>
+                    <td className="px-3 py-2">{arm.registered}</td>
+                    {[arm.finishedSetup, arm.addedCard, arm.paying].map(
+                      (count, i) => (
+                        <td key={i} className="px-3 py-2">
+                          {count}
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            {arm.registered
+                              ? `${Math.round((count / arm.registered) * 100)}%`
+                              : ""}
+                          </span>
+                        </td>
+                      ),
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Demo leads */}
+      <div className="mt-6 rounded-lg border border-border bg-card p-5">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <TrendingUp className="h-4 w-4" />
+          <span className="text-sm">Demo leads</span>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          People who passed the hosted-demo email gate, most recent first.
+          Follow-up stops when they create an account or when you pause them
+          here to reply personally.
+        </p>
+        {demoLeads ? (
+          <div className="mt-4 overflow-x-auto rounded-md border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/30 text-left text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Email</th>
+                  <th className="px-3 py-2 font-medium">Seen</th>
+                  <th className="px-3 py-2 font-medium">Explored</th>
+                  <th className="px-3 py-2 font-medium">Follow-up</th>
+                  <th className="px-3 py-2 font-medium" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {demoLeads.map((lead) => (
+                  <tr key={lead.leadId} className="align-top hover:bg-muted/20">
+                    <td className="px-3 py-2">
+                      <a
+                        href={`mailto:${lead.email}`}
+                        className="font-medium underline-offset-2 hover:underline"
+                      >
+                        {lead.email}
+                      </a>
+                      {lead.registered ? (
+                        <p className="mt-0.5 text-xs font-medium text-emerald-700">
+                          Created an account
+                        </p>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      <p>First {formatDate(lead.firstSeenAt)}</p>
+                      <p>
+                        Last {formatDate(lead.lastSeenAt)} · {lead.seenCount}{" "}
+                        visit{lead.seenCount === 1 ? "" : "s"}
+                      </p>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      <p className="tabular-nums">
+                        {lead.toolCount} tool{lead.toolCount === 1 ? "" : "s"}
+                      </p>
+                      {lead.firstTool ? (
+                        <p>First: {recoveryLabel(lead.firstTool)}</p>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      <p className="tabular-nums">
+                        {lead.emailsSent} sent
+                        {lead.lastEmailAt
+                          ? ` · last ${formatDate(lead.lastEmailAt)}`
+                          : ""}
+                      </p>
+                      <p>
+                        {lead.disclosureVersion === DEMO_DISCLOSURE_FOLLOWUP_V2
+                          ? "Getting-started series"
+                          : "One feedback email"}
+                      </p>
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      {lead.registered ? null : (
+                        <button
+                          type="button"
+                          disabled={setDemoLeadPaused.isPending}
+                          onClick={() =>
+                            setDemoLeadPaused.mutate({
+                              leadId: lead.leadId,
+                              paused: !lead.pausedAt,
+                            })
+                          }
+                          className="rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-muted/40 disabled:opacity-50"
+                        >
+                          {lead.pausedAt ? "Resume" : "Pause"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {demoLeads.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={5}
+                      className="px-3 py-6 text-center text-muted-foreground"
+                    >
+                      No demo leads yet.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">
+            {demoLeadsError
+              ? "Could not load demo leads."
+              : "Loading demo leads…"}
           </p>
         )}
       </div>

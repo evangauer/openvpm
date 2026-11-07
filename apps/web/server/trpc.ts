@@ -5,13 +5,21 @@ import superjson from "superjson";
 import { ZodError } from "zod";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { authOptions } from "@/lib/auth";
-import { hasBlankConfiguredNextAuthSecret } from "@/lib/auth-secret";
+import { nextAuthSecretRejected } from "@/lib/auth-secret";
 import { recordAuditLog } from "@/lib/audit";
 import { db } from "@openpims/db/client";
 import type { Database } from "@openpims/db/client";
 import { withTenant, withSystem } from "@/lib/tenant-db";
 import { assertHostedRlsRoleOnce } from "@/lib/rls-assertion";
-import { clientIpFromRequest } from "@/lib/request-ip";
+import {
+  clientIpFromRequest,
+  proxyWithoutTrustedHops,
+  resolveClientIp,
+  trustedProxyNotForwarding,
+} from "@/lib/request-ip";
+import { knownDeviceCookieFromHeader } from "@/lib/known-device";
+import { sessionVersionIsCurrent } from "@/lib/session-version";
+import { externallyVisibleRequestOrigin } from "@/lib/request-origin";
 import { practices, users } from "@openpims/db";
 import {
   billingEnforced,
@@ -21,6 +29,16 @@ import {
   type Feature,
 } from "@/lib/billing/plans";
 import { readHostedAiAccess } from "@/lib/billing/ai-access";
+import {
+  hasPreviewAccess,
+  isPreviewPractice,
+  PREVIEW_OUTBOUND_BLOCK_MESSAGE,
+} from "@/lib/billing/preview";
+import {
+  portalSessionTokenFromCookie,
+  resolvePortalSession,
+  type PortalSessionClient,
+} from "@/lib/portal/session";
 
 type UserRole =
   | "admin"
@@ -36,9 +54,12 @@ interface AppSession extends Session {
     name: string;
     role: UserRole;
     practiceId: string;
+    sessionVersion?: number;
     recoveryHold?: boolean;
     emailVerifiedAt?: Date | string | null;
     practiceCreatedAt?: Date | string | null;
+    /** Started in a preview and has no card-backed trial yet. */
+    practiceInPreview?: boolean;
   };
 }
 
@@ -46,6 +67,30 @@ export type TRPCContext = {
   db: Database;
   session: AppSession | null;
   ip?: string | null;
+  portalSessionToken?: string | null;
+  /**
+   * Client address only when the deployment can verify it (Vercel or
+   * OPENVPM_TRUSTED_PROXY_HOPS); `ip` may be a claimed, forgeable value.
+   */
+  verifiedIp?: string | null;
+  /** Raw signed known-device cookie, if the request carries one. */
+  knownDeviceCookie?: string | null;
+  requestOrigin?: string | null;
+  requestUrlOrigin?: string | null;
+  /**
+   * The request came through a reverse proxy, but OPENVPM_TRUSTED_PROXY_HOPS
+   * is unset so client addresses can't be verified. Shown to admins.
+   */
+  untrustedProxy?: boolean;
+  /**
+   * OPENVPM_TRUSTED_PROXY_HOPS is set, but the proxy chain reported a missing
+   * or non-public client address, so the proxy likely isn't forwarding
+   * client addresses. Shown to admins.
+   */
+  proxyNotForwarding?: { address: string | null } | null;
+  /** Pre-resolved only by portalProcedure (or explicitly injected test callers). */
+  portalClient?: PortalSessionClient;
+  portalSessionId?: string;
   /**
    * Queue a mutation side effect that must begin only after the procedure's
    * outer RLS transaction commits. The callback receives the root pool, not
@@ -94,9 +139,15 @@ async function activeSessionOrNull(
       tx
         .select({
           id: users.id,
+          role: users.role,
+          sessionVersion: users.sessionVersion,
           emailVerifiedAt: users.emailVerifiedAt,
           practiceCreatedAt: practices.createdAt,
           recoveryHold: practices.recoveryHold,
+          billingStatus: practices.billingStatus,
+          trialEndsAt: practices.trialEndsAt,
+          stripeSubscriptionId: practices.stripeSubscriptionId,
+          previewEndsAt: practices.previewEndsAt,
         })
         .from(users)
         .innerJoin(
@@ -113,28 +164,59 @@ async function activeSessionOrNull(
         .limit(1),
   );
 
-  return activeUser
-    ? {
-        ...session,
-        user: {
-          ...session.user,
-          emailVerifiedAt: activeUser.emailVerifiedAt,
-          practiceCreatedAt: activeUser.practiceCreatedAt,
-          recoveryHold: activeUser.recoveryHold,
-        },
-      }
-    : null;
+  // A password reset, role change, or deactivation bumps the version and
+  // revokes every session issued before it.
+  if (
+    !activeUser ||
+    !sessionVersionIsCurrent(
+      session.user.sessionVersion,
+      activeUser.sessionVersion,
+    )
+  ) {
+    return null;
+  }
+
+  // The JWT role is a sign-in snapshot. Authorization (requireRole, the
+  // viewer write block) must see the role as it is now.
+  return {
+    ...session,
+    user: {
+      ...session.user,
+      role: activeUser.role,
+      emailVerifiedAt: activeUser.emailVerifiedAt,
+      practiceCreatedAt: activeUser.practiceCreatedAt,
+      recoveryHold: activeUser.recoveryHold,
+      practiceInPreview: billingEnforced() && isPreviewPractice(activeUser),
+    },
+  };
 }
 
 export async function createTRPCContext(opts?: {
   req?: Request;
 }): Promise<TRPCContext> {
   await assertHostedRlsRoleOnce();
-  const rawSession = hasBlankConfiguredNextAuthSecret()
+  const rawSession = nextAuthSecretRejected()
     ? null
     : ((await getServerSession(authOptions)) as AppSession | null);
   const session = await activeSessionOrNull(db, rawSession);
-  return { db, session, ip: clientIp(opts?.req) };
+  return {
+    db,
+    session,
+    ip: clientIp(opts?.req),
+    portalSessionToken: portalSessionTokenFromCookie(
+      opts?.req?.headers.get("cookie"),
+    ),
+    verifiedIp: opts?.req ? resolveClientIp(opts.req).ip : null,
+    knownDeviceCookie: knownDeviceCookieFromHeader(
+      opts?.req?.headers.get("cookie"),
+    ),
+    requestOrigin: opts?.req?.headers.get("origin") ?? null,
+    requestUrlOrigin: opts?.req
+      ? externallyVisibleRequestOrigin(opts.req)
+      : null,
+    untrustedProxy: opts?.req ? proxyWithoutTrustedHops(opts.req) : false,
+    proxyNotForwarding: opts?.req ? trustedProxyNotForwarding(opts.req) : null,
+  };
 }
 
 const t = initTRPC.context<TRPCContext>().create({
@@ -153,10 +235,32 @@ const t = initTRPC.context<TRPCContext>().create({
 
 export const createRouter = t.router;
 
+/**
+ * Cloud features a preview clinic can try in-app. Texting, AI, the public
+ * API, and integrations reach outside the clinic and wait for the trial.
+ */
+const PREVIEW_FEATURES: ReadonlySet<Feature> = new Set<Feature>([
+  "advancedReporting",
+  "multiLocation",
+]);
+
+const PREVIEW_BLOCKED_MUTATION_PREFIXES: readonly string[] = [
+  "messaging.",
+  "apiKeys.",
+  "webhooks.",
+  "billing.createPaymentAccountOnboarding",
+  "billing.refreshPaymentAccount",
+  "billing.openPaymentAccountDashboard",
+  "billing.createCardPaymentCheckout",
+];
+
 const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
   "auth.resendVerification",
   "settings.requestAccountDeletion",
   "settings.setMarketingEmailPreference",
+  // Saving a setup cursor/dismissal must remain possible before checkout.
+  // This procedure cannot change clinic records or start provider work.
+  "settings.setJourneyProgress",
   "subscription.createCheckout",
   "subscription.openBillingPortal",
   // Platform-operator tooling must keep working even when the operator's own
@@ -299,6 +403,41 @@ export const publicProcedure = t.procedure.use(
   },
 );
 
+/**
+ * Requires a revocable portal browser session. The opaque cookie is resolved
+ * inside the system-scoped transaction, then every router query still applies
+ * explicit practice/client predicates as defense in depth.
+ */
+export const portalProcedure = publicProcedure.use(
+  async ({ ctx, next, type }) => {
+    const portalSession =
+      ctx.portalClient && ctx.portalSessionId
+        ? { client: ctx.portalClient, sessionId: ctx.portalSessionId }
+        : await resolvePortalSession(ctx.db, ctx.portalSessionToken);
+    if (!portalSession) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: "Portal session expired",
+      });
+    }
+    if (
+      type === "mutation" &&
+      ctx.requestOrigin &&
+      ctx.requestUrlOrigin &&
+      ctx.requestOrigin !== ctx.requestUrlOrigin
+    ) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "Invalid request origin" });
+    }
+    return next({
+      ctx: {
+        ...ctx,
+        portalClient: portalSession.client as PortalSessionClient,
+        portalSessionId: portalSession.sessionId,
+      },
+    });
+  },
+);
+
 /** Requires an authenticated session */
 export const protectedProcedure = t.procedure.use(
   async ({ ctx, next, type, path, getRawInput }) => {
@@ -344,6 +483,8 @@ export const protectedProcedure = t.procedure.use(
               tier: practices.subscriptionTier,
               billingStatus: practices.billingStatus,
               trialEndsAt: practices.trialEndsAt,
+              stripeSubscriptionId: practices.stripeSubscriptionId,
+              previewEndsAt: practices.previewEndsAt,
             })
             .from(practices)
             .where(
@@ -356,13 +497,22 @@ export const protectedProcedure = t.procedure.use(
           if (!practice) {
             throw practiceNotFound();
           }
-          if (
-            !hasHostedFullAccess(
-              practice.tier,
-              practice.billingStatus,
-              practice.trialEndsAt,
-            )
-          ) {
+          const fullAccess = hasHostedFullAccess(
+            practice.tier,
+            practice.billingStatus,
+            practice.trialEndsAt,
+          );
+          // A preview clinic may set up its workspace in-app. Surfaces that
+          // reach outside the clinic or buy provider resources wait for the
+          // card-backed trial; email, SMS, and AI also keep their own checks.
+          if (!fullAccess && hasPreviewAccess(practice)) {
+            if (PREVIEW_BLOCKED_MUTATION_PREFIXES.some((p) => path.startsWith(p))) {
+              throw new TRPCError({
+                code: "FORBIDDEN",
+                message: PREVIEW_OUTBOUND_BLOCK_MESSAGE,
+              });
+            }
+          } else if (!fullAccess) {
             throw new TRPCError({
               code: "FORBIDDEN",
               message:
@@ -387,6 +537,14 @@ export const protectedProcedure = t.procedure.use(
           },
         });
 
+        if (
+          (["patientNotes.create", "offline.saveSoapDraft"].includes(path) ||
+            path.startsWith("labReports.")) &&
+          !result.ok
+        ) {
+          // tRPC returns errors as values; force rollback of the note and audit.
+          throw result.error;
+        }
         if (path === "patients.merge" && !result.ok) {
           // tRPC represents resolver exceptions as error results. Rethrowing
           // here keeps the outer tenant transaction fail-closed and exposes
@@ -428,9 +586,16 @@ export const protectedProcedure = t.procedure.use(
       }
       throw error;
     });
-    // Audit every successful mutation after the tenant transaction committed.
+    // Chart notes and recovered SOAP drafts write a required, content-free
+    // audit in the same transaction. Keep clinical text out of generic audits.
+    // Audit other successful mutations after the tenant transaction committed.
     // Runs in its own system-context tx and never blocks or fails the request.
-    if (type === "mutation" && result.ok) {
+    if (
+      type === "mutation" &&
+      result.ok &&
+      !["patientNotes.create", "offline.saveSoapDraft"].includes(path) &&
+      !path.startsWith("labReports.")
+    ) {
       const rawInput = await getRawInput().catch(() => undefined);
       void withSystem(db, (sysTx) =>
         recordAuditLog(sysTx, {
@@ -492,6 +657,8 @@ export function requireFeature(feature: Feature) {
           tier: practices.subscriptionTier,
           billingStatus: practices.billingStatus,
           trialEndsAt: practices.trialEndsAt,
+          stripeSubscriptionId: practices.stripeSubscriptionId,
+          previewEndsAt: practices.previewEndsAt,
         })
         .from(practices)
         .where(
@@ -509,7 +676,9 @@ export function requireFeature(feature: Feature) {
         practice.billingStatus,
         practice.trialEndsAt,
       );
-      if (!isEntitled(tier, feature, true)) {
+      const previewFeature =
+        PREVIEW_FEATURES.has(feature) && hasPreviewAccess(practice);
+      if (!previewFeature && !isEntitled(tier, feature, true)) {
         throw new TRPCError({
           code: "FORBIDDEN",
           message: `Your plan doesn't include this feature. Upgrade to unlock it.`,

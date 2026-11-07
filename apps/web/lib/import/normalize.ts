@@ -5,14 +5,9 @@
  * so clinics do not have to hand-edit their files. Pure — no I/O.
  */
 
-export type NormalizedSpecies =
-  | "canine"
-  | "feline"
-  | "avian"
-  | "rabbit"
-  | "reptile"
-  | "equine"
-  | "other";
+import type { PatientSpecies } from "@/lib/patients/species";
+
+export type NormalizedSpecies = PatientSpecies;
 
 const SPECIES_ALIASES: Record<string, NormalizedSpecies> = {
   canine: "canine",
@@ -27,7 +22,7 @@ const SPECIES_ALIASES: Record<string, NormalizedSpecies> = {
   parrot: "avian",
   parakeet: "avian",
   cockatiel: "avian",
-  chicken: "avian",
+  chicken: "poultry",
   rabbit: "rabbit",
   bunny: "rabbit",
   lagomorph: "rabbit",
@@ -44,6 +39,27 @@ const SPECIES_ALIASES: Record<string, NormalizedSpecies> = {
   pony: "equine",
   donkey: "equine",
   mule: "equine",
+  bovine: "bovine",
+  cow: "bovine",
+  cattle: "bovine",
+  calf: "bovine",
+  ovine: "ovine",
+  sheep: "ovine",
+  lamb: "ovine",
+  caprine: "caprine",
+  goat: "caprine",
+  kid: "caprine",
+  porcine: "porcine",
+  pig: "porcine",
+  swine: "porcine",
+  poultry: "poultry",
+  hen: "poultry",
+  rooster: "poultry",
+  turkey: "poultry",
+  duck: "poultry",
+  camelid: "camelid",
+  alpaca: "camelid",
+  llama: "camelid",
   other: "other",
   exotic: "other",
   "pocket pet": "other",

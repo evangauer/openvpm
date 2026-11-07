@@ -1,0 +1,68 @@
+{
+  "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+  "version": "v1.1.0",
+  "entity": {
+    "type": "organisation",
+    "role": "owner",
+    "name": "Get Talky Inc.",
+    "email": "evan@openvpm.com",
+    "phone": "",
+    "description": "Get Talky Inc. is a small, founder-owned software company in New York City (Delaware C corporation, founded November 2024). It owns and maintains OpenVPM, a free, AGPL-3.0 licensed veterinary practice management system. OpenVPM is developed in the open by Get Talky staff and outside contributors; self-hosting is free and unrestricted, and an optional hosted service (OpenVPM Cloud) helps sustain development. OpenVPM has received no grants, donations or sponsorships to date.",
+    "webpageUrl": {
+      "url": "https://gettalky.ai"
+    }
+  },
+  "projects": [
+    {
+      "guid": "openvpm",
+      "name": "OpenVPM",
+      "description": "OpenVPM is a free, open-source, API-first veterinary practice management system (PIMS). Clinics use it for client and patient records, scheduling, medical records (SOAP notes, vaccinations, prescriptions, lab results), append-only controlled-substance logs, billing, inventory, reminders and a client portal. It ships a versioned REST API with scoped keys and HMAC-signed webhooks, an optional AI agent with explicit opt-in for every write, and multi-tenant isolation enforced by PostgreSQL row-level security. Clinics can self-host it with Docker Compose. Veterinary software is dominated by closed, expensive vendors; OpenVPM gives small clinics with no IT staff an open, secure system of record they control.",
+      "webpageUrl": {
+        "url": "https://openvpm.com",
+        "wellKnown": "https://openvpm.com/.well-known/funding-manifest-urls"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/evangauer/openvpm"
+      },
+      "licenses": [
+        "spdx:AGPL-3.0"
+      ],
+      "tags": [
+        "healthcare",
+        "veterinary",
+        "practice-management",
+        "web-application",
+        "self-hosted",
+        "api",
+        "postgresql",
+        "typescript",
+        "security",
+        "i18n"
+      ]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "gettalky-bank",
+        "type": "bank",
+        "address": "",
+        "description": "Direct bank transfer (wire) to Get Talky Inc.'s US business account. Please email evan@openvpm.com for account details and tax documents."
+      }
+    ],
+    "plans": [
+      {
+        "guid": "maintenance-2027",
+        "status": "active",
+        "name": "OpenVPM maintenance: i18n, migrations and security",
+        "description": "About 12 months of maintainer time on work no paying customer funds: (1) i18n: implement the agreed architecture (docs/I18N.md), message catalogs and community translations; (2) migrations: extend the dry-run CSV import with more record types and adapters for common legacy practice-management exports; (3) security: CodeQL, OpenSSF Scorecard, private vulnerability reporting, signed releases with SBOMs and provenance, a threat model, and an external review of row-level-security tenancy.",
+        "amount": 50000,
+        "currency": "USD",
+        "frequency": "yearly",
+        "channels": [
+          "gettalky-bank"
+        ]
+      }
+    ]
+  }
+}

@@ -40,7 +40,19 @@ const MESSAGE_ID = "00000000-0000-0000-0000-000000000001";
 const ACTIVE_PRACTICE = [{ id: PRACTICE_ID }];
 
 function callerWithDb(db: Record<string, unknown>, ip?: string) {
-  return portalRouter.createCaller({ db, ip } as never);
+  return portalRouter.createCaller({
+    db,
+    ip,
+    portalSessionId: TOKEN,
+    portalClient: {
+      id: CLIENT_ID,
+      practiceId: PRACTICE_ID,
+      firstName: "Portal",
+      lastName: "Client",
+      email: "portal@example.test",
+      phone: null,
+    },
+  } as never);
 }
 
 function createDb(opts?: {
@@ -502,8 +514,8 @@ describe("portal messages", () => {
   it("scopes portal read receipts to active outbound portal rows", () => {
     const source = readFileSync("server/routers/portal.ts", "utf8");
     const block = source.slice(
-      source.indexOf("markMessagesRead: publicProcedure"),
-      source.indexOf("getInvoices: publicProcedure")
+      source.indexOf("markMessagesRead: portalProcedure"),
+      source.indexOf("getInvoices: portalProcedure")
     );
 
     expect(block).toContain("eq(communications.clientId, client.id)");

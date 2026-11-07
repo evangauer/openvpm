@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { eq, and, isNull, sql, not, inArray, lt, gt, asc } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { createRouter, publicProcedure, protectedProcedure, requireRole } from "../trpc";
+import {
+  createRouter,
+  publicProcedure,
+  protectedProcedure,
+  requireRole,
+} from "../trpc";
 import {
   bookingPages,
   practices,
@@ -26,7 +31,6 @@ import {
 } from "@/lib/scheduling/availability";
 import { providerCoverageForDate } from "@/lib/scheduling/provider-availability";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
-import { generatePortalAccessToken } from "@/lib/portal/tokens";
 import { latestAssignedToForClient } from "@/lib/communications/assignment";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
 import {
@@ -40,6 +44,11 @@ import {
   BOOKING_REASON_MAX_LENGTH,
   BOOKING_SLUG_MAX_LENGTH,
 } from "@/lib/booking/page-config";
+import {
+  filterPrevisitIntakeByFieldKeys,
+  preflightOnlineBookingAppointmentNote,
+  previsitIntakeInput,
+} from "@/lib/booking/previsit-intake";
 import {
   listActiveAppointmentLocations,
   resolveAppointmentLocation,
@@ -85,7 +94,7 @@ async function assertBookingRateLimit(input: {
 async function assertBookingIpRateLimit(
   ip: string | null | undefined,
   keyPrefix: string,
-  limits: { limit: number; windowMs: number }
+  limits: { limit: number; windowMs: number },
 ) {
   await assertBookingRateLimit({
     key: `${keyPrefix}:ip:${ip || "unknown"}`,
@@ -125,7 +134,7 @@ function isPostgresUniqueViolation(error: unknown): boolean {
 async function bookingSlugTakenByAnotherPractice(
   database: any,
   slug: string,
-  practiceId: string
+  practiceId: string,
 ): Promise<boolean> {
   const [page] = await database
     .select({ practiceId: bookingPages.practiceId })
@@ -159,8 +168,8 @@ async function getLivePage(db: any, slug: string) {
         eq(bookingPages.slug, slug),
         eq(bookingPages.published, true),
         isNull(bookingPages.deletedAt),
-        isNull(practices.deletedAt)
-      )
+        isNull(practices.deletedAt),
+      ),
     )
     .limit(1);
 
@@ -183,7 +192,7 @@ function assertBookingBillingAccess(practice: {
     !hasHostedFullAccess(
       practice.subscriptionTier,
       practice.billingStatus,
-      practice.trialEndsAt
+      practice.trialEndsAt,
     )
   ) {
     throw pageNotFound();
@@ -193,7 +202,7 @@ function assertBookingBillingAccess(practice: {
 async function bookableTypesForPage(
   db: any,
   practiceId: string,
-  bookableTypeIds: string[]
+  bookableTypeIds: string[],
 ): Promise<
   Array<{
     id: string;
@@ -214,8 +223,8 @@ async function bookableTypesForPage(
     .where(
       and(
         eq(appointmentTypes.practiceId, practiceId),
-        isNull(appointmentTypes.deletedAt)
-      )
+        isNull(appointmentTypes.deletedAt),
+      ),
     )
     .orderBy(asc(appointmentTypes.name));
 
@@ -232,7 +241,7 @@ async function lockBookableTypeForRequest(
   db: any,
   practiceId: string,
   bookableTypeIds: string[],
-  requestedTypeId: string
+  requestedTypeId: string,
 ): Promise<{
   id: string;
   durationMinutes: number;
@@ -250,8 +259,8 @@ async function lockBookableTypeForRequest(
       and(
         eq(appointmentTypes.id, requestedTypeId),
         eq(appointmentTypes.practiceId, practiceId),
-        isNull(appointmentTypes.deletedAt)
-      )
+        isNull(appointmentTypes.deletedAt),
+      ),
     )
     .for("share");
   return type ?? null;
@@ -260,7 +269,7 @@ async function lockBookableTypeForRequest(
 async function lockActiveSelectedTypeIds(
   db: any,
   practiceId: string,
-  selectedTypeIds: string[]
+  selectedTypeIds: string[],
 ): Promise<string[]> {
   if (selectedTypeIds.length === 0) return [];
   const rows = await db
@@ -270,8 +279,8 @@ async function lockActiveSelectedTypeIds(
       and(
         eq(appointmentTypes.practiceId, practiceId),
         inArray(appointmentTypes.id, selectedTypeIds),
-        isNull(appointmentTypes.deletedAt)
-      )
+        isNull(appointmentTypes.deletedAt),
+      ),
     )
     .for("share");
   const active = new Set(rows.map((row: { id: string }) => row.id));
@@ -294,6 +303,12 @@ const petInput = z.object({
     "rabbit",
     "reptile",
     "equine",
+    "bovine",
+    "ovine",
+    "caprine",
+    "porcine",
+    "poultry",
+    "camelid",
     "other",
   ]),
 });
@@ -306,13 +321,17 @@ export const bookingRouter = createRouter({
   getPage: publicProcedure
     .input(z.object({ slug: bookingSlugInput }))
     .query(async ({ ctx, input }) => {
-      await assertBookingIpRateLimit(ctx.ip, "booking-page", PAGE_READ_IP_RATE_LIMIT);
+      await assertBookingIpRateLimit(
+        ctx.ip,
+        "booking-page",
+        PAGE_READ_IP_RATE_LIMIT,
+      );
       const { practice, config } = await getLivePage(ctx.db, input.slug);
       assertBookingBillingAccess(practice);
       const types = await bookableTypesForPage(
         ctx.db,
         practice.id,
-        config.bookableTypeIds
+        config.bookableTypeIds,
       );
       if (types.length === 0) throw pageNotFound();
       const bookingLocations = await listActiveAppointmentLocations(
@@ -335,6 +354,7 @@ export const bookingRouter = createRouter({
         hours: config.hours,
         leadTimeMinutes: config.leadTimeMinutes,
         bookingWindowDays: config.bookingWindowDays,
+        intakeFieldKeys: config.intakeFieldKeys,
         types,
         locations: bookingLocations,
       };
@@ -345,12 +365,16 @@ export const bookingRouter = createRouter({
       z.object({
         slug: bookingSlugInput,
         date: bookingDateInput,
-        typeId: z.string().uuid(),
-        locationId: z.string().uuid().optional()
-      })
+        typeId: z.string().guid(),
+        locationId: z.string().guid().optional(),
+      }),
     )
     .query(async ({ ctx, input }) => {
-      await assertBookingIpRateLimit(ctx.ip, "booking-slots", SLOTS_IP_RATE_LIMIT);
+      await assertBookingIpRateLimit(
+        ctx.ip,
+        "booking-slots",
+        SLOTS_IP_RATE_LIMIT,
+      );
       await assertBookingRateLimit({
         key: `booking-slots:slug:${input.slug}`,
         ...SLOTS_SLUG_RATE_LIMIT,
@@ -360,13 +384,17 @@ export const bookingRouter = createRouter({
       assertBookingBillingAccess(practice);
 
       if (!isDateWithinBookingWindow(config, input.date)) return [];
-      const window = bookingWindowForDate(config, input.date, practice.timezone);
+      const window = bookingWindowForDate(
+        config,
+        input.date,
+        practice.timezone,
+      );
       if (!window) return [];
 
       const types = await bookableTypesForPage(
         ctx.db,
         practice.id,
-        config.bookableTypeIds
+        config.bookableTypeIds,
       );
       const type = types.find((candidate) => candidate.id === input.typeId);
       if (!type) {
@@ -417,8 +445,8 @@ export const bookingRouter = createRouter({
             isNull(appointments.deletedAt),
             not(inArray(appointments.status, ["cancelled", "no_show"])),
             lt(appointments.startTime, window.dayEnd),
-            gt(appointments.endTime, window.dayStart)
-          )
+            gt(appointments.endTime, window.dayStart),
+          ),
         );
 
       const earliest = minimumBookableInstant(config);
@@ -443,16 +471,17 @@ export const bookingRouter = createRouter({
     .input(
       z.object({
         slug: bookingSlugInput,
-        typeId: z.string().uuid(),
-        locationId: z.string().uuid().optional(),
+        typeId: z.string().guid(),
+        locationId: z.string().guid().optional(),
         date: bookingDateInput,
         time: bookingTimeInput,
         contact: contactInput,
         pet: petInput,
         reason: z.string().trim().min(1).max(BOOKING_REASON_MAX_LENGTH),
+        intake: previsitIntakeInput.optional(),
         /** Honeypot — humans never fill this; bots do. */
         website: z.string().max(255).optional(),
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       // Silently accept honeypot submissions without creating anything, so
@@ -466,7 +495,11 @@ export const bookingRouter = createRouter({
         };
       }
 
-      await assertBookingIpRateLimit(ctx.ip, "booking-book", BOOK_IP_RATE_LIMIT);
+      await assertBookingIpRateLimit(
+        ctx.ip,
+        "booking-book",
+        BOOK_IP_RATE_LIMIT,
+      );
       await assertBookingRateLimit({
         key: `booking-book:slug:${input.slug}`,
         ...BOOK_SLUG_RATE_LIMIT,
@@ -474,6 +507,38 @@ export const bookingRouter = createRouter({
 
       const { practice, config } = await getLivePage(ctx.db, input.slug);
       assertBookingBillingAccess(practice);
+
+      const enabledIntake = input.intake
+        ? filterPrevisitIntakeByFieldKeys(input.intake, config.intakeFieldKeys)
+        : undefined;
+      const submittedDisabledIntakeField = input.intake
+        ? Object.entries(input.intake).some(
+            ([key, value]) =>
+              value !== undefined &&
+              !config.intakeFieldKeys.includes(
+                key as (typeof config.intakeFieldKeys)[number],
+              ),
+          )
+        : false;
+      if (submittedDisabledIntakeField) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "One or more optional intake fields are no longer enabled. Refresh the page and try again.",
+        });
+      }
+
+      const appointmentNotePreflight = preflightOnlineBookingAppointmentNote({
+        reason: input.reason,
+        intake: enabledIntake,
+      });
+      if (!appointmentNotePreflight.ok) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: appointmentNotePreflight.message,
+        });
+      }
+      const appointmentNote = appointmentNotePreflight.note;
 
       // Public and portal requests for one practice share a transaction lock,
       // so neither path can pass the conflict check concurrently. Take it
@@ -497,8 +562,8 @@ export const bookingRouter = createRouter({
           and(
             eq(locations.id, location.locationId),
             eq(locations.practiceId, practice.id),
-            isNull(locations.deletedAt)
-          )
+            isNull(locations.deletedAt),
+          ),
         )
         .limit(1);
       if (!selectedLocation) throw pageNotFound();
@@ -509,7 +574,7 @@ export const bookingRouter = createRouter({
         ctx.db,
         practice.id,
         config.bookableTypeIds,
-        input.typeId
+        input.typeId,
       );
       if (!type) {
         throw new TRPCError({
@@ -525,10 +590,15 @@ export const bookingRouter = createRouter({
       if (!isDateWithinBookingWindow(config, input.date)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "That date is outside the online appointment request window.",
+          message:
+            "That date is outside the online appointment request window.",
         });
       }
-      const window = bookingWindowForDate(config, input.date, practice.timezone);
+      const window = bookingWindowForDate(
+        config,
+        input.date,
+        practice.timezone,
+      );
       if (!window) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -539,7 +609,7 @@ export const bookingRouter = createRouter({
       const slotStart = dateInputTimeUtcInstant(
         input.date,
         { hour: hour!, minute: minute! },
-        practice.timezone
+        practice.timezone,
       );
       const slotEnd = new Date(slotStart.getTime() + durationMinutes * 60_000);
 
@@ -587,14 +657,15 @@ export const bookingRouter = createRouter({
             isNull(appointments.deletedAt),
             not(inArray(appointments.status, ["cancelled", "no_show"])),
             lt(appointments.startTime, slotEnd),
-            gt(appointments.endTime, slotStart)
-          )
+            gt(appointments.endTime, slotStart),
+          ),
         )
         .limit(1);
       if (conflict) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "That time is no longer available. Please choose another time.",
+          message:
+            "That time is no longer available. Please choose another time.",
         });
       }
 
@@ -607,8 +678,8 @@ export const bookingRouter = createRouter({
           and(
             eq(clients.practiceId, practice.id),
             isNull(clients.deletedAt),
-            sql`lower(${clients.email}) = ${input.contact.email}`
-          )
+            sql`lower(${clients.email}) = ${input.contact.email}`,
+          ),
         )
         .limit(1);
 
@@ -633,7 +704,7 @@ export const bookingRouter = createRouter({
             email: input.contact.email,
             phone: input.contact.phone || null,
             preferredContactMethod: "email",
-            accessToken: generatePortalAccessToken(),
+            accessToken: null,
           })
           .returning({ id: clients.id });
         clientId = created!.id;
@@ -650,8 +721,8 @@ export const bookingRouter = createRouter({
             eq(patients.clientId, clientId),
             eq(patients.status, "active"),
             isNull(patients.deletedAt),
-            sql`lower(${patients.name}) = ${input.pet.name.toLowerCase()}`
-          )
+            sql`lower(${patients.name}) = ${input.pet.name.toLowerCase()}`,
+          ),
         )
         .limit(1);
 
@@ -687,13 +758,13 @@ export const bookingRouter = createRouter({
           // Public booking is deliberately request-only. Keep this invariant
           // independent of legacy booking-page config stored in jsonb.
           status: "scheduled",
-          notes: `[Online request] ${input.reason}`,
+          notes: appointmentNote,
         })
         .returning();
       await recordActivationAfterAppointmentCreated(
         ctx.db,
         practice.id,
-        "booking.book"
+        "booking.book",
       );
 
       // Surface the request in the communications inbox so the front desk
@@ -709,7 +780,7 @@ export const bookingRouter = createRouter({
           `Pet: ${petName}`,
           `Requested: ${input.date} ${input.time}`,
           `Location: ${selectedLocation.name}`,
-          `Reason: ${input.reason}`,
+          `Details: ${appointmentNote}`,
         ].join("\n"),
         status: "pending",
         assignedTo: latestAssignedToForClient(practice.id, clientId),
@@ -719,7 +790,7 @@ export const bookingRouter = createRouter({
         ctx,
         practice.id,
         "appointment.created",
-        appointmentCreatedWebhookPayload(appt!, "booking_page")
+        appointmentCreatedWebhookPayload(appt!, "booking_page"),
       );
 
       return {
@@ -743,8 +814,8 @@ export const bookingRouter = createRouter({
         .where(
           and(
             eq(bookingPages.practiceId, ctx.practiceId),
-            isNull(bookingPages.deletedAt)
-          )
+            isNull(bookingPages.deletedAt),
+          ),
         )
         .limit(1);
 
@@ -779,7 +850,7 @@ export const bookingRouter = createRouter({
       const taken = await bookingSlugTakenByAnotherPractice(
         ctx.db,
         input.slug,
-        ctx.practiceId
+        ctx.practiceId,
       );
       return { valid: true, available: !taken };
     }),
@@ -791,7 +862,7 @@ export const bookingRouter = createRouter({
         slug: bookingSlugInput,
         published: z.boolean(),
         config: bookingPageConfigInput,
-      })
+      }),
     )
     .mutation(async ({ ctx, input }) => {
       if (!isValidBookingSlug(input.slug)) {
@@ -809,7 +880,7 @@ export const bookingRouter = createRouter({
         const activeSelectedTypeIds = await lockActiveSelectedTypeIds(
           tx,
           ctx.practiceId,
-          input.config.bookableTypeIds
+          input.config.bookableTypeIds,
         );
         if (input.published && activeSelectedTypeIds.length === 0) {
           throw new TRPCError({
@@ -829,8 +900,8 @@ export const bookingRouter = createRouter({
           .where(
             and(
               eq(bookingPages.practiceId, ctx.practiceId),
-              isNull(bookingPages.deletedAt)
-            )
+              isNull(bookingPages.deletedAt),
+            ),
           )
           .limit(1);
 

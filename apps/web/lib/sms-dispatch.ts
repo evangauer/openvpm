@@ -45,6 +45,10 @@ import {
   hostedMessagingLaunchDecision,
 } from "@/lib/messaging/launch-gate";
 import { withSystem } from "@/lib/tenant-db";
+import {
+  definiteReminderFailureOutcomeSql,
+  lockAppointmentReminderClaimForSend,
+} from "@/lib/messaging/appointment-reminder";
 import { envValue } from "@/lib/messaging/env";
 import { alertOps } from "@/lib/alerts";
 import {
@@ -109,6 +113,12 @@ export type SmsSendOptions = {
   source?: string;
   sourceId?: string;
   idempotencyKey?: string;
+  /**
+   * Appointment reminders only: the claim token the caller holds on the
+   * linked communication. Re-checked under a row lock right before the
+   * provider call; a claim that was taken over is blocked from sending.
+   */
+  reminderClaimToken?: string;
 };
 
 type AttemptRow = typeof smsSendAttempts.$inferSelect;
@@ -126,6 +136,7 @@ type PreparedDispatch = {
   sourceId: string;
   idempotencyKey: string;
   resendOfAttemptId?: string;
+  reminderClaimToken?: string;
   expectedProvider: MessagingProvider["name"];
   requestedBy?: {
     actorType: "clinic_user" | "platform_operator";
@@ -562,7 +573,12 @@ async function appendProviderResult(
   if (normalized.status === "accepted" && attempt.communicationId) {
     const [projected] = await tx
       .update(communications)
-      .set({ status: "sent", providerMessageId: normalized.id })
+      // A confirmed send supersedes any earlier "delivery unknown" marker.
+      .set({
+        status: "sent",
+        providerMessageId: normalized.id,
+        reminderOutcome: null,
+      })
       .where(
         and(
           eq(communications.practiceId, attempt.practiceId),
@@ -672,6 +688,7 @@ async function dispatchWinner(
   provider: MessagingProvider,
   sender: MessagingSender,
   hostedExternalSend: boolean,
+  reminderClaimToken?: string,
 ): Promise<SmsDispatchResult> {
   let result: SendMessageResult;
   try {
@@ -1059,6 +1076,31 @@ async function dispatchWinner(
         return rejected;
       }
 
+      // A reminder claimant that stalled while another sender took the
+      // reminder over must not send. The row lock is held through the
+      // provider call.
+      if (
+        reminderClaimToken &&
+        attempt.communicationId &&
+        !(await lockAppointmentReminderClaimForSend(tx, {
+          practiceId: attempt.practiceId,
+          claim: { id: attempt.communicationId, claimToken: reminderClaimToken },
+          channel: "sms",
+        }))
+      ) {
+        const rejected: SendMessageResult = {
+          status: "definite_failure",
+          error:
+            "Another send took over this reminder before dispatch; this one was stopped.",
+        };
+        await appendProviderResult(
+          tx as unknown as Database,
+          attempt,
+          rejected,
+        );
+        return rejected;
+      }
+
       const providerResult = await providerCall(provider, {
         to: attempt.destinationE164,
         body: attempt.body,
@@ -1178,6 +1220,7 @@ async function dispatchPreparedSms(
     provider,
     sender,
     hostedExternalSend,
+    prepared.reminderClaimToken,
   );
 }
 
@@ -1268,6 +1311,7 @@ async function sendSmsInternal(
     source,
     sourceId,
     idempotencyKey: provisionalKey,
+    reminderClaimToken: options.reminderClaimToken,
     expectedProvider: initialTransport.provider.name,
   });
   return result;
@@ -1383,8 +1427,12 @@ export async function reconcileSmsSendAttempt(options: {
                 ? {
                     status: "sent",
                     providerMessageId: prior.providerMessageId,
+                    reminderOutcome: null,
                   }
-                : { status: "failed" },
+                : {
+                    status: "failed",
+                    reminderOutcome: definiteReminderFailureOutcomeSql(),
+                  },
             )
             .where(
               and(
@@ -1462,8 +1510,11 @@ export async function reconcileSmsSendAttempt(options: {
           .update(communications)
           .set(
             options.outcome === "accepted"
-              ? { status: "sent", providerMessageId }
-              : { status: "failed" },
+              ? { status: "sent", providerMessageId, reminderOutcome: null }
+              : {
+                  status: "failed",
+                  reminderOutcome: definiteReminderFailureOutcomeSql(),
+                },
           )
           .where(
             and(

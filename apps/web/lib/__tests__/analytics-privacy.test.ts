@@ -4,11 +4,14 @@ import { filterVercelAnalyticsEvent } from "../analytics-privacy";
 
 describe("Vercel Analytics capability privacy", () => {
   it.each([
+    "https://app.openvpm.com/newsletter/confirm#token=private-token",
     "https://app.openvpm.com/capture/raw-secret-token",
     "https://app.openvpm.com/capture/raw-secret-token?source=qr",
     "https://app.openvpm.com/sign/raw-secret-token",
+    "https://app.openvpm.com/treatment-plan/raw-secret-token",
     "/capture/raw-secret-token",
     "/sign/raw-secret-token",
+    "/treatment-plan/raw-secret-token",
   ])("drops capability-page events before they are sent: %s", (url) => {
     expect(filterVercelAnalyticsEvent({ type: "pageview", url })).toBeNull();
     expect(filterVercelAnalyticsEvent({ type: "event", url })).toBeNull();

@@ -18,9 +18,11 @@ const sha256Check = (column: AnyPgColumn) => sql`${column} ~ '^[a-f0-9]{64}$'`;
 /**
  * One durable, PII-free record of the key used to derive recipient identities.
  *
- * The application inserts slot 1 on first use and never updates it. Comparing
- * the configured key fingerprint with this row prevents an accidental key
- * rotation from making every existing opt-out unreachable/default-enabled.
+ * The application inserts slot 1 on first use and never updates it. A guarded
+ * database-owner rotation transaction may replace its current fingerprint and
+ * register one previous fingerprint. Comparing the configured ring with this
+ * row prevents an accidental key change from making existing opt-outs
+ * unreachable/default-enabled.
  */
 export const platformEmailIdentity = pgTable(
   "platform_email_identity",
@@ -29,6 +31,13 @@ export const platformEmailIdentity = pgTable(
     identityKeyFingerprint: varchar("identity_key_fingerprint", {
       length: 64,
     }).notNull(),
+    previousIdentityKeyFingerprint: varchar(
+      "previous_identity_key_fingerprint",
+      { length: 64 },
+    ),
+    rotationStartedAt: timestamp("rotation_started_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -41,6 +50,78 @@ export const platformEmailIdentity = pgTable(
     fingerprintCheck: check(
       "platform_email_identity_fingerprint_check",
       sha256Check(table.identityKeyFingerprint),
+    ),
+    previousFingerprintCheck: check(
+      "platform_email_identity_previous_fingerprint_check",
+      sql`${table.previousIdentityKeyFingerprint} IS NULL OR ${sha256Check(table.previousIdentityKeyFingerprint)}`,
+    ),
+    distinctFingerprintsCheck: check(
+      "platform_email_identity_distinct_fingerprints_check",
+      sql`${table.previousIdentityKeyFingerprint} IS NULL OR ${table.previousIdentityKeyFingerprint} <> ${table.identityKeyFingerprint}`,
+    ),
+    rotationStateCheck: check(
+      "platform_email_identity_rotation_state_check",
+      sql`(${table.previousIdentityKeyFingerprint} IS NULL) = (${table.rotationStartedAt} IS NULL)`,
+    ),
+  }),
+);
+
+/**
+ * PII-free links between the current and immediately previous recipient HMACs.
+ *
+ * Rows are derived only while the application has the recipient's plaintext
+ * address. They let signed legacy unsubscribe targets converge both projections
+ * without ever persisting the address or either identity secret.
+ */
+export const platformEmailIdentityAliases = pgTable(
+  "platform_email_identity_aliases",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    currentIdentityKeyFingerprint: varchar("current_identity_key_fingerprint", {
+      length: 64,
+    }).notNull(),
+    currentEmailHash: varchar("current_email_hash", { length: 64 }).notNull(),
+    previousIdentityKeyFingerprint: varchar(
+      "previous_identity_key_fingerprint",
+      { length: 64 },
+    ).notNull(),
+    previousEmailHash: varchar("previous_email_hash", {
+      length: 64,
+    }).notNull(),
+  },
+  (table) => ({
+    currentIdentityUq: uniqueIndex(
+      "platform_email_identity_aliases_current_uq",
+    ).on(table.currentIdentityKeyFingerprint, table.currentEmailHash),
+    previousIdentityUq: uniqueIndex(
+      "platform_email_identity_aliases_previous_uq",
+    ).on(table.previousIdentityKeyFingerprint, table.previousEmailHash),
+    currentFingerprintCheck: check(
+      "platform_email_identity_aliases_current_fingerprint_check",
+      sha256Check(table.currentIdentityKeyFingerprint),
+    ),
+    currentHashCheck: check(
+      "platform_email_identity_aliases_current_hash_check",
+      sha256Check(table.currentEmailHash),
+    ),
+    previousFingerprintCheck: check(
+      "platform_email_identity_aliases_previous_fingerprint_check",
+      sha256Check(table.previousIdentityKeyFingerprint),
+    ),
+    previousHashCheck: check(
+      "platform_email_identity_aliases_previous_hash_check",
+      sha256Check(table.previousEmailHash),
+    ),
+    distinctFingerprintsCheck: check(
+      "platform_email_identity_aliases_distinct_fingerprints_check",
+      sql`${table.currentIdentityKeyFingerprint} <> ${table.previousIdentityKeyFingerprint}`,
+    ),
+    distinctHashesCheck: check(
+      "platform_email_identity_aliases_distinct_hashes_check",
+      sql`${table.currentEmailHash} <> ${table.previousEmailHash}`,
     ),
   }),
 );

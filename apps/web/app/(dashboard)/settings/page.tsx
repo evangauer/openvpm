@@ -1,5 +1,7 @@
 "use client";
 
+import { ImportRowIssues } from "@/components/settings/import-row-issues";
+
 import { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useSession } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
@@ -34,6 +36,7 @@ import {
   HeartPulse,
   Compass,
   ReceiptText,
+  LockOpen,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -47,6 +50,7 @@ import { BookingTab } from "@/components/settings/booking-tab";
 import { ProviderHours } from "@/components/settings/provider-hours";
 import { MigrationHelpRequest } from "@/components/onboarding/migration-help-request";
 import { ServicesTab } from "@/components/settings/services-tab";
+import { AmbulatoryWorkspaceSettingsCard } from "@/components/settings/ambulatory-workspace-settings";
 import {
   TemplateCatalogPicker,
   type TemplateCatalogItem,
@@ -63,6 +67,7 @@ import {
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
+import { TRIAL_DAYS } from "@/lib/billing/plans";
 import { trialCalendarDaysLeft } from "@/lib/billing/trial-days";
 import { CloudBillingCadencePicker } from "@/components/billing/cloud-billing-cadence-picker";
 import {
@@ -138,6 +143,7 @@ import {
   isValidSettingsTaxRate,
   isSupportedPracticeTimezone,
 } from "@/lib/settings-policy";
+import { downloadCsv, recordsToCsv } from "@/lib/csv/serialize";
 
 // ── Types ───────────────────────────────────────────────────
 type Tab =
@@ -309,6 +315,53 @@ function SettingsLoadError({
   );
 }
 
+function TrustedProxyNotice() {
+  const notices = trpc.settings.deploymentNotices.useQuery(undefined, {
+    staleTime: Infinity,
+  });
+  const data = notices.data;
+  if (!data?.trustedProxyHopsMissing && !data?.proxyNotForwarding) return null;
+  return (
+    <div className="mt-4 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+      <div>
+        {data.proxyNotForwarding ? (
+          <>
+            <p className="font-medium">
+              Your proxy isn&apos;t forwarding client addresses
+            </p>
+            <p className="mt-1">
+              <code>OPENVPM_TRUSTED_PROXY_HOPS</code> is set, but requests
+              arrive from{" "}
+              {data.proxyNotForwarding.address
+                ? `an internal address (${data.proxyNotForwarding.address})`
+                : "no client address"}
+              , which is usually the proxy itself. Per-IP sign-in limits are
+              off until the proxy sends <code>X-Forwarded-For</code>;
+              per-account limits still apply. If staff only connect from
+              inside your network, this is expected. See &ldquo;Reverse
+              proxies and sign-in limits&rdquo; in the README.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="font-medium">Reverse proxy not configured</p>
+            <p className="mt-1">
+              OpenVPM can&apos;t verify client addresses, so per-IP sign-in
+              limits are off; per-account limits still apply. Only if you
+              run a reverse proxy in front of OpenVPM: set{" "}
+              <code>OPENVPM_TRUSTED_PROXY_HOPS</code> to the number of proxies
+              in front of the app and restart. See &ldquo;Reverse proxies and
+              sign-in limits&rdquo; in the README for nginx, Caddy, and Traefik
+              settings.
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ───────────────────────────────────────────────
 export default function SettingsPage() {
   return (
@@ -373,6 +426,8 @@ function SettingsPageInner() {
           Guides
         </Button>
       </div>
+
+      <TrustedProxyNotice />
 
       <div className="mt-6 flex min-w-0 w-full max-w-full flex-col gap-6 lg:flex-row lg:gap-8">
         {/* Section nav: horizontal scroll on small screens, vertical on lg+ */}
@@ -950,6 +1005,11 @@ function PracticeInfoTab() {
             </div>
           )}
         </div>
+
+        <AmbulatoryWorkspaceSettingsCard
+          settings={practice.settings}
+          rolloutEnabled={practice.ambulatoryWorkspaceRolloutEnabled === true}
+        />
       </div>
 
       <Button
@@ -1514,6 +1574,8 @@ function BillingTab() {
     .filter((option) => option.purchasable)
     .map((option) => option.cadence);
   const firstActivation = !data.hasSubscription;
+  const pendingTrial = firstActivation && !data.trialEndsAt && data.billingStatus === "none";
+  const previewEnded = pendingTrial && !!data.previewEndsAt && !data.previewActive;
   const checkoutStatus = searchParams.get("checkout");
   // Only surface the sync note when something actually needs attention.
   const showSyncNote =
@@ -1552,18 +1614,28 @@ function BillingTab() {
                 <Badge
                   variant={data.billingStatus === "active" ? "success" : "info"}
                 >
-                  {data.billingStatus === "trialing"
+                  {pendingTrial
+                    ? "Trial not started"
+                    : data.billingStatus === "trialing"
                     ? `${daysLeft} trial day${daysLeft === 1 ? "" : "s"} left`
                     : data.billingStatus.replace("_", " ")}
                 </Badge>
               </div>
               <h3 className="mt-2 font-heading text-2xl font-semibold tracking-tight">
-                {firstActivation
+                {pendingTrial
+                  ? "Start your free trial"
+                  : firstActivation
                   ? "Activate your account"
                   : "Your Cloud subscription"}
               </h3>
               <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
-                {firstActivation
+                {pendingTrial && data.previewActive
+                  ? `Your setup is saved. Add your card securely in Stripe Checkout to start your ${TRIAL_DAYS}-day trial and unlock email, texting, and AI. No charge today.`
+                  : previewEnded
+                  ? `Your preview has ended and everything you set up is saved. Add your card securely in Stripe Checkout to start your ${TRIAL_DAYS}-day trial and pick up where you left off. No charge today.`
+                  : pendingTrial
+                  ? `Add your card securely in Stripe Checkout to start your ${TRIAL_DAYS}-day trial. No charge today.`
+                  : firstActivation
                   ? "Choose a billing schedule, then add your payment details in secure Stripe Checkout. Your workspace and trial stay exactly as they are."
                   : `${currentPlan?.name ?? "Cloud"} keeps your clinic workspace active with unlimited staff.`}
               </p>
@@ -1572,7 +1644,7 @@ function BillingTab() {
         </div>
 
         <div className="p-6 sm:p-8">
-          {showReadOnlyNotice ? (
+          {showReadOnlyNotice && !data.previewActive ? (
             <div className="mb-5 flex gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <p>
@@ -1611,7 +1683,9 @@ function BillingTab() {
                       : `$${data.estimatedMonthlyBase} billed monthly`}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {data.billingStatus === "trialing"
+                    {pendingTrial
+                      ? `Free for ${TRIAL_DAYS} days, then automatic billing at the selected price plus applicable taxes and usage overages. Cancel before the trial ends to avoid a subscription charge.`
+                      : data.billingStatus === "trialing"
                       ? `No charge today. ${daysLeft} trial day${daysLeft === 1 ? "" : "s"} remaining.`
                       : "Stripe securely collects and stores your payment method."}
                   </p>
@@ -2081,6 +2155,20 @@ function StaffTab() {
       toast.error(err.message);
     },
   });
+  const signInLocks = trpc.settings.staffSignInLocks.useQuery();
+  const lockedStaff = new Set(
+    (signInLocks.data ?? []).map((lock) => lock.userId),
+  );
+  const clearSignInLockMutation =
+    trpc.settings.clearStaffSignInLock.useMutation({
+      onSuccess: () => {
+        utils.settings.staffSignInLocks.invalidate();
+        toast.success("Sign-in lock cleared");
+      },
+      onError: (err) => {
+        toast.error(err.message);
+      },
+    });
   const inviteMutation = trpc.settings.inviteStaff.useMutation({
     onSuccess: (res) => {
       utils.settings.listUsers.invalidate();
@@ -2565,7 +2653,14 @@ function StaffTab() {
                   </>
                 ) : (
                   <>
-                    <td className="px-4 py-3 font-medium">{user.name}</td>
+                    <td className="px-4 py-3 font-medium">
+                      {user.name}
+                      {lockedStaff.has(user.id) && (
+                        <span className="ml-2 text-xs font-normal text-amber-700">
+                          Sign-in locked
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {user.email}
                     </td>
@@ -2615,6 +2710,20 @@ function StaffTab() {
                         </div>
                       ) : (
                         <div className="flex justify-end gap-1">
+                          {lockedStaff.has(user.id) && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              title="Clear sign-in lock"
+                              aria-label={`Clear sign-in lock for ${user.name}`}
+                              disabled={clearSignInLockMutation.isPending}
+                              onClick={() =>
+                                clearSignInLockMutation.mutate({ id: user.id })
+                              }
+                            >
+                              <LockOpen className="h-4 w-4" />
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="ghost"
@@ -3029,27 +3138,7 @@ function AppointmentTypesTab() {
 // ── CSV Helpers ──────────────────────────────────────────────
 function downloadCSV(data: Record<string, unknown>[], filename: string) {
   if (data.length === 0) return;
-  const headers = Object.keys(data[0]);
-  const csv = [
-    headers.join(","),
-    ...data.map((row) =>
-      headers
-        .map((h) => {
-          const val = String(row[h] ?? "");
-          return val.includes(",") || val.includes('"')
-            ? `"${val.replace(/"/g, '""')}"`
-            : val;
-        })
-        .join(","),
-    ),
-  ].join("\n");
-  const blob = new Blob([csv], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadCsv(filename, recordsToCsv(data));
 }
 
 function downloadJSON(data: unknown, filename: string) {
@@ -4330,7 +4419,7 @@ function DataTab() {
                   </div>
                   <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
                     <ImportStat
-                      label="Rows parsed"
+                      label="Valid rows"
                       value={importPreview.total}
                     />
                     <ImportStat
@@ -4369,24 +4458,13 @@ function DataTab() {
                     />
                   </div>
 
-                  {importPreview.errors.length > 0 && (
-                    <div className="mt-4 space-y-1">
-                      <p className="text-sm font-medium text-destructive">
-                        {importPreview.errors.length} row issue(s):
-                      </p>
-                      <ul className="max-h-40 space-y-0.5 overflow-y-auto text-xs text-destructive">
-                        {importPreview.errors.map((err, i) => (
-                          <li key={i}>{err}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                  <ImportRowIssues errors={importPreview.errors} csv={csvText} />
                   <p className="mt-4 text-xs text-muted-foreground">
                     Only the{" "}
                     {importPreview.willInsert +
                       (importPreview.willReconcile ?? 0)}{" "}
-                    listed changes will be saved. {importPreview.errors.length}{" "}
-                    issue row(s) will be skipped.
+                    listed changes will be saved. Review any reported issues first;
+                    some rows may import with a warning.
                   </p>
                   <p className="mt-2 text-xs font-medium text-amber-700">
                     Start with a small representative sample. A confirmed import

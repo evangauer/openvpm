@@ -155,4 +155,14 @@ describe("controlled substances UI bounds", () => {
       source.indexOf("trpc.controlledSubstances.settings.useQuery")
     );
   });
+
+  it("submits a regulated log entry once per form submission", () => {
+    expect(source).toContain("const submittingRef = useRef(false)");
+    expect(source).toContain("if (submittingRef.current) return;");
+    expect(source).toContain("operationIdRef.current ??= crypto.randomUUID()");
+    expect(source).toContain("operationId: operationIdRef.current");
+    expect(source.indexOf("if (submittingRef.current) return;")).toBeLessThan(
+      source.indexOf("createMutation.mutate({")
+    );
+  });
 });

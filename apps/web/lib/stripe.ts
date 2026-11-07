@@ -9,6 +9,7 @@ import {
 } from "@/lib/stripe-config";
 import { envFlagEnabled } from "@/lib/env-bool";
 import type { BillingCadence } from "@/lib/billing/catalog";
+import { subscriptionBillingAccount, subscriptionBillingEnv, type SubscriptionBillingAccount } from "@/lib/billing/stripe-accounts";
 
 export const STRIPE_TAX_ENABLED_ENV = "STRIPE_TAX_ENABLED";
 export const INVOICE_CHECKOUT_CAPTURE_MODE = "manual_v1";
@@ -36,6 +37,35 @@ const configuredStripeSecretKey = stripeSecretKey();
 const stripe = configuredStripeSecretKey
   ? new Stripe(configuredStripeSecretKey, { apiVersion: STRIPE_API_VERSION })
   : null;
+
+const openvpmKey = process.env.STRIPE_OPENVPM_SECRET_KEY?.trim();
+const openvpmStripe = openvpmKey
+  ? new Stripe(openvpmKey, { apiVersion: STRIPE_API_VERSION })
+  : null;
+
+export function subscriptionStripe(account: SubscriptionBillingAccount = "legacy"): Stripe | null {
+  return subscriptionBillingAccount(account) === "openvpm" ? openvpmStripe : stripe;
+}
+
+let openvpmAccountVerification: Promise<void> | undefined;
+async function verifyOpenvpmBillingAccount(client: Stripe): Promise<void> {
+  openvpmAccountVerification ??= (async () => {
+    const expected = process.env.STRIPE_OPENVPM_ACCOUNT_ID?.trim();
+    const portalId = process.env.STRIPE_OPENVPM_BILLING_PORTAL_CONFIGURATION?.trim();
+    if (!portalId || !process.env.STRIPE_OPENVPM_SUBSCRIPTION_WEBHOOK_SECRET?.trim()) {
+      throw new Error("OpenVPM billing requires its webhook and customer portal configuration.");
+    }
+    const actual = await client.accounts.retrieve(null);
+    if (!expected || actual.id !== expected) {
+      throw new Error("OpenVPM billing key does not match its configured Stripe account.");
+    }
+    const portal = await client.billingPortal.configurations.retrieve(portalId);
+    if (!portal.active || !portal.features.subscription_cancel.enabled || !portal.features.payment_method_update.enabled) {
+      throw new Error("OpenVPM customer portal must allow cancellation and payment-method updates.");
+    }
+  })().catch((error) => { openvpmAccountVerification = undefined; throw error; });
+  await openvpmAccountVerification;
+}
 
 export async function createCheckoutSession(data: {
   invoiceId: string;
@@ -512,13 +542,16 @@ export async function createSubscriptionCheckoutSession(data: {
   trialPeriodDays?: number;
   billingCadence?: BillingCadence;
   source?: "signup" | "settings";
+  billingAccount?: SubscriptionBillingAccount;
 }): Promise<{ url: string | null } | null> {
+  const stripe = subscriptionStripe(data.billingAccount);
   if (!stripe) {
     console.warn(
       "[Stripe] No API key configured; subscription checkout unavailable"
     );
     return null;
   }
+  if (data.billingAccount === "openvpm") await verifyOpenvpmBillingAccount(stripe);
   const params = buildSubscriptionCheckoutSessionParams(data);
   const session = await stripe.checkout.sessions.create(params, {
     idempotencyKey: stripeIdempotencyKey(
@@ -541,6 +574,7 @@ export function buildSubscriptionCheckoutSessionParams(data: {
   trialPeriodDays?: number;
   billingCadence?: BillingCadence;
   source?: "signup" | "settings";
+  billingAccount?: SubscriptionBillingAccount;
 }): Stripe.Checkout.SessionCreateParams {
   const trialEnd = data.trialEnd
     ? Math.floor(new Date(data.trialEnd).getTime() / 1000)
@@ -575,7 +609,7 @@ export function buildSubscriptionCheckoutSessionParams(data: {
       : { customer_email: checkoutCustomerEmail(data.customerEmail) }),
     client_reference_id: data.practiceId,
     metadata,
-    ...subscriptionTaxCheckoutParams(data.customerId),
+    ...subscriptionTaxCheckoutParams(data.customerId, data.billingAccount),
     subscription_data: {
       description: `OpenVPM Cloud — ${
         billingCadence === "year" ? "annual" : "monthly"
@@ -600,9 +634,10 @@ export function buildSubscriptionCheckoutSessionParams(data: {
 }
 
 function subscriptionTaxCheckoutParams(
-  customerId?: string | null
+  customerId?: string | null,
+  account: SubscriptionBillingAccount = "legacy",
 ): Partial<Stripe.Checkout.SessionCreateParams> {
-  if (!envFlagEnabled(STRIPE_TAX_ENABLED_ENV)) {
+  if (!envFlagEnabled(subscriptionBillingEnv(STRIPE_TAX_ENABLED_ENV, account))) {
     return {};
   }
 
@@ -619,11 +654,17 @@ function subscriptionTaxCheckoutParams(
 export async function createBillingPortalSession(data: {
   customerId: string;
   returnUrl: string;
+  billingAccount?: SubscriptionBillingAccount;
 }): Promise<{ url: string | null } | null> {
+  const stripe = subscriptionStripe(data.billingAccount);
   if (!stripe) return null;
+  if (data.billingAccount === "openvpm") await verifyOpenvpmBillingAccount(stripe);
   const session = await stripe.billingPortal.sessions.create({
     customer: data.customerId,
     return_url: data.returnUrl,
+    ...(data.billingAccount === "openvpm" && process.env.STRIPE_OPENVPM_BILLING_PORTAL_CONFIGURATION?.trim()
+      ? { configuration: process.env.STRIPE_OPENVPM_BILLING_PORTAL_CONFIGURATION!.trim() }
+      : {}),
   });
   return { url: stripeCheckoutRedirectUrl(session.url) };
 }
@@ -632,9 +673,13 @@ export async function createBillingPortalSession(data: {
 export async function constructSubscriptionWebhookEvent(
   body: string,
   signature: string,
+  account: SubscriptionBillingAccount = "legacy",
 ): Promise<Stripe.Event | null> {
+  const stripe = subscriptionStripe(account);
   if (!stripe) return null;
-  const endpointSecret = stripeSubscriptionWebhookSecret();
+  const endpointSecret = account === "openvpm"
+    ? process.env.STRIPE_OPENVPM_SUBSCRIPTION_WEBHOOK_SECRET?.trim()
+    : stripeSubscriptionWebhookSecret();
   if (!endpointSecret) return null;
   return stripe.webhooks.constructEvent(
     body,

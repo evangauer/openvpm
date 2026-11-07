@@ -36,11 +36,16 @@ export const practices = pgTable(
       .default("free"),
     stripeCustomerId: varchar("stripe_customer_id", { length: 64 }),
     stripeSubscriptionId: varchar("stripe_subscription_id", { length: 64 }),
+    // NULL preserves existing Get Talky subscriptions; new OpenVPM trials pin their account.
+    stripeBillingAccount: varchar("stripe_billing_account", { length: 16 }),
     // Stripe-style billing lifecycle: none | trialing | active | past_due | canceled.
     billingStatus: varchar("billing_status", { length: 24 })
       .notNull()
       .default("none"),
     trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+    // Hosted preview before card: in-app setup on sample data until this time,
+    // without a trial or payment details. NULL for every other signup path.
+    previewEndsAt: timestamp("preview_ends_at", { withTimezone: true }),
     // Region/locale — gates currency, tax, formatting, and (later) regulatory
     // behavior. Defaults keep existing US practices working unchanged.
     country: varchar("country", { length: 2 }).notNull().default("US"), // ISO 3166-1 alpha-2

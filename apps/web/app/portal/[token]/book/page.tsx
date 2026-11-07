@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
-import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle, PawPrint } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -15,8 +14,6 @@ import {
 import { formatPortalDateInput } from "@/lib/portal/date";
 
 export default function BookAppointmentPage() {
-  const params = useParams();
-  const token = params.token as string;
   const formId = useId();
   const patientFieldId = `${formId}-patient`;
   const typeFieldId = `${formId}-type`;
@@ -26,8 +23,8 @@ export default function BookAppointmentPage() {
   const timeHelpId = `${formId}-time-help`;
   const reasonFieldId = `${formId}-reason`;
 
-  const client = trpc.portal.getClient.useQuery({ token });
-  const types = trpc.portal.getAppointmentTypes.useQuery({ token });
+  const client = trpc.portal.getClient.useQuery({});
+  const types = trpc.portal.getAppointmentTypes.useQuery({});
   const request = trpc.portal.requestAppointment.useMutation();
 
   const [patientId, setPatientId] = useState("");
@@ -60,7 +57,6 @@ export default function BookAppointmentPage() {
   // Suggested request times for the chosen date.
   const slots = trpc.portal.availableSlots.useQuery(
     {
-      token,
       date: preferredDate,
       durationMinutes: selectedDurationMinutes,
       typeId: typeId || undefined,
@@ -83,7 +79,7 @@ export default function BookAppointmentPage() {
   if (client.isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-teal-600 border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     );
   }
@@ -118,7 +114,7 @@ export default function BookAppointmentPage() {
   if (types.isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-teal-600 border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
       </div>
     );
   }
@@ -156,7 +152,6 @@ export default function BookAppointmentPage() {
     e.preventDefault();
     if (!canSubmit) return;
     request.mutate({
-      token,
       patientId,
       typeId,
       locationId,
@@ -169,7 +164,7 @@ export default function BookAppointmentPage() {
   if (request.data?.success) {
     return (
       <div className="text-center py-16">
-        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-teal-100 text-teal-600">
+        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
           <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
           </svg>
@@ -208,8 +203,8 @@ export default function BookAppointmentPage() {
           </dl>
         </div>
         <Link
-          href={`/portal/${token}/appointments`}
-          className="inline-flex items-center gap-1 text-sm font-medium text-teal-600 hover:text-teal-700"
+          href="/portal/appointments"
+          className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:text-primary/80"
         >
           View your appointments
         </Link>
@@ -220,8 +215,8 @@ export default function BookAppointmentPage() {
   return (
     <div className="max-w-xl">
       <Link
-        href={`/portal/${token}/appointments`}
-        className="inline-flex items-center gap-1 text-sm text-teal-600 hover:text-teal-700 mb-6"
+        href="/portal/appointments"
+        className="mb-6 inline-flex items-center gap-1 text-sm text-primary hover:text-primary/80"
       >
         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
@@ -259,7 +254,7 @@ export default function BookAppointmentPage() {
                   setPreferredTime("");
                 }}
                 required
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
               >
                 <option value="" disabled>
                   Choose a location…
@@ -299,7 +294,7 @@ export default function BookAppointmentPage() {
               value={patientId}
               onChange={(e) => setPatientId(e.target.value)}
               required
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
             >
               <option value="">Select a pet…</option>
               {pets.map((p) => (
@@ -325,7 +320,7 @@ export default function BookAppointmentPage() {
                 setPreferredTime("");
               }}
               required
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
             >
               <option value="" disabled>
                 Select a visit type…
@@ -356,7 +351,7 @@ export default function BookAppointmentPage() {
                 }}
                 min={today}
                 required
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
               />
             </div>
             <div>
@@ -377,7 +372,7 @@ export default function BookAppointmentPage() {
                 aria-invalid={showTimeBoundsError}
                 aria-describedby={timeHelpId}
                 required
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
               />
               <p
                 id={timeHelpId}
@@ -431,8 +426,8 @@ export default function BookAppointmentPage() {
                       onClick={() => setPreferredTime(s.time)}
                       className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
                         preferredTime === s.time
-                          ? "border-teal-500 bg-teal-50 text-teal-700"
-                          : "border-gray-200 text-gray-600 hover:border-teal-300"
+                          ? "border-primary bg-primary/5 text-primary"
+                          : "border-gray-200 text-gray-600 hover:border-primary/40"
                       }`}
                     >
                       {s.time}
@@ -458,7 +453,7 @@ export default function BookAppointmentPage() {
               maxLength={PORTAL_BOOKING_REASON_MAX_LENGTH}
               aria-invalid={reason.length > 0 && !hasValidReason}
               placeholder="Briefly describe the reason for the visit"
-              className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+              className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
 
@@ -469,7 +464,7 @@ export default function BookAppointmentPage() {
           <button
             type="submit"
             disabled={!canSubmit}
-            className="w-full rounded-lg bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
+            className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             {request.isPending ? "Sending…" : "Request appointment"}
           </button>

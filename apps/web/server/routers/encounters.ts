@@ -82,7 +82,7 @@ const optionalText = (label: string, max: number) =>
     .transform((value) => trimmedOrNull(value));
 
 const clinicalDraftInput = z.object({
-  appointmentId: z.string().uuid(),
+  appointmentId: z.string().guid(),
   expectedRevision: z.number().int().min(0),
   diagnosisSummary: optionalText("Diagnosis summary", CLOSEOUT_DIAGNOSIS_MAX_LENGTH),
   dischargeInstructions: optionalText(
@@ -100,14 +100,14 @@ const clinicalDraftInput = z.object({
     "Follow-up notes",
     CLOSEOUT_FOLLOW_UP_NOTES_MAX_LENGTH
   ),
-  followUpAppointmentId: z.string().uuid().nullable(),
+  followUpAppointmentId: z.string().guid().nullable(),
   followUpDueDate: clinicalDateInput("Follow-up due date")
     .nullable()
     .optional()
     .transform((value) => value ?? null),
   followUpAssignedTo: z
     .string()
-    .uuid()
+    .guid()
     .nullable()
     .optional()
     .transform((value) => value ?? null),
@@ -186,7 +186,7 @@ const finalizeClinicalInput = clinicalDraftInput.superRefine((input, ctx) => {
 
 const completeVisitInput = z
   .object({
-    appointmentId: z.string().uuid(),
+    appointmentId: z.string().guid(),
     expectedRevision: z.number().int().min(1),
     chargeDisposition: z.enum(["paid", "accounts_receivable", "no_charge"]),
     noChargeReason: optionalText("No-charge reason", CLOSEOUT_REASON_MAX_LENGTH),
@@ -231,7 +231,7 @@ const completeVisitInput = z
   });
 
 const reopenClinicalInput = z.object({
-  appointmentId: z.string().uuid(),
+  appointmentId: z.string().guid(),
   expectedRevision: z.number().int().min(1),
   reason: z
     .string()
@@ -242,12 +242,12 @@ const reopenClinicalInput = z.object({
 
 const resolveNeededFollowUpInput = z
   .object({
-    appointmentId: z.string().uuid(),
+    appointmentId: z.string().guid(),
     expectedRevision: z.number().int().min(1),
     resolution: z.enum(["scheduled", "completed", "not_needed"]),
     resolutionAppointmentId: z
       .string()
-      .uuid()
+      .guid()
       .nullable()
       .optional()
       .transform((value) => value ?? null),
@@ -280,13 +280,22 @@ const resolveNeededFollowUpInput = z
     }
   });
 
+// Waiving charges is a billing decision: only the roles that manage billing
+// may mark performed work or a whole visit as no charge.
+function canWaiveVisitCharges(role: string): boolean {
+  return role === "admin" || role === "front_desk";
+}
+
+const NO_CHARGE_FORBIDDEN_MESSAGE =
+  "Only an administrator or front desk teammate can mark visit work as no charge.";
+
 const resolveVisitWorkInput = z.object({
-  appointmentId: z.string().uuid(),
-  workItemId: z.string().uuid(),
+  appointmentId: z.string().guid(),
+  workItemId: z.string().guid(),
   resolution: z.discriminatedUnion("status", [
     z.object({
       status: z.literal("charged"),
-      invoiceItemId: z.string().uuid(),
+      invoiceItemId: z.string().guid(),
     }),
     z.object({
       status: z.literal("no_charge"),
@@ -308,8 +317,8 @@ const resolveVisitWorkInput = z.object({
 });
 
 const reopenVisitWorkInput = z.object({
-  appointmentId: z.string().uuid(),
-  workItemId: z.string().uuid(),
+  appointmentId: z.string().guid(),
+  workItemId: z.string().guid(),
   reason: z
     .string()
     .trim()
@@ -596,7 +605,7 @@ async function lockInitialDispenseCharge(
       )
     )
     .limit(1)
-    .for("update");
+    .for("update", { of: dispenseChargeQueue });
   return charge ?? null;
 }
 
@@ -667,7 +676,7 @@ export const encountersRouter = createRouter({
   ),
 
   getCloseout: protectedProcedure
-    .input(z.object({ appointmentId: z.string().uuid() }))
+    .input(z.object({ appointmentId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const [appointment] = await ctx.db
         .select({
@@ -707,6 +716,7 @@ export const encountersRouter = createRouter({
         medications,
         followUpAppointments,
         followUpAssignees,
+        canFinalizeDoctorRequiredVisit,
       ] = await Promise.all([
         getCloseoutRow(ctx, input.appointmentId),
         ctx.db
@@ -867,6 +877,7 @@ export const encountersRouter = createRouter({
             )
             .orderBy(asc(users.name), asc(users.email))
             .limit(100),
+          isVeterinarianProvider(ctx, ctx.user.id, ctx.user.role),
         ]);
 
       const rawInvoices =
@@ -918,11 +929,12 @@ export const encountersRouter = createRouter({
         followUpAppointments,
         followUpAssignees,
         invoices: invoiceSummaries,
+        canFinalizeDoctorRequiredVisit,
       };
     }),
 
   getVisitReconciliation: protectedProcedure
-    .input(z.object({ appointmentId: z.string().uuid() }))
+    .input(z.object({ appointmentId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const [appointment] = await ctx.db
         .select({ id: appointments.id, status: appointments.status })
@@ -1159,6 +1171,15 @@ export const encountersRouter = createRouter({
           code: "FORBIDDEN",
           message:
             "Only an administrator or veterinarian can void clinical work.",
+        });
+      }
+      if (
+        input.resolution.status === "no_charge" &&
+        !canWaiveVisitCharges(ctx.user.role)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: NO_CHARGE_FORBIDDEN_MESSAGE,
         });
       }
       return ctx.db.transaction(async (tx) => {
@@ -2271,8 +2292,17 @@ export const encountersRouter = createRouter({
   completeVisit: protectedProcedure
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(completeVisitInput)
-    .mutation(async ({ ctx, input }) =>
-      ctx.db.transaction(async (tx) => {
+    .mutation(async ({ ctx, input }) => {
+      if (
+        input.chargeDisposition === "no_charge" &&
+        !canWaiveVisitCharges(ctx.user.role)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: NO_CHARGE_FORBIDDEN_MESSAGE,
+        });
+      }
+      return ctx.db.transaction(async (tx) => {
         const txCtx: EncounterContext = { db: tx, practiceId: ctx.practiceId };
         const appointment = await lockAppointment(txCtx, input.appointmentId);
         const closeout = await getCloseoutRow(txCtx, input.appointmentId);
@@ -2339,9 +2369,66 @@ export const encountersRouter = createRouter({
         let invoiceId: string | null = null;
         if (input.chargeDisposition === "no_charge") {
           if (invoice) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message: "Void or resolve the active visit invoice before marking no charge.",
+            const zeroDollarInvoiceReady =
+              invoice.itemCount > 0 &&
+              invoice.status === "draft" &&
+              moneyToCents(invoice.total) === 0 &&
+              moneyToCents(invoice.paidAmount ?? "0") === 0 &&
+              moneyToCents(invoice.adjustedAmount) === 0 &&
+              invoice.balanceDueCents === 0;
+            if (!zeroDollarInvoiceReady) {
+              throw new TRPCError({
+                code: "PRECONDITION_FAILED",
+                message:
+                  "No-charge checkout requires either no invoice or a draft invoice whose saved line items total $0.00.",
+              });
+            }
+
+            const [finalizedInvoice] = await tx
+              .update(invoices)
+              .set({ status: "paid", updatedAt: new Date() })
+              .where(
+                and(
+                  eq(invoices.id, invoice.id),
+                  eq(invoices.practiceId, ctx.practiceId),
+                  eq(invoices.appointmentId, input.appointmentId),
+                  eq(invoices.patientId, appointment.patientId),
+                  eq(invoices.clientId, appointment.clientId),
+                  eq(invoices.status, "draft"),
+                  eq(invoices.total, invoice.total),
+                  eq(invoices.paidAmount, invoice.paidAmount ?? "0"),
+                  eq(invoices.isEstimate, false),
+                  isNull(invoices.deletedAt),
+                  sql`not exists (
+                    select 1 from ${invoiceAdjustments}
+                    where ${invoiceAdjustments.invoiceId} = ${invoice.id}
+                      and ${invoiceAdjustments.deletedAt} is null
+                  )`,
+                ),
+              )
+              .returning({ id: invoices.id });
+            if (!finalizedInvoice) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message:
+                  "The $0.00 invoice changed while completing checkout. Refresh and try again.",
+              });
+            }
+            invoiceId = finalizedInvoice.id;
+            await tx.insert(auditLog).values({
+              practiceId: ctx.practiceId,
+              userId: ctx.user.id,
+              action: "invoice_finalized_no_charge",
+              entityType: "invoice",
+              entityId: invoice.id,
+              changes: {
+                appointmentId: input.appointmentId,
+                priorStatus: invoice.status,
+                nextStatus: "paid",
+                total: invoice.total,
+                itemCount: invoice.itemCount,
+                reason: input.noChargeReason,
+              },
             });
           }
         } else {
@@ -2463,6 +2550,6 @@ export const encountersRouter = createRouter({
           });
         }
         return { closeout: completed, appointment: checkedOut };
-      })
-    ),
+      });
+    }),
 });

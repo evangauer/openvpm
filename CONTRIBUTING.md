@@ -4,28 +4,32 @@ Thank you for your interest in contributing to OpenVPM!
 
 ## Development Setup
 
-1. **Prerequisites**: Node.js 20+, pnpm 9+, Docker
+1. **Prerequisites**: Node.js 24.22.1 or a newer Node.js 24 patch, pnpm 9+, Docker
 2. **Clone and install**:
    ```bash
    git clone https://github.com/evangauer/openvpm.git
    cd openvpm
+   nvm use # when using nvm; see .nvmrc
    cp .env.example .env
-   pnpm install
+   # set NEXTAUTH_SECRET in .env to the output of: openssl rand -base64 32
+   pnpm install --frozen-lockfile
    ```
 3. **Start services**:
    ```bash
-   docker compose -f docker/docker-compose.yml up -d
-   pnpm db:push
+   docker compose --env-file .env -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
+   pnpm db:migrate
    pnpm db:seed
    pnpm dev
    ```
 
 ## Project Structure
 
-- `apps/web/` — Next.js frontend + API (tRPC)
+- `apps/web/` — Next.js product + dashboard and REST/tRPC APIs
+- `apps/docs/` — Searchable Next.js staff-guide site
 - `packages/db/` — Drizzle ORM schema and migrations
 - `packages/api/` — Shared Zod validators and types
 - `packages/config/` — Shared TypeScript and Tailwind config
+- `packages/docs-content/` — Shared guide content and metadata
 
 ## Development Workflow
 
@@ -83,9 +87,10 @@ open one) to claim it.
   (`apps/web/lib/dosing/__tests__/`). Keep ranges conservative and cite a source.
 - **Drag-to-reschedule on the calendar** — the `appointments.reschedule` API
   already exists with conflict checking; wire it into the schedule UI.
-- **Appointment waitlist** — small schema + tRPC router + a list view.
-- **CSV import UI** — a Settings → Data screen for the existing
-  `data.importClientsCsv` / `importPatientsCsv` procedures.
+- **Appointment waitlist UI** — build a staff-facing list on the existing
+  tenant-scoped schema and tRPC router.
+- **CSV import review UX** — deepen the existing Settings → Data flow with
+  clearer row-level validation and issue resolution for supported import types.
 - **Embeddable booking widget** — an iframe/script version of the client-portal
   booking flow (`apps/web/app/portal/[token]/book`).
 
