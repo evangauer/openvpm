@@ -22,6 +22,13 @@ Thank you for your interest in contributing to OpenVPM!
    pnpm dev
    ```
 
+Keep `.env` at the repository root beside `.env.example`. `pnpm dev` loads it
+for the web server in `apps/web`; you do not need a second env file there.
+Existing shell exports and app env values take precedence. If `DATABASE_URL`
+is missing, the dev server stops with setup instructions. Restart `pnpm dev`
+after changing the root env file. Production continues to use its deployment
+environment.
+
 ## Project Structure
 
 - `apps/web/` — Next.js product + dashboard and REST/tRPC APIs

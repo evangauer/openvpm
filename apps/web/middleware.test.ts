@@ -12,7 +12,9 @@ vi.mock("next-auth/jwt", () => ({
 
 const { config, middleware } = await import("./middleware");
 const require = createRequire(import.meta.url);
-const nextConfig = require("./next.config.js") as {
+const nextConfig = require("./next.config.js")(
+  require("next/constants").PHASE_PRODUCTION_BUILD
+) as {
   poweredByHeader?: boolean;
   headers: () => Promise<
     {
