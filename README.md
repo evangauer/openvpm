@@ -189,6 +189,7 @@ cd openvpm
 
 # Copy environment config
 cp .env.example .env
+# In the root .env, set NEXTAUTH_SECRET using: openssl rand -base64 32
 
 # Start PostgreSQL and S3-compatible storage
 docker compose -f docker/docker-compose.yml up -d
@@ -213,6 +214,13 @@ pnpm db:seed
 pnpm dev
 ```
 
+Keep `.env` at the repository root beside `.env.example`. `pnpm dev` loads it
+for the web server in `apps/web`; you do not need a second env file there.
+Existing shell exports and app env values take precedence. If `DATABASE_URL`
+is missing, the dev server stops with setup instructions. Restart `pnpm dev`
+after changing the root env file. Production continues to use its deployment
+environment.
+
 Open [http://localhost:3000](http://localhost:3000) and sign in with the demo credentials:
 
 | Role         | Email                                     | Password    |
@@ -234,6 +242,11 @@ Before using a self-hosted installation with real clinic data, complete the
 local build is not, by itself, a production-readiness assessment.
 
 ### Deploy with Docker
+
+Allocate at least 4 GiB of memory to the Docker builder. The image build gives
+Node a 3 GiB heap for compilation and type checking; the running application
+keeps Node's default memory settings. On a larger builder, the heap can be
+adjusted with `--build-arg BUILD_NODE_OPTIONS=--max-old-space-size=4096`.
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d

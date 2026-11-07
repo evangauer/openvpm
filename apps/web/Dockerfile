@@ -22,7 +22,10 @@ COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm build --filter=@openpims/web
+# The default heap on a 4 GiB builder is too small for Next's type-check worker.
+# Keep the larger heap scoped to this build; the runtime uses Node's defaults.
+ARG BUILD_NODE_OPTIONS="--max-old-space-size=3072"
+RUN NODE_OPTIONS="$BUILD_NODE_OPTIONS" pnpm --filter @openpims/web build
 
 # --- Runner ---
 FROM base AS runner
