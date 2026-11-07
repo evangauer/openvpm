@@ -14,7 +14,13 @@ import { trpc } from "./trpc";
 
 export const ACTIVE_THEME = "light";
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({
+  children,
+  analyticsEnabled = false,
+}: {
+  children: React.ReactNode;
+  analyticsEnabled?: boolean;
+}) {
   const [queryClient] = useState(() => {
     let signingOut = false;
     return createAppQueryClient({
@@ -72,7 +78,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
           >
             {children}
             <Toaster richColors position="bottom-right" />
-            <Analytics beforeSend={filterVercelAnalyticsEvent} />
+            {analyticsEnabled ? (
+              <Analytics beforeSend={filterVercelAnalyticsEvent} />
+            ) : null}
           </ThemeProvider>
         </SessionProvider>
       </QueryClientProvider>

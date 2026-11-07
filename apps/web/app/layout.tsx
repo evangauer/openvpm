@@ -38,7 +38,9 @@ export default function RootLayout({
         >
           Skip to main content
         </a>
-        <Providers>{children}</Providers>
+        <Providers analyticsEnabled={process.env.VERCEL === "1"}>
+          {children}
+        </Providers>
       </body>
     </html>
   );
