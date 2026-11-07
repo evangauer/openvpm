@@ -5,7 +5,7 @@
 <h1 align="center">OpenVPM</h1>
 
 <p align="center">
-  <strong>The open-source veterinary practice management system the industry has been waiting for.</strong>
+  <strong>Open-source veterinary software. Your practice. Your data.</strong>
 </p>
 
 <p align="center">
@@ -27,25 +27,31 @@
   <a href="https://github.com/evangauer/openvpm/stargazers"><img src="https://img.shields.io/github/stars/evangauer/openvpm?style=social" alt="GitHub Stars" /></a>
 </p>
 
----
+<p align="center">
+  <strong>Veterinary software should belong to the people who use it.</strong>
+</p>
+
+OpenVPM brings appointments, patient records, clinical notes, and billing into one workspace. Explore the demo, run it on your own infrastructure, or build on the API.
 
 <p align="center">
-  <strong>▶ <a href="https://demo.openvpm.com/login">Try the live demo</a></strong> — instant email access, no account or credit card. &nbsp;|&nbsp; If you believe veterinary software should be open, <strong><a href="https://github.com/evangauer/openvpm">give us a ⭐</a></strong> — it helps other clinics and builders find the project.
+  <!-- The published video attachment will wrap this cover before merge. -->
+  <img src="docs/media/product-tour-cover.png" alt="Watch the 56-second OpenVPM product tour: appointments, patient records, invoices, and data export" width="100%" />
+</p>
+
+<p align="center">
+  <a href="https://demo.openvpm.com/login"><strong>Try the live demo</strong></a> &middot;
+  <a href="docs/api/README.md">Build with the API</a>
+</p>
+
+<p align="center">
+  <sub>Real product footage with fictional demo data. The API segment illustrates documented interfaces. <a href="docs/media/product-tour.en.srt">English captions</a> · <a href="docs/clinic-pilot-readiness.md">Clinic pilot readiness guide</a>.</sub>
+</p>
+
+<p align="center">
+  If you want veterinary software to be open, <strong><a href="https://github.com/evangauer/openvpm">star OpenVPM</a></strong> to help clinics and builders find it.
 </p>
 
 ---
-
-## The Problem
-
-The veterinary PIMS market is broken — and everyone knows it.
-
-**For clinics:** Commercial systems like ezyVet, ProVet Cloud, and Cornerstone charge $200–600+/month, lock you into proprietary data formats, and deliver software that staff describe as "extremely nonuser friendly," "very clunky," with "terrible" financial reporting and support that declines after the sale closes. Legacy systems crash. Modern ones charge extra for texting. Every one of them holds your data hostage.
-
-**For innovators:** AI agents are poised to disrupt the PIMS as the "system of record" — but only if there's an open system to build on. Today, most PIMS have closed or poorly documented APIs, making it nearly impossible for AI tools, voice agents, or third-party developers to read and write patient data. There is no widely adopted data interoperability standard in veterinary medicine.
-
-**The open-source gap:** OpenVPMS is Java-based, dated, and primarily Australian-focused. A few student projects exist on GitHub but none are production-ready. Until now, there has been **no modern, well-designed, open-source PIMS with an open API.**
-
-OpenVPM fills that gap.
 
 ## What is OpenVPM?
 
