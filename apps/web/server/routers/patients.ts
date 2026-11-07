@@ -24,6 +24,7 @@ import {
   soapNotes,
   vaccinationRecords,
   labResults,
+  labReportDecisions,
   procedures,
   clinicalNotes,
   problemList,
@@ -361,6 +362,7 @@ function immutableMergeHistoryPredicate(
     or exists (select 1 from ${patientAllergies} where ${patientAllergies.patientId} = ${patientId})
     or exists (select 1 from ${soapNotes} where ${soapNotes.practiceId} = ${practiceId} and ${soapNotes.patientId} = ${patientId})
     or exists (select 1 from ${vaccinationRecords} where ${vaccinationRecords.practiceId} = ${practiceId} and ${vaccinationRecords.patientId} = ${patientId})
+    or exists (select 1 from ${labReportDecisions} where ${labReportDecisions.practiceId} = ${practiceId} and ${labReportDecisions.patientId} = ${patientId})
     or exists (select 1 from ${labResults} where ${labResults.practiceId} = ${practiceId} and ${labResults.patientId} = ${patientId})
     or exists (select 1 from ${procedures} where ${procedures.practiceId} = ${practiceId} and ${procedures.patientId} = ${patientId})
     or exists (select 1 from ${clinicalNotes} where ${clinicalNotes.practiceId} = ${practiceId} and ${clinicalNotes.patientId} = ${patientId})
@@ -595,7 +597,7 @@ async function analyzePatientMerge(
       allergies: sql<number>`(select count(*)::int from ${patientAllergies} where ${patientAllergies.patientId} = ${mergeId})`,
       soapNotes: sql<number>`(select count(*)::int from ${soapNotes} where ${soapNotes.practiceId} = ${practiceId} and ${soapNotes.patientId} = ${mergeId})`,
       vaccinations: sql<number>`(select count(*)::int from ${vaccinationRecords} where ${vaccinationRecords.practiceId} = ${practiceId} and ${vaccinationRecords.patientId} = ${mergeId})`,
-      labResults: sql<number>`(select count(*)::int from ${labResults} where ${labResults.practiceId} = ${practiceId} and ${labResults.patientId} = ${mergeId})`,
+      labResults: sql<number>`(select count(*)::int from ${labResults} where ${labResults.practiceId} = ${practiceId} and ${labResults.patientId} = ${mergeId}) + (select count(*)::int from ${labReportDecisions} where ${labReportDecisions.practiceId} = ${practiceId} and ${labReportDecisions.patientId} = ${mergeId})`,
       procedures: sql<number>`(select count(*)::int from ${procedures} where ${procedures.practiceId} = ${practiceId} and ${procedures.patientId} = ${mergeId})`,
       clinicalNotes: sql<number>`(select count(*)::int from ${clinicalNotes} where ${clinicalNotes.practiceId} = ${practiceId} and ${clinicalNotes.patientId} = ${mergeId})`,
       problemList: sql<number>`(select count(*)::int from ${problemList} where ${problemList.practiceId} = ${practiceId} and ${problemList.patientId} = ${mergeId})`,

@@ -65,6 +65,12 @@ jobs:
           OFFLINE_WORKSPACE_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/offline-workspace.integration.test.ts
 
+      - name: Verify lab report intake and recovery
+        if: matrix.test == 'golden-clinic'
+        env:
+          LAB_REPORT_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/lab-report-intake.integration.test.ts
+
   build:
     runs-on: ubuntu-latest
 
