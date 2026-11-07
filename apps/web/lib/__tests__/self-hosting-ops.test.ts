@@ -28,14 +28,14 @@ describe("self-hosting operations docs", () => {
     );
 
     expect(compose).toContain("minio-bootstrap:");
-    expect(compose).toContain("mc mb --ignore-existing local/openpims");
+    expect(compose).toContain("mcli mb --ignore-existing local/openpims");
     expect(compose).toMatch(
       /minio-bootstrap:\s*\n\s*condition: service_completed_successfully/,
     );
 
     expect(readme).toContain("pnpm db:rls");
     expect(readme).toContain("pnpm db:rls:test");
-    expect(readme).toContain("automatic MinIO bucket bootstrap");
+    expect(readme).toContain("automatic bucket bootstrap");
     expect(readme).toContain("least-privilege `openpims_app` database role");
     expect(readme).toContain("OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls");
     expect(readme).toContain(
