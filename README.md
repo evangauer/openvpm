@@ -64,10 +64,8 @@ OpenVPM is a modern, cloud-native veterinary practice information management sys
 - **Cloud-native but self-hostable** — Run it on our cloud or deploy it on your own infrastructure
 - **Free and open source** — AGPLv3, forever. No per-provider pricing. No vendor lock-in. Your data is yours.
 
-> _"I would need to see the product benefit us by reducing our staff hours."_
-> — A practice manager we interviewed during research
-
-That's the bar we're building to.
+> _"I was intrigued and excited to find that there is a viable open-source practice management offering out there."_
+> — Veterinarian and veterinary software builder
 
 ## Screenshots
 
