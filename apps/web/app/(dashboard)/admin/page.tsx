@@ -16,6 +16,7 @@ import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
 import { PageLoading } from "@/components/common/loading";
 import { SmsRecoveryConsole } from "@/components/admin/sms-recovery-console";
+import { PracticeTrackingPanel } from "@/components/admin/practice-tracking-panel";
 import { ClinicPilotConsole } from "@/components/admin/clinic-pilot-console";
 
 const EMPTY_UUID = "00000000-0000-4000-8000-000000000000";
@@ -1688,6 +1689,8 @@ export default function AdminPage() {
           </p>
         )}
       </div>
+
+      <PracticeTrackingPanel />
 
       {/* Practices table */}
       {extendTrialError && (

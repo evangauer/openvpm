@@ -16,6 +16,7 @@ export const CRON_HEARTBEAT_JOBS = [
   "auth-cleanup",
   "prescription-expiry",
   "activation-digest",
+  "atlas-tracking",
   "conversion-reconcile",
   "sms-operations",
   "sms-provider-events",
