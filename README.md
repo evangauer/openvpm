@@ -34,11 +34,13 @@
 OpenVPM brings appointments, patient records, clinical notes, and billing into one workspace. Explore the demo, run it on your own infrastructure, or build on the API.
 
 <p align="center">
-  <!-- The published video attachment will wrap this cover before merge. -->
-  <img src="docs/media/product-tour-cover.png" alt="Watch the 56-second OpenVPM product tour: appointments, patient records, invoices, and data export" width="100%" />
+  <a href="https://docs.openvpm.com/media/openvpm-product-tour-v1.mp4">
+    <img src="docs/media/product-tour-cover.png" alt="Watch the 56-second OpenVPM product tour: appointments, patient records, invoices, and data export" width="100%" />
+  </a>
 </p>
 
 <p align="center">
+  <a href="https://docs.openvpm.com/media/openvpm-product-tour-v1.mp4"><strong>Watch the 56-second product tour</strong></a> &middot;
   <a href="https://demo.openvpm.com/login"><strong>Try the live demo</strong></a> &middot;
   <a href="docs/api/README.md">Build with the API</a>
 </p>
