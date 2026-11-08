@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("demo conversion bridge UI", () => {
-  const login = readFileSync("app/(auth)/login/page.tsx", "utf8");
+  const login = readFileSync("components/demo/demo-login.tsx", "utf8");
   const demoAccessRoute = readFileSync("app/api/demo-access/route.ts", "utf8");
   const register = readFileSync("app/(auth)/register/register-form.tsx", "utf8");
   const firstDayRecommendations = readFileSync(
@@ -27,10 +27,11 @@ describe("demo conversion bridge UI", () => {
     expect(demoAccessRoute).toContain("await recordAcceptedDemoGate");
     expect(login).toContain("FUNNEL_EVENTS.demoCtaStartClinic");
     expect(login).toContain("buildCloudSignupUrl");
-    expect(login).toContain("Explore the demo");
+    expect(login).toContain("Enter the demo");
     expect(login).not.toContain("password123");
     expect(login).not.toContain("View raw credentials");
-    expect(login.match(/min-h-11/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(login).toContain("DEMO_ROLE_OPTIONS");
+    expect(login).toContain("role: role.id");
     expect(login).toContain("Start my clinic");
   });
 

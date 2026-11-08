@@ -179,7 +179,7 @@ describe("POST /api/demo-access", () => {
         source: "demo",
         email: "vet@clinic.com",
         anonymousId: ANONYMOUS_ID,
-        disclosureVersion: "demo-followup-v2",
+        disclosureVersion: "demo-useful-v3",
       });
     } finally {
       vi.unstubAllEnvs();
