@@ -1,3 +1,6 @@
+import { loadPracticeTracking } from "@/lib/admin/practice-tracking";
+import { accountActivityEmail, type AccountActivityEmail } from "@/lib/admin/account-activity-email";
+import { appBaseUrl } from "@/lib/app-url";
 import { NextResponse } from "next/server";
 import { db } from "@openpims/db/client";
 import { cronAuthError } from "@/lib/cron-auth";
@@ -40,16 +43,22 @@ export async function GET(request: Request) {
       return NextResponse.json({ recipients: 0, sent: 0, failed: 0 });
     }
 
-    const [week, month, journeyWeek, journeyMonth, pilots] = await Promise.all([
+    const [week, month, journeyWeek, journeyMonth, pilots, tracking] = await Promise.all([
       computeActivationFunnel(db, 7),
       computeActivationFunnel(db, 30),
       computeJourneyFunnel(db, 7),
       computeJourneyFunnel(db, 30),
       loadClinicPilotQueue(db),
+      loadPracticeTracking(db, { limit: 10 }).catch(() => {
+        void alertOps("Account activity digest unavailable", "The account activity query failed; no usage was assumed.");
+        return null;
+      }),
     ]);
 
     const subject = `OpenVPM trial funnel: ${week.totals.signups} signups, ${week.totals.activated} activated this week`;
-    const html = digestHtml(week, month, journeyWeek, journeyMonth, pilots);
+    const html = digestHtml(week, month, journeyWeek, journeyMonth, pilots, tracking ? {
+      snapshotAt: tracking.snapshotAt, practices: tracking.practices, hasMore: tracking.nextCursor !== null,
+    } : null);
 
     let sent = 0;
     let failed = 0;
@@ -71,7 +80,7 @@ export async function GET(request: Request) {
 
     await reportCronHeartbeat({
       job: "activation-digest",
-      status: failed > 0 ? "degraded" : "ok",
+      status: failed > 0 || !tracking ? "degraded" : "ok",
       detail: `${sent} sent, ${failed} failed`,
       metrics: { recipients: recipients.length, sent, failed },
     });
@@ -238,7 +247,7 @@ function pilotSection(pilots: ClinicPilotQueue, now = new Date()): string {
   );
   return `<h2 style="margin:24px 0 8px;font-size:16px;color:#111827;">Supported clinic cohort</h2>
 <p style="margin:0 0 8px;color:#6b7280;font-size:13px;line-height:1.5;">${pilots.length} enrolled · ${pilots.filter((pilot) => pilot.decision === "eligible").length} eligible · ${pilots.filter((pilot) => pilot.decision === "approved").length} approved · ${active.length} active · ${pilots.filter((pilot) => pilot.evidence.firstVisitCompletedAt).length} first visit observed · ${pilots.filter((pilot) => pilot.evidence.distinctClinicDays >= 5).length} five clinic days observed · ${pilots.filter((pilot) => pilot.evidence.paymentMethodCollectedAt).length} payment method · ${pilots.filter((pilot) => pilot.evidence.firstPositivePaymentAt).length} first positive payment · ${overdue.length} overdue review(s) · ${pilots.reduce((sum, pilot) => sum + pilot.blockerCodes.length, 0)} open blocker code(s).</p>
-<p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Open Platform Admin for the restricted clinic-level queue. Operator stages do not replace canonical product or payment evidence. This digest is aggregate-only: it contains no clinic names, contact addresses, participant messages, free-form notes, or blocker detail.</p>`;
+<p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Open Platform Admin for the restricted clinic-level queue. Operator stages do not replace canonical product or payment evidence. This supported-cohort section is aggregate-only: it contains no clinic names, contact addresses, participant messages, free-form notes, or blocker detail.</p>`;
 }
 
 function digestHtml(
@@ -247,6 +256,7 @@ function digestHtml(
   journeyWeek: JourneyFunnel,
   journeyMonth: JourneyFunnel,
   pilots: ClinicPilotQueue,
+  tracking: AccountActivityEmail | null,
 ): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -267,6 +277,7 @@ function digestHtml(
           </tr>
           <tr>
             <td style="padding:32px;">
+              ${accountActivityEmail(tracking, `${appBaseUrl()}/admin#practice-tracking`)}
               ${journeySection("Production journey · past 7 days", journeyWeek)}
               ${journeySection("Production journey · past 30 days", journeyMonth)}
               ${funnelSection("Past 7 days", week)}

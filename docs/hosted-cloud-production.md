@@ -710,3 +710,13 @@ accordingly. Disabling the flag stops new exports; already received history is
 retained under the receiving service's retention process.
 
 ![Account activity using synthetic trial data](screenshots/practice-tracking.png)
+
+
+The existing weekly activation email also includes the ten newest
+subscription-backed accounts from this same projection, with owner contact,
+verification, trial dates, usage, action summaries and captured source values.
+It goes only to `PLATFORM_ADMIN_EMAILS` through the existing cron-authenticated
+job; no additional email schedule is created. It links to
+`/admin#practice-tracking`. If account evidence cannot load, the email labels
+it unavailable, preserves the aggregate report and reports a degraded heartbeat.
+The separate supported-clinic cohort section remains aggregate-only.

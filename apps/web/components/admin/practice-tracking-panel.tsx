@@ -15,7 +15,7 @@ export function PracticeTrackingPanel() {
     { retry: false, refetchInterval: 60_000 },
   );
   return (
-    <section className="mt-8 rounded-lg border border-border p-4 sm:p-6" aria-labelledby="practice-tracking-title">
+    <section id="practice-tracking" className="mt-8 rounded-lg border border-border p-4 sm:p-6" aria-labelledby="practice-tracking-title">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 id="practice-tracking-title" className="font-heading text-lg font-semibold">Trial and customer activity</h2>
