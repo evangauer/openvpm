@@ -860,6 +860,7 @@ set job-specific URLs (`CRON_HEARTBEAT_REMINDERS_URL`,
 `CRON_HEARTBEAT_WELLNESS_BILLING_URL`,
 `CRON_HEARTBEAT_RATE_LIMIT_CLEANUP_URL`,
 `CRON_HEARTBEAT_AUTH_CLEANUP_URL`,
+`CRON_HEARTBEAT_ATLAS_TRACKING_URL`,
 `CRON_HEARTBEAT_ACTIVATION_DIGEST_URL`,
 `CRON_HEARTBEAT_SMS_OPERATIONS_URL`,
 `CRON_HEARTBEAT_SMS_PROVIDER_EVENTS_URL`,
@@ -952,3 +953,51 @@ Once any clinic uses OpenVPM billing, rollback must retain this account-routing
 code and database column. A code rollback to a revision that knows only Get
 Talky would route those clinics to the wrong portal and usage meter. Disable
 new account assignment instead of deleting the account boundary.
+
+## Private account activity reporting
+
+Platform operators can open **Admin → Trial and customer activity** to inspect
+account-provided business names, owner contacts, trial status, non-sample record
+counts, metered AI/SMS usage, successful product-action summaries and captured
+signup source/medium/campaign. Registered accounts appear even before checkout
+or a trial, with their observed billing status. Internal practices marked
+excluded and deleted accounts are omitted.
+Unknown attribution stays unknown; signup placement alone does not establish
+an external referral channel. The view does not track time online or presence.
+Action-day counts use UTC; audit summaries contain only supported action labels.
+
+An optional signed feed uses this same projection for the private operating
+system. It is off by default. To activate after the receiving service and the
+normal release are approved:
+
+1. Configure its matching `/api/intake/openvpm/sync` receiver with a dedicated
+   random `OPENVPM_USAGE_SECRET` of at least 32 characters.
+2. Configure the same secret and the full HTTPS `ATLAS_OPENVPM_INTAKE_URL` on the
+   hosted production app. Never reuse provider, auth, cron or webhook secrets.
+3. Set `ATLAS_OPENVPM_SYNC_ENABLED=true` on that production environment only.
+4. Invoke the cron-authenticated `/api/cron/atlas-tracking` once and verify its
+   complete acknowledgement and corresponding private account records before
+   considering the feed connected. The hourly schedule runs at minute 17.
+
+Non-production Vercel deployments and self-hosted mode do not export. Redirects
+are refused. Pages are bounded; retries are safe at the receiver. A failed or
+partial acknowledgement yields HTTP 502 and a failed heartbeat. The job uses
+`CRON_HEARTBEAT_ATLAS_TRACKING_URL` or the shared heartbeat destination. Keep the
+feed disabled if those controls or the receiving service are unavailable.
+No patient/client names, prompts, notes, capability tokens or IPs are exported.
+The owner contact is included for account follow-up; restrict receiving access
+accordingly. Disabling the flag stops new exports; already received history is
+retained under the receiving service's retention process.
+
+![Account activity using synthetic trial data](screenshots/practice-tracking.png)
+
+
+The existing weekly activation email also includes the ten newest
+registered accounts from this same projection, including signups before
+checkout, with owner contact,
+verification, trial dates, usage, action summaries and captured source values.
+It goes only to `PLATFORM_ADMIN_EMAILS` through the existing cron-authenticated
+job; no additional email schedule is created. It links to
+`/admin#practice-tracking`. If account evidence cannot load, the email labels
+it unavailable, preserves the aggregate report and reports a degraded heartbeat.
+The separate supported-clinic cohort section remains aggregate-only.

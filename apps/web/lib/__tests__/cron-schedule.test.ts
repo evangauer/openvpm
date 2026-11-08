@@ -26,6 +26,7 @@ describe("Vercel cron schedule", () => {
         "/api/cron/rate-limit-cleanup",
         "/api/cron/auth-cleanup",
         "/api/cron/activation-digest",
+        "/api/cron/atlas-tracking",
         "/api/cron/sms-operations",
         "/api/cron/sms-provider-events",
         "/api/cron/conversion-reconcile",

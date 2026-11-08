@@ -16,6 +16,7 @@ import { trpc } from "@/lib/trpc";
 import { EmptyState } from "@/components/common/empty-state";
 import { PageLoading } from "@/components/common/loading";
 import { SmsRecoveryConsole } from "@/components/admin/sms-recovery-console";
+import { PracticeTrackingPanel } from "@/components/admin/practice-tracking-panel";
 import { ClinicPilotConsole } from "@/components/admin/clinic-pilot-console";
 import { BUILD_SCENE_LABELS } from "@/lib/build/catalog";
 import { DEMO_DISCLOSURE_FOLLOWUP_V2 } from "@/lib/growth/demo-disclosure";
@@ -1781,6 +1782,8 @@ export default function AdminPage() {
           </p>
         )}
       </div>
+
+      <PracticeTrackingPanel />
 
       {/* Practices table */}
       {extendTrialError && (
