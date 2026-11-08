@@ -20,7 +20,7 @@ export function PracticeTrackingPanel() {
         <div>
           <h2 id="practice-tracking-title" className="font-heading text-lg font-semibold">Trial and customer activity</h2>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            Business names are account-provided. Record counts exclude seeded samples.
+            Includes signups before checkout. Business names are account-provided. Record counts exclude seeded samples.
             Recorded actions show product use, not time online or current presence.
           </p>
         </div>
@@ -79,7 +79,7 @@ export function PracticeTrackingPanel() {
               </div>
             </details>
           ))}
-          {!data.practices.length ? <p className="py-4 text-sm text-muted-foreground">No subscription-backed accounts to track yet.</p> : null}
+          {!data.practices.length ? <p className="py-4 text-sm text-muted-foreground">No registered accounts to track yet.</p> : null}
         </div>
         <div className="mt-4 flex gap-2">
           <button type="button" disabled={isFetching || pages.length === 1} onClick={() => setPages(p => p.slice(0, -1))}

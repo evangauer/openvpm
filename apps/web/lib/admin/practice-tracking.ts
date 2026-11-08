@@ -9,7 +9,8 @@ function acquisitionValue(value: unknown): string | null {
   return typeof value === "string" && /^[a-zA-Z0-9._:/-]{1,80}$/.test(value) ? value : null;
 }
 
-/** Operator-only projection shared by the dashboard and the signed Atlas feed.
+/** Operator-only projection of registered accounts, including before checkout,
+ * shared by the dashboard, email and signed Atlas feed.
  * Reads only counts and allowlisted audit labels: no prompts, notes, tokens or IPs.
  * Cursor pages are stable for a fixed upper registration-time bound.
  */
@@ -25,7 +26,6 @@ export async function loadPracticeTracking(
       select p.* from practices p
       where p.deleted_at is null
         and p.settings ->> 'analyticsExcluded' is distinct from 'true'
-        and (p.stripe_subscription_id is not null or p.billing_status <> 'none')
         and p.created_at <= ${asOf.toISOString()}::timestamptz
         ${cursor ? sql`and (p.created_at, p.id) <
           (${cursor.createdAt}::timestamptz, ${cursor.practiceId}::uuid)` : sql``}

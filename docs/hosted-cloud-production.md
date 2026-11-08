@@ -681,7 +681,9 @@ Do not commit:
 Platform operators can open **Admin → Trial and customer activity** to inspect
 account-provided business names, owner contacts, trial status, non-sample record
 counts, metered AI/SMS usage, successful product-action summaries and captured
-signup source/medium/campaign. Internal practices marked excluded are omitted.
+signup source/medium/campaign. Registered accounts appear even before checkout
+or a trial, with their observed billing status. Internal practices marked
+excluded and deleted accounts are omitted.
 Unknown attribution stays unknown; signup placement alone does not establish
 an external referral channel. The view does not track time online or presence.
 Action-day counts use UTC; audit summaries contain only supported action labels.
@@ -713,7 +715,8 @@ retained under the receiving service's retention process.
 
 
 The existing weekly activation email also includes the ten newest
-subscription-backed accounts from this same projection, with owner contact,
+registered accounts from this same projection, including signups before
+checkout, with owner contact,
 verification, trial dates, usage, action summaries and captured source values.
 It goes only to `PLATFORM_ADMIN_EMAILS` through the existing cron-authenticated
 job; no additional email schedule is created. It links to

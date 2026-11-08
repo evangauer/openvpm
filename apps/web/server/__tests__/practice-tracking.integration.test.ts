@@ -10,7 +10,7 @@ import { loadPracticeTracking } from "@/lib/admin/practice-tracking";
 
 const integration = process.env.PRACTICE_TRACKING_DB_INTEGRATION === "1" ? describe : describe.skip;
 integration("private tracking PostgreSQL contract", () => {
-  it("excludes samples and internal tenants, preserves unknown attribution and pages without leaking audit content", async () => {
+  it("includes registrations before checkout, excludes samples and internal tenants, and pages without leaking audit content", async () => {
     const url = new URL(process.env.DATABASE_URL!);
     if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) throw new Error("This fixture requires a local database");
     const name="openpims_tracking_"+randomUUID().replaceAll("-","");
@@ -26,8 +26,10 @@ integration("private tracking PostgreSQL contract", () => {
       const db=drizzle(client,{schema});
       const [p]=await db.insert(schema.practices).values({name:"Synthetic Tracking Clinic",billingStatus:"trialing",createdAt:new Date("2026-11-08T09:00:00Z")}).returning();
       await db.insert(schema.practices).values([
-        {name:"Excluded",billingStatus:"trialing",settings:{analyticsExcluded:true}},
-        {name:"No subscription",billingStatus:"none"},
+        {name:"Excluded",billingStatus:"trialing",settings:{analyticsExcluded:true},createdAt:new Date("2026-11-08T12:00:00Z")},
+        {name:"Deleted registration",billingStatus:"none",deletedAt:new Date("2026-11-08T12:00:00Z"),createdAt:new Date("2026-11-08T11:00:00Z")},
+        {name:"No subscription",billingStatus:"none",createdAt:new Date("2026-11-08T10:00:00Z")},
+        {name:"After snapshot",billingStatus:"none",createdAt:new Date("2026-11-09T09:00:00Z")},
         {name:"Older tracked clinic",billingStatus:"active",createdAt:new Date("2026-11-07T09:00:00Z")},
       ]);
       const [sample,own]=await db.insert(schema.clients).values([
@@ -42,9 +44,17 @@ integration("private tracking PostgreSQL contract", () => {
         {practiceId:p.id,entityType:"settings",action:"updatePractice"},
       ]);
       await db.insert(schema.usageRecords).values({practiceId:p.id,kind:"ai_run",quantity:2,periodMonth:"2026-11"});
-      const asOf=new Date(Date.now()+1000);
+      const asOf=new Date("2026-11-08T17:00:00Z");
       // Counts come from product records; successful audit labels never expose inputs.
-      const first=await loadPracticeTracking(db,{limit:1,asOf});
+      const lead=await loadPracticeTracking(db,{limit:1,asOf});
+      expect(lead.practices).toHaveLength(1);
+      expect(lead.practices[0]).toMatchObject({
+        businessName:"No subscription",billingStatus:"none",trialEndsAt:null,
+        ownerName:null,ownerEmail:null,lastActionAt:null,activeDays7:0,activeDays30:0,actions:[],
+      });
+      expect(Object.values(lead.practices[0].usage)).toEqual(Array(9).fill(0));
+      expect(lead.nextCursor).not.toBeNull();
+      const first=await loadPracticeTracking(db,{limit:1,cursor:lead.nextCursor!,asOf});
       expect(first.practices).toHaveLength(1);
       expect(first.practices[0].practiceId).toBe(p.id);
       expect(first.practices[0].usage.clients).toBe(1);

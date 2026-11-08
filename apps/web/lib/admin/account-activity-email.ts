@@ -65,8 +65,8 @@ export function accountActivityEmail(
 <p style="margin:4px 0;font-size:12px;color:#6b7280;">A homepage button identifies signup placement; an external referral channel cannot be inferred from it. Billing status is separate from product use and paid revenue.</p>
 </div>`;
   }).join("");
-  return heading + `<p style="color:#6b7280;font-size:13px;">Account snapshot: ${timestamp(activity.snapshotAt)}. Successful supported actions indicate product activity, not time online or current presence.</p>`
-    + (accounts || "<p>No subscription-backed accounts to report.</p>")
-    + ((activity.hasMore || activity.practices.length > 10) ? "<p>Showing the 10 newest subscription-backed accounts. More accounts are available in the dashboard.</p>" : "")
+  return heading + `<p style="color:#6b7280;font-size:13px;">Account snapshot: ${timestamp(activity.snapshotAt)}. Includes signups before checkout. Successful supported actions indicate product activity, not time online or current presence.</p>`
+    + (accounts || "<p>No registered accounts to report.</p>")
+    + ((activity.hasMore || activity.practices.length > 10) ? "<p>Showing the 10 newest registered accounts. More accounts are available in the dashboard.</p>" : "")
     + link;
 }

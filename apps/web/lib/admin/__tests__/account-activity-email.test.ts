@@ -38,4 +38,16 @@ describe("operator account email", () => {
     expect(html).toContain("&lt;img");
     expect(() => accountActivityEmail(null, "javascript:alert(1)")).toThrow("Invalid operator dashboard URL");
   });
+  it("reports a registration without a subscription or recorded product actions", () => {
+    const lead = { ...sample, billingStatus: "none", trialEndsAt: null, emailVerifiedAt: null,
+      lastActionAt: null, activeDays7: 0, activeDays30: 0, actions: [],
+      usage: { clients: 0, patients: 0, appointments: 0, soapNotes: 0, invoices: 0, files: 0, captureSessions: 0, aiRuns: 0, sms: 0 } };
+    const html = accountActivityEmail({ snapshotAt: "2026-11-08T17:00:00Z", practices: [lead], hasMore: false }, url);
+    expect(html).toContain("Includes signups before checkout");
+    expect(html).toContain("owner@example.test");
+    expect(html).toContain("Billing status:</strong> none");
+    expect(html).toContain("Trial ends:</strong> Not recorded");
+    expect(html).toContain("No recorded product actions");
+    expect(html).not.toContain("Exploring sample data");
+  });
 });
