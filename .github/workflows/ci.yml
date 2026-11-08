@@ -353,4 +353,9 @@ jobs:
       - name: Prove tenant/RLS pool-reuse isolation
         run: pnpm --filter @openpims/db db:rls:test
 
+      - name: Verify private account reporting with a bounded database pool
+        env:
+          PRACTICE_TRACKING_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/practice-tracking.integration.test.ts
+
       - run: pnpm --filter @openpims/db db:migration-runs:test
