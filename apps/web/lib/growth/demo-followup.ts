@@ -1,4 +1,7 @@
-import { DEMO_DISCLOSURE_FOLLOWUP_V2 } from "@/lib/growth/demo-disclosure";
+import {
+  DEMO_DISCLOSURE_FOLLOWUP_V2,
+  DEMO_DISCLOSURE_USEFUL_V3,
+} from "@/lib/growth/demo-disclosure";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -63,7 +66,11 @@ export function demoFollowupMaxEmails(input: {
   disclosureVersion: string;
   toolCount: number;
 }): number {
-  if (input.disclosureVersion !== DEMO_DISCLOSURE_FOLLOWUP_V2) return 1;
+  if (
+    input.disclosureVersion !== DEMO_DISCLOSURE_FOLLOWUP_V2 &&
+    input.disclosureVersion !== DEMO_DISCLOSURE_USEFUL_V3
+  )
+    return 1;
   return input.toolCount >= DEMO_FOLLOWUP_ENGAGED_TOOL_COUNT
     ? DEMO_FOLLOWUP_MAX_EMAILS
     : 2;
@@ -153,8 +160,7 @@ export const DEMO_TOOL_COPY: Record<string, DemoToolCopy> = {
   },
   inbox: {
     name: "the shared inbox",
-    pitch:
-      "Client messages in one place the whole front desk can work from.",
+    pitch: "Client messages in one place the whole front desk can work from.",
   },
   inventory: {
     name: "inventory",
@@ -168,6 +174,8 @@ export const DEMO_TOOL_COPY: Record<string, DemoToolCopy> = {
   },
 };
 
-export function demoToolCopy(tool: string | null | undefined): DemoToolCopy | null {
+export function demoToolCopy(
+  tool: string | null | undefined,
+): DemoToolCopy | null {
   return tool ? (DEMO_TOOL_COPY[tool] ?? null) : null;
 }
