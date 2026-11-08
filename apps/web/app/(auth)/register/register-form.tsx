@@ -44,7 +44,7 @@ import { FUNNEL_EVENTS } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import { getFunnelVisitorId } from "@/lib/funnel-visitor";
 import { previewArmFor, type PreviewArm } from "@/lib/billing/preview";
-import { inBuilderArm } from "@/lib/build/catalog";
+import { usesClinicBuilder } from "@/lib/registration-entry";
 import {
   CLINIC_REGION_OPTIONS,
   type ClinicRegionCode,
@@ -99,9 +99,45 @@ export default function RegisterForm(props: RegisterFormProps) {
         </div>
       }
     >
-      <RegisterPageInner {...props} />
+      <RegistrationEntry {...props} />
     </Suspense>
   );
+}
+
+/** Resolve browser-only attribution before mounting any registration UI or events. */
+function RegistrationEntry(props: RegisterFormProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const funnelId =
+      acquisitionFromSearchParams(searchParams)?.funnelId ?? getFunnelVisitorId();
+    if (
+      usesClinicBuilder({
+        cardRequired: props.cardRequired,
+        builderPercent: props.builderPercent ?? 0,
+        funnelId,
+      })
+    ) {
+      const params = new URLSearchParams(searchParams.toString());
+      if (funnelId) params.set("funnel_id", funnelId);
+      router.replace(`/start?${params.toString()}`);
+    } else {
+      setReady(true);
+    }
+  }, [props.cardRequired, props.builderPercent, router, searchParams]);
+  if (!ready) {
+    return (
+      <div
+        role="status"
+        aria-label="Opening clinic setup"
+        className="flex min-h-screen items-center justify-center bg-white"
+      >
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+  return <RegisterPageInner {...props} />;
 }
 
 function RegisterPageInner({
@@ -110,7 +146,6 @@ function RegisterPageInner({
   trialDays,
   monthlyPriceUsd,
   previewPercent = 0,
-  builderPercent = 0,
 }: RegisterFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -140,18 +175,6 @@ function RegisterPageInner({
       ),
     );
     // Assigned once per mount from the attribution snapshot.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable arm
-  }, []);
-  // "Build your clinic" A/B: visitors in the builder arm take the guided,
-  // card-gated walkthrough instead, keeping their attribution parameters.
-  useEffect(() => {
-    if (!cardRequired || builderPercent <= 0) return;
-    if (
-      inBuilderArm(acquisition?.funnelId ?? getFunnelVisitorId(), builderPercent)
-    ) {
-      router.replace(`/start${window.location.search}`);
-    }
-    // Decided once per mount from the attribution snapshot.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stable arm
   }, []);
   const previewFirst = cardRequired && previewArm === "preview";

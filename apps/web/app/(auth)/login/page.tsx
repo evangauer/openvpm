@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -10,17 +10,10 @@ import {
 } from "@/lib/auth-input-policy";
 import { AUTH_PASSWORD_MAX_LENGTH } from "@/lib/auth-password-policy";
 import { PawMark } from "@/components/brand/paw-mark";
+import { DemoLogin } from "@/components/demo/demo-login";
 import { isValidEmail } from "@/lib/utils";
-import {
-  buildCloudSignupUrl,
-  cloudSignupAppOrigin,
-  FUNNEL_EVENTS,
-} from "@/lib/funnel-analytics";
-import { trackFunnelEvent } from "@/lib/track-funnel-event";
-import { getFunnelVisitorId, useFunnelVisitorId } from "@/lib/funnel-visitor";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
 import { loginErrorMessage } from "@/lib/login-error-message";
-import { CURRENT_DEMO_DISCLOSURE_TEXT } from "@/lib/growth/demo-disclosure";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
@@ -33,19 +26,18 @@ export default function LoginPage() {
         </div>
       }
     >
-      <LoginPageInner />
+      {DEMO_MODE ? <DemoLogin /> : <PracticeLogin />}
     </Suspense>
   );
 }
 
-function LoginPageInner() {
+function PracticeLogin() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const visitorId = useFunnelVisitorId();
   const checkoutState = searchParams.get("checkout");
   const nextPath = safeAuthNextPath(
     searchParams.get("next"),
-    checkoutState === "cancelled" ? "/settings?tab=billing" : DEMO_MODE ? "/demo-start" : "/post-login",
+    checkoutState === "cancelled" ? "/settings?tab=billing" : "/post-login",
   );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -53,87 +45,40 @@ function LoginPageInner() {
   const [loading, setLoading] = useState(false);
   const passwordMeetsPolicy =
     password.length > 0 && password.length <= AUTH_PASSWORD_MAX_LENGTH;
-  const emailIsValid = isAuthEmailLengthValid(email) && isValidEmail(email);
-  const canSubmit = emailIsValid && (DEMO_MODE || passwordMeetsPolicy);
+  const canSubmit =
+    isAuthEmailLengthValid(email) && isValidEmail(email) && passwordMeetsPolicy;
 
-  useEffect(() => {
-    if (!DEMO_MODE) return;
-    trackFunnelEvent(FUNNEL_EVENTS.demoLand);
-    trackFunnelEvent(FUNNEL_EVENTS.demoGateViewed);
-  }, []);
-
-  async function signInWith(emailValue: string, passwordValue: string) {
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!canSubmit || loading) return;
     setError("");
     setLoading(true);
-    setEmail(emailValue);
-    setPassword(passwordValue);
-
-    const result = await signIn("credentials", {
-      email: emailValue,
-      password: passwordValue,
-      redirect: false,
-    });
-
-    setLoading(false);
-
-    if (result?.error) {
-      setError(loginErrorMessage(result.error));
-    } else {
-      router.push(nextPath);
-      router.refresh();
-    }
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!canSubmit) return;
-
-    if (DEMO_MODE) {
-      setError("");
-      setLoading(true);
-
-      try {
-        const gateResponse = await fetch("/api/demo-access", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: email.trim().toLowerCase(),
-            anonymousId: visitorId ?? getFunnelVisitorId() ?? undefined,
-          }),
-        });
-        const gateResult = (await gateResponse.json().catch(() => null)) as {
-          ok?: boolean;
-          error?: string;
-        } | null;
-        if (!gateResponse.ok || !gateResult?.ok) {
-          setError(gateResult?.error ?? "The demo is temporarily unavailable.");
-          return;
-        }
-
-        const result = await signIn("demo", {
-          role: "admin",
-          redirect: false,
-        });
-        if (result?.error) {
-          setError("The demo is temporarily unavailable.");
-          return;
-        }
-
+    try {
+      const result = await signIn("credentials", {
+        email: email.trim().toLowerCase(),
+        password,
+        redirect: false,
+      });
+      if (result?.error) {
+        setError(loginErrorMessage(result.error));
+      } else if (result?.ok) {
         router.push(nextPath);
         router.refresh();
-      } catch {
-        setError("The demo is temporarily unavailable.");
-      } finally {
-        setLoading(false);
+      } else {
+        setError("Sign-in is temporarily unavailable. Please try again.");
       }
-      return;
+    } catch {
+      setError("Sign-in is temporarily unavailable. Please try again.");
+    } finally {
+      setLoading(false);
     }
-
-    await signInWith(email.trim().toLowerCase(), password);
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-surface p-4">
+    <main
+      id="main-content"
+      className="flex min-h-screen items-center justify-center bg-surface p-4"
+    >
       <div className="w-full max-w-md rounded-lg border border-border bg-card p-8">
         <div className="mb-6 text-center">
           <span className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-primary-foreground">
@@ -143,39 +88,28 @@ function LoginPageInner() {
             OpenVPM
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {DEMO_MODE
-              ? "Try a day in your clinic"
-              : "Sign in to your practice"}
+            Sign in to your practice
           </p>
         </div>
-
-        {!DEMO_MODE && (checkoutState === "success" || checkoutState === "cancelled") && (
-          <div role="status" className="mb-6 rounded-md border border-primary/20 bg-primary/5 p-4 text-sm leading-6">
+        {(checkoutState === "success" || checkoutState === "cancelled") && (
+          <div
+            role="status"
+            className="mb-6 rounded-md border border-primary/20 bg-primary/5 p-4 text-sm leading-6"
+          >
             {checkoutState === "success"
               ? "Checkout completed. Sign in to open your clinic workspace. Your billing status updates after Stripe confirms checkout."
               : "Your account is saved, but your trial has not started. Sign in to resume secure checkout in Plan & Billing. No subscription charge was made."}
           </div>
         )}
-
-        {DEMO_MODE && (
-          <div className="mb-6 rounded-md border border-primary/20 bg-primary/5 p-4">
-            <p className="mb-1 text-sm font-semibold text-foreground">
-              A sample clinic, ready to explore
-            </p>
-            <p className="text-xs leading-5 text-muted-foreground">
-              Open a patient chart, follow a lab result, or explore billing.
-              No credit card or setup needed.
-            </p>
-          </div>
-        )}
-
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (
-            <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+            <div
+              role="alert"
+              className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive"
+            >
               {error}
             </div>
           )}
-
           <div>
             <label
               htmlFor="email"
@@ -187,7 +121,7 @@ function LoginPageInner() {
               id="email"
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(event) => setEmail(event.target.value)}
               required
               maxLength={AUTH_EMAIL_MAX_LENGTH}
               className="min-h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
@@ -195,93 +129,55 @@ function LoginPageInner() {
               autoComplete="email"
             />
           </div>
-
-          {!DEMO_MODE && (
-            <div>
-              <label
-                htmlFor="password"
-                className="mb-1.5 block text-sm font-medium text-foreground"
-              >
-                Password
-              </label>
-              <input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                maxLength={AUTH_PASSWORD_MAX_LENGTH}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Enter your password"
-              />
-            </div>
-          )}
-
+          <div>
+            <label
+              htmlFor="password"
+              className="mb-1.5 block text-sm font-medium text-foreground"
+            >
+              Password
+            </label>
+            <input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+              maxLength={AUTH_PASSWORD_MAX_LENGTH}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              placeholder="Enter your password"
+              autoComplete="current-password"
+            />
+          </div>
           <button
             type="submit"
             disabled={!canSubmit || loading}
             className="min-h-11 w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
-            {loading
-              ? DEMO_MODE
-                ? "Opening demo..."
-                : "Signing in..."
-              : DEMO_MODE
-                ? "Explore the demo"
-                : "Sign in"}
+            {loading ? "Signing in..." : "Sign in"}
           </button>
-          {DEMO_MODE && (
-            <p className="text-xs leading-5 text-muted-foreground">
-              {CURRENT_DEMO_DISCLOSURE_TEXT}
-            </p>
-          )}
         </form>
-
-        {!DEMO_MODE && (
-          <p className="mt-4 text-center text-sm text-muted-foreground">
-            <Link
-              href="/forgot-password"
-              className="text-primary hover:underline"
-            >
-              Forgot your password?
-            </Link>
-          </p>
-        )}
+        <p className="mt-4 text-center text-sm text-muted-foreground">
+          <Link
+            href="/forgot-password"
+            className="text-primary hover:underline"
+          >
+            Forgot your password?
+          </Link>
+        </p>
         <p className="mt-2 text-center text-sm text-muted-foreground">
-          {DEMO_MODE ? "Ready for your own workspace?" : "Don't have an account?"}{" "}
-          {DEMO_MODE ? (
-            <a
-              href={buildCloudSignupUrl({
-                appOrigin: cloudSignupAppOrigin(),
-                source: "demo",
-                medium: "product",
-                campaign: "demo_login",
-                visitorId,
-              })}
-              onClick={() =>
-                trackFunnelEvent(FUNNEL_EVENTS.demoCtaStartClinic, {
-                  tool: "login",
-                  path: "/login",
-                })
-              }
-              className="text-primary hover:underline"
-            >
-              Start my clinic
-            </a>
-          ) : (
-            <Link
-              href={
-                nextPath === "/post-login"
-                  ? "/register"
-                  : `/register?next=${encodeURIComponent(nextPath)}`
-              }
-              className="text-primary hover:underline"
-            >
-              Register your practice
-            </Link>
-          )}
+          Don&apos;t have an account?{" "}
+          <Link
+            href={
+              nextPath === "/post-login"
+                ? "/register"
+                : `/register?next=${encodeURIComponent(nextPath)}`
+            }
+            className="text-primary hover:underline"
+          >
+            Register your practice
+          </Link>
         </p>
       </div>
-    </div>
+    </main>
   );
 }
