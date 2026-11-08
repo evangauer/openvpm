@@ -19,6 +19,7 @@ function sha256(body: Buffer): string {
 function evidenceFixture(
   options: {
     omitVersion?: boolean;
+    beforeLabReports?: boolean;
     providerNullVersion?: boolean;
     formatVersion?: number;
   } = {},
@@ -30,6 +31,10 @@ function evidenceFixture(
   const sections = Object.fromEntries(
     PRACTICE_EXPORT_SECTIONS.map((section) => [section, []]),
   ) as Record<string, unknown[]>;
+  if (options.beforeLabReports) {
+    delete sections.labReportReceipts;
+    delete sections.labReportDecisions;
+  }
   sections.clients = [{ id: "client-1" }, { id: "client-2" }];
   sections.patients = [
     { id: "patient-1" },
@@ -37,7 +42,7 @@ function evidenceFixture(
     { id: "patient-3" },
   ];
   const counts = Object.fromEntries(
-    PRACTICE_EXPORT_SECTIONS.map((section) => [
+    Object.keys(sections).map((section) => [
       section,
       sections[section]!.length,
     ]),
@@ -111,6 +116,10 @@ afterEach(() => {
 });
 
 describe("backup recovery evidence CLI", () => {
+  it("accepts an intact v8 backup created before lab-report intake sections existed", () => {
+    const result = run(evidenceFixture({ beforeLabReports: true }));
+    expect(result.status).toBe(0);
+  });
   it("verifies checksum-addressed catalog and exact-version recovery evidence without restoring", () => {
     const result = run(evidenceFixture());
 

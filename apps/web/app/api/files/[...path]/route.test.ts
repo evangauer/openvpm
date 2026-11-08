@@ -519,3 +519,32 @@ describe("file proxy response headers", () => {
     expect(ROUTE_SOURCE).toContain("isNull(users.deletedAt)");
   });
 });
+
+it("rejects direct lab PDF downloads after a clinical role is revoked", async () => {
+  mocks.selectResults.push([{ id: mocks.userId, role: "front_desk", sessionVersion: 1 }]);
+  const path = [mocks.practiceId, "lab-results", "report"];
+  expect((await GET(fileRequest(path.join("/")), routeContext(path))).status).toBe(403);
+  expect(mocks.readPrimaryObject).not.toHaveBeenCalled();
+});
+
+it.each(["admin", "veterinarian", "technician", "viewer"])("serves the original lab PDF to a current %s account", async (role) => {
+  mocks.selectResults.push(
+    [{ id: mocks.userId, role, sessionVersion: 1 }],
+    [mocks.fileMetadata({ fileName: "report.pdf", mimeType: "application/pdf" })],
+  );
+  mocks.readPrimaryObject.mockResolvedValue({
+    status: "available", body: new TextEncoder().encode("%PDF-1.7\nsynthetic"), contentType: "application/pdf",
+  });
+  const path = [mocks.practiceId, "lab-results", "report"];
+  const response = await GET(fileRequest(path.join("/")), routeContext(path));
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Content-Disposition")).toContain("attachment");
+  expect(await response.text()).toBe("%PDF-1.7\nsynthetic");
+});
+
+it("rejects a revoked lab PDF session even when the clinical role remains authorized", async () => {
+  mocks.selectResults.push([{ id: mocks.userId, role: "veterinarian", sessionVersion: 2 }]);
+  const path = [mocks.practiceId, "lab-results", "report"];
+  expect((await GET(fileRequest(path.join("/")), routeContext(path))).status).toBe(403);
+  expect(mocks.readPrimaryObject).not.toHaveBeenCalled();
+});

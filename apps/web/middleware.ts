@@ -15,6 +15,7 @@ import {
 import { isSecretIndependentPath } from "./lib/secret-independent-paths";
 
 const CAPABILITY_PATH_PREFIXES = [
+  "/newsletter/confirm",
   "/capture",
   "/sign",
   "/treatment-plan",
@@ -35,6 +36,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/forgot-password",
   "/legal",
   "/login",
+  "/newsletter",
   "/portal",
   "/register",
   "/reset-password",
@@ -50,6 +52,7 @@ const PUBLIC_FILE_PATTERN =
 
 function isPublicPath(pathname: string): boolean {
   return (
+    pathname === "/offline/index.html" ||
     PUBLIC_FILE_PATTERN.test(pathname) ||
     PUBLIC_PATH_PREFIXES.some(
       (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),

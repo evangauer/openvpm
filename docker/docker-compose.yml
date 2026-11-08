@@ -20,7 +20,9 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    # Keep the service and volume names so existing S3 endpoints still work.
+    # PGSTY Silo maintains the MinIO-compatible server and bundles mcli.
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z@sha256:7bb2aff6b89efe1cb1303c10fc21d579447434ed06649ac9ec05a5e2dbf30ad7
     restart: unless-stopped
     # Loopback only, like Postgres: files are served to browsers through the
     # app's authenticated proxy, never directly from MinIO.
@@ -35,17 +37,22 @@ services:
     command: server /data --console-address ":9001"
 
   minio-bootstrap:
-    image: minio/mc:latest
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z@sha256:7bb2aff6b89efe1cb1303c10fc21d579447434ed06649ac9ec05a5e2dbf30ad7
     depends_on:
       minio:
         condition: service_started
-    entrypoint: >
-      /bin/sh -c "
-      until mc alias set local http://minio:9000 openpims openpims123; do
-        sleep 1;
-      done;
-      mc mb --ignore-existing local/openpims;
-      "
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        for attempt in $$(seq 1 60); do
+          if mcli alias set local http://minio:9000 openpims openpims123; then
+            exec mcli mb --ignore-existing local/openpims
+          fi
+          sleep 1
+        done
+        echo "Object storage was not ready after 60 attempts" >&2
+        exit 1
 
   web:
     build:

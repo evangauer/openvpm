@@ -21,6 +21,7 @@ describe("Vercel cron schedule", () => {
         "/api/cron/demo-followup",
         "/api/cron/customer-lifecycle",
         "/api/cron/build-followup",
+        "/api/cron/newsletter-followup",
         "/api/cron/wellness-billing",
         "/api/cron/rate-limit-cleanup",
         "/api/cron/auth-cleanup",

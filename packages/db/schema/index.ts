@@ -47,3 +47,5 @@ export * from "./care-reminders";
 export * from "./migration-records";
 export * from "./recent-clinical-items";
 export * from "./backup-runs";
+
+export * from "./lab-report-intake";

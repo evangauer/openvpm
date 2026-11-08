@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { Fragment, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
   ArrowLeft,
@@ -316,9 +316,16 @@ function PatientDetailLoadingPanel({ label }: { label: string }) {
 export default function PatientDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
-  const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [fieldVisitLocationId, setFieldVisitLocationId] = useState("");
+  const activeTab =
+    tabs.find((tab) => tab.id === searchParams.get("tab"))?.id ?? "overview";
+  function setActiveTab(tab: Tab) {
+    const query = new URLSearchParams(searchParams.toString());
+    query.set("tab", tab);
+    router.push(`/patients/${params.id}?${query}`, { scroll: false });
+  }
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoUploadAttemptRef = useRef<ManagedUploadAttempt | null>(null);
@@ -1116,6 +1123,15 @@ export default function PatientDetailPage() {
                 ) : null}
               </div>
             ) : null}
+            {process.env.NEXT_PUBLIC_OFFLINE_WORKSPACE_ENABLED === "true" &&
+            (session?.user?.role === "admin" ||
+              session?.user?.role === "veterinarian") ? (
+              <Button size="sm" variant="outline" asChild>
+                <a href={`/offline/index.html#patientId=${patient.id}`}>
+                  Make available offline
+                </a>
+              </Button>
+            ) : null}
             {canCorrectClinicalRecords ? (
               <Button size="sm" asChild>
                 <a href="#patient-note-content">Add chart note</a>
@@ -1740,7 +1756,24 @@ export default function PatientDetailPage() {
         )}
 
         {activeTab === "documents" && (
-          <DocumentsTab patientId={patient.id} timeZone={recordsTimeZone} />
+          <div className="space-y-4">
+            {process.env.NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED === "true" && session?.user.role !== "front_desk" ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-medium">Lab report PDFs</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Original reports and clinical review status.
+                  </p>
+                </div>
+                <Button asChild variant="outline" size="sm">
+                  <Link href={`/lab-reports?patientId=${patient.id}`}>
+                    View lab reports
+                  </Link>
+                </Button>
+              </div>
+            ) : null}
+            <DocumentsTab patientId={patient.id} timeZone={recordsTimeZone} />
+          </div>
         )}
 
         {activeTab === "appointments" && (
@@ -1751,10 +1784,15 @@ export default function PatientDetailPage() {
       </div>
       {canSearchPatientHistory ? (
         <PatientNotes
-          key={patient.id}
+          key={`${patient.id}:${session?.user.id}:${session?.user.practiceId}:${canCorrectClinicalRecords}`}
           patientId={patient.id}
           timeZone={recordsTimeZone}
           canWrite={canCorrectClinicalRecords}
+          draftScope={session?.user ? {
+            patientId: patient.id,
+            userId: session.user.id,
+            practiceId: session.user.practiceId,
+          } : null}
         />
       ) : null}
     </div>

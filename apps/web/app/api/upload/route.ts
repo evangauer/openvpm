@@ -1,3 +1,7 @@
+import {
+  labReportIntakeEnabled,
+  receiveLabReport,
+} from "@/lib/lab-report-intake";
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -15,6 +19,7 @@ import {
 } from "@/lib/upload-security";
 import {
   UPLOAD_REQUEST_MAX_BYTES,
+  LAB_REPORT_MAX_BYTES,
   UPLOAD_FILE_MAX_BYTES,
   PATIENT_DOCUMENT_MAX_BYTES,
   uploadRequestContentLengthTooLarge,
@@ -215,6 +220,16 @@ export async function POST(req: NextRequest) {
       const file = formData.get("file");
       const category = formData.get("category");
       const patientIdValue = formData.get("patientId");
+      const supersedesValue = formData.get("supersedesId");
+      const supersedesId =
+        typeof supersedesValue === "string" && supersedesValue
+          ? supersedesValue
+          : null;
+      if (supersedesId && !IDEMPOTENCY_KEY_PATTERN.test(supersedesId))
+        return NextResponse.json(
+          { error: "Invalid previous report" },
+          { status: 400 },
+        );
       const idempotencyKey = req.headers.get("idempotency-key")?.trim() ?? "";
 
       if (!IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
@@ -252,6 +267,19 @@ export async function POST(req: NextRequest) {
         );
       }
       const dashboardCategory = category as DashboardUploadCategory;
+      // A patient-bound attachment keeps the existing document workflow.
+      // Unassigned PDFs enter the inbox and require explicit matching/review.
+      const isLabIntake = dashboardCategory === "lab-results" && patientIdValue == null;
+      if (
+        isLabIntake &&
+        (!labReportIntakeEnabled() ||
+          !["admin", "veterinarian", "technician"].includes(activeAccount.role))
+      ) {
+        return NextResponse.json(
+          { error: "Lab report import is unavailable for this account" },
+          { status: 403 },
+        );
+      }
       if (dashboardCategory === "branding" && activeAccount.role !== "admin") {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       }
@@ -261,7 +289,7 @@ export async function POST(req: NextRequest) {
         IDEMPOTENCY_KEY_PATTERN.test(patientIdValue)
           ? patientIdValue
           : null;
-      if (dashboardCategory !== "branding" && !patientId) {
+      if (dashboardCategory !== "branding" && !isLabIntake && !patientId) {
         return NextResponse.json(
           { error: "A canonical patientId is required for patient uploads" },
           { status: 400 },
@@ -279,16 +307,25 @@ export async function POST(req: NextRequest) {
         );
       }
       if (
-        (dashboardCategory === "branding" || dashboardCategory === "patient-photos") &&
-        !mimeType.startsWith("image/")
+        (isLabIntake && mimeType !== "application/pdf") ||
+        ((dashboardCategory === "branding" || dashboardCategory === "patient-photos") &&
+        !mimeType.startsWith("image/"))
       ) {
         return NextResponse.json(
-          { error: "Dashboard uploads must be image files" },
+          {
+            error:
+              dashboardCategory === "lab-results"
+                ? "Lab reports must be PDF files"
+                : "Dashboard uploads must be image files",
+          },
           { status: 400 },
         );
       }
 
       // ---------- Validate size ----------
+      if (isLabIntake && file.size > LAB_REPORT_MAX_BYTES) {
+        return NextResponse.json({ error: "Lab reports must be 4 MB or smaller" }, { status: 413 });
+      }
       const isPatientDocument = dashboardCategory === "documents" || dashboardCategory === "lab-results";
       const maxFileBytes = isPatientDocument ? PATIENT_DOCUMENT_MAX_BYTES : UPLOAD_FILE_MAX_BYTES;
       if (file.size > maxFileBytes) {
@@ -310,7 +347,7 @@ export async function POST(req: NextRequest) {
 
       const checksumSha256 = checksumSha256Hex(buffer);
       const reservation = await withTenant(db, practiceId, async (tx) => {
-        if (dashboardCategory !== "branding") {
+        if (dashboardCategory !== "branding" && !isLabIntake) {
           const [activePatient] = await tx
             .select({ id: patients.id })
             .from(patients)
@@ -340,10 +377,10 @@ export async function POST(req: NextRequest) {
               : dashboardCategory === "patient-photos"
                 ? "profile_photo"
                 : dashboardCategory === "lab-results"
-                  ? "lab_report"
+                  ? isLabIntake ? "lab_report_upload" : "lab_report"
                   : "external_record",
-          entityType: dashboardCategory === "branding" ? "practice" : "patient",
-          entityId: dashboardCategory === "branding" ? practiceId : patientId!,
+          entityType: dashboardCategory === "branding" || isLabIntake ? "practice" : "patient",
+          entityId: dashboardCategory === "branding" || isLabIntake ? practiceId : patientId!,
           patientId: dashboardCategory !== "branding" ? patientId : null,
         });
       });
@@ -356,7 +393,13 @@ export async function POST(req: NextRequest) {
 
       if (reservation.storageStatus === "available") {
         return NextResponse.json(
-          { url: reservation.fileUrl, key: reservation.fileKey },
+          {
+            url: reservation.fileUrl,
+            key: reservation.fileKey,
+            ...(isLabIntake
+              ? await receiveLabReport(leaseTx, reservation, supersedesId)
+              : {}),
+          },
           { status: 200 },
         );
       }
@@ -401,7 +444,7 @@ export async function POST(req: NextRequest) {
           .where(and(eq(practices.id, practiceId), isNull(practices.deletedAt)))
           .returning({ id: practices.id });
         if (!linked) throw new Error("Practice disappeared during upload");
-      } else {
+      } else if (!isLabIntake) {
         const [linked] = await leaseTx
           .update(patients)
           .set({
@@ -425,7 +468,13 @@ export async function POST(req: NextRequest) {
         queueManagedUploadReplication(reservation, writeResult.evidence);
 
       return NextResponse.json(
-        { url: reservation.fileUrl, key: reservation.fileKey },
+        {
+          url: reservation.fileUrl,
+          key: reservation.fileKey,
+          ...(isLabIntake
+            ? await receiveLabReport(leaseTx, reservation, supersedesId)
+            : {}),
+        },
         { status: reservation.created ? 201 : 200 },
       );
     });

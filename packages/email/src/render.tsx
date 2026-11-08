@@ -1,3 +1,4 @@
+import { NewsletterEmail, newsletterSubject, type NewsletterEmailProps } from "./templates/NewsletterEmail";
 import * as React from "react";
 import { render } from "@react-email/render";
 import { WelcomeEmail, type WelcomeEmailProps } from "./templates/WelcomeEmail";
@@ -181,4 +182,8 @@ export async function renderBuildFollowupEmail(
     subject: buildFollowupSubject(p.step, p.clinicName),
     html: await render(<BuildFollowupEmail {...p} />),
   };
+}
+
+export async function renderNewsletterEmail(p: NewsletterEmailProps): Promise<RenderedEmail> {
+  return { subject: newsletterSubject(p.step), html: await render(<NewsletterEmail {...p} />) };
 }
