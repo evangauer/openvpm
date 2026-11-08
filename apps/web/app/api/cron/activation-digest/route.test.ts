@@ -4,6 +4,7 @@ import type { JourneyFunnel } from "@/lib/admin/journey-funnel";
 
 const mocks = vi.hoisted(() => ({
   db: {},
+  loadPracticeTracking: vi.fn(async () => ({ snapshotAt: "2026-11-08T17:00:00Z", practices: [], nextCursor: null })),
   alertOps: vi.fn(async () => undefined),
   cronAuthError: vi.fn(() => null),
   reportCronHeartbeat: vi.fn(async () => undefined),
@@ -12,6 +13,9 @@ const mocks = vi.hoisted(() => ({
   computeJourneyFunnel: vi.fn(),
   loadClinicPilotQueue: vi.fn(async () => []),
 }));
+
+vi.mock("@/lib/admin/practice-tracking", () => ({ loadPracticeTracking: mocks.loadPracticeTracking }));
+vi.mock("@/lib/app-url", () => ({ appBaseUrl: () => "https://app.example.test" }));
 
 vi.mock("@openpims/db/client", () => ({
   db: mocks.db,
@@ -188,6 +192,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.clearAllMocks();
   mocks.loadClinicPilotQueue.mockResolvedValue([]);
+  mocks.loadPracticeTracking.mockResolvedValue({ snapshotAt: "2026-11-08T17:00:00Z", practices: [], nextCursor: null });
 });
 
 describe("activation digest cron", () => {
@@ -407,4 +412,43 @@ describe("activation digest cron", () => {
       detail: "relation practices does not exist",
     });
   });
+});
+
+
+it("keeps the weekly report useful when account details are unavailable", async () => {
+  vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.test");
+  mocks.computeActivationFunnel.mockImplementation(async (_db: unknown, days: number) => funnel(days));
+  mocks.computeJourneyFunnel.mockImplementation(async (_db: unknown, days: number) => journey(days));
+  mocks.loadPracticeTracking.mockRejectedValueOnce(new Error("PRIVATE_DATABASE_ERROR"));
+  const response = await GET(new Request("https://openvpm.test/api/cron/activation-digest"));
+  expect(response.status).toBe(200);
+  expect(mocks.sendEmail).toHaveBeenCalledWith(expect.objectContaining({
+    to: "ops@example.test", html: expect.stringContaining("unknown for this report"),
+  }));
+  const html = (mocks.sendEmail.mock.calls as unknown as Array<[{ html: string }]>)[0]![0].html;
+  expect(html).not.toContain("PRIVATE_DATABASE_ERROR");
+  expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith(expect.objectContaining({status: "degraded"}));
+});
+
+
+it("includes a named account's usage and source in the existing operator email", async () => {
+  vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.test");
+  mocks.computeActivationFunnel.mockImplementation(async (_db: unknown, days: number) => funnel(days));
+  mocks.computeJourneyFunnel.mockImplementation(async (_db: unknown, days: number) => journey(days));
+  mocks.loadPracticeTracking.mockResolvedValueOnce({
+    snapshotAt: "2026-11-08T17:00:00Z", nextCursor: null,
+    practices: [{
+      practiceId: "00000000-0000-4000-8000-000000000001", businessName: "Synthetic <Clinic>",
+      ownerName: "Sample Owner", ownerEmail: "owner@example.test", emailVerifiedAt: null,
+      registeredAt: "2026-11-08T09:00:00Z", billingStatus: "trialing", trialEndsAt: "2026-11-22T09:00:00Z",
+      acquisition: { signupSource: "homepage_hero", medium: null, campaign: null },
+      usage: { clients: 0, patients: 0, appointments: 1, soapNotes: 0, invoices: 0, files: 0, captureSessions: 1, aiRuns: 6, sms: 0 },
+      lastActionAt: "2026-11-08T10:00:00Z", activeDays7: 1, activeDays30: 1,
+      actions: [{ label: "AI run", count: 6, lastAt: "2026-11-08T10:00:00Z" }],
+    }],
+  } as never);
+  await GET(new Request("https://openvpm.test/api/cron/activation-digest"));
+  const html = (mocks.sendEmail.mock.calls as unknown as Array<[{ html: string }]>)[0]![0].html;
+  for (const detail of ["Synthetic &lt;Clinic&gt;", "Sample Owner", "owner@example.test", "Metered AI runs", "AI run × 6", "homepage_hero", "admin#practice-tracking"])
+    expect(html).toContain(detail);
 });
