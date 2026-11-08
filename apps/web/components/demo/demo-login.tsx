@@ -11,11 +11,11 @@ import {
   CheckCircle2,
   HeartPulse,
   LockKeyhole,
-  PawPrint,
   Phone,
   ShieldCheck,
   Stethoscope,
 } from "lucide-react";
+import { PawMark } from "@/components/brand/paw-mark";
 import { DEMO_ROLE_OPTIONS } from "@/lib/demo-role-switcher";
 import { AUTH_EMAIL_MAX_LENGTH } from "@/lib/auth-input-policy";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
@@ -57,12 +57,22 @@ const shots = {
   whiteboard: {
     src: "/demo/whiteboard.jpg",
     alt: "OpenVPM sample clinic: the clinic board",
+    width: 1280,
+    height: 800,
+    fit: styles.productImageFill,
   },
   "visit-clinical-work": {
     src: "/demo/patient-record.jpg",
     alt: "OpenVPM sample clinic: a patient record",
+    width: 1040,
+    height: 448,
+    fit: styles.productImageTop,
   },
 };
+const previewTabs = [
+  { id: "whiteboard", label: "The clinic board" },
+  { id: "visit-clinical-work", label: "The patient record" },
+] as const;
 function ProductImage({
   id,
   priority = false,
@@ -75,11 +85,11 @@ function ProductImage({
     <Image
       src={shot.src}
       alt={shot.alt}
-      width={1280}
-      height={800}
+      width={shot.width}
+      height={shot.height}
       sizes="(max-width: 760px) 100vw, 65vw"
       priority={priority}
-      className={styles.productImage}
+      className={`${styles.productImage} ${shot.fit}`}
     />
   );
 }
@@ -92,7 +102,8 @@ export function DemoLogin() {
   const [role, setRole] = useState<(typeof demoRoles)[number] | null>(null);
   const [step, setStep] = useState<"role" | "email">("role");
   const [email, setEmail] = useState("");
-  const [previewTab, setPreviewTab] = useState(0);
+  const [previewTab, setPreviewTab] =
+    useState<(typeof previewTabs)[number]["id"]>("whiteboard");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const submitting = useRef(false);
@@ -152,7 +163,7 @@ export function DemoLogin() {
           className={styles.brand}
         >
           <span>
-            <PawPrint size={21} aria-hidden="true" />
+            <PawMark className={styles.brandMark} />
           </span>
           OpenVPM
         </a>
@@ -344,32 +355,24 @@ export function DemoLogin() {
                 <i />
                 <i />
               </span>
-              <span>OpenVPM · Sample clinic</span>
-              <LockKeyhole size={12} aria-hidden="true" />
+              <div
+                className={styles.previewTabs}
+                role="group"
+                aria-label="Product preview"
+              >
+                {previewTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    aria-pressed={previewTab === tab.id}
+                    onClick={() => setPreviewTab(tab.id)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <ProductImage
-              id={previewTab === 0 ? "whiteboard" : "visit-clinical-work"}
-              priority
-            />
+            <ProductImage id={previewTab} priority />
           </div>
-          <div className={styles.previewTabs} aria-label="Product preview">
-            <button
-              aria-pressed={previewTab === 0}
-              onClick={() => setPreviewTab(0)}
-            >
-              The clinic board
-            </button>
-            <button
-              aria-pressed={previewTab === 1}
-              onClick={() => setPreviewTab(1)}
-            >
-              The patient record
-            </button>
-          </div>
-          <p className={styles.sampleNote}>
-            <PawPrint size={16} aria-hidden="true" />
-            Real product. Fictional patients. Room to explore.
-          </p>
         </aside>
       </div>
     </main>
