@@ -3,10 +3,11 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { eq } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { eq, sql } from "drizzle-orm";
+import { describe, expect, it, vi } from "vitest";
 import * as schema from "@openpims/db";
 import { loadPracticeTracking } from "@/lib/admin/practice-tracking";
+import { createRouter, protectedProcedure } from "@/server/trpc";
 
 const integration = process.env.PRACTICE_TRACKING_DB_INTEGRATION === "1" ? describe : describe.skip;
 integration("private tracking PostgreSQL contract", () => {
@@ -67,6 +68,42 @@ integration("private tracking PostgreSQL contract", () => {
       expect(second.practices[0].businessName).toBe("Older tracked clinic");
       expect(second.nextCursor).toBeNull();
       expect(own.id).toBeTruthy();
+
+      // Real bounded pool: an unused outer tenant transaction must not hold
+      // the only connection while an operator read opens its system scope.
+      const limited=postgres(url.toString(),{max:1,prepare:false});
+      const limitedDb=drizzle(limited,{schema});
+      vi.stubEnv("PLATFORM_ADMIN_EMAILS","operator@example.test");
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const tenantProbe=protectedProcedure.query(({ctx})=>ctx.db.execute(sql`select current_setting('app.current_practice_id',true) as practice`));
+        const router=createRouter({
+          operator:protectedProcedure.meta({platformAdminRead:true}).query(()=>loadPracticeTracking(limitedDb,{asOf})),
+          tenant:tenantProbe,
+          opted:protectedProcedure.meta({platformAdminRead:true}).query(({ctx})=>ctx.db.execute(sql`select current_setting('app.current_practice_id',true) as practice`)),
+        });
+        const context=(email:string)=>({db:limitedDb,session:{user:{id:randomUUID(),practiceId:p.id,email,role:"admin"},expires:"2099-01-01T00:00:00Z"}});
+        const operator=router.createCaller(context("operator@example.test") as never);
+        const pages=await Promise.race([
+          Promise.all(Array.from({length:4},()=>operator.operator())),
+          new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error("Operator reads exhausted a one-connection database pool")),5000);}),
+        ]);
+        expect(pages).toHaveLength(4);
+        expect(pages[0].practices.some(r=>r.practiceId===p.id)).toBe(true);
+        // Operator status alone cannot remove scope from a tenant procedure.
+        expect((await operator.tenant() as unknown as {practice:string}[])[0].practice).toBe(p.id);
+        // Metadata alone cannot remove scope from a non-operator caller.
+        const clinic=router.createCaller(context("clinic@example.test") as never);
+        expect((await clinic.opted() as unknown as {practice:string}[])[0].practice).toBe(p.id);
+        const anonymous=router.createCaller({db:limitedDb,session:null} as never);
+        await expect(anonymous.operator()).rejects.toMatchObject({code:"UNAUTHORIZED"});
+        const [scope]=await limited`select current_setting('app.rls_bypass',true) as bypass`;
+        expect([null,""]).toContain(scope.bypass);
+      } finally {
+        if(timer)clearTimeout(timer);
+        vi.unstubAllEnvs();
+        await limited.end({timeout:1});
+      }
     } finally {
       if(client)await client.end();
       await admin.unsafe('drop database if exists "'+name+'" with (force)');

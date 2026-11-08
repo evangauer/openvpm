@@ -124,7 +124,7 @@ import { envFlagEnabled } from "@/lib/env-bool";
  * Platform-operator only. Crosses tenant boundaries deliberately, so it is
  * gated by the PLATFORM_ADMIN_EMAILS allowlist (not the practice "admin" role).
  */
-const platformAdminProcedure = protectedProcedure.use(async ({ ctx, next }) => {
+const platformAdminProcedure = protectedProcedure.meta({ platformAdminRead: true }).use(async ({ ctx, next }) => {
   if (!isPlatformAdmin(ctx.session?.user?.email)) {
     throw new TRPCError({
       code: "FORBIDDEN",
