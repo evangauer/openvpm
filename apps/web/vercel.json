@@ -85,6 +85,10 @@
     {
       "path": "/api/cron/newsletter-followup",
       "schedule": "10 * * * *"
+    },
+    {
+      "path": "/api/cron/atlas-tracking",
+      "schedule": "17 * * * *"
     }
   ]
 }
