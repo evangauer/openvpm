@@ -7,19 +7,21 @@
  */
 export const DEMO_DISCLOSURE_FEEDBACK_V1 = "demo-feedback-v1";
 export const DEMO_DISCLOSURE_FOLLOWUP_V2 = "demo-followup-v2";
+export const DEMO_DISCLOSURE_USEFUL_V3 = "demo-useful-v3";
 
 export const DEMO_DISCLOSURE_VERSIONS = [
   DEMO_DISCLOSURE_FEEDBACK_V1,
   DEMO_DISCLOSURE_FOLLOWUP_V2,
+  DEMO_DISCLOSURE_USEFUL_V3,
 ] as const;
 
 export type DemoDisclosureVersion = (typeof DEMO_DISCLOSURE_VERSIONS)[number];
 
 export const CURRENT_DEMO_DISCLOSURE: DemoDisclosureVersion =
-  DEMO_DISCLOSURE_FOLLOWUP_V2;
+  DEMO_DISCLOSURE_USEFUL_V3;
 
 export const CURRENT_DEMO_DISCLOSURE_TEXT =
-  "No call, sales form, or credit card. We use your email to protect this shared sandbox from automated abuse and to send a few short emails about getting started with OpenVPM. Unsubscribe anytime.";
+  "This helps us block spam and repeat abuse. We’ll only reach out when there’s something useful to share. Unsubscribe anytime.";
 
 export function isDemoDisclosureVersion(
   value: unknown,

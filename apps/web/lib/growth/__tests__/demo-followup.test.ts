@@ -9,6 +9,7 @@ import {
 import {
   DEMO_DISCLOSURE_FEEDBACK_V1,
   DEMO_DISCLOSURE_FOLLOWUP_V2,
+  DEMO_DISCLOSURE_USEFUL_V3,
 } from "../demo-disclosure";
 
 const HOUR = 60 * 60 * 1000;
@@ -43,16 +44,16 @@ describe("demoFollowupMaxEmails", () => {
     ).toBe(1);
   });
 
-  it("sends the full series only to engaged visitors who saw the new disclosure", () => {
+  it.each([DEMO_DISCLOSURE_FOLLOWUP_V2, DEMO_DISCLOSURE_USEFUL_V3])("caps follow-up for %s by engagement", (disclosureVersion) => {
     expect(
       demoFollowupMaxEmails({
-        disclosureVersion: DEMO_DISCLOSURE_FOLLOWUP_V2,
+        disclosureVersion,
         toolCount: 1,
       }),
     ).toBe(2);
     expect(
       demoFollowupMaxEmails({
-        disclosureVersion: DEMO_DISCLOSURE_FOLLOWUP_V2,
+        disclosureVersion,
         toolCount: 2,
       }),
     ).toBe(4);
