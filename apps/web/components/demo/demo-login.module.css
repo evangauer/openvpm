@@ -41,6 +41,10 @@
   color: white;
   background: #0d9488;
 }
+.brandMark {
+  width: 20px;
+  height: 20px;
+}
 .backLink {
   display: inline-flex;
   align-items: center;
@@ -188,8 +192,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  padding: 32px 0 24px 52px;
+  padding: clamp(40px, 9svh, 104px) 0 0 52px;
   background:
     radial-gradient(ellipse at 100% 90%, #d8e7bc 0, transparent 60%), #eaf3ed;
 }
@@ -226,26 +229,28 @@
   color: #617869;
 }
 .previewWindow {
+  flex: 1 1 0;
+  min-height: 340px;
+  display: flex;
+  flex-direction: column;
   width: calc(100% + 30px);
-  height: clamp(220px, 30svh, 300px);
-  margin-top: 24px;
+  margin-top: 36px;
   border: 1px solid #d4ded7;
-  border-radius: 12px 0 0 12px;
+  border-bottom: 0;
+  border-radius: 12px 0 0 0;
   overflow: hidden;
   box-shadow: 0 20px 50px -22px #2f493e45;
   background: #fff;
 }
 .browserBar {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  min-height: 34px;
-  padding: 9px 14px;
+  flex-shrink: 0;
+  padding: 7px 14px;
   border-bottom: 1px solid #e7ebe8;
   background: #fafcfb;
-  color: #738178;
-  font-size: 9px;
 }
 .browserDots {
   display: flex;
@@ -259,33 +264,44 @@
 }
 .productImage {
   display: block;
+  flex: 1 1 0;
+  min-height: 0;
   width: 100%;
-  height: auto;
+}
+.productImageFill {
+  object-fit: cover;
+  object-position: left top;
+}
+.productImageTop {
+  object-fit: contain;
+  object-position: center top;
+  background: #f9f9fb;
 }
 .previewTabs {
   display: flex;
-  gap: 6px;
-  margin-top: 16px;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background: #edf2ef;
 }
 .previewTabs button {
-  padding: 8px 12px;
+  padding: 5px 12px;
   border-radius: 6px;
   font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
   color: #607465;
+  transition:
+    background 150ms,
+    color 150ms;
+}
+.previewTabs button:hover {
+  color: #28583f;
 }
 .previewTabs button[aria-pressed="true"] {
-  background: #fff9;
-  color: #28583f;
-  box-shadow: 0 1px 3px #12302308;
-}
-.sampleNote {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  font-size: 10px;
-  color: #61745f;
-  margin-top: 20px;
-  padding-right: 20px;
+  background: #fff;
+  color: #1f4f3c;
+  box-shadow: 0 1px 2px #1230231f;
 }
 .changeRole {
   display: flex;
@@ -382,9 +398,6 @@
   .showcase {
     padding-left: 80px;
   }
-  .previewWindow {
-    max-width: 900px;
-  }
   .role {
     padding: 20px;
   }
@@ -442,25 +455,24 @@
     font-size: 12px;
   }
   .showcase {
-    padding: 36px 24px;
+    padding: 36px 24px 0;
   }
   .showcaseCopy h2 {
     font-size: 42px;
   }
   .previewWindow {
+    flex: none;
+    height: 320px;
+    min-height: 0;
     width: 100%;
-    border-radius: 10px;
-  }
-  .previewTabs {
-    margin-top: 14px;
-  }
-  .sampleNote {
-    margin-top: 20px;
+    margin-top: 28px;
+    border-radius: 10px 10px 0 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .role,
-  .primary {
+  .primary,
+  .previewTabs button {
     transition: none;
   }
   .role:hover {
