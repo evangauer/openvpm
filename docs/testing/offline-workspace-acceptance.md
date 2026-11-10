@@ -31,6 +31,9 @@ Production mode also requires `openssl`. It generates a temporary self-signed
 loopback certificate accepted by the test browsers and serves the proxy over
 HTTPS, exercising the application's production HTTPS-upgrade policy. The
 temporary certificate/key and private fixture manifest are removed on shutdown.
+The Node reachability probe explicitly trusts that generated certificate while
+retaining certificate and hostname validation. A negative check verifies the
+ordinary trust store rejects it without that explicit trust.
 
 The dedicated config always runs the tests; there is no opt-in skip. It owns
 ports 3456–3458 and refuses to reuse an existing server. Do not build or run another

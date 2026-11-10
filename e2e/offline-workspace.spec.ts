@@ -27,6 +27,7 @@ type Clinic = {
   password: string;
   secondEmail: string;
   controlToken: string;
+  certificate?: string;
   sql: ReturnType<typeof postgres>;
 };
 
@@ -35,6 +36,9 @@ const test = base.extend<{ clinic: Clinic }>({
     const directory = process.env.OFFLINE_E2E_DIRECTORY;
     if (!directory) throw new Error("Use playwright.offline.config.ts; this suite never attaches to an existing clinic.");
     const { ownerUrl, controlToken } = JSON.parse(await readFile(path.join(directory, "fixture.json"), "utf8"));
+    const certificate = baseURL.startsWith("https:")
+      ? await readFile(path.join(directory, "loopback-cert.pem"), "utf8")
+      : undefined;
     const url = new URL(ownerUrl);
     if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
         !/^\/openvpm_offline_e2e_[a-f0-9]{32}$/.test(url.pathname)) {
@@ -63,7 +67,7 @@ const test = base.extend<{ clinic: Clinic }>({
         values (${practice!.id}, ${client!.id}, 'Synthetic Offline Patient', 'feline') returning id`;
       const [appointment] = await sql`insert into appointments (practice_id, patient_id, client_id, doctor_id, status, start_time, end_time)
         values (${practice!.id}, ${patient!.id}, ${client!.id}, ${user!.id}, 'in_exam', now(), now() + interval '30 minutes') returning id`;
-      await use({ sql, email, secondEmail, password, controlToken, userId: user!.id, patientId: patient!.id, appointmentId: appointment!.id });
+      await use({ sql, email, secondEmail, password, controlToken, certificate, userId: user!.id, patientId: patient!.id, appointmentId: appointment!.id });
     } finally {
       try {
         const response = await fetch("http://127.0.0.1:3456/reconnect", { method: "POST", headers: { authorization: `Bearer ${controlToken}` } });
@@ -139,18 +143,23 @@ async function reopen(page: Page) {
   return fresh;
 }
 
+function probeOrigin(certificate?: string) {
+  return new Promise<void>((resolve, reject) => {
+    const request = baseURL.startsWith("https:") ? httpsRequest : httpRequest;
+    const probe = request(`${baseURL}/api/auth/csrf`, { ca: certificate }, (response) => {
+      response.resume(); response.on("end", resolve);
+    });
+    probe.on("error", reject); probe.end();
+  });
+}
+
 async function originAvailable(clinic: Clinic, available: boolean) {
   const response = await fetch(`http://127.0.0.1:3456/${available ? "reconnect" : "disconnect"}`, {
     method: "POST", headers: { authorization: `Bearer ${clinic.controlToken}` },
   });
   expect(response.ok).toBe(true);
-  if (!available) await expect(new Promise<void>((resolve, reject) => {
-    const request = baseURL.startsWith("https:") ? httpsRequest : httpRequest;
-    const probe = request(`${baseURL}/api/auth/csrf`, { rejectUnauthorized: false }, (response) => {
-      response.resume(); response.on("end", resolve);
-    });
-    probe.on("error", reject); probe.end();
-  })).rejects.toThrow();
+  if (available) await probeOrigin(clinic.certificate);
+  else await expect(probeOrigin(clinic.certificate)).rejects.toThrow();
 }
 
 test("cold offline reopening retains all SOAP sections and saves one exact draft after reconnecting", async ({ page, clinic, browserName }, info) => {
@@ -358,6 +367,12 @@ test("unavailable device storage cannot report a prepared or saved workspace", a
 
 // Adversarial cases use the same real server, storage, and clinical routes.
 test("deep: wrong passphrases preserve ciphertext and public caches contain no chart text", async ({ page, clinic }) => {
+  if (clinic.certificate) {
+    // Trust only this invocation's loopback certificate. The ordinary trust
+    // store must reject it; valid TLS must work before simulating an outage.
+    await probeOrigin(clinic.certificate);
+    await expect(probeOrigin()).rejects.toThrow(/self.signed|certificate/i);
+  }
   await prepare(page, clinic);
   const secretText = `Synthetic confidential canary ${randomUUID()}`;
   await edit(page, { plan: secretText });
