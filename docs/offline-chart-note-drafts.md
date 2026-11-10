@@ -53,6 +53,10 @@ clears this site's browser data.
 
 ## Scope
 
+For prepared visit drafts and the browser/device acceptance boundary, see the
+[offline acceptance runbook](testing/offline-workspace-acceptance.md). The
+standalone chart-note feature remains a separate pilot.
+
 This feature is offline drafting in an already-open chart with encrypted recovery.
 Opening the app or a different chart still requires connectivity. It does not
 cache patient records, attachments, routes, billing, or the authenticated app

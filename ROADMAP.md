@@ -28,6 +28,7 @@ For the operational boundary used in clinic evaluations, see the [Clinic Pilot R
 - **Client online card payments** require the clinic to complete Stripe Connect onboarding; manual payment recording works without it
 - **OpenVPM Agent** requires a supported model API key, must be reviewed by clinic staff, and gates writes behind explicit opt-in
 - **Migration and restore** require a dry run, validation, and operator-supported cutover for anything beyond the documented self-service CSV import
+- **Prepared offline charts and encrypted drafts** are opt-in, default-off pilots on trusted devices. Existing-visit SOAP drafts save explicitly after reconnecting; browser/device support requires the [offline acceptance drill](docs/testing/offline-workspace-acceptance.md).
 
 ## 🔜 Next (no external dependencies — community PRs very welcome)
 

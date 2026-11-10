@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { EncryptedDeviceVault, encryptedValueExists } from "./encrypted-vault";
+import {
+  EncryptedDeviceVault,
+  encryptedValueExists,
+  type EncryptedVaultRecovery,
+} from "./encrypted-vault";
 
 export const WORKSPACE_DATABASE = "openvpm-offline-workspace-v1";
 export const WORKSPACE_KEY = "encrypted-practice-workspace-v1";
@@ -274,6 +278,10 @@ const options = {
 export function workspaceExists(factory?: IDBFactory) {
   return encryptedValueExists({ ...options, factory });
 }
-export function openWorkspace(passphrase: string, factory?: IDBFactory) {
-  return EncryptedDeviceVault.open({ ...options, factory }, passphrase);
+export function openWorkspace(
+  passphrase: string,
+  factory?: IDBFactory,
+  recovery?: EncryptedVaultRecovery,
+) {
+  return EncryptedDeviceVault.open({ ...options, factory }, passphrase, recovery);
 }
