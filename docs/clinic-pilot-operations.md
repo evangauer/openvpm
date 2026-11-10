@@ -153,8 +153,10 @@ sessions cannot read any pilot-cohort state.
   retry charges blindly.
 - **Data isolation or security:** treat as an incident and follow the security
   process.
-- **Connectivity:** use the agreed connected-mode fallback; OpenVPM does not
-  offer offline charting.
+- **Connectivity:** use the agreed downtime procedure. Prepared offline charts
+  and drafts are a separate, default-off pilot with browser/device acceptance;
+  they do not cover the full clinic workflow. See the
+  [offline acceptance runbook](testing/offline-workspace-acceptance.md).
 - **SMS:** disable clinic sending and use email until carrier and consent
   evidence are reviewed.
 
