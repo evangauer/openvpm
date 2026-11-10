@@ -189,4 +189,30 @@ describe("offline chart workspace", () => {
       (await openWorkspace(phrase, factory)).value?.charts[0]?.sections.plan,
     ).toBe("Winner");
   });
+  it("recovers encrypted in-tab changes with the original passphrase and persists only after retry", async () => {
+    const factory = new IDBFactory(), phrase = "synthetic recovery passphrase";
+    const opened = await openWorkspace(phrase, factory);
+    await opened.vault.save(prepared());
+    const newest = prepared();
+    newest.charts[0]!.sections.plan = "Synthetic memory-only recovery";
+    const recovery = await opened.vault.sealForRecovery(newest);
+    expect(new TextDecoder().decode(recovery.record.ciphertext)).not.toContain("Synthetic memory-only recovery");
+    await expect(openWorkspace("incorrect recovery passphrase", factory, recovery)).rejects.toThrow("Unable to unlock");
+    expect((await openWorkspace(phrase, factory)).value!.charts[0]!.sections.plan).not.toBe("Synthetic memory-only recovery");
+    const recovered = await openWorkspace(phrase, factory, recovery);
+    expect(recovered.value).toEqual(newest);
+    await recovered.vault.save(recovered.value!);
+    expect((await openWorkspace(phrase, factory)).value).toEqual(newest);
+  });
+  it("never overwrites a newer durable copy with encrypted in-tab recovery", async () => {
+    const factory = new IDBFactory(), phrase = "synthetic recovery passphrase";
+    const opened = await openWorkspace(phrase, factory);
+    await opened.vault.save(prepared());
+    const recovery = await opened.vault.sealForRecovery(prepared());
+    const winner = prepared();
+    winner.charts[0]!.sections.plan = "Newer durable winner";
+    await opened.vault.save(winner);
+    await expect(openWorkspace(phrase, factory, recovery)).rejects.toThrow("another tab");
+    expect((await openWorkspace(phrase, factory)).value).toEqual(winner);
+  });
 });

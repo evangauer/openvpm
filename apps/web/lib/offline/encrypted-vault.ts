@@ -13,6 +13,11 @@ const recordSchema = z
   })
   .strict();
 type DraftRecord = z.infer<typeof recordSchema>;
+/** Ciphertext only: safe to retain in the tab after dropping the unlocked key. */
+export interface EncryptedVaultRecovery {
+  record: DraftRecord;
+  expectedRevision: string | null;
+}
 const conflictMessage =
   "This device draft changed in another tab. Reopen the chart to recover that version. Your current text is still here.";
 
@@ -147,12 +152,19 @@ export class EncryptedDeviceVault<T> {
     private salt: Uint8Array<ArrayBuffer>,
     private revision: string | null,
   ) {}
-  static async open<T>(options: VaultOptions<T>, passphrase: string) {
-    const record = await readRecord(
+  static async open<T>(
+    options: VaultOptions<T>,
+    passphrase: string,
+    recovery?: EncryptedVaultRecovery,
+  ) {
+    const stored = await readRecord(
       options.factory ?? indexedDB,
       options.database,
       options.storageKey,
     );
+    if (recovery && (stored?.revision ?? null) !== recovery.expectedRevision)
+      throw new Error(conflictMessage);
+    const record = recovery ? recordSchema.parse(recovery.record) : stored;
     if (record && record.ciphertext.byteLength > options.maxBytes + 16)
       throw new Error(
         "The device draft cannot be read. It has not been overwritten.",
@@ -187,9 +199,33 @@ export class EncryptedDeviceVault<T> {
         options,
         key,
         salt,
-        record?.revision ?? null,
+        stored?.revision ?? null,
       ),
       value,
+    };
+  }
+  /** Does not touch storage or retain a key; recovery still needs the passphrase. */
+  async sealForRecovery(value: T): Promise<EncryptedVaultRecovery> {
+    const snapshot = optionsSnapshot(this.options, value);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      {
+        name: "AES-GCM",
+        iv,
+        additionalData: new TextEncoder().encode(this.options.storageKey),
+      },
+      this.key,
+      snapshot,
+    );
+    return {
+      expectedRevision: this.revision,
+      record: {
+        version: 1,
+        revision: crypto.randomUUID(),
+        salt: Array.from(this.salt),
+        iv: Array.from(iv),
+        ciphertext,
+      },
     };
   }
   save(value: T): Promise<void> {
