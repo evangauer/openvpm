@@ -6,6 +6,8 @@ const webServerCommand =
 
 export default defineConfig({
   testDir: "./e2e",
+  // The offline suite owns a disposable database and server via its dedicated config.
+  testIgnore: "**/offline-workspace.spec.ts",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
