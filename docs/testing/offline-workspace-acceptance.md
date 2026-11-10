@@ -38,8 +38,9 @@ Screenshots and failure traces are written to an invocation-specific temporary
 directory, outside the checkout. `OFFLINE_E2E_ARTIFACT_DIRECTORY` can select a
 different artifact destination. Artifacts contain synthetic fixtures only.
 
-The `Offline browser recovery` CI job runs the same cases in desktop Chromium
-and WebKit with an iPad viewport against an ephemeral PostgreSQL service:
+The `Offline browser recovery` CI job uses Ubuntu 24.04, supported by the pinned
+Playwright version. It runs the same cases in desktop Chromium and WebKit with
+an iPad viewport against an ephemeral PostgreSQL service:
 
 - cold offline page reopening, unlock, exact recovery of all four SOAP
   sections, explicit save, one persisted note, and online editor readback;
