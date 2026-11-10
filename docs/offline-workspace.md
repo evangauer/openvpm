@@ -102,6 +102,10 @@ and cleared device data cannot be recovered by the server.
 
 ## Verification
 
+The [offline acceptance runbook](testing/offline-workspace-acceptance.md) provides
+the repeatable Chromium/WebKit drill and a separate physical Safari/iPad
+checklist. Automated WebKit results do not establish physical-device acceptance.
+
 Run the ordinary type check, test suite, and build. The Golden clinic CI job
 also runs `offline-workspace.integration.test.ts` against a disposable local
 PostgreSQL database under the restricted application role. It verifies tenant
