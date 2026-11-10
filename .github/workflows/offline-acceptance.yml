@@ -32,7 +32,6 @@ jobs:
       # Ephemeral service credentials only; no hosted environment or provider secrets.
       OFFLINE_E2E_ADMIN_DATABASE_URL: postgresql://openpims:openpims@127.0.0.1:5432/openpims
       OPENPIMS_APP_DB_PASSWORD: openpims_app
-      OFFLINE_E2E_ARTIFACT_DIRECTORY: ${{ runner.temp }}/openvpm-offline-results
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -46,7 +45,10 @@ jobs:
       - name: Type-check the browser drill
         run: pnpm --filter @openpims/web exec tsc --noEmit --strict --target es2022 --module commonjs --moduleResolution node --esModuleInterop --skipLibCheck ../../playwright.offline.config.ts ../../e2e/offline-workspace.spec.ts
       - run: pnpm exec playwright install --with-deps chromium webkit
-      - run: pnpm exec playwright test --config=playwright.offline.config.ts
+      - name: Exercise offline browser recovery
+        env:
+          OFFLINE_E2E_ARTIFACT_DIRECTORY: ${{ runner.temp }}/openvpm-offline-results
+        run: pnpm exec playwright test --config=playwright.offline.config.ts
       - name: Retain synthetic failure evidence
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
