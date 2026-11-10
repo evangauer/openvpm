@@ -6,7 +6,8 @@ import path from "node:path";
 // Each invocation owns its server, database and private fixture manifest.
 const runDirectory = process.env.OFFLINE_E2E_DIRECTORY ?? path.join(tmpdir(), `openvpm-offline-${randomUUID()}`);
 process.env.OFFLINE_E2E_DIRECTORY = runDirectory;
-const baseURL = "http://127.0.0.1:3457";
+const baseURL = process.env.OFFLINE_E2E_SERVER_MODE === "production" ? "https://127.0.0.1:3457" : "http://127.0.0.1:3457";
+process.env.OFFLINE_E2E_BASE_URL = baseURL;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -22,18 +23,20 @@ export default defineConfig({
   use: {
     baseURL,
     serviceWorkers: "allow",
+    ignoreHTTPSErrors: true, // Only the disposable loopback certificate.
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    { name: "chromium", use: { ...devices["Desktop Chrome"], launchOptions: { args: baseURL.startsWith("https:") ? ["--ignore-certificate-errors"] : [] } } },
     { name: "webkit-ipad", use: { ...devices["iPad Pro 11"], browserName: "webkit" } },
   ],
   webServer: {
     command: "node e2e/offline/server.mjs",
     url: `${baseURL}/api/auth/csrf`,
     reuseExistingServer: false,
-    timeout: 180_000,
+    ignoreHTTPSErrors: true,
+    timeout: process.env.OFFLINE_E2E_SERVER_MODE === "production" ? 300_000 : 180_000,
     gracefulShutdown: { signal: "SIGTERM", timeout: 15_000 },
   },
 });

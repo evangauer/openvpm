@@ -33,6 +33,7 @@ jobs:
       # Ephemeral service credentials only; no hosted environment or provider secrets.
       OFFLINE_E2E_ADMIN_DATABASE_URL: postgresql://openpims:openpims@127.0.0.1:5432/openpims
       OPENPIMS_APP_DB_PASSWORD: openpims_app
+      OFFLINE_E2E_SERVER_MODE: production
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

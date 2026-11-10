@@ -23,7 +23,14 @@ pnpm exec playwright install chromium webkit
 # OFFLINE_E2E_ADMIN_DATABASE_URL: local database administrator connection
 # OPENPIMS_APP_DB_PASSWORD: existing local restricted-role password
 pnpm exec playwright test --config=playwright.offline.config.ts
+# To build and test the actual standalone production server:
+OFFLINE_E2E_SERVER_MODE=production pnpm exec playwright test --config=playwright.offline.config.ts
 ```
+
+Production mode also requires `openssl`. It generates a temporary self-signed
+loopback certificate accepted by the test browsers and serves the proxy over
+HTTPS, exercising the application's production HTTPS-upgrade policy. The
+temporary certificate/key and private fixture manifest are removed on shutdown.
 
 The dedicated config always runs the tests; there is no opt-in skip. It owns
 ports 3456–3458 and refuses to reuse an existing server. Do not build or run another
@@ -39,8 +46,10 @@ directory, outside the checkout. `OFFLINE_E2E_ARTIFACT_DIRECTORY` can select a
 different artifact destination. Artifacts contain synthetic fixtures only.
 
 The `Offline browser recovery` CI job uses Ubuntu 24.04, supported by the pinned
-Playwright version. It runs the same cases in desktop Chromium and WebKit with
-an iPad viewport against an ephemeral PostgreSQL service:
+Playwright version. It builds and serves the standalone production artifact,
+with generated public/static assets copied into that artifact, and runs the
+same cases in desktop Chromium and WebKit with an iPad viewport against an
+ephemeral PostgreSQL service:
 
 - cold offline page reopening, unlock, exact recovery of all four SOAP
   sections, explicit save, one persisted note, and online editor readback;
@@ -52,6 +61,20 @@ an iPad viewport against an ephemeral PostgreSQL service:
 - account changes that lock the workspace without discarding the owner's work;
 - failed IndexedDB writes retaining in-memory text and the prior durable copy;
   and unavailable storage refusing workspace creation.
+
+Additional adversarial cases check wrong-passphrase ciphertext preservation,
+absence of chart text in public caches, separate drafts for multiple visits,
+live lease expiry, audit rejection/rollback and retry, correction of oversized
+pastes, storage failure combined with automatic locking, and service-worker
+update waiting/activation with an existing draft. The worker update changes
+only the public cache version in the test proxy; clinical routes stay real.
+
+A persistent-profile test closes and restarts the browser process. Chromium
+must reopen offline directly. The pinned WebKit automation has also been
+observed losing its cached shell across a process restart. That branch records
+an explicit limitation annotation and proves the encrypted draft still recovers
+after reconnection; it must not be reported as successful offline Safari cold
+startup. Physical-device acceptance is still required.
 
 The drill uses real browser storage, service workers, login, protected HTTP
 routes, and PostgreSQL. Fault injection drops a response only after the server
@@ -117,3 +140,11 @@ silent replacement of newer/signed work, unauthorized access, or false save
 confirmation. Retain the prior clinical system and the agreed downtime
 procedure. Follow the normal staging and production release controls; keep
 compatible recovery available until every outstanding device draft is resolved.
+
+For a storage failure followed by automatic locking, the new recovery buffer
+contains ciphertext only in that tab's memory. Wrong passphrases and a different
+signed-in person must remain blocked. The owner can recover after storage
+returns; concurrent newer durable data must not be overwritten. Keep the tab
+open until this recovery is durably saved. The drill does not promise recovery
+of oversized/invalid text, cleared browser data, or a memory-only buffer after
+the tab/browser process is terminated.

@@ -34,6 +34,16 @@ requires the passphrase. Offline access lasts up to 24 hours after online
 authorization; reconnect and sign in to renew it. Expiry locks the workspace
 without deleting its encrypted drafts. Keep the device clock accurate.
 
+If device storage fails immediately before automatic locking, supported-size
+unsaved changes are retained as ciphertext **only in the current open tab**.
+The warning tells you to keep that tab open. Restore storage, reconnect and
+unlock as the workspace owner to persist this recovery copy. The passphrase is
+still required; a newer durable copy in another tab cannot be overwritten.
+Reloading, closing the tab, or terminating the browser loses this temporary
+copy. It is not a substitute for **Encrypted device copy saved**. Oversized or
+otherwise invalid drafts cannot be retained this way; keep each SOAP section
+within its stated limit and correct any validation warning before proceeding.
+
 ## Snapshot scope
 
 Each snapshot includes patient basics, all active recorded allergies (up to
