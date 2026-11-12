@@ -257,6 +257,35 @@ describe("buildSubscriptionCheckoutSessionParams", () => {
 });
 
 describe("buildInvoiceCheckoutSessionParams", () => {
+  const currencyCheckout = {
+    invoiceId: "invoice_japan",
+    amount: 450000,
+    clientName: "Sample client",
+    description: "Invoice payment",
+    successUrl: "https://app.example.com/success",
+    cancelUrl: "https://app.example.com/cancel",
+  };
+
+  it.each(["jpy", "JPY", "kwd", "zzz", ""])(
+    "rejects %s at the provider boundary before hundredths can be mischarged",
+    (currency) => {
+      expect(() => buildInvoiceCheckoutSessionParams({
+        ...currencyCheckout, currency,
+      })).toThrow("Card payments are not available for this invoice currency");
+    },
+  );
+
+  it.each(["usd", "gbp", "eur", "cad", "aud", "USD", undefined])(
+    "preserves the amount for supported currency %s",
+    (currency) => {
+      const params = buildInvoiceCheckoutSessionParams({ ...currencyCheckout, currency });
+      expect(params.line_items?.[0]?.price_data).toMatchObject({
+        unit_amount: 450000,
+        currency: (currency ?? "usd").toLowerCase(),
+      });
+    },
+  );
+
   it("creates a client invoice payment checkout session", () => {
     const params = buildInvoiceCheckoutSessionParams({
       invoiceId: "invoice_123",
