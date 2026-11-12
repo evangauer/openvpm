@@ -9,6 +9,10 @@ import {
 } from "@/lib/stripe-config";
 import { envFlagEnabled } from "@/lib/env-bool";
 import type { BillingCadence } from "@/lib/billing/catalog";
+import {
+  supportsInvoiceCardCurrency,
+  UNSUPPORTED_INVOICE_CARD_CURRENCY_MESSAGE,
+} from "@/lib/billing/invoice-card-currency";
 
 export const STRIPE_TAX_ENABLED_ENV = "STRIPE_TAX_ENABLED";
 export const INVOICE_CHECKOUT_CAPTURE_MODE = "manual_v1";
@@ -345,6 +349,9 @@ export function buildInvoiceCheckoutSessionParams(data: {
   connectedAccountId?: string | null;
   applicationFeeAmount?: number;
 }): Stripe.Checkout.SessionCreateParams {
+  if (!supportsInvoiceCardCurrency(data.currency)) {
+    throw new Error(UNSUPPORTED_INVOICE_CARD_CURRENCY_MESSAGE);
+  }
   const metadata: Record<string, string> = {
     invoiceId: data.invoiceId,
     captureMode: INVOICE_CHECKOUT_CAPTURE_MODE,

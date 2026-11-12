@@ -26,6 +26,9 @@ export function formatCurrency(
   return new Intl.NumberFormat(localeForCountry(country), {
     style: "currency",
     currency: currency.toUpperCase(),
+    // Keep fractional yen visible when the existing two-decimal invoice/tax
+    // arithmetic produces them. Formatting must never silently round a balance.
+    ...(currency.toLowerCase() === "jpy" ? { maximumFractionDigits: 2 } : {}),
   }).format(Number.isFinite(n) ? (n as number) : 0);
 }
 
@@ -64,7 +67,7 @@ export function regionDefaults(country?: string | null): RegionDefaults {
     case "AU":
       return { currency: "aud", taxRatePercent: "10.00", timezone: "Australia/Sydney" };
     case "JP":
-      // Consumption tax standard rate. Veterinary care is not a tax-exempt medical service in Japan.
+      // Editable standard-rate default, not a Japanese tax-compliance engine.
       return { currency: "jpy", taxRatePercent: "10.00", timezone: "Asia/Tokyo" };
     default:
       return { currency: "usd", taxRatePercent: "8.00", timezone: "America/New_York" };

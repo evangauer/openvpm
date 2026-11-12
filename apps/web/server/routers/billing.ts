@@ -32,6 +32,10 @@ import {
 } from "@/lib/stripe";
 import { billingEnforced } from "@/lib/billing/plans";
 import {
+  supportsInvoiceCardCurrency,
+  UNSUPPORTED_INVOICE_CARD_CURRENCY_MESSAGE,
+} from "@/lib/billing/invoice-card-currency";
+import {
   centsToMoney,
   invoiceBalanceCents,
   moneyToCents,
@@ -3855,6 +3859,13 @@ export const billingRouter = createRouter({
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "No balance remaining.",
+        });
+      }
+
+      if (!supportsInvoiceCardCurrency(invoice.currency)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: UNSUPPORTED_INVOICE_CARD_CURRENCY_MESSAGE,
         });
       }
 
