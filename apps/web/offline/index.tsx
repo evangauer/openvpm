@@ -23,7 +23,10 @@ import {
   type OfflineWorkspace,
   type WorkspaceIdentity,
 } from "../lib/offline/workspace";
-import type { EncryptedDeviceVault } from "../lib/offline/encrypted-vault";
+import type {
+  EncryptedDeviceVault,
+  EncryptedVaultRecovery,
+} from "../lib/offline/encrypted-vault";
 import { prepareOfflineShell } from "./prepare-shell";
 
 const api = createTRPCClient<AppRouter>({
@@ -80,6 +83,8 @@ function OfflineApp() {
   const [workspace, setWorkspace] = useState<OfflineWorkspace | null>(null);
   const current = useRef<OfflineWorkspace | null>(null);
   const vault = useRef<EncryptedDeviceVault<OfflineWorkspace> | null>(null);
+  const recovery = useRef<EncryptedVaultRecovery | null>(null);
+  const [recoveryWarning, setRecoveryWarning] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const version = useRef(0);
   const [selected, setSelected] = useState<string | null>(null);
@@ -112,8 +117,8 @@ function OfflineApp() {
   useEffect(() => {
     const guard = (event: BeforeUnloadEvent) => {
       if (
-        current.current &&
-        (hasWorkspaceChanges(current.current) || busyRef.current)
+        recovery.current ||
+        (current.current && (hasWorkspaceChanges(current.current) || busyRef.current))
       ) {
         event.preventDefault();
         event.returnValue = "";
@@ -200,6 +205,14 @@ function OfflineApp() {
       if (current.current) await persist(current.current);
     } catch (error) {
       if (!force) throw error;
+      if (vault.current && current.current) {
+        try {
+          recovery.current = await vault.current.sealForRecovery(current.current);
+          setRecoveryWarning("The newest changes are encrypted only in this open tab. Keep this tab open, restore device storage, then unlock as the workspace owner to recover them.");
+        } catch {
+          setRecoveryWarning("The newest changes could not be secured. Only the last successfully saved device copy can be recovered. Keep SOAP sections within the stated size limit.");
+        }
+      }
     }
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
@@ -244,7 +257,11 @@ function OfflineApp() {
     const secret = passphrase;
     setPassphrase("");
     setConfirmation("");
-    const opened = await openWorkspace(secret);
+    const opened = await openWorkspace(
+      secret,
+      undefined,
+      recovery.current ?? undefined,
+    );
     let identity: WorkspaceIdentity | null = null;
     try {
       identity = await api.offline.session.query();
@@ -272,7 +289,14 @@ function OfflineApp() {
       ? { ...opened.value, identity: identity ?? opened.value.identity }
       : { version: 1 as const, identity: identity!, charts: [] };
     vault.current = opened.vault;
-    await commit(value);
+    try {
+      await commit(value);
+    } catch (error) {
+      vault.current = null;
+      throw error;
+    }
+    recovery.current = null;
+    setRecoveryWarning(null);
     setExists(true);
     setSelected(value.charts[0]?.key ?? null);
     setNotice(
@@ -441,6 +465,11 @@ function OfflineApp() {
         id="main-content"
         className="mx-auto max-w-6xl space-y-4 p-4 sm:p-6"
       >
+        {recoveryWarning ? (
+          <p role="alert" className="rounded-lg border border-amber-500 bg-background p-4 text-sm">
+            {recoveryWarning}
+          </p>
+        ) : null}
         {message ? (
           <div
             role="alert"
@@ -586,7 +615,10 @@ function OfflineApp() {
                     key={item.key}
                     disabled={busy}
                     aria-current={selected === item.key ? "page" : undefined}
-                    onClick={() => setSelected(item.key)}
+                    onClick={() => {
+                      setSelected(item.key);
+                      setNotice(null);
+                    }}
                     className={`block w-full rounded-lg border p-3 text-left ${selected === item.key ? "border-primary bg-primary/10" : "bg-background"}`}
                   >
                     <span className="block font-medium">
