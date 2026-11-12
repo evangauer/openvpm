@@ -177,7 +177,7 @@ Dashboard tRPC routers cover the product's clinic workflows, including patients,
 ### Prerequisites
 
 - Node.js 24.22.1 or a newer Node.js 24 patch (`nvm use`)
-- pnpm 9+
+- pnpm 9.15.0 (pinned in `package.json`)
 - Docker (for PostgreSQL and MinIO)
 
 ### Setup
@@ -186,13 +186,14 @@ Dashboard tRPC routers cover the product's clinic workflows, including patients,
 # Clone the repository
 git clone https://github.com/evangauer/openvpm.git
 cd openvpm
+git switch development
 
 # Copy environment config
 cp .env.example .env
 # In the root .env, set NEXTAUTH_SECRET using: openssl rand -base64 32
 
 # Start PostgreSQL and S3-compatible storage
-docker compose -f docker/docker-compose.yml up -d
+docker compose --env-file .env -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
 
 # Install dependencies
 pnpm install --frozen-lockfile
@@ -200,14 +201,14 @@ pnpm install --frozen-lockfile
 # Verify this clone contains only public release material
 pnpm verify:oss-release
 
-# Apply database schema
-pnpm db:push
+# Apply committed database migrations
+pnpm db:migrate
 
 # Apply and verify row-level security policies
-pnpm db:rls
-pnpm db:rls:test
+OPENPIMS_APP_DB_PASSWORD='local-openpims-app' pnpm db:rls
+OPENPIMS_APP_DB_PASSWORD='local-openpims-app' pnpm db:rls:test
 
-# Seed with realistic demo data
+# Seed synthetic data once, only on a new empty local database
 pnpm db:seed
 
 # Start the development server
@@ -341,6 +342,9 @@ We believe the best software for veterinary medicine should be built _with_ the 
 We welcome contributions from developers, veterinary professionals, and anyone who believes in open-source healthcare software.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and how to submit pull requests.
+For terminology and localization contributions, start with
+[the translation guide](docs/TRANSLATING.md). Regional formatting does not imply
+translated UI or supported card payments.
 
 ### Contributors
 
