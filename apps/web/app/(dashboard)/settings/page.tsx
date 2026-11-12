@@ -60,6 +60,10 @@ import { cn, isValidEmail } from "@/lib/utils";
 import { toast } from "sonner";
 import { regionDefaults } from "@/lib/locale/format";
 import {
+  supportsInvoiceCardCurrency,
+  UNSUPPORTED_INVOICE_CARD_CURRENCY_MESSAGE,
+} from "@/lib/billing/invoice-card-currency";
+import {
   CLINIC_REGION_OPTIONS,
   isClinicRegionCode,
   type ClinicRegionCode,
@@ -187,9 +191,10 @@ const TIMEZONES = [
   "Europe/London",
   "Europe/Dublin",
   "Australia/Sydney",
+  "Asia/Tokyo",
 ];
 
-const CURRENCIES = ["usd", "gbp", "eur", "cad", "aud"];
+const CURRENCIES = ["usd", "gbp", "eur", "cad", "aud", "jpy"];
 
 const PRESET_COLORS = [
   "#0d9488",
@@ -756,6 +761,11 @@ function PracticeInfoTab() {
               Controls invoice currency, tax rate, and date formatting. Choosing
               a country prefills the usual defaults — adjust as needed.
             </p>
+            {!supportsInvoiceCardCurrency(current.currency) ? (
+              <p className="text-xs text-muted-foreground" role="status">
+                {UNSUPPORTED_INVOICE_CARD_CURRENCY_MESSAGE}
+              </p>
+            ) : null}
           </div>
           <div className="grid gap-4">
             <div className="grid grid-cols-2 gap-4">
