@@ -21,6 +21,8 @@ COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=deps /app/packages/db/node_modules ./packages/db/node_modules
 COPY . .
 
+ARG NODE_OPTIONS
+
 ENV NEXT_TELEMETRY_DISABLED=1
 # The default heap on a 4 GiB builder is too small for Next's type-check worker.
 # Keep the larger heap scoped to this build; the runtime uses Node's defaults.
