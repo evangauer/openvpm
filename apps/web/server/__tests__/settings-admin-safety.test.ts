@@ -198,6 +198,27 @@ describe("settings admin stale target safety", () => {
 
     expect(updateSet).not.toHaveBeenCalled();
   });
+  it.each(["onboarding", "settings"] as const)(
+    "saves Japan defaults from %s while honoring explicit currency and tax overrides",
+    async (jurisdictionSource) => {
+      const { db, updateSet } = createDb({
+        selectRows: [{ timezone: "Asia/Tokyo" }],
+        updatedRows: [{ id: PRACTICE_ID }],
+      });
+      await callerWithDb(db).updatePractice({
+        country: "JP", timezone: "Asia/Tokyo", jurisdictionSource,
+      });
+      expect(updateSet).toHaveBeenLastCalledWith(expect.objectContaining({
+        country: "JP", currency: "jpy", taxRatePercent: "10.00", timezone: "Asia/Tokyo",
+      }));
+      await callerWithDb(db).updatePractice({
+        country: "JP", currency: "USD", taxRatePercent: "0", jurisdictionSource,
+      });
+      expect(updateSet).toHaveBeenLastCalledWith(expect.objectContaining({
+        country: "JP", currency: "usd", taxRatePercent: "0",
+      }));
+    },
+  );
 
   it("rejects settings strings that exceed storage bounds before writes", async () => {
     const { db, updateSet, insertValues } = createDb();

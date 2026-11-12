@@ -128,6 +128,23 @@ afterEach(() => {
 });
 
 describe("billing card checkout", () => {
+  it.each(["jpy", "JPY", "kwd", "zzz"])(
+    "refuses %s before creating a card checkout with a hundredths amount",
+    async (currency) => {
+      const { db } = createDb([
+        [{ ...baseInvoice, currency, total: "4500.00", paidAmount: "0.00" }],
+        [],
+      ]);
+      await expect(
+        callerWithDb(db).createCardPaymentCheckout({ invoiceId: INVOICE_ID }),
+      ).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+        message: expect.stringContaining("invoice currency"),
+      });
+      expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not call Stripe checkout while the practice is held", async () => {
     mocks.lockPracticeForExternalSideEffects.mockResolvedValueOnce(false);
     const { db, select } = createDb([]);

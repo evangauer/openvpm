@@ -205,6 +205,28 @@ afterEach(() => {
 });
 
 describe("portal checkout route", () => {
+  it.each(["jpy", "JPY", "kwd", "zzz"])(
+    "refuses %s without contacting the payment provider",
+    async (currency) => {
+      mocks.selectResults.push(
+        [client()],
+        [invoice({ total: "4500.00", paidAmount: "0.00" })],
+        [],
+        [{ name: "Biscuit" }],
+        [practice({ currency })],
+      );
+      const response = await POST(
+        portalRequest({ token: "portal-token", invoiceId: INVOICE_ID }),
+      );
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toEqual({
+        error: "Online payments are not available for this invoice currency. Please call the clinic to pay.",
+      });
+      expect(mocks.createCheckoutSession).not.toHaveBeenCalled();
+      expect(mocks.getChargeableStripeConnectAccountId).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     { payload: {}, label: "missing fields" },
     {
