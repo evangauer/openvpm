@@ -1,3 +1,4 @@
+import { clinicalUnitsFromSettings } from "@/lib/clinical-units";
 import { z } from "zod";
 import { eq, and, isNull, lt, gte, lte, sql, desc, inArray } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
@@ -310,7 +311,7 @@ export const aiRouter = createRouter({
         });
       }
 
-      const [[patient], allergies, problems, [latestVitals]] =
+      const [[patient], allergies, problems, [latestVitals], [practiceUnits]] =
         await Promise.all([
           ctx.db
             .select({
@@ -394,6 +395,11 @@ export const aiRouter = createRouter({
             )
             .orderBy(desc(vitalSigns.recordedAt))
             .limit(1),
+          ctx.db
+            .select({ settings: practices.settings })
+            .from(practices)
+            .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
+            .limit(1),
         ]);
 
       if (!patient) {
@@ -428,6 +434,7 @@ export const aiRouter = createRouter({
           allergies,
           activeProblems: problems,
           latestVitals: latestVitals ?? null,
+          units: clinicalUnitsFromSettings(practiceUnits?.settings),
           visitContext: input.visitContext,
         });
         // Meter successful drafts like agent runs (no-op on self-host).

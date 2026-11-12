@@ -1,3 +1,4 @@
+import { clinicalUnitsFromSettings } from "@/lib/clinical-units";
 import { z } from "zod";
 import { eq, and, isNull, desc, sql, ne } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
@@ -225,6 +226,7 @@ async function practicePortalProfile(db: any, practiceId: string) {
       phone: practices.phone,
       email: practices.email,
       timezone: practices.timezone,
+      settings: practices.settings,
     })
     .from(practices)
     .where(activePracticeWhere(practiceId))
@@ -235,6 +237,7 @@ async function practicePortalProfile(db: any, practiceId: string) {
   }
 
   return {
+    units: clinicalUnitsFromSettings(practice.settings),
     name: practice.name?.trim() || "Veterinary Practice",
     address: practice.address ?? null,
     phone: practice.phone ?? null,

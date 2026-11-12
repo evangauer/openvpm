@@ -1,3 +1,4 @@
+import { clinicalUnitsFromSettings, type ClinicalUnits } from "@/lib/clinical-units";
 import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -258,6 +259,7 @@ function activeLabResultPredicate(practiceId: string) {
 }
 
 async function practiceSettings(ctx: RecordsContext): Promise<{
+  units: ClinicalUnits;
   name: string;
   address: string | null;
   phone: string | null;
@@ -271,6 +273,7 @@ async function practiceSettings(ctx: RecordsContext): Promise<{
       phone: practices.phone,
       email: practices.email,
       timezone: practices.timezone,
+      settings: practices.settings,
     })
     .from(practices)
     .where(and(eq(practices.id, ctx.practiceId), isNull(practices.deletedAt)))
@@ -284,6 +287,7 @@ async function practiceSettings(ctx: RecordsContext): Promise<{
   }
 
   return {
+    units: clinicalUnitsFromSettings(practice.settings),
     name: practice.name?.trim() || "Veterinary Practice",
     address: practice.address ?? null,
     phone: practice.phone ?? null,
@@ -2073,6 +2077,7 @@ export const recordsRouter = createRouter({
             practicePhone: practices.phone,
             practiceEmail: practices.email,
             practiceTimezone: practices.timezone,
+            practiceUnitSettings: practices.settings,
             patientId: patients.id,
             patientName: patients.name,
             species: patients.species,
@@ -2334,6 +2339,7 @@ export const recordsRouter = createRouter({
         certificateId,
         kind: input.kind,
         generatedAt: new Date(),
+        units: clinicalUnitsFromSettings(identity.practiceUnitSettings),
         ready: warnings.length === 0,
         missingFields: warnings,
         practice: {

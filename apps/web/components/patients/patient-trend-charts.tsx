@@ -1,5 +1,13 @@
 "use client";
 
+import {
+  DEFAULT_CLINICAL_UNITS,
+  formatClinicalWeight,
+  formatClinicalTemperature,
+  kilogramsToWeight,
+  celsiusToTemperature,
+  type ClinicalUnits,
+} from "@/lib/clinical-units";
 import { Activity } from "lucide-react";
 import {
   CartesianGrid,
@@ -21,7 +29,9 @@ function ChartTooltip({
   active,
   payload,
   label,
+  formatValue,
 }: {
+  formatValue?: (value: number | string | null | undefined) => string;
   active?: boolean;
   payload?: Array<{
     name?: string;
@@ -44,7 +54,7 @@ function ChartTooltip({
                 style={{ backgroundColor: entry.color }}
               />
               <span className="text-muted-foreground">{entry.name}</span>
-              <span className="font-medium text-foreground">{entry.value}</span>
+              <span className="font-medium text-foreground">{formatValue ? formatValue(entry.value) : entry.value}</span>
             </div>
           ))}
       </div>
@@ -52,7 +62,7 @@ function ChartTooltip({
   );
 }
 
-export function WeightTrendChart({ data }: { data: WeightTrendPoint[] }) {
+export function WeightTrendChart({ data, units = DEFAULT_CLINICAL_UNITS }: { data: WeightTrendPoint[]; units?: ClinicalUnits }) {
   if (data.length < 2) {
     return (
       <div className="rounded-lg border border-dashed border-border bg-card p-6 text-center">
@@ -68,9 +78,9 @@ export function WeightTrendChart({ data }: { data: WeightTrendPoint[] }) {
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h3 className="font-heading text-base font-semibold">Weight Trend</h3>
+          <h3 className="font-heading text-base font-semibold">Weight Trend ({units.weightEntryUnit})</h3>
           <p className="text-sm text-muted-foreground">
-            {data[0]!.weightKg} kg to {data[data.length - 1]!.weightKg} kg
+            {formatClinicalWeight(data[0]!.weightKg, units)} to {formatClinicalWeight(data[data.length - 1]!.weightKg, units)}
           </p>
         </div>
       </div>
@@ -85,17 +95,18 @@ export function WeightTrendChart({ data }: { data: WeightTrendPoint[] }) {
               axisLine={{ stroke: "hsl(var(--border))" }}
             />
             <YAxis
-              width={44}
+              tickFormatter={(kg: number) => `${Number(kilogramsToWeight(kg, units.weightEntryUnit).toFixed(2))}`}
+              width={64}
               tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
               tickLine={false}
               axisLine={{ stroke: "hsl(var(--border))" }}
               domain={["dataMin - 1", "dataMax + 1"]}
             />
-            <Tooltip content={<ChartTooltip />} />
+            <Tooltip content={<ChartTooltip formatValue={(value) => formatClinicalWeight(value, units)} />} />
             <Line
               type="monotone"
               dataKey="weightKg"
-              name="Weight kg"
+              name={`Weight (${units.weightEntryUnit})`}
               stroke="hsl(var(--primary))"
               strokeWidth={2}
               dot={{ r: 3 }}
@@ -109,7 +120,7 @@ export function WeightTrendChart({ data }: { data: WeightTrendPoint[] }) {
   );
 }
 
-export function VitalsTrendChart({ data }: { data: VitalTrendPoint[] }) {
+export function VitalsTrendChart({ data, units = DEFAULT_CLINICAL_UNITS }: { data: VitalTrendPoint[]; units?: ClinicalUnits }) {
   const hasTemp = hasTrendValues(data, ["temperatureC"]);
   const hasRates = hasTrendValues(data, ["heartRateBpm", "respiratoryRateBpm"]);
   const hasScores = hasTrendValues(data, ["bodyConditionScore", "painScore"]);
@@ -129,15 +140,15 @@ export function VitalsTrendChart({ data }: { data: VitalTrendPoint[] }) {
     <div className="grid gap-4 lg:grid-cols-2">
       {hasTemp && (
         <div className="rounded-lg border border-border bg-card p-4">
-          <h3 className="font-heading text-base font-semibold">Temperature</h3>
+          <h3 className="font-heading text-base font-semibold">Temperature (°{units.temperatureUnit})</h3>
           <div className="mt-3 h-56">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={data} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                 <XAxis dataKey="dateLabel" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }} tickLine={false} axisLine={{ stroke: "hsl(var(--border))" }} />
-                <YAxis width={44} tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }} tickLine={false} axisLine={{ stroke: "hsl(var(--border))" }} domain={["dataMin - 0.5", "dataMax + 0.5"]} />
-                <Tooltip content={<ChartTooltip />} />
-                <Line type="monotone" dataKey="temperatureC" name="Temp C" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 3 }} connectNulls />
+                <YAxis tickFormatter={(celsius: number) => `${Number(celsiusToTemperature(celsius, units.temperatureUnit).toFixed(1))}`} width={64} tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }} tickLine={false} axisLine={{ stroke: "hsl(var(--border))" }} domain={["dataMin - 0.5", "dataMax + 0.5"]} />
+                <Tooltip content={<ChartTooltip formatValue={(value) => formatClinicalTemperature(value, units)} />} />
+                <Line type="monotone" dataKey="temperatureC" name={`Temperature (°${units.temperatureUnit})`} stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 3 }} connectNulls />
               </LineChart>
             </ResponsiveContainer>
           </div>

@@ -1,5 +1,6 @@
 "use client";
 
+import { ClinicalUnitsSettings } from "@/components/settings/clinical-units-settings";
 import { ImportRowIssues } from "@/components/settings/import-row-issues";
 
 import { useState, useCallback, useEffect, useRef, Suspense } from "react";
@@ -987,6 +988,7 @@ function PracticeInfoTab() {
         )}
         Save Changes
       </Button>
+      <ClinicalUnitsSettings />
     </div>
   );
 }

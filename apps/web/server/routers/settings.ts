@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { clinicalUnitsFromSettings, WEIGHT_UNITS, TEMPERATURE_UNITS } from "@/lib/clinical-units";
 import { createHash, randomUUID } from "crypto";
 import {
   asc,
@@ -733,6 +734,37 @@ interface PracticeSettings {
 
 export const settingsRouter = createRouter({
   // ── Practice ──────────────────────────────────────────────
+
+  getClinicalUnits: protectedProcedure.query(async ({ ctx }) => {
+    const [practice] = await ctx.db
+      .select({ settings: practices.settings })
+      .from(practices)
+      .where(activePracticeWhere(ctx.practiceId))
+      .limit(1);
+    if (!practice) throw practiceNotFound();
+    return clinicalUnitsFromSettings(practice.settings);
+  }),
+
+  updateClinicalUnits: adminProcedure
+    .input(
+      z.object({
+        weightEntryUnit: z.enum(WEIGHT_UNITS),
+        temperatureUnit: z.enum(TEMPERATURE_UNITS),
+        dualDisplay: z.boolean(),
+      }).strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [practice] = await ctx.db
+        .update(practices)
+        .set({
+          settings: settingsMergePatch({ units: input }),
+          updatedAt: new Date(),
+        })
+        .where(activePracticeWhere(ctx.practiceId))
+        .returning({ settings: practices.settings });
+      if (!practice) throw practiceNotFound();
+      return clinicalUnitsFromSettings(practice.settings);
+    }),
 
   getPractice: adminProcedure.query(async ({ ctx }) => {
     const [practice] = await ctx.db
