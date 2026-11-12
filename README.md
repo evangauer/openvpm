@@ -426,6 +426,12 @@ We welcome contributions from developers, veterinary professionals, and anyone w
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and how to submit pull requests.
 
+### Contributors
+
+Thanks to [everyone who contributes](https://github.com/evangauer/openvpm/graphs/contributors) to OpenVPM, including:
+
+- [@katsushi2441](https://github.com/katsushi2441) — Japan clinic region, locale formatting, and regional defaults ([#343](https://github.com/evangauer/openvpm/pull/343)).
+
 ### Areas Where We Need Help
 
 - **Veterinary domain expertise** — Help us get the clinical workflows right

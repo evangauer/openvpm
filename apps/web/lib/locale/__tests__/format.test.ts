@@ -37,6 +37,11 @@ describe("formatCurrency", () => {
     expect(s).toContain("£");
     expect(s).toContain("65");
   });
+  it("does not hide fractional yen in stored balances or calculated tax", () => {
+    expect(formatCurrency("4500.50", "jpy", "JP")).toContain("4,500.5");
+    expect(formatCurrency("0.01", "JPY", "JP")).toContain("0.01");
+    expect(formatCurrency("-1.25", "jpy", "JP")).toMatch(/^-[¥￥]1\.25$/);
+  });
   it("treats null/undefined/non-numeric as zero", () => {
     expect(formatCurrency(null)).toContain("0");
     expect(formatCurrency(undefined)).toContain("0");
@@ -84,6 +89,7 @@ describe("regionDefaults", () => {
       timezone: "Asia/Tokyo",
     });
     expect(localeForCountry("JP")).toBe("ja-JP");
+    expect(regionDefaults("jp")).toEqual(regionDefaults("JP"));
   });
 });
 
