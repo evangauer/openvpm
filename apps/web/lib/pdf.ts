@@ -1,3 +1,8 @@
+import {
+  formatClinicalWeight,
+  formatClinicalTemperature,
+  type ClinicalUnits,
+} from "@/lib/clinical-units";
 import jsPDF from "jspdf";
 import { soapSectionText } from "@/lib/records/soap-content";
 
@@ -414,6 +419,13 @@ export function generatePrescriptionLabelPdf(
 // ---------------------------------------------------------------------------
 
 export interface MedicalSummaryData {
+  units?: ClinicalUnits;
+  latestWeight?: { weightKg: string; recordedAt: string };
+  latestVitals?: {
+    temperatureC: string | number | null;
+    weightKg: string | number | null;
+    recordedAt: string;
+  };
   practiceName: string;
   practiceAddress?: string;
   practicePhone?: string;
@@ -576,6 +588,34 @@ export function generateMedicalSummaryPdf(data: MedicalSummaryData): jsPDF {
     }
   }
   if (col !== 0) y += 6;
+
+  if (data.latestWeight || data.latestVitals) {
+    sectionHeading("Recent Measurements");
+    doc.setFont(FONT, "normal");
+    doc.setFontSize(10);
+    setColor(doc, COLOR_DARK);
+    if (data.latestWeight) {
+      writeWrappedText(
+        `Weight: ${formatClinicalWeight(data.latestWeight.weightKg, data.units)} - recorded ${data.latestWeight.recordedAt}`,
+        PAGE_MARGIN, CONTENT_WIDTH,
+      );
+    }
+    if (data.latestVitals) {
+      const vital = data.latestVitals;
+      if (vital.temperatureC !== null) {
+        writeWrappedText(
+          `Temperature: ${formatClinicalTemperature(vital.temperatureC, data.units)} - recorded ${vital.recordedAt}`,
+          PAGE_MARGIN, CONTENT_WIDTH,
+        );
+      }
+      if (vital.weightKg !== null) {
+        writeWrappedText(
+          `Weight in vitals: ${formatClinicalWeight(vital.weightKg, data.units)} - recorded ${vital.recordedAt}`,
+          PAGE_MARGIN, CONTENT_WIDTH,
+        );
+      }
+    }
+  }
 
   // ---- Owner Info -----------------------------------------------------------
   sectionHeading("Owner Information");
@@ -1069,6 +1109,7 @@ export function generateVaccinationCertificatePdf(
 }
 
 export interface StaffVaccinationCertificateData {
+  units?: ClinicalUnits;
   certificateId: string;
   generatedDate: string;
   practice: {
@@ -1172,7 +1213,7 @@ function drawCertificateHeader(
 
 function drawCertificateIdentity(
   doc: jsPDF,
-  data: Pick<StaffVaccinationCertificateData, "owner" | "patient">,
+  data: Pick<StaffVaccinationCertificateData, "owner" | "patient" | "units">,
   y: number,
 ): number {
   const rightX = PAGE_MARGIN + CONTENT_WIDTH / 2 + 4;
@@ -1192,7 +1233,9 @@ function drawCertificateIdentity(
     data.patient.microchipNumber
       ? `Microchip: ${data.patient.microchipNumber}`
       : undefined,
-    data.patient.weightKg ? `Weight: ${data.patient.weightKg} kg` : undefined,
+    data.patient.weightKg
+      ? `Weight: ${formatClinicalWeight(data.patient.weightKg, data.units)}`
+      : undefined,
   ].filter(Boolean) as string[];
   const ownerLines = [
     data.owner.name,

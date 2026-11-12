@@ -1,6 +1,7 @@
 import { describe, it, vi } from "vitest";
 import { disposableClinic } from "./helpers/disposable-clinic";
 import { runCollectionRegression } from "./helpers/collection-regression";
+import { runClinicalUnitsRegression } from "./helpers/clinical-units-regression";
 import { runGoldenClinic } from "./helpers/golden-clinic";
 
 // Provider delivery is deliberately outside this database workflow contract.
@@ -16,6 +17,7 @@ integration("Golden clinic workflow on disposable PostgreSQL", () => {
     try {
       const clinic = await runGoldenClinic(fixture);
       await runCollectionRegression(clinic);
+      await runClinicalUnitsRegression(clinic);
     } finally {
       process.env.DATABASE_URL = originalUrl;
       await fixture.close();

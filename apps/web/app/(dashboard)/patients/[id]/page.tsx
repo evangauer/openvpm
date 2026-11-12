@@ -1,5 +1,17 @@
 "use client";
 
+import { MeasurementInput } from "@/components/records/measurement-input";
+import {
+  DEFAULT_CLINICAL_UNITS,
+  formatClinicalWeight,
+  formatClinicalTemperature,
+  weightInputKilograms,
+  temperatureInputCelsius,
+  type ClinicalUnits,
+  type WeightUnit,
+  type TemperatureUnit,
+} from "@/lib/clinical-units";
+
 import dynamic from "next/dynamic";
 import { Fragment, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
@@ -69,12 +81,6 @@ import {
   type PatientFileKind,
 } from "@/lib/records/file-kinds";
 import {
-  PATIENT_WEIGHT_MAX_KG,
-  PATIENT_WEIGHT_MIN_KG,
-  PATIENT_WEIGHT_STEP,
-  isPatientWeightInputValid,
-} from "@/lib/records/patient-weight-policy";
-import {
   VITALS_BODY_CONDITION_MAX,
   VITALS_BODY_CONDITION_MIN,
   VITALS_CAPILLARY_REFILL_MAX_SEC,
@@ -88,20 +94,13 @@ import {
   VITALS_PAIN_SCORE_MIN,
   VITALS_RESPIRATORY_RATE_MAX_BPM,
   VITALS_RESPIRATORY_RATE_MIN_BPM,
-  VITALS_TEMPERATURE_MAX_C,
-  VITALS_TEMPERATURE_MIN_C,
-  VITALS_TEMPERATURE_STEP,
   VITALS_WEIGHT_MAX_KG,
-  VITALS_WEIGHT_MIN_KG,
-  VITALS_WEIGHT_STEP,
   isVitalsOptionalBodyConditionInputValid,
   isVitalsOptionalCapillaryRefillInputValid,
   isVitalsOptionalHeartRateInputValid,
   isVitalsOptionalPainScoreInputValid,
   isVitalsOptionalRespiratoryRateInputValid,
-  isVitalsOptionalTemperatureInputValid,
   isVitalsOptionalTextInputValid,
-  isVitalsOptionalWeightInputValid,
 } from "@/lib/records/vitals-policy";
 
 function PatientChartChunkLoading() {
@@ -434,26 +433,32 @@ export default function PatientDetailPage() {
     () => buildWeightTrend(patient?.weights ?? [], recordsSettingsTimeZone),
     [patient?.weights, recordsSettingsTimeZone],
   );
-  const [weightKg, setWeightKg] = useState("");
+  const clinicalUnits = verifiedRecordsSettings?.units ?? DEFAULT_CLINICAL_UNITS;
+  const [weightEntry, setWeightEntry] = useState("");
+  const [weightUnitOverride, setWeightUnit] = useState<WeightUnit | null>(null);
+  const weightUnit = weightUnitOverride ?? clinicalUnits.weightEntryUnit;
+  const weightKg = weightInputKilograms(weightEntry, weightUnit);
   const addWeight = trpc.patients.addWeight.useMutation({
     onSuccess: () => {
       toast.success("Weight recorded");
       void refreshPatientDetail();
-      setWeightKg("");
+      setWeightEntry("");
+      setWeightUnit(null);
     },
     onError: (err) => toast.error(err.message),
   });
   const canSubmitWeight =
     canManagePatientDetail &&
-    isPatientWeightInputValid(weightKg) &&
+    verifiedRecordsSettings !== null &&
+    weightKg !== null &&
     !addWeight.isPending;
 
   function handleRecordWeight(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSubmitWeight || !patient) return;
+    if (!canSubmitWeight || !patient || weightKg === null) return;
     addWeight.mutate({
       patientId: patient.id,
-      weightKg: weightKg.trim(),
+      weightKg,
     });
   }
 
@@ -545,6 +550,7 @@ export default function PatientDetailPage() {
         soapNotesResult,
         prescriptionsResult,
         chartNotesResult,
+        summaryVitals,
       ] = await Promise.all([
         problemsQuery.refetch(),
         vaccinationsQuery.refetch(),
@@ -553,6 +559,7 @@ export default function PatientDetailPage() {
         canSearchPatientHistory
           ? utils.patientNotes.list.fetch({ patientId: canonicalPatientId })
           : Promise.resolve(null),
+        utils.vitals.listByPatient.fetch({ patientId: canonicalPatientId }),
       ]);
 
       const summaryError =
@@ -580,7 +587,19 @@ export default function PatientDetailPage() {
       const prescriptions = prescriptionsResult.data;
       const { generateMedicalSummaryPdf } = await import("@/lib/pdf");
 
+      const latestVitals = summaryVitals.find(vital => !vital.correctionId);
+      const latestWeight = patientData.weights?.[0];
       generateMedicalSummaryPdf({
+        units: clinicalUnits,
+        latestWeight: latestWeight ? {
+          weightKg: latestWeight.weightKg,
+          recordedAt: formatClinicalDateTime(latestWeight.recordedAt, recordsTimeZone, "Unknown"),
+        } : undefined,
+        latestVitals: latestVitals ? {
+          temperatureC: latestVitals.temperatureC,
+          weightKg: latestVitals.weightKg,
+          recordedAt: formatClinicalDateTime(latestVitals.recordedAt, recordsTimeZone, "Unknown"),
+        } : undefined,
         practiceName: recordsPracticeName,
         practicePhone: recordsPracticePhone ?? undefined,
         patientName: patientData.name,
@@ -858,6 +877,9 @@ export default function PatientDetailPage() {
                 {formatSex(patient.sex)}
               </p>
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                {patient.weights?.[0] ? <span>
+                  Weight: {formatClinicalWeight(patient.weights[0].weightKg, clinicalUnits)} · {formatClinicalDate(patient.weights[0].recordedAt, recordsTimeZone, "Unknown date")}
+                </span> : null}
                 {patient.color && <span>Color: {patient.color}</span>}
                 {patient.microchipNumber && (
                   <span>Microchip: {patient.microchipNumber}</span>
@@ -1206,23 +1228,10 @@ export default function PatientDetailPage() {
               >
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                   <div className="w-full sm:max-w-xs">
-                    <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                      Weight (kg)
-                    </label>
-                    <input
-                      type="number"
-                      min={PATIENT_WEIGHT_MIN_KG}
-                      max={PATIENT_WEIGHT_MAX_KG}
-                      step={PATIENT_WEIGHT_STEP}
-                      value={weightKg}
-                      required
-                      aria-invalid={
-                        weightKg.trim().length > 0 &&
-                        !isPatientWeightInputValid(weightKg)
-                      }
-                      onChange={(event) => setWeightKg(event.target.value)}
-                      className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-                    />
+                    <MeasurementInput kind="weight" unit={weightUnit} onUnitChange={setWeightUnit}
+                      value={weightEntry} valid={!weightEntry.trim() || weightKg !== null}
+                      disabled={addWeight.isPending}
+                      onChange={(value) => { setWeightUnit(weightUnit); setWeightEntry(value); }} />
                   </div>
                   <Button type="submit" disabled={!canSubmitWeight}>
                     {addWeight.isPending ? (
@@ -1238,7 +1247,7 @@ export default function PatientDetailPage() {
 
             {patient.weights && patient.weights.length > 0 ? (
               <>
-                <WeightTrendChart data={weightTrend} />
+                <WeightTrendChart data={weightTrend} units={clinicalUnits} />
                 <div className="overflow-x-auto rounded-lg border border-border">
                   <table className="w-full text-sm">
                     <thead>
@@ -1247,7 +1256,7 @@ export default function PatientDetailPage() {
                           Date
                         </th>
                         <th className="px-4 py-3 text-left font-medium text-muted-foreground">
-                          Weight (kg)
+                          Weight
                         </th>
                         <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                           Recorded By
@@ -1268,7 +1277,7 @@ export default function PatientDetailPage() {
                             )}
                           </td>
                           <td className="px-4 py-3 font-medium">
-                            {weight.weightKg} kg
+                            {formatClinicalWeight(weight.weightKg, clinicalUnits)}
                           </td>
                           <td className="px-4 py-3 text-muted-foreground">
                             {weight.recordedBy ?? "\u2014"}
@@ -1287,6 +1296,7 @@ export default function PatientDetailPage() {
 
         {activeTab === "vitals" && (
           <VitalsTab
+            units={clinicalUnits}
             patientId={patient.id}
             timeZone={recordsTimeZone}
             canRecordVitals={canRecordVitals}
@@ -1358,6 +1368,7 @@ export default function PatientDetailPage() {
 }
 
 function VitalsTab({
+  units,
   patientId,
   timeZone,
   canRecordVitals,
@@ -1367,6 +1378,7 @@ function VitalsTab({
   timeZone?: string | null;
   canRecordVitals: boolean;
   canCorrectClinicalRecords: boolean;
+  units: ClinicalUnits;
 }) {
   const utils = trpc.useUtils();
   const {
@@ -1388,6 +1400,8 @@ function VitalsTab({
       toast.success("Vitals recorded");
       utils.vitals.listByPatient.invalidate({ patientId });
       setForm(initialVitalsForm());
+      setWeightUnit(null);
+      setTemperatureUnit(null);
     },
     onError: (err) => toast.error(err.message),
   });
@@ -1400,6 +1414,15 @@ function VitalsTab({
   });
 
   const [form, setForm] = useState<VitalsFormState>(() => initialVitalsForm());
+  const [weightUnitOverride, setWeightUnit] = useState<WeightUnit | null>(null);
+  const [temperatureUnitOverride, setTemperatureUnit] = useState<TemperatureUnit | null>(null);
+  const weightUnit = weightUnitOverride ?? units.weightEntryUnit;
+  const temperatureUnit = temperatureUnitOverride ?? units.temperatureUnit;
+  // Form strings are in the selected entry units; only normalized values reach the API.
+  const weightKg = weightInputKilograms(form.weightKg, weightUnit, VITALS_WEIGHT_MAX_KG);
+  const temperatureC = temperatureInputCelsius(form.temperatureC, temperatureUnit);
+  const weightValid = !form.weightKg.trim() || weightKg !== null;
+  const temperatureValid = !form.temperatureC.trim() || temperatureC !== null;
   const set =
     (k: keyof VitalsFormState) => (e: React.ChangeEvent<HTMLInputElement>) =>
       setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -1414,10 +1437,10 @@ function VitalsTab({
   const canSubmitVitals =
     canRecordVitals &&
     hasVitalsFormContent &&
-    isVitalsOptionalTemperatureInputValid(form.temperatureC) &&
+    temperatureValid &&
     isVitalsOptionalHeartRateInputValid(form.heartRateBpm) &&
     isVitalsOptionalRespiratoryRateInputValid(form.respiratoryRateBpm) &&
-    isVitalsOptionalWeightInputValid(form.weightKg) &&
+    weightValid &&
     isVitalsOptionalBodyConditionInputValid(form.bodyConditionScore) &&
     isVitalsOptionalPainScoreInputValid(form.painScore) &&
     isVitalsOptionalTextInputValid(
@@ -1433,10 +1456,10 @@ function VitalsTab({
     if (!canSubmitVitals) return;
     record.mutate({
       patientId,
-      temperatureC: num(form.temperatureC),
+      temperatureC: temperatureC ?? undefined,
       heartRateBpm: num(form.heartRateBpm),
       respiratoryRateBpm: num(form.respiratoryRateBpm),
-      weightKg: num(form.weightKg),
+      weightKg: weightKg === null ? undefined : Number(weightKg),
       bodyConditionScore: num(form.bodyConditionScore),
       painScore: num(form.painScore),
       mucousMembrane: form.mucousMembrane.trim() || undefined,
@@ -1453,23 +1476,9 @@ function VitalsTab({
           className="rounded-lg border border-border bg-card p-4"
         >
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                Temp (C)
-              </label>
-              <input
-                type="number"
-                min={VITALS_TEMPERATURE_MIN_C}
-                max={VITALS_TEMPERATURE_MAX_C}
-                step={VITALS_TEMPERATURE_STEP}
-                value={form.temperatureC}
-                aria-invalid={
-                  !isVitalsOptionalTemperatureInputValid(form.temperatureC)
-                }
-                onChange={set("temperatureC")}
-                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-              />
-            </div>
+            <MeasurementInput kind="temperature" unit={temperatureUnit} onUnitChange={setTemperatureUnit}
+              value={form.temperatureC} valid={temperatureValid} disabled={record.isPending}
+              onChange={(value) => { setTemperatureUnit(temperatureUnit); setForm(current => ({ ...current, temperatureC: value })); }} />
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
                 HR (bpm)
@@ -1506,21 +1515,9 @@ function VitalsTab({
                 className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
               />
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                Weight (kg)
-              </label>
-              <input
-                type="number"
-                min={VITALS_WEIGHT_MIN_KG}
-                max={VITALS_WEIGHT_MAX_KG}
-                step={VITALS_WEIGHT_STEP}
-                value={form.weightKg}
-                aria-invalid={!isVitalsOptionalWeightInputValid(form.weightKg)}
-                onChange={set("weightKg")}
-                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
-              />
-            </div>
+            <MeasurementInput kind="weight" unit={weightUnit} onUnitChange={setWeightUnit}
+              value={form.weightKg} valid={weightValid} disabled={record.isPending}
+              onChange={(value) => { setWeightUnit(weightUnit); setForm(current => ({ ...current, weightKg: value })); }} />
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
                 BCS (1-9)
@@ -1618,7 +1615,7 @@ function VitalsTab({
         <EmptyState icon={Activity} title="No vitals recorded yet" />
       ) : (
         <>
-          <VitalsTrendChart data={vitalTrend} />
+          <VitalsTrendChart data={vitalTrend} units={units} />
           <div className="overflow-x-auto rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead>
@@ -1645,10 +1642,10 @@ function VitalsTab({
                     <td className="px-3 py-2">
                       {formatClinicalDateTime(v.recordedAt, timeZone, "—")}
                     </td>
-                    <td className="px-3 py-2">{v.temperatureC ?? "—"}</td>
+                    <td className="px-3 py-2">{formatClinicalTemperature(v.temperatureC, units)}</td>
                     <td className="px-3 py-2">{v.heartRateBpm ?? "—"}</td>
                     <td className="px-3 py-2">{v.respiratoryRateBpm ?? "—"}</td>
-                    <td className="px-3 py-2">{v.weightKg ?? "—"}</td>
+                    <td className="px-3 py-2">{formatClinicalWeight(v.weightKg, units)}</td>
                     <td className="px-3 py-2">{v.bodyConditionScore ?? "—"}</td>
                     <td className="px-3 py-2">{v.painScore ?? "—"}</td>
                     <td className="min-w-64 px-3 py-2">
@@ -1775,6 +1772,7 @@ function VaccinationsTab({
       );
       const baseData = {
         certificateId: certificate.certificateId,
+        units: certificate.units,
         generatedDate,
         practice: certificate.practice,
         owner: certificate.owner,

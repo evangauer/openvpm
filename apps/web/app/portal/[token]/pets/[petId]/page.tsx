@@ -1,5 +1,7 @@
 "use client";
 
+import { formatClinicalWeight } from "@/lib/clinical-units";
+
 import { useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
@@ -415,10 +417,7 @@ export default function PetDetailPage() {
                   >
                     <div>
                       <p className="font-medium text-gray-900">
-                        {currentWeight.toFixed(1)} kg
-                        <span className="ml-1 text-gray-400 text-sm">
-                          ({(currentWeight * 2.205).toFixed(1)} lbs)
-                        </span>
+                        {formatClinicalWeight(currentWeight, data.practice.units)}
                       </p>
                       <p className="text-xs text-gray-400">
                         {formatDate(w.recordedAt, practiceTimeZone)}
@@ -435,7 +434,7 @@ export default function PetDetailPage() {
                         }`}
                       >
                         {diff > 0 ? "+" : ""}
-                        {diff.toFixed(1)} kg
+                        {formatClinicalWeight(diff, { ...data.practice.units, dualDisplay: false })}
                       </span>
                     )}
                   </div>

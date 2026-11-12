@@ -80,7 +80,7 @@ describe("patient detail UI states", () => {
     expect(source).toContain("if (!canManagePatientDetail)");
     expect(source).toContain("{canManagePatientDetail && (");
     expect(source).toContain(
-      "canManagePatientDetail &&\n    isPatientWeightInputValid",
+      "canManagePatientDetail &&\n    verifiedRecordsSettings !== null &&\n    weightKg !== null",
     );
     expect(source).toContain("canRecordVitals={canRecordVitals}");
     expect(source).toContain("canRecordVitals &&");
@@ -337,12 +337,10 @@ describe("patient detail UI states", () => {
     expect(source).toContain("type VitalsFormState =");
     expect(source).toContain("const canSubmitVitals =");
     expect(source).toContain("hasVitalsFormContent");
-    expect(source).toContain("min={VITALS_TEMPERATURE_MIN_C}");
-    expect(source).toContain("max={VITALS_TEMPERATURE_MAX_C}");
-    expect(source).toContain("step={VITALS_TEMPERATURE_STEP}");
-    expect(source).toContain("min={VITALS_WEIGHT_MIN_KG}");
-    expect(source).toContain("max={VITALS_WEIGHT_MAX_KG}");
-    expect(source).toContain("step={VITALS_WEIGHT_STEP}");
+    expect(source).toContain("temperatureInputCelsius(form.temperatureC, temperatureUnit)");
+    expect(source).toContain("weightInputKilograms(form.weightKg, weightUnit, VITALS_WEIGHT_MAX_KG)");
+    expect(source).toContain("temperatureValid &&");
+    expect(source).toContain("weightValid &&");
     expect(source).toContain("maxLength={VITALS_MUCOUS_MEMBRANE_MAX_LENGTH}");
     expect(source).toContain("maxLength={VITALS_NOTES_MAX_LENGTH}");
     expect(source).toContain(
@@ -352,7 +350,7 @@ describe("patient detail UI states", () => {
       "capillaryRefillSec: num(form.capillaryRefillSec)",
     );
     expect(source).toContain("disabled={!canSubmitVitals}");
-    expect(source).not.toContain("disabled={record.isPending}");
+    expect(source).toMatch(/<Button type="submit" disabled=\{!canSubmitVitals\}/);
   });
 
   it("bounds and wires the patient weight history form", () => {
@@ -373,11 +371,9 @@ describe("patient detail UI states", () => {
     );
     expect(source).toContain("const canSubmitWeight =");
     expect(source).toContain("handleRecordWeight");
-    expect(source).toContain("min={PATIENT_WEIGHT_MIN_KG}");
-    expect(source).toContain("max={PATIENT_WEIGHT_MAX_KG}");
-    expect(source).toContain("step={PATIENT_WEIGHT_STEP}");
+    expect(source).toContain("weightInputKilograms(weightEntry, weightUnit)");
     expect(source).toContain("disabled={!canSubmitWeight}");
-    expect(source).toContain("weightKg: weightKg.trim()");
+    expect(source).toContain("if (!canSubmitWeight || !patient || weightKg === null) return;");
     expect(source).toContain('toast.success("Weight recorded")');
   });
 

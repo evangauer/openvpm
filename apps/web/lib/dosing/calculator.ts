@@ -1,3 +1,4 @@
+import { formatClinicalWeight } from "@/lib/clinical-units";
 import {
   findDrug,
   DOSING_DISCLAIMER,
@@ -26,6 +27,8 @@ export interface DoseResult {
   drug: { id: string; name: string; category: string };
   species: DosingSpecies;
   weightKg: number;
+  /** Supplied weight, not a claim about a patient observation or its date. */
+  weightUsed: string;
   route: string;
   frequency: string;
   mgPerKgLow: number;
@@ -110,6 +113,7 @@ export function calculateDose(input: DoseInput): DoseResult {
     drug: { id: drug.id, name: drug.name, category: drug.category },
     species: input.species,
     weightKg: input.weightKg,
+    weightUsed: formatClinicalWeight(input.weightKg),
     route: dose.route,
     frequency: dose.frequency,
     mgPerKgLow: dose.mgPerKgLow,

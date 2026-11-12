@@ -158,6 +158,7 @@ describe("records target safety", () => {
     });
 
     await expect(callerWithDb(db).settings()).resolves.toEqual({
+      units: { weightEntryUnit: "kg", temperatureUnit: "C", dualDisplay: true },
       name: "Neighborhood Veterinary",
       address: "100 Clinic Way",
       phone: "555-0100",

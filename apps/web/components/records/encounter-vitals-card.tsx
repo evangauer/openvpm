@@ -1,5 +1,16 @@
 "use client";
 
+import { MeasurementInput } from "@/components/records/measurement-input";
+import {
+  DEFAULT_CLINICAL_UNITS,
+  formatClinicalWeight,
+  formatClinicalTemperature,
+  weightInputKilograms,
+  temperatureInputCelsius,
+  type WeightUnit,
+  type TemperatureUnit,
+} from "@/lib/clinical-units";
+
 import { useState } from "react";
 import { Activity, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -18,20 +29,13 @@ import {
   VITALS_PAIN_SCORE_MIN,
   VITALS_RESPIRATORY_RATE_MAX_BPM,
   VITALS_RESPIRATORY_RATE_MIN_BPM,
-  VITALS_TEMPERATURE_MAX_C,
-  VITALS_TEMPERATURE_MIN_C,
-  VITALS_TEMPERATURE_STEP,
   VITALS_WEIGHT_MAX_KG,
-  VITALS_WEIGHT_MIN_KG,
-  VITALS_WEIGHT_STEP,
   isVitalsOptionalBodyConditionInputValid,
   isVitalsOptionalCapillaryRefillInputValid,
   isVitalsOptionalHeartRateInputValid,
   isVitalsOptionalPainScoreInputValid,
   isVitalsOptionalRespiratoryRateInputValid,
-  isVitalsOptionalTemperatureInputValid,
   isVitalsOptionalTextInputValid,
-  isVitalsOptionalWeightInputValid,
 } from "@/lib/records/vitals-policy";
 import { Button } from "@/components/ui/button";
 import {
@@ -163,6 +167,13 @@ export function EncounterVitalsCard({
   timeZone?: string | null;
 }) {
   const utils = trpc.useUtils();
+  const settingsQuery = trpc.settings.getClinicalUnits.useQuery();
+  const units = settingsQuery.data ?? DEFAULT_CLINICAL_UNITS;
+  const settingsReady = Boolean(settingsQuery.data) && !settingsQuery.error;
+  const [weightUnitOverride, setWeightUnit] = useState<WeightUnit | null>(null);
+  const [temperatureUnitOverride, setTemperatureUnit] = useState<TemperatureUnit | null>(null);
+  const weightUnit = weightUnitOverride ?? units.weightEntryUnit;
+  const temperatureUnit = temperatureUnitOverride ?? units.temperatureUnit;
   const isOnline = useOnlineStatus();
   const [form, setForm] = useState<VitalsFormState>(() => ({
     ...EMPTY_VITALS_FORM,
@@ -173,6 +184,8 @@ export function EncounterVitalsCard({
   const recordVitals = trpc.vitals.record.useMutation({
     onSuccess: async () => {
       setForm({ ...EMPTY_VITALS_FORM });
+      setWeightUnit(null);
+      setTemperatureUnit(null);
       toast.success("Visit vitals recorded");
       await Promise.all([
         utils.vitals.listByAppointment.invalidate({ appointmentId }),
@@ -200,6 +213,11 @@ export function EncounterVitalsCard({
     setForm((current) => ({ ...current, [field]: value }));
   }
 
+  // Form strings use entry units; the API and persistence continue to use kg/°C.
+  const weightKg = weightInputKilograms(form.weightKg, weightUnit, VITALS_WEIGHT_MAX_KG);
+  const temperatureC = temperatureInputCelsius(form.temperatureC, temperatureUnit);
+  const weightValid = !form.weightKg.trim() || weightKg !== null;
+  const temperatureValid = !form.temperatureC.trim() || temperatureC !== null;
   const hasContent = Object.values(form).some(
     (value) => value.trim().length > 0,
   );
@@ -212,11 +230,12 @@ export function EncounterVitalsCard({
     canRecord &&
     isOnline &&
     vitalsReady &&
+    settingsReady &&
     hasContent &&
-    isVitalsOptionalTemperatureInputValid(form.temperatureC) &&
+    temperatureValid &&
     isVitalsOptionalHeartRateInputValid(form.heartRateBpm) &&
     isVitalsOptionalRespiratoryRateInputValid(form.respiratoryRateBpm) &&
-    isVitalsOptionalWeightInputValid(form.weightKg) &&
+    weightValid &&
     isVitalsOptionalBodyConditionInputValid(form.bodyConditionScore) &&
     isVitalsOptionalPainScoreInputValid(form.painScore) &&
     isVitalsOptionalCapillaryRefillInputValid(form.capillaryRefillSec) &&
@@ -233,10 +252,10 @@ export function EncounterVitalsCard({
     recordVitals.mutate({
       patientId,
       appointmentId,
-      temperatureC: optionalNumber(form.temperatureC),
+      temperatureC: temperatureC ?? undefined,
       heartRateBpm: optionalNumber(form.heartRateBpm),
       respiratoryRateBpm: optionalNumber(form.respiratoryRateBpm),
-      weightKg: optionalNumber(form.weightKg),
+      weightKg: weightKg === null ? undefined : Number(weightKg),
       bodyConditionScore: optionalNumber(form.bodyConditionScore),
       painScore: optionalNumber(form.painScore),
       mucousMembrane: form.mucousMembrane.trim() || undefined,
@@ -263,6 +282,10 @@ export function EncounterVitalsCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {!settingsReady ? <p role="status" className="text-sm text-muted-foreground">
+          {settingsQuery.error ? "Unable to load clinical units." : "Loading clinical units..."}
+          {settingsQuery.error ? <button type="button" className="ml-2 underline" onClick={() => void settingsQuery.refetch()}>Retry</button> : null}
+        </p> : null}
         {canRecord ? (
           <form onSubmit={submitVitals} className="space-y-3">
             {!isOnline ? (
@@ -275,16 +298,9 @@ export function EncounterVitalsCard({
               </div>
             ) : null}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <VitalNumberInput
-                label="Temp (C)"
-                name="temperatureC"
-                min={VITALS_TEMPERATURE_MIN_C}
-                max={VITALS_TEMPERATURE_MAX_C}
-                step={VITALS_TEMPERATURE_STEP}
-                value={form.temperatureC}
-                valid={isVitalsOptionalTemperatureInputValid(form.temperatureC)}
-                onChange={updateField}
-              />
+              <MeasurementInput kind="temperature" unit={temperatureUnit} onUnitChange={setTemperatureUnit}
+                value={form.temperatureC} valid={temperatureValid} disabled={!settingsReady || recordVitals.isPending}
+                onChange={(value) => { setTemperatureUnit(temperatureUnit); setForm(current => ({ ...current, temperatureC: value })); }} />
               <VitalNumberInput
                 label="HR (bpm)"
                 name="heartRateBpm"
@@ -307,16 +323,9 @@ export function EncounterVitalsCard({
                 )}
                 onChange={updateField}
               />
-              <VitalNumberInput
-                label="Weight (kg)"
-                name="weightKg"
-                min={VITALS_WEIGHT_MIN_KG}
-                max={VITALS_WEIGHT_MAX_KG}
-                step={VITALS_WEIGHT_STEP}
-                value={form.weightKg}
-                valid={isVitalsOptionalWeightInputValid(form.weightKg)}
-                onChange={updateField}
-              />
+              <MeasurementInput kind="weight" unit={weightUnit} onUnitChange={setWeightUnit}
+                value={form.weightKg} valid={weightValid} disabled={!settingsReady || recordVitals.isPending}
+                onChange={(value) => { setWeightUnit(weightUnit); setForm(current => ({ ...current, weightKg: value })); }} />
               <VitalNumberInput
                 label="BCS (1-9)"
                 name="bodyConditionScore"
@@ -424,7 +433,7 @@ export function EncounterVitalsCard({
                   <dl className="grid grid-cols-3 gap-x-3 gap-y-2 text-sm sm:grid-cols-6">
                     <div>
                       <dt className="text-xs text-muted-foreground">Temp</dt>
-                      <dd>{displayMeasurement(vital.temperatureC, " C")}</dd>
+                      <dd>{formatClinicalTemperature(vital.temperatureC, units)}</dd>
                     </div>
                     <div>
                       <dt className="text-xs text-muted-foreground">HR</dt>
@@ -438,7 +447,7 @@ export function EncounterVitalsCard({
                     </div>
                     <div>
                       <dt className="text-xs text-muted-foreground">Weight</dt>
-                      <dd>{displayMeasurement(vital.weightKg, " kg")}</dd>
+                      <dd>{formatClinicalWeight(vital.weightKg, units)}</dd>
                     </div>
                     <div>
                       <dt className="text-xs text-muted-foreground">BCS</dt>

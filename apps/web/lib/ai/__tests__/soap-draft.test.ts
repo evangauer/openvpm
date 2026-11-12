@@ -111,3 +111,14 @@ describe("parseSoapDraft", () => {
     ).toBeNull();
   });
 });
+
+it("keeps exact metric context alongside clinic display units", () => {
+  const prompt = buildSoapDraftPrompt({ ...CONTEXT,
+    units: {weightEntryUnit: "lb", temperatureUnit: "F", dualDisplay: false},
+    latestVitals: {...CONTEXT.latestVitals, weightKg: "11.793", temperatureC: "38.6"},
+  });
+  expect(prompt).toContain("Weight (kg): 11.793");
+  expect(prompt).toContain("Temperature (C): 38.6");
+  expect(prompt).toContain("Weight in clinic units: 26.00 lb");
+  expect(prompt).toContain("Temperature in clinic units: 101.5 °F");
+});

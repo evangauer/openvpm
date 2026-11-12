@@ -1,3 +1,8 @@
+import {
+  formatClinicalWeight,
+  formatClinicalTemperature,
+  type ClinicalUnits,
+} from "@/lib/clinical-units";
 import { generateText } from "ai";
 import { configuredModel } from "@/lib/agent/runner";
 import { SOAP_SECTION_MAX_LENGTH } from "@/lib/records/soap-content";
@@ -42,6 +47,7 @@ export interface SoapDraftContext {
     respiratoryRateBpm: number | null;
     weightKg: string | number | null;
   } | null;
+  units?: ClinicalUnits;
   visitContext?: string;
 }
 
@@ -80,6 +86,14 @@ export function buildSoapDraftPrompt(context: SoapDraftContext): string {
     prompt += line("Heart rate (bpm)", latestVitals.heartRateBpm);
     prompt += line("Respiratory rate (bpm)", latestVitals.respiratoryRateBpm);
     prompt += line("Weight (kg)", latestVitals.weightKg);
+    if (context.units) {
+      if (latestVitals.temperatureC !== null) {
+        prompt += line("Temperature in clinic units", formatClinicalTemperature(latestVitals.temperatureC, context.units));
+      }
+      if (latestVitals.weightKg !== null) {
+        prompt += line("Weight in clinic units", formatClinicalWeight(latestVitals.weightKg, context.units));
+      }
+    }
   }
 
   if (context.visitContext) {

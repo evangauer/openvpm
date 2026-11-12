@@ -260,3 +260,20 @@ describe("staff vaccination certificate PDFs", () => {
     expect(source).toContain("Certificate ID: ${data.certificateId}");
   });
 });
+
+it("exports observed weights and temperatures with units and dates", () => {
+  const doc = generateMedicalSummaryPdf({
+    practiceName: "Synthetic Units Clinic", patientName: "Scout", species: "Canine", clientName: "Synthetic Owner",
+    allergies: [], problems: [], vaccinations: [], recentNotes: [], prescriptions: [],
+    units: {weightEntryUnit: "lb", temperatureUnit: "F", dualDisplay: true},
+    latestWeight: {weightKg: "11.793", recordedAt: "11/12/2026"},
+    latestVitals: {weightKg: "11.793", temperatureC: "38.6", recordedAt: "11/11/2026"},
+  });
+  const output = doc.output();
+  expect(output).toContain("26.00 lb");
+  expect(output).toContain("11.79 kg");
+  expect(output).toContain("101.5");
+  expect(output).toContain("38.6");
+  expect(output).toContain("11/12/2026");
+  expect(output).toContain("11/11/2026");
+});
