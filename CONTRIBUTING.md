@@ -1,60 +1,100 @@
 # Contributing to OpenVPM
 
-Thank you for your interest in contributing to OpenVPM!
+OpenVPM welcomes code, documentation, translations, clinical terminology review,
+and bug reports. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+Report security issues through [SECURITY.md](SECURITY.md).
 
-## Development Setup
+## Development setup
 
-1. **Prerequisites**: Node.js 24.22.1 or a newer Node.js 24 patch, pnpm 9+, Docker
-2. **Clone and install**:
+Use Node.js 24.22.1 from `.nvmrc`, pnpm 9.15.0 from `package.json`, and Docker.
+The following setup is for a **new, empty local development database**:
+
+```bash
+git clone https://github.com/evangauer/openvpm.git
+cd openvpm
+git switch development
+nvm use # if you use nvm
+cp .env.example .env
+# Set NEXTAUTH_SECRET in .env using: openssl rand -base64 32
+pnpm install --frozen-lockfile
+docker compose --env-file .env -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
+pnpm db:migrate
+OPENPIMS_APP_DB_PASSWORD='local-openpims-app' pnpm db:rls
+OPENPIMS_APP_DB_PASSWORD='local-openpims-app' pnpm db:rls:test
+pnpm db:seed # once, on the new local database only
+pnpm dev
+```
+
+Open http://localhost:3000. The [README Quick Start](README.md#quick-start)
+lists the synthetic sign-in accounts. Keep real clinic data out of a shared demo.
+For an existing checkout, apply pending migrations; do not reset or repeat the
+non-idempotent seed as part of ordinary startup.
+
+Keep `.env` at the repository root. `pnpm dev` loads it for the web app; a second
+copy in `apps/web` is unnecessary. Existing shell exports and app env values
+have precedence. Restart the dev server after changing the root env file, and
+never commit secrets.
+
+## Find and claim work
+
+Browse the [good first issue label](https://github.com/evangauer/openvpm/labels/good%20first%20issue)
+and comment on an issue before starting so a maintainer can confirm its scope.
+For a new idea, open a [Discussion](https://github.com/evangauer/openvpm/discussions).
+Docs, terminology glossaries, and focused bug fixes are useful first contributions.
+
+## Workflow and review
+
+1. Fork the repository and branch from current **`development`**.
+2. Keep the change focused and link the issue it addresses.
+3. Run the relevant checks:
+
    ```bash
-   git clone https://github.com/evangauer/openvpm.git
-   cd openvpm
-   nvm use # when using nvm; see .nvmrc
-   cp .env.example .env
-   pnpm install
-   ```
-3. **Start services**:
-   ```bash
-   docker compose -f docker/docker-compose.yml up -d
-   pnpm db:push
-   pnpm db:seed
-   pnpm dev
+   pnpm type-check
+   pnpm test
+   pnpm build
+   pnpm verify:oss-release
    ```
 
-Keep `.env` at the repository root beside `.env.example`. `pnpm dev` loads it
-for the web server in `apps/web`; you do not need a second env file there.
-Existing shell exports and app env values take precedence. If `DATABASE_URL`
-is missing, the dev server stops with setup instructions. Restart `pnpm dev`
-after changing the root env file. Production continues to use its deployment
-environment.
+   Stop the dev server before building; both use `apps/web/.next`.
+   For a focused test, use `pnpm --filter @openpims/web exec vitest run lib/locale`.
+4. Open the PR into **`development`** using the repository template. Reconcile
+   a moved base and resolve review conversations before integration.
+5. Follow [repository governance](docs/repository-governance.md) for required
+   checks, reviews, staging acceptance, and production promotion. A feature PR
+   does not authorize a production deployment.
 
-## Project Structure
+The current `pnpm lint` command invokes Next.js's interactive ESLint setup when
+no ESLint configuration exists. That prompt is not a completed lint check.
 
-- `apps/web/` — Next.js frontend + API (tRPC)
-- `packages/db/` — Drizzle ORM schema and migrations
-- `packages/api/` — Shared Zod validators and types
-- `packages/config/` — Shared TypeScript and Tailwind config
+### PR checklist
 
-## Development Workflow
+- [ ] Targets `development` and links its issue.
+- [ ] Relevant type checks, tests, build, and public-release scan pass.
+- [ ] Behavior changes have meaningful regression coverage.
+- [ ] Queries retain tenant scope and appropriate soft-delete filtering.
+- [ ] Existing migrations remain unchanged; new migrations are append-only.
+- [ ] UI changes include reproducible visual and interaction evidence.
+- [ ] Auth, billing, migration, recovery, tenant, secret, or deployment risks are identified.
 
-1. Create a feature branch from `main`
-2. Make your changes
-3. Run `pnpm test` (unit) and `pnpm build` (type-check + lint) to verify
-4. Submit a pull request
+First-time fork CI may need maintainer approval. Previews remain subject to the
+repository's quarantine controls; a skipped preview does not establish browser
+acceptance. Required checks must pass before merging.
 
-## Testing
+## Project structure and testing
 
-- **Unit tests** (Vitest): `pnpm test`. Co-locate as `*.test.ts` next to the code
-  (e.g. `lib/compat/openvpm/__tests__/`). Pure logic — mappers, helpers — should
-  be unit-tested without a database.
-- **E2E tests** (Playwright): `pnpm test:e2e`.
+- `apps/web/`: Next.js product, dashboard, and REST/tRPC APIs.
+- `apps/docs/`: reserved documentation package; no standalone site on this branch.
+- `packages/db/`: Drizzle schemas, committed migrations, RLS, and synthetic seed.
+- `packages/api/`: shared Zod validators and API types.
+- `packages/config/`: shared TypeScript and Tailwind configuration.
+- `packages/email/`: email templates.
+- `docs/help/`: staff guides.
+- `e2e/`: Playwright tests, run with `pnpm test:e2e` and the appropriate local fixture.
 
-## Code Style
-
-- TypeScript strict mode
-- Tailwind CSS for styling (follow existing design tokens)
-- tRPC for all internal API endpoints
-- Drizzle ORM for database queries
+Co-locate Vitest tests in `*.test.ts` or `__tests__/`. Opt-in database and browser
+tests require their documented disposable fixtures; default unit tests do not
+prove those integrations. Use TypeScript strict mode, existing Tailwind tokens,
+tRPC for internal APIs, and Drizzle for database access.
 
 ## Adding a compatibility endpoint or target
 
@@ -80,26 +120,15 @@ Every endpoint ships with mapper unit tests **and** a contract test
 (`schema.parse(toApiX(row))`) so internal changes can't silently break the
 public contract.
 
-## Good first issues
+## Translations
 
-New here? These are scoped, self-contained, and well-tested — great first PRs.
-Comment on the matching [issue](https://github.com/evangauer/openvpm/issues) (or
-open one) to claim it.
+The UI currently uses English. Locale formatting and selectable clinic regions
+are separate from UI translation. See [the translation guide](docs/TRANSLATING.md)
+for glossary work, language coordination, and the approval needed for a new
+region or message-catalog foundation.
 
-- **Expand the drug dosing formulary** — add drugs with species-specific reference
-  ranges to `apps/web/lib/dosing/formulary.ts`. Data-only, fully unit-tested
-  (`apps/web/lib/dosing/__tests__/`). Keep ranges conservative and cite a source.
-- **Drag-to-reschedule on the calendar** — the `appointments.reschedule` API
-  already exists with conflict checking; wire it into the schedule UI.
-- **Appointment waitlist** — small schema + tRPC router + a list view.
-- **CSV import UI** — a Settings → Data screen for the existing
-  `data.importClientsCsv` / `importPatientsCsv` procedures.
-- **Embeddable booking widget** — an iframe/script version of the client-portal
-  booking flow (`apps/web/app/portal/[token]/book`).
+## Questions and license
 
-Want to help but unsure where to start? Open a
-[Discussion](https://github.com/evangauer/openvpm/discussions) and say hello.
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the GNU AGPLv3.
+Use [Discussions](https://github.com/evangauer/openvpm/discussions) for questions
+and [issue templates](https://github.com/evangauer/openvpm/issues/new/choose) for
+bugs. OpenVPM uses the [GNU AGPLv3](LICENSE); contributions use the same license.
