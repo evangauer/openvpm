@@ -20,6 +20,7 @@ import {
 import { knownDeviceCookieFromHeader } from "@/lib/known-device";
 import { sessionVersionIsCurrent } from "@/lib/session-version";
 import { externallyVisibleRequestOrigin } from "@/lib/request-origin";
+import { isPlatformAdmin } from "@/lib/platform-admin";
 import { practices, users } from "@openpims/db";
 import {
   billingEnforced,
@@ -219,7 +220,7 @@ export async function createTRPCContext(opts?: {
   };
 }
 
-const t = initTRPC.context<TRPCContext>().create({
+const t = initTRPC.context<TRPCContext>().meta<{ platformAdminRead?: boolean }>().create({
   transformer: superjson,
   errorFormatter({ shape, error }) {
     return {
@@ -440,7 +441,7 @@ export const portalProcedure = publicProcedure.use(
 
 /** Requires an authenticated session */
 export const protectedProcedure = t.procedure.use(
-  async ({ ctx, next, type, path, getRawInput }) => {
+  async ({ ctx, next, type, path, getRawInput, meta }) => {
     if (!ctx.session?.user) {
       throw new TRPCError({ code: "UNAUTHORIZED" });
     }
@@ -460,6 +461,18 @@ export const protectedProcedure = t.procedure.use(
       });
     }
     const user = ctx.session.user;
+    // Operator reads establish their own explicit system scopes. Holding an
+    // otherwise unused tenant transaction here can exhaust a bounded pool
+    // before those reads acquire a connection. Metadata is server-owned;
+    // neither metadata alone nor an operator's ordinary tenant queries opt out.
+    if (type === "query" && meta?.platformAdminRead === true && isPlatformAdmin(user.email)) {
+      return next({ ctx: {
+        session: ctx.session, user, practiceId: user.practiceId, ip: ctx.ip, db: ctx.db,
+        postCommitEffect: (_effect: PostCommitEffect) => {
+          throw new Error("Post-commit effects are mutation-only.");
+        },
+      } });
+    }
     // Run the whole request in a tenant DB context so Postgres RLS scopes every
     // query to this practice (defense-in-depth behind the app-layer filters).
     const effects: PostCommitEffect[] = [];
