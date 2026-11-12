@@ -12,6 +12,7 @@ import {
   practices,
 } from "@openpims/db";
 import { createCheckoutSession } from "@/lib/stripe";
+import { supportsInvoiceCardCurrency } from "@/lib/billing/invoice-card-currency";
 import { withSystem } from "@/lib/tenant-db";
 import { billingEnforced, hasHostedFullAccess } from "@/lib/billing/plans";
 import { stripeConnectApplicationFeeConfigured } from "@/lib/stripe-config";
@@ -400,6 +401,16 @@ export async function POST(req: NextRequest) {
               "OpenVPM Cloud is read-only until the practice trial or subscription is active.",
           },
           { status: 403 },
+        );
+      }
+
+      if (!supportsInvoiceCardCurrency(practice.currency)) {
+        return NextResponse.json(
+          {
+            error:
+              "Online payments are not available for this invoice currency. Please call the clinic to pay.",
+          },
+          { status: 422 },
         );
       }
 
