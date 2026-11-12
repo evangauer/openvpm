@@ -365,6 +365,66 @@ describe("encounter closeout safety", () => {
     expect(updateSet).toHaveBeenNthCalledWith(2, { status: "checked_out" });
   });
 
+  it.each(["veterinarian", "technician"])(
+    "keeps %s from completing a visit as no charge",
+    async (role) => {
+      const { db, select, updateSet } = createDb({
+        selectResults: [
+          [openAppointment],
+          [{ id: PATIENT_ID }],
+          [clinicalFinalized],
+          [],
+        ],
+      });
+
+      await expect(
+        callerWithDb(db, role).completeVisit({
+          appointmentId: APPOINTMENT_ID,
+          expectedRevision: 2,
+          chargeDisposition: "no_charge",
+          noChargeReason: "Complimentary postoperative recheck",
+          handoffMethod: "verbal",
+        })
+      ).rejects.toMatchObject({
+        code: "FORBIDDEN",
+        message: expect.stringContaining("front desk"),
+      });
+      expect(select).not.toHaveBeenCalled();
+      expect(updateSet).not.toHaveBeenCalled();
+    }
+  );
+
+  it("lets front desk complete an explicit no-charge visit", async () => {
+    const completed = {
+      ...clinicalFinalized,
+      status: "completed",
+      revision: 3,
+      chargeDisposition: "no_charge",
+      noChargeReason: "Complimentary postoperative recheck",
+      handoffMethod: "verbal",
+    };
+    const checkedOut = { ...openAppointment, status: "checked_out" };
+    const { db } = createDb({
+      selectResults: [
+        [openAppointment],
+        [{ id: PATIENT_ID }],
+        [clinicalFinalized],
+        [],
+      ],
+      updateResults: [[completed], [checkedOut]],
+    });
+
+    await expect(
+      callerWithDb(db, "front_desk").completeVisit({
+        appointmentId: APPOINTMENT_ID,
+        expectedRevision: 2,
+        chargeDisposition: "no_charge",
+        noChargeReason: "Complimentary postoperative recheck",
+        handoffMethod: "verbal",
+      })
+    ).resolves.toEqual({ closeout: completed, appointment: checkedOut });
+  });
+
   it("finalizes a saved zero-dollar invoice during no-charge checkout", async () => {
     const completed = {
       ...clinicalFinalized,

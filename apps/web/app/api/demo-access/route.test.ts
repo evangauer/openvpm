@@ -154,6 +154,72 @@ describe("POST /api/demo-access", () => {
     }
   });
 
+  it("forwards the gated email to the app for follow-up when configured", async () => {
+    vi.stubEnv("LEAD_CAPTURE_SECRET", "lead-capture-secret-at-least-32-bytes!");
+    try {
+      const response = await POST(
+        request({ email: " Vet@Clinic.COM ", anonymousId: ANONYMOUS_ID }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mocks.fetchFunnel).toHaveBeenCalledWith(
+        new URL("https://app.openvpm.com/api/growth/leads"),
+        expect.objectContaining({
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer lead-capture-secret-at-least-32-bytes!",
+          },
+        }),
+      );
+      const leadCall = mocks.fetchFunnel.mock.calls.find(
+        (call) => String(call[0]) === "https://app.openvpm.com/api/growth/leads",
+      );
+      expect(JSON.parse(String(leadCall?.[1]?.body))).toEqual({
+        source: "demo",
+        email: "vet@clinic.com",
+        anonymousId: ANONYMOUS_ID,
+        disclosureVersion: "demo-useful-v3",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps access immediate when lead capture is unavailable", async () => {
+    vi.stubEnv("LEAD_CAPTURE_SECRET", "lead-capture-secret-at-least-32-bytes!");
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mocks.fetchFunnel.mockImplementation(async (url: unknown) =>
+      String(url).endsWith("/api/growth/leads")
+        ? new Response("{}", { status: 503 })
+        : new Response("{}", { status: 202 }),
+    );
+    try {
+      const response = await POST(
+        request({ email: "vet@clinic.com", anonymousId: ANONYMOUS_ID }),
+      );
+      expect(response.status).toBe(200);
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[demo-access] lead capture failed:",
+        "lead capture returned 503",
+      );
+    } finally {
+      errorSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not forward leads when no capture secret is configured", async () => {
+    await POST(request({ email: "vet@clinic.com", anonymousId: ANONYMOUS_ID }));
+    expect(
+      mocks.fetchFunnel.mock.calls.some((call) =>
+        String(call[0]).endsWith("/api/growth/leads"),
+      ),
+    ).toBe(false);
+  });
+
   it("does not exist outside the isolated demo deployment", async () => {
     mocks.demoModeEnabled.mockReturnValue(false);
 

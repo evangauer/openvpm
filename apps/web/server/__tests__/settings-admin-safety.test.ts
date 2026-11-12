@@ -818,7 +818,10 @@ describe("settings admin stale target safety", () => {
     ).resolves.toMatchObject({ id: STAFF_ID, role: "viewer" });
 
     expect(db.execute).toHaveBeenCalled();
-    expect(updateSet).toHaveBeenCalledWith({ role: "viewer" });
+    expect(updateSet).toHaveBeenCalledWith({
+      role: "viewer",
+      sessionVersion: expect.anything(),
+    });
   });
 
   it("rejects stale staff role demotions", async () => {
@@ -832,7 +835,10 @@ describe("settings admin stale target safety", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(db.execute).toHaveBeenCalled();
-    expect(updateSet).toHaveBeenCalledWith({ role: "viewer" });
+    expect(updateSet).toHaveBeenCalledWith({
+      role: "viewer",
+      sessionVersion: expect.anything(),
+    });
   });
 
   it("rejects self-deactivation before DB work", async () => {
@@ -914,7 +920,10 @@ describe("settings admin stale target safety", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     expect(db.execute).toHaveBeenCalled();
-    expect(updateSet).toHaveBeenCalledWith({ deletedAt: expect.any(Date) });
+    expect(updateSet).toHaveBeenCalledWith({
+      deletedAt: expect.any(Date),
+      sessionVersion: expect.anything(),
+    });
     expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
   });
 
@@ -940,7 +949,10 @@ describe("settings admin stale target safety", () => {
       callerWithDb(db).restoreUser({ id: STAFF_ID }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
 
-    expect(updateSet).toHaveBeenCalledWith({ deletedAt: null });
+    expect(updateSet).toHaveBeenCalledWith({
+      deletedAt: null,
+      sessionVersion: expect.anything(),
+    });
     expect(syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
   });
 
@@ -1280,5 +1292,21 @@ describe("settings scheduling metadata delete safety", () => {
     expect(updateUserBlock).toContain('eq(users.role, "admin")');
     expect(updateUserBlock).toContain("ne(users.id, id)");
     expect(updateUserBlock).toContain("eq(users.role, targetUser.role)");
+  });
+});
+
+describe("settings staff responses", () => {
+  it("never returns a staff member's password hash or session version", () => {
+    const start = SETTINGS_SOURCE.indexOf("updateUser: adminProcedure");
+    const end = SETTINGS_SOURCE.indexOf("\n  }),\n", start);
+    const updateUser = SETTINGS_SOURCE.slice(start, end);
+    expect(updateUser).not.toMatch(/\.returning\(\s*\)/);
+    expect(updateUser).toContain(".returning(STAFF_USER_COLUMNS)");
+    const columnsStart = SETTINGS_SOURCE.indexOf("const STAFF_USER_COLUMNS = {");
+    const columns = SETTINGS_SOURCE.slice(
+      columnsStart,
+      SETTINGS_SOURCE.indexOf("};", columnsStart),
+    );
+    expect(columns).not.toMatch(/passwordHash|sessionVersion/);
   });
 });

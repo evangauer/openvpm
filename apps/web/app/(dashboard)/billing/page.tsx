@@ -1190,6 +1190,7 @@ function InvoiceRow({
                             tax: formatCurrency(d.tax),
                             total: formatCurrency(d.total),
                             paidAmount: formatCurrency(d.paidAmount),
+                            adjustedAmount: formatCurrency(d.adjustedAmount),
                             balanceDue: formatCurrency(d.balanceDue),
                           }).save(`estimate-${clientName || "unknown"}.pdf`);
                         }}
@@ -1376,6 +1377,7 @@ function InvoiceRow({
                             tax: formatCurrency(d.tax),
                             total: formatCurrency(d.total),
                             paidAmount: formatCurrency(d.paidAmount),
+                            adjustedAmount: formatCurrency(d.adjustedAmount),
                             balanceDue: formatCurrency(d.balanceDue),
                           }).save(`invoice-${clientName || "unknown"}.pdf`);
                         }}

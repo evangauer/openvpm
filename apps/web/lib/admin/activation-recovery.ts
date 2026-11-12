@@ -1,6 +1,11 @@
 import { sql } from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
 import { withSystem } from "@/lib/tenant-db";
+import {
+  isStopReason,
+  STOP_REASON_LABELS,
+} from "@/lib/growth/checkout-recovery";
+import { scoreLead, type LeadScore } from "@/lib/growth/lead-score";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const TRIAL_ENDING_SOON_DAYS = 3;
@@ -47,6 +52,12 @@ export interface ActivationRecoveryPractice {
   authoritativeStage: RecoveryStage;
   nextAction: string;
   nextActionPriority: number;
+  /** Why a never-trialed clinic stopped, from the recovery email answer. */
+  stopReason: string | null;
+  stopReasonNote: string | null;
+  /** Preview-before-card experiment arm, when the clinic was assigned one. */
+  previewArm: "preview" | "control" | null;
+  lead: LeadScore;
 }
 
 interface RecoveryRow {
@@ -77,8 +88,40 @@ type RecoverySettings = {
     journeyLastProgressAt?: string | null;
     journeyDismissed?: boolean;
     setupHelpRequestedAt?: string | null;
+    clinicModel?: string | null;
+    firstGoal?: string | null;
+    onboardingIntent?: string | null;
+  };
+  growthLead?: {
+    stopReason?: string | null;
+    stopReasonNote?: string | null;
+  };
+  growthExperiments?: {
+    previewBeforeCard?: { arm?: string | null };
   };
 };
+
+export function recoveryLeadProfile(settingsValue: unknown): {
+  clinicModel: string | null;
+  firstGoal: string | null;
+  onboardingIntent: string | null;
+  stopReason: string | null;
+  stopReasonNote: string | null;
+  previewArm: "preview" | "control" | null;
+} {
+  const settings = (settingsValue ?? {}) as RecoverySettings;
+  const state = settings.onboardingState;
+  const stopReason = settings.growthLead?.stopReason;
+  const arm = settings.growthExperiments?.previewBeforeCard?.arm;
+  return {
+    previewArm: arm === "preview" || arm === "control" ? arm : null,
+    clinicModel: state?.clinicModel ?? null,
+    firstGoal: state?.firstGoal ?? null,
+    onboardingIntent: state?.onboardingIntent ?? null,
+    stopReason: isStopReason(stopReason) ? stopReason : null,
+    stopReasonNote: settings.growthLead?.stopReasonNote ?? null,
+  };
+}
 
 const setupStepLabels: Record<string, string> = {
   intent: "Starting path",
@@ -202,9 +245,16 @@ export function deriveRecoveryNextAction(input: {
   setupHelpRequested: boolean;
   hasVerifiedAdmin: boolean;
   hasAnyAdmin: boolean;
+  stopReason?: string | null;
 }): RecoveryNextAction {
   if (input.setupHelpRequested) {
     return { priority: 100, label: "Respond to setup help request" };
+  }
+  if (isStopReason(input.stopReason) && input.billingStatus === "none") {
+    return {
+      priority: 98,
+      label: `Follow up: ${STOP_REASON_LABELS[input.stopReason].toLowerCase()}`,
+    };
   }
   if (!input.hasVerifiedAdmin) {
     return {
@@ -388,6 +438,7 @@ export async function computeActivationRecovery(
     const realClientCount = Number(row.realClientCount) || 0;
     const realAppointmentCount = Number(row.realAppointmentCount) || 0;
     const setup = recoverySetupState(row.settings);
+    const profile = recoveryLeadProfile(row.settings);
     const lastMeaningfulActivityAt = [
       createdAt,
       validDate(row.lastMeaningfulActivityAt),
@@ -423,6 +474,23 @@ export async function computeActivationRecovery(
       setupHelpRequested: setup.helpRequestedAt != null,
       hasVerifiedAdmin: Boolean(row.verifiedAdminEmail && verifiedAdminEmailAt),
       hasAnyAdmin: Number(row.activeAdminCount) > 0,
+      stopReason: profile.stopReason,
+    });
+    const lead = scoreLead({
+      now,
+      clinicModel: profile.clinicModel,
+      firstGoal: profile.firstGoal,
+      onboardingIntent: profile.onboardingIntent,
+      setupStarted: setup.started,
+      setupCompleted: setup.completed,
+      helpRequested: setup.helpRequestedAt != null,
+      stopReason: profile.stopReason,
+      realClientCount,
+      realAppointmentCount,
+      activated: row.activated,
+      paymentMethodCollected: row.paymentMethodCollected,
+      firstPositivePayment: row.firstPositivePayment,
+      lastMeaningfulActivityAt,
     });
 
     return {
@@ -451,12 +519,17 @@ export async function computeActivationRecovery(
       authoritativeStage,
       nextAction: nextAction.label,
       nextActionPriority: nextAction.priority,
+      stopReason: profile.stopReason,
+      stopReasonNote: profile.stopReasonNote,
+      previewArm: profile.previewArm,
+      lead,
     };
   });
 
   practices.sort(
     (a, b) =>
       b.nextActionPriority - a.nextActionPriority ||
+      b.lead.total - a.lead.total ||
       b.stallAgeDays - a.stallAgeDays ||
       a.createdAt.getTime() - b.createdAt.getTime() ||
       a.practiceId.localeCompare(b.practiceId),

@@ -95,7 +95,7 @@ describe("billing list input validation", () => {
         status: "lost",
         limit: 25,
         offset: 0,
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
@@ -103,28 +103,28 @@ describe("billing list input validation", () => {
         appointmentId: "not-an-appointment-id",
         limit: 25,
         offset: 0,
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       caller.listInvoices({
         limit: 1.5,
         offset: 0,
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       caller.listInvoices({
         limit: 25,
         offset: 0.5,
-      } as never)
+      } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     await expect(
       caller.listInvoices({
         limit: 25,
         offset: LIST_OFFSET_MAX + 1,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(db.select).not.toHaveBeenCalled();
@@ -134,7 +134,7 @@ describe("billing list input validation", () => {
     const db = createDb();
 
     await expect(
-      callerWithDb(db).listProducts({ limit: 1.5 } as never)
+      callerWithDb(db).listProducts({ limit: 1.5 } as never),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(db.select).not.toHaveBeenCalled();
@@ -147,9 +147,47 @@ describe("billing list input validation", () => {
       callerWithDb(db).listProducts({
         search: "x".repeat(121),
         limit: 25,
-      })
+      }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     expect(db.select).not.toHaveBeenCalled();
   });
+});
+
+describe("charge product search pagination", () => {
+  it.each([-1, 0.5])("rejects invalid cursor %s", async (cursor) => {
+    const db = createDb();
+    await expect(
+      callerWithDb(db).searchProducts({ cursor, limit: 50 }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+  it.each([0, 1, 2, 3])(
+    "returns bounded pages and a continuation only when more rows exist (%s rows)",
+    async (count) => {
+      const rows = Array.from({ length: count }, (_, n) => ({
+        id: String(n),
+        name: `Product ${n}`,
+      }));
+      const builder = {
+        from: vi.fn(() => builder),
+        where: vi.fn(() => builder),
+        orderBy: vi.fn(() => builder),
+        limit: vi.fn(() => builder),
+        offset: vi.fn(async () => rows),
+      };
+      const db = createDb();
+      db.select = vi.fn(() => builder);
+      const result = await callerWithDb(db).searchProducts({
+        search: "Product",
+        limit: 2,
+        cursor: 100,
+      });
+      expect(result.items).toEqual(rows.slice(0, 2));
+      expect(result.nextCursor).toBe(count > 2 ? 102 : undefined);
+      expect(builder.limit).toHaveBeenCalledWith(3);
+      expect(builder.offset).toHaveBeenCalledWith(100);
+      expect(builder.orderBy.mock.calls[0]).toHaveLength(2);
+    },
+  );
 });

@@ -1643,6 +1643,47 @@ describe("appointments target safety", () => {
     );
   });
 
+  it("clamps monthly series to month ends at the practice's local time", async () => {
+    const { db, insertValues } = createDb({
+      selectResults: [
+        [{ id: PATIENT_ID, clientId: CLIENT_ID }],
+        [{ id: CLIENT_ID }],
+        [{ timezone: "America/New_York" }],
+      ],
+      insertedRows: [{ id: SERIES_ID }],
+    });
+
+    await expect(
+      callerWithDb(db).createRecurring({
+        patientId: PATIENT_ID,
+        clientId: CLIENT_ID,
+        // 9:00-9:30 AM EST on Dec 31, 2026.
+        startTime: "2026-12-31T14:00:00.000Z",
+        endTime: "2026-12-31T14:30:00.000Z",
+        frequency: "monthly",
+        interval: 1,
+        occurrences: 4,
+      }),
+    ).resolves.toEqual({ seriesId: SERIES_ID, created: 4, skipped: 0 });
+
+    expect(insertValues).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ endDate: "2027-03-31" }),
+    );
+    const occurrences = (
+      insertValues.mock.calls.slice(1) as unknown as Array<
+        [{ startTime: Date; endTime: Date }]
+      >
+    ).map(([row]) => [row.startTime.toISOString(), row.endTime.toISOString()]);
+    expect(occurrences).toEqual([
+      ["2026-12-31T14:00:00.000Z", "2026-12-31T14:30:00.000Z"],
+      ["2027-01-31T14:00:00.000Z", "2027-01-31T14:30:00.000Z"],
+      ["2027-02-28T14:00:00.000Z", "2027-02-28T14:30:00.000Z"],
+      // 9:00 AM EDT after the Mar 14, 2027 DST change.
+      ["2027-03-31T13:00:00.000Z", "2027-03-31T13:30:00.000Z"],
+    ]);
+  });
+
   it("creates recurring appointments with normalized notes", async () => {
     const { db, insertValues, transaction } = createDb({
       selectResults: [
@@ -1851,14 +1892,80 @@ describe("appointments display join scoping", () => {
 
   it("creates recurring appointments from the practice timezone wall clock", () => {
     expect(source).toContain("const timezone = await practiceTimeZone(txCtx)");
-    expect(source).toContain("resolveRecurrenceTimeZone");
-    expect(source).toContain("recurrenceBaseParts");
-    expect(source).toContain("dateInputTimeUtcInstant(");
+    expect(source).toContain('from "@/lib/scheduling/recurrence"');
+    expect(source).toContain("resolveRecurrenceTimeZone(timezone)");
+    expect(source).not.toContain("setUTCMonth");
+    expect(source).not.toContain("setUTCFullYear");
     expect(source).toContain(
       "formatDateInputForTimeZone(\n              lastOccurrenceDate",
     );
     expect(source).not.toContain(
       'lastOccurrenceDate.toISOString().split("T")[0]',
     );
+  });
+});
+
+describe("mistaken appointment deletion", () => {
+  it("soft deletes an empty scheduled appointment", async () => {
+    const row = {
+      id: APPOINTMENT_ID,
+      status: "scheduled",
+      startTime: new Date(),
+      endTime: new Date(),
+    };
+    const { db, updateSet } = createDb({
+      selectResults: [[row], [{ hasRecords: false }]],
+      updatedRows: [{ ...row, status: "cancelled" }],
+    });
+    await expect(
+      callerWithDb(db).delete({
+        id: APPOINTMENT_ID,
+        reason: "Duplicate booking",
+      }),
+    ).resolves.toEqual({ id: APPOINTMENT_ID });
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "cancelled",
+        deletedAt: expect.any(Date),
+      }),
+    );
+  });
+  it.each(["checked_in", "in_exam", "checked_out"])(
+    "preserves %s visits",
+    async (status) => {
+      const { db, updateSet } = createDb({
+        selectResults: [[{ id: APPOINTMENT_ID, status }]],
+      });
+      await expect(
+        callerWithDb(db).delete({ id: APPOINTMENT_ID, reason: "Mistake" }),
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      expect(updateSet).not.toHaveBeenCalled();
+    },
+  );
+  it("preserves appointment clinical and financial evidence", async () => {
+    const { db, updateSet } = createDb({
+      selectResults: [
+        [{ id: APPOINTMENT_ID, status: "cancelled" }],
+        [{ hasRecords: true }],
+      ],
+    });
+    await expect(
+      callerWithDb(db).delete({ id: APPOINTMENT_ID, reason: "Mistake" }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+  it("rejects unavailable or foreign appointments", async () => {
+    const { db, updateSet } = createDb({ selectResults: [[]] });
+    await expect(
+      callerWithDb(db).delete({ id: APPOINTMENT_ID, reason: "Mistake" }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+  it("requires an attributable deletion reason", async () => {
+    const { db, select } = createDb();
+    await expect(
+      callerWithDb(db).delete({ id: APPOINTMENT_ID, reason: " " }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(select).not.toHaveBeenCalled();
   });
 });

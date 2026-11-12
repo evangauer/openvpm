@@ -1,0 +1,61 @@
+name: Offline acceptance
+
+on:
+  pull_request:
+    branches: [development, staging, main]
+  push:
+    branches: [development, staging, main]
+
+permissions:
+  contents: read
+
+jobs:
+  offline-browsers:
+    name: Offline browser recovery
+    # Keep the runner within the pinned Playwright version's supported OS set.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openpims
+          POSTGRES_PASSWORD: openpims
+          POSTGRES_DB: openpims
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openpims"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Ephemeral service credentials only; no hosted environment or provider secrets.
+      OFFLINE_E2E_ADMIN_DATABASE_URL: postgresql://openpims:openpims@127.0.0.1:5432/openpims
+      OPENPIMS_APP_DB_PASSWORD: openpims_app
+      OFFLINE_E2E_SERVER_MODE: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Type-check the browser drill
+        run: pnpm --filter @openpims/web exec tsc --noEmit --strict --target es2022 --module commonjs --moduleResolution node --esModuleInterop --skipLibCheck ../../playwright.offline.config.ts ../../e2e/offline-workspace.spec.ts
+      - run: pnpm exec playwright install --with-deps chromium webkit
+      - name: Exercise offline browser recovery
+        env:
+          OFFLINE_E2E_ARTIFACT_DIRECTORY: ${{ runner.temp }}/openvpm-offline-results
+        run: pnpm exec playwright test --config=playwright.offline.config.ts
+      - name: Retain synthetic failure evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: offline-browser-recovery
+          path: ${{ runner.temp }}/openvpm-offline-results
+          if-no-files-found: ignore
+          retention-days: 7

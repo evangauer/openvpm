@@ -13,6 +13,8 @@ interface SoapNoteEditorProps {
   onChange: (html: string) => void;
   placeholder?: string;
   className?: string;
+  editable?: boolean;
+  ariaLabel?: string;
 }
 
 export function SoapNoteEditor({
@@ -20,18 +22,28 @@ export function SoapNoteEditor({
   onChange,
   placeholder = "Enter text here...",
   className,
+  editable = true,
+  ariaLabel = "SOAP note section",
 }: SoapNoteEditorProps) {
   const [isEmpty, setIsEmpty] = useState(!value);
   const editor = useEditor({
     immediatelyRender: false,
+    editable,
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
         bulletList: { HTMLAttributes: { class: "list-disc list-inside" } },
         orderedList: { HTMLAttributes: { class: "list-decimal list-inside" } },
         paragraph: { HTMLAttributes: { class: "mb-2" } },
-        code: { HTMLAttributes: { class: "bg-muted px-1 rounded text-xs font-mono" } },
-        codeBlock: { HTMLAttributes: { class: "bg-muted p-2 rounded text-xs font-mono overflow-x-auto mb-2" } },
+        code: {
+          HTMLAttributes: { class: "bg-muted px-1 rounded text-xs font-mono" },
+        },
+        codeBlock: {
+          HTMLAttributes: {
+            class:
+              "bg-muted p-2 rounded text-xs font-mono overflow-x-auto mb-2",
+          },
+        },
       }),
       Highlight.configure({ multicolor: true }),
     ],
@@ -42,14 +54,23 @@ export function SoapNoteEditor({
     },
     editorProps: {
       attributes: {
+        role: "textbox",
+        "aria-label": ariaLabel,
+        "aria-multiline": "true",
         class: cn(
           "prose prose-sm max-w-none focus:outline-none p-3 min-h-32",
           "text-foreground placeholder-muted-foreground",
-          className
+          className,
         ),
       },
     },
   });
+
+  useEffect(() => {
+    // Locking/unlocking is not an edit. Emitting an update here can clear a
+    // save error or mark an untouched recovered draft as locally changed.
+    editor?.setEditable(editable, false);
+  }, [editor, editable]);
 
   useEffect(() => {
     if (!editor) return;
@@ -70,7 +91,10 @@ export function SoapNoteEditor({
   return (
     <div className="rounded-lg border border-border bg-background overflow-hidden">
       {/* Toolbar */}
-      <div className="flex items-center gap-1 p-2 border-b border-border bg-muted/50 flex-wrap">
+      <fieldset
+        disabled={!editable}
+        className="flex items-center gap-1 p-2 border-b border-border bg-muted/50 flex-wrap"
+      >
         <div className="flex gap-1">
           <Button
             type="button"
@@ -141,7 +165,7 @@ export function SoapNoteEditor({
         >
           <Trash2 className="h-4 w-4" />
         </Button>
-      </div>
+      </fieldset>
 
       {/* Editor */}
       <div className="relative">

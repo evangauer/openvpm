@@ -5,7 +5,7 @@
 <h1 align="center">OpenVPM</h1>
 
 <p align="center">
-  <strong>The open-source veterinary practice management system the industry has been waiting for.</strong>
+  <strong>Open-source veterinary software. Your practice. Your data.</strong>
 </p>
 
 <p align="center">
@@ -27,25 +27,33 @@
   <a href="https://github.com/evangauer/openvpm/stargazers"><img src="https://img.shields.io/github/stars/evangauer/openvpm?style=social" alt="GitHub Stars" /></a>
 </p>
 
----
+<p align="center">
+  <strong>Veterinary software should belong to the people who use it.</strong>
+</p>
+
+OpenVPM brings appointments, patient records, clinical notes, and billing into one workspace. Explore the demo, run it on your own infrastructure, or build on the API.
 
 <p align="center">
-  <strong>▶ <a href="https://demo.openvpm.com/login">Try the live demo</a></strong> — instant email access, no account or credit card. &nbsp;|&nbsp; If you believe veterinary software should be open, <strong><a href="https://github.com/evangauer/openvpm">give us a ⭐</a></strong> — it helps other clinics and builders find the project.
+  <a href="https://docs.openvpm.com/media/openvpm-product-tour-v1.mp4">
+    <img src="docs/media/product-tour-cover.png" alt="Watch the 56-second OpenVPM product tour: appointments, patient records, invoices, and data export" width="100%" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://docs.openvpm.com/media/openvpm-product-tour-v1.mp4"><strong>Watch the 56-second product tour</strong></a> &middot;
+  <a href="https://demo.openvpm.com/login"><strong>Try the live demo</strong></a> &middot;
+  <a href="docs/api/README.md">Build with the API</a>
+</p>
+
+<p align="center">
+  <sub>Real product footage with fictional demo data. The API segment illustrates documented interfaces. <a href="docs/media/product-tour.en.srt">English captions</a> · <a href="docs/clinic-pilot-readiness.md">Clinic pilot readiness guide</a>.</sub>
+</p>
+
+<p align="center">
+  If you want veterinary software to be open, <strong><a href="https://github.com/evangauer/openvpm">star OpenVPM</a></strong> to help clinics and builders find it.
 </p>
 
 ---
-
-## The Problem
-
-The veterinary PIMS market is broken — and everyone knows it.
-
-**For clinics:** Commercial systems like ezyVet, ProVet Cloud, and Cornerstone charge $200–600+/month, lock you into proprietary data formats, and deliver software that staff describe as "extremely nonuser friendly," "very clunky," with "terrible" financial reporting and support that declines after the sale closes. Legacy systems crash. Modern ones charge extra for texting. Every one of them holds your data hostage.
-
-**For innovators:** AI agents are poised to disrupt the PIMS as the "system of record" — but only if there's an open system to build on. Today, most PIMS have closed or poorly documented APIs, making it nearly impossible for AI tools, voice agents, or third-party developers to read and write patient data. There is no widely adopted data interoperability standard in veterinary medicine.
-
-**The open-source gap:** OpenVPMS is Java-based, dated, and primarily Australian-focused. A few student projects exist on GitHub but none are production-ready. Until now, there has been **no modern, well-designed, open-source PIMS with an open API.**
-
-OpenVPM fills that gap.
 
 ## What is OpenVPM?
 
@@ -56,10 +64,8 @@ OpenVPM is a modern, cloud-native veterinary practice information management sys
 - **Cloud-native but self-hostable** — Run it on our cloud or deploy it on your own infrastructure
 - **Free and open source** — AGPLv3, forever. No per-provider pricing. No vendor lock-in. Your data is yours.
 
-> _"I would need to see the product benefit us by reducing our staff hours."_
-> — A practice manager we interviewed during research
-
-That's the bar we're building to.
+> _"I was intrigued and excited to find that there is a viable open-source practice management offering out there."_
+> — Veterinarian and veterinary software builder
 
 ## Screenshots
 
@@ -76,7 +82,7 @@ That's the bar we're building to.
 
 ## Help & Guides
 
-The searchable [OpenVPM Guides](https://docs.openvpm.com) cover front desk, clinical, checkout, client care, and practice administration workflows. Their MDX source and publishing workflow are documented in [docs/help](docs/help/README.md). Before evaluating OpenVPM for live clinic use, read the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md) for the current supported, configuration-dependent, and not-yet-supported boundaries. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
+[OpenVPM Help](https://docs.openvpm.com) has step-by-step guides with real screens for the front desk, clinical team, and practice managers, a tour of every screen, and a training path for each role. The site lives in [apps/docs](apps/docs), and its screenshots are captured from the seeded demo clinic ([how](apps/docs/capture/README.md)). Self-hosting setup guides stay in [docs/help](docs/help/README.md). Before evaluating OpenVPM for live clinic use, read the [Clinic Pilot Readiness Guide](docs/clinic-pilot-readiness.md) for the current supported, configuration-dependent, and not-yet-supported boundaries. Switching from another PIMS? Start with [Migrating to OpenVPM](docs/migrating-to-openvpm.md).
 
 ## Features
 
@@ -136,7 +142,7 @@ Structured data models queryable by AI agents. Signed webhook events for agent s
 | **Events**       | Signed webhook delivery for integrations                           |
 | **Email/SMS**    | Resend + Telnyx SMS (Twilio fallback)                              |
 | **Payments**     | Stripe                                                             |
-| **File Storage** | S3-compatible or Vercel Blob (MinIO for self-hosted)               |
+| **File Storage** | S3-compatible or Vercel Blob (PGSTY Silo for self-hosted)               |
 | **Monorepo**     | Turborepo + pnpm workspaces                                        |
 | **Testing**      | Vitest + Playwright                                                |
 | **Deployment**   | Docker Compose (self-host) or Vercel (cloud)                       |
@@ -186,7 +192,7 @@ Dashboard tRPC routers cover the product's clinic workflows, including patients,
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 24.22.1 or a newer Node.js 24 patch (`nvm use`)
 - pnpm 9+
 - Docker (for PostgreSQL and MinIO)
 
@@ -200,8 +206,12 @@ cd openvpm
 # Copy environment config
 cp .env.example .env
 
-# Start the local PostgreSQL and MinIO dependencies
-docker compose -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
+# Replace the placeholder NEXTAUTH_SECRET in .env with a generated one
+# (or paste the output of `openssl rand -base64 32` into .env yourself)
+sed -i.bak "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=\"$(openssl rand -base64 32)\"|" .env && rm .env.bak
+
+# Start the local PostgreSQL and S3-compatible storage dependencies
+docker compose --env-file .env -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
 
 # Install dependencies
 pnpm install --frozen-lockfile
@@ -223,6 +233,13 @@ pnpm db:seed
 pnpm dev
 ```
 
+Keep `.env` at the repository root beside `.env.example`. `pnpm dev` loads it
+for the web server in `apps/web`; you do not need a second env file there.
+Existing shell exports and app env values take precedence. If `DATABASE_URL`
+is missing, the dev server stops with setup instructions. Restart `pnpm dev`
+after changing the root env file. Production continues to use its deployment
+environment.
+
 Open [http://localhost:3000](http://localhost:3000) and sign in with the demo credentials:
 
 | Role         | Email                                     | Password    |
@@ -234,7 +251,9 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with the demo cr
 
 The seed data creates a complete demo practice — "Neighborhood Veterinary" — with 8 staff, 25 clients, 40 patients, 2 weeks of appointments, SOAP notes, vaccination records, invoices, and 50 inventory products.
 
-The Docker Compose stack includes a one-shot MinIO bootstrap container that creates the `openpims` bucket used by `S3_BUCKET`. When using an external S3-compatible store, create that bucket yourself and grant the app credentials read/write/delete/head access before uploads, backups, or file previews run.
+The Docker Compose stack uses [PGSTY Silo](https://github.com/pgsty/silo), a maintained MinIO-compatible server, pinned to a release and image digest for both AMD64 and ARM64 hosts. Its bundled `mcli` client creates the `openpims` bucket used by `S3_BUCKET`; the bootstrap exits with an error if storage cannot be reached after 60 attempts. When using an external S3-compatible store, create that bucket yourself and grant the app credentials read/write/delete/head access before uploads, backups, or file previews run.
+
+The Compose service name `minio`, volume name `minio_data`, S3 endpoint, and `MINIO_*` settings remain compatible with existing configuration. Before upgrading an existing MinIO installation, keep an independent backup and follow the [Silo migration guide](https://silo.pgsty.com/compatibility/migration/). Do not delete the existing storage volume to upgrade.
 
 Before using a self-hosted installation with real clinic data, complete the
 [open-source release checklist](docs/open-source-release-checklist.md) and the
@@ -243,11 +262,79 @@ local build is not, by itself, a production-readiness assessment.
 
 ### Deploy with Docker
 
+Allocate at least 4 GiB of memory to the Docker builder. The image build gives
+Node a 3 GiB heap for compilation and type checking; the running application
+keeps Node's default memory settings. On a larger builder, the heap can be
+adjusted with `--build-arg BUILD_NODE_OPTIONS=--max-old-space-size=4096`.
+
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+# One time: create .env with a unique session secret
+cp .env.example .env
+sed -i.bak "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=\"$(openssl rand -base64 32)\"|" .env && rm .env.bak
+
+docker compose --env-file .env -f docker/docker-compose.yml up -d
 ```
 
-The Docker setup includes PostgreSQL 16 with health checks, MinIO for S3-compatible file storage, automatic MinIO bucket bootstrap, and a multi-stage production build of the web application. For production, run `pnpm db:migrate`, then `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls`, verify with `OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test`, and point the app at the generated least-privilege `openpims_app` database role before serving traffic.
+`NEXTAUTH_SECRET` signs every staff session, so it must be unique to your
+installation. Compose refuses to start the app without it, and a production
+build refuses to sign anyone in while it is a placeholder published in this
+repository or shorter than 32 characters: every page shows a setup notice, API
+routes return `503`, and `/api/health` reports the `authSecret` check as
+failing. PostgreSQL and MinIO are published on `127.0.0.1` only; their default
+credentials are for this single-host setup and must not be exposed to a network.
+
+> **Upgrading an existing Docker install:** earlier versions of
+> `docker/docker-compose.yml` shipped a fixed `NEXTAUTH_SECRET`. Anyone who knows
+> that public value can forge a staff session on an install still using it.
+> Generate a new secret as above, put it in `.env`, and restart with
+> `docker compose --env-file .env -f docker/docker-compose.yml up -d`. Changing
+> the secret signs everyone out once; staff sign in again with their usual
+> password. Invoice payment links signed with the old secret also stop working
+> and should be re-sent. Patient-portal sign-in links are not affected.
+>
+> The same upgrade binds PostgreSQL (`5432`) and the MinIO API and console
+> (`9000`, `9001`) to `127.0.0.1` on the Docker host, so they are no longer
+> reachable from other machines. If you administered them remotely, use an SSH
+> tunnel instead, for example
+> `ssh -N -L 5432:127.0.0.1:5432 -L 9001:127.0.0.1:9001 you@your-server`, then
+> connect to `localhost:5432` or open `http://localhost:9001`.
+
+The Docker setup includes PostgreSQL 16 with health checks, PGSTY Silo for S3-compatible file storage, automatic bucket bootstrap, and a multi-stage production build of the web application. For production, run `pnpm db:migrate`, then `OPENPIMS_APP_DB_PASSWORD='<strong>' pnpm db:rls`, verify with `OPENPIMS_APP_DB_PASSWORD='<same>' pnpm db:rls:test`, and point the app at the generated least-privilege `openpims_app` database role before serving traffic.
+
+#### Reverse proxies and sign-in limits
+
+Sign-in is limited per account: 5 free failures, then a lock that doubles from 1 minute up to 1 hour. That applies the same way whether or not the account exists, and it is the main defense against password guessing.
+
+So that someone else's failed guesses can't keep staff out, each successful sign-in also sets a signed, HttpOnly "known device" cookie for 90 days. While an account is locked, a browser that has signed in to it before isn't held by that lock; it gets its own backoff (the same 5 failures, then 1 minute doubling to 1 hour). The correct password from a browser that has never signed in to the account still waits for the lock. Completing a password reset or accepting an invite proves control of the mailbox, so it lifts the account's lock and marks that browser as known too. One browser remembers up to 10 accounts; on a shared front-desk computer used by more staff than that, the accounts that signed in least recently drop off and wait for a lock like a new browser until they sign in again. The cookie is signed with a key derived from `NEXTAUTH_SECRET`, so changing that secret forgets every device. Password reset requests from a known device also skip the per-address daily cap.
+
+Per-IP limits apply only when OpenVPM can verify the client's address: 50 failed sign-ins per 15 minutes, plus 600 sign-in requests per 15 minutes, and never to a known device. An address OpenVPM can't verify could be forged by anyone, so limiting it would only let an attacker lock out the address they claim, such as your clinic's. Without a verified address, per-IP sign-in limits are off and per-account limits do the work. On Vercel the platform's client address is used automatically; nothing to configure. OpenVPM Cloud assumes nothing sits in front of Vercel.
+
+If you self-host behind a reverse proxy and want per-IP limits, set `OPENVPM_TRUSTED_PROXY_HOPS` to the number of proxies in front of the app (`1` for a single nginx, Caddy, or Traefik). A CDN or load balancer in front of your proxy (Cloudflare, an AWS ALB) is a hop too: Cloudflare in front of nginx is `2`. Three things must also be true, or a client can choose its own IP:
+
+1. **Each proxy writes `X-Forwarded-For`.** The client is read from the entry `OPENVPM_TRUSTED_PROXY_HOPS` places from the right.
+   - **nginx** doesn't send it by default. Add it to every `location` that proxies to OpenVPM:
+
+     ```nginx
+     proxy_set_header Host              $host;
+     proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+     proxy_set_header X-Forwarded-Proto $scheme;
+     ```
+
+     Without the `X-Forwarded-For` line, the app sees nginx's own address. OpenVPM then skips per-IP limits (see below) and shows administrators a Settings notice that the proxy isn't forwarding client addresses.
+   - **Caddy** (`reverse_proxy`) sends it by default. It replaces any client-supplied value unless the client is listed in the global `servers { trusted_proxies ... }` option, in which case it appends. Leave `trusted_proxies` unset when Caddy faces the internet directly. If Caddy sits behind a load balancer or CDN, list that hop's addresses in `trusted_proxies` and count both hops (`2`). Caddy behind Cloudflare without `trusted_proxies` is a common mistake: Caddy discards Cloudflare's entry and records the Cloudflare edge server as the client, so every visitor is limited under a handful of shared Cloudflare addresses and one person's failures can hold back everyone routed through the same edge. Those are public addresses, so OpenVPM can't tell anything is wrong and no Settings notice appears.
+   - **Traefik** sends it by default and drops client-supplied forwarded headers unless the entry point's `forwardedHeaders.trustedIPs` includes the client. Same rule as Caddy: leave it unset when Traefik faces the internet, or list the upstream hop and count it.
+2. **With a CDN or load balancer in front, your proxy accepts connections only from it.** Otherwise a client can skip the CDN, connect to your proxy directly, and put a forged entry exactly where OpenVPM expects the CDN's. Allow only the CDN's published address ranges to reach the proxy (a firewall or security group), or have nginx take the client address from the CDN with `set_real_ip_from <CDN ranges>;` and `real_ip_header CF-Connecting-IP;` (Cloudflare), forwarding `$remote_addr` and counting one hop.
+3. **The app port is reachable only through the proxy.** This is required whenever `OPENVPM_TRUSTED_PROXY_HOPS` is set. If the port is reachable directly, anyone can connect to it, forge `X-Forwarded-For`, and spend another network's sign-in limits, including your clinic's own public address. In `docker/docker-compose.yml`:
+   - If the proxy runs in a container, put it on the same Compose network as `web`, point it at `http://web:3000`, and remove the `ports:` entry from `web`. Inside a container, `127.0.0.1` is the container itself, not the host.
+   - If the proxy runs directly on the host, publish the app on loopback only: `"127.0.0.1:3000:3000"`.
+
+   Docker-published ports bypass host firewalls such as `ufw`, so a firewall rule alone is not enough.
+
+When OpenVPM sees signs of a proxy without `OPENVPM_TRUSTED_PROXY_HOPS`, administrators get a notice in Settings and the server logs a warning. Leave it unset if clients connect to OpenVPM directly.
+
+Per-IP limits never apply to loopback, private, carrier-grade NAT, or link-local addresses (for example `127.0.0.1`, `10.x`, `172.16-31.x`, `192.168.x`, `fd00::/8`). Requests appear to come from one of those when a proxy or container gateway isn't forwarding the client's address, and limiting it would let one client lock out everyone. Clinics whose staff sign in over a LAN are covered by per-account limits.
+
+Administrators can lift a staff member's lock, including any per-device backoff, from **Settings → Staff**; the action is recorded in the audit log. Expired limit records are pruned by the server itself at most once an hour, so self-hosts don't need to schedule `/api/cron/rate-limit-cleanup`.
 
 ## API
 
@@ -307,7 +394,7 @@ OpenVPM ships with a built-in AI agent that operates on practice data through a 
 
 Self-hosting stays fully unlocked and free. Leave `HOSTED_BILLING_ENABLED` unset and OpenVPM runs without Stripe gates, hosted metering, or paid-plan limits.
 
-OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day free trial with no credit card required — clinics land in the product immediately and add billing only to convert, then bills one simple plan:
+OpenVPM Cloud is the hosted service for clinics that do not want to run infrastructure. It includes a 14-day free trial that starts after secure Stripe checkout collects payment details. There is no subscription charge today; billing starts automatically after the trial unless the clinic cancels in Plan & Billing. One simple plan:
 
 - $79/month per active, non-deleted location, with unlimited staff (all roles included)
 - $790/year per active location (two months free), with unlimited staff
@@ -317,6 +404,8 @@ OpenVPM Cloud is the hosted service for clinics that do not want to run infrastr
 Hosted Stripe setup uses monthly and annual recurring per-location prices in `STRIPE_PRICE_CLOUD_LOCATION` and `STRIPE_PRICE_CLOUD_LOCATION_ANNUAL`. Checkout contains one customer-facing OpenVPM Cloud line item. `STRIPE_PRICE_CLOUD_USER` and `STRIPE_PRICE_CLOUD` are legacy-only for existing subscriptions and are not used for new checkout.
 
 For hosted deployment details, see [docs/hosted-cloud-production.md](docs/hosted-cloud-production.md).
+
+For self-hosted clinic integrations, follow [Stripe payment setup](docs/help/self-hosted-payments.md) and [SMS setup](docs/help/self-hosted-sms.md). For a practice owner handling care and checkout alone, see [Run a solo practice](https://docs.openvpm.com/guides/run-a-solo-practice).
 
 ## Why Open Source Matters for Veterinary Medicine
 

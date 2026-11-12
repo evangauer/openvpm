@@ -15,6 +15,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { ActivationChecklist } from "@/components/dashboard/activation-checklist";
+import { UnfinishedFieldVisits } from "@/components/dashboard/unfinished-field-visits";
 import { EmptyState } from "@/components/common/empty-state";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
@@ -118,8 +119,8 @@ const kpiConfig = [
   },
   {
     key: "revenueMtd" as const,
-    label: "Revenue (MTD)",
-    description: "Paid invoices this month",
+    label: "Net collections (MTD)",
+    description: "Payments less refunds this month",
     icon: DollarSign,
     isCurrency: true,
   },
@@ -259,12 +260,13 @@ export default function DashboardPage() {
       chartData.appointmentsByDay.some(
         (d) => d.completed + d.scheduled + d.cancelled > 0,
       ) ||
-      chartData.revenueByDay.some((d) => d.revenue > 0) ||
-      chartData.productionByDoctor.some((d) => d.production > 0));
+      chartData.revenueByDay.some((d) => d.revenue !== 0) ||
+      chartData.productionByDoctor.some((d) => d.production !== 0));
 
   return (
     <div className="space-y-8">
       <ActivationChecklist />
+      <UnfinishedFieldVisits />
       {/* KPI Cards */}
       {statsError || statsDisplayMissing ? (
         <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
@@ -432,7 +434,14 @@ export default function DashboardPage() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">
-                    {appt.patientName ?? "Unknown Patient"}
+                    {appt.patientId ? (
+                      <Link
+                        href={`/patients/${appt.patientId}`}
+                        className="text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+                      >
+                        {appt.patientName ?? "Open patient"}
+                      </Link>
+                    ) : "Unknown Patient"}
                     {appt.clientLastName && (
                       <span className="ml-1 font-normal text-muted-foreground">
                         ({appt.clientFirstName} {appt.clientLastName})

@@ -53,7 +53,7 @@ const IP_WINDOW_MS = 10 * 60 * 1000;
 const DECISIONS_REQUEST_MAX_BYTES = 64_000;
 
 const decisionInput = z.object({
-  revisionLineId: z.string().uuid(),
+  revisionLineId: z.string().guid(),
   decision: z.enum(["accepted", "declined"]),
   acceptedQuantity: z.string().trim().max(32),
   declineReason: z.string().trim().max(2_000).nullable().optional(),

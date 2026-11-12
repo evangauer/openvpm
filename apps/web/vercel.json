@@ -35,6 +35,22 @@
       "schedule": "0 15 * * *"
     },
     {
+      "path": "/api/cron/checkout-recovery",
+      "schedule": "25 * * * *"
+    },
+    {
+      "path": "/api/cron/demo-followup",
+      "schedule": "40 * * * *"
+    },
+    {
+      "path": "/api/cron/build-followup",
+      "schedule": "50 * * * *"
+    },
+    {
+      "path": "/api/cron/customer-lifecycle",
+      "schedule": "0 16 * * *"
+    },
+    {
       "path": "/api/cron/wellness-billing",
       "schedule": "0 5 * * *"
     },
@@ -65,6 +81,10 @@
     {
       "path": "/api/cron/conversion-reconcile",
       "schedule": "35 * * * *"
+    },
+    {
+      "path": "/api/cron/newsletter-followup",
+      "schedule": "10 * * * *"
     }
   ]
 }

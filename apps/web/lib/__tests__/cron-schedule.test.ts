@@ -17,6 +17,11 @@ describe("Vercel cron schedule", () => {
         "/api/cron/billing-lifecycle",
         "/api/cron/first-clinic-win",
         "/api/cron/setup-recovery",
+        "/api/cron/checkout-recovery",
+        "/api/cron/demo-followup",
+        "/api/cron/customer-lifecycle",
+        "/api/cron/build-followup",
+        "/api/cron/newsletter-followup",
         "/api/cron/wellness-billing",
         "/api/cron/rate-limit-cleanup",
         "/api/cron/auth-cleanup",
@@ -37,6 +42,27 @@ describe("Vercel cron schedule", () => {
       config.crons?.find((cron) => cron.path === "/api/cron/setup-recovery")
         ?.schedule,
     ).toBe("0 15 * * *");
+
+    expect(
+      config.crons?.find((cron) => cron.path === "/api/cron/checkout-recovery")
+        ?.schedule,
+    ).toBe("25 * * * *");
+
+    expect(
+      config.crons?.find((cron) => cron.path === "/api/cron/demo-followup")
+        ?.schedule,
+    ).toBe("40 * * * *");
+
+    expect(
+      config.crons?.find((cron) => cron.path === "/api/cron/build-followup")
+        ?.schedule,
+    ).toBe("50 * * * *");
+
+    // Personal notes go out once a day in North American business hours.
+    expect(
+      config.crons?.find((cron) => cron.path === "/api/cron/customer-lifecycle")
+        ?.schedule,
+    ).toBe("0 16 * * *");
 
     expect(
       config.crons?.find((cron) => cron.path === "/api/cron/first-clinic-win")

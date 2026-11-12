@@ -7,6 +7,8 @@ const webServerCommand =
 
 export default defineConfig({
   testDir: "./e2e",
+  // The offline suite owns a disposable database and server via its dedicated config.
+  testIgnore: "**/offline-workspace.spec.ts",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
@@ -22,7 +24,7 @@ export default defineConfig({
     // The ambulatory acceptance spec mutates a disposable clinical record and
     // must never attach to a pre-existing server with an unknown DATABASE_URL.
     reuseExistingServer:
-      process.env.AMBULATORY_E2E === "1" ? false : !process.env.CI,
+      (process.env.AMBULATORY_E2E === "1" || process.env.PATIENT_DOCUMENTS_E2E === "1") ? false : !process.env.CI,
     timeout: 30000,
   },
 });

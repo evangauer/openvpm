@@ -6,6 +6,11 @@ import { createRouter, publicProcedure, protectedProcedure } from "../trpc";
 import { users, practices, locations } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { rateLimit } from "@/lib/rate-limit";
+import {
+  clearLoginAccountLock,
+  loginNetworkBucket,
+} from "@/lib/login-throttle";
+import { knownDeviceForAccount, rememberKnownDevice } from "@/lib/known-device";
 import { seedPractice, seedDemoData } from "@/lib/onboarding/defaults";
 import {
   billingEnforced,
@@ -17,6 +22,7 @@ import {
 } from "@/lib/billing/plans";
 import { createAuthToken, consumeAuthToken } from "@/lib/auth-tokens";
 import { PASSWORD_HASH_COST } from "@/lib/auth-hashing";
+import { bumpSessionVersion } from "@/lib/session-version";
 import { authPasswordInput } from "@/lib/auth-password";
 import {
   sendPasswordResetEmail,
@@ -26,8 +32,24 @@ import {
 import { sendTrackedVerificationEmail } from "@/lib/auth-email-delivery";
 import { sendOptionalPlatformEmail } from "@/lib/email-lifecycle";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
+import { newSubscriptionBillingAccount } from "@/lib/billing/stripe-accounts";
+import { BILLING_CADENCES } from "@/lib/billing/catalog";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { createSubscriptionCheckoutSession } from "@/lib/stripe";
+import {
+  buildDraftSchema,
+  buildFirstGoal,
+  builderPercent,
+} from "@/lib/build/catalog";
+import {
+  applyBuildServices,
+  setUpBuildBookingPage,
+} from "@/lib/build/apply";
+import {
+  previewArmFor,
+  previewEndsAtFrom,
+  previewPercent,
+} from "@/lib/billing/preview";
 import {
   AUTH_EMAIL_MAX_LENGTH,
   AUTH_LOCATION_NAME_MAX_LENGTH,
@@ -64,6 +86,9 @@ function deriveName(name: string | undefined, email: string): string {
 function normalizeAuthEmail(email: string): string {
   return email.trim().toLowerCase();
 }
+
+export const PASSWORD_RESET_PER_NETWORK_LIMIT = 5;
+export const PASSWORD_RESET_PER_EMAIL_DAILY_LIMIT = 20;
 
 async function assertPreAuthRateLimit(input: {
   key: string;
@@ -155,7 +180,7 @@ const signupAcquisitionSchema = z
     source: acquisitionValueSchema.optional(),
     medium: acquisitionValueSchema.optional(),
     campaign: acquisitionValueSchema.optional(),
-    funnelId: z.string().uuid().optional(),
+    funnelId: z.string().guid().optional(),
   })
   .strict();
 
@@ -209,6 +234,10 @@ export const authRouter = createRouter({
         ).optional(),
         onboardingDraft: onboardingDraftSchema.optional(),
         acquisition: signupAcquisitionSchema.optional(),
+        /** Choices from "Build your clinic"; the workspace opens built. */
+        build: buildDraftSchema.optional(),
+        /** The plan chosen before checkout; only card-gated signups use it. */
+        billingCadence: z.enum(BILLING_CADENCES).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -244,8 +273,12 @@ export const authRouter = createRouter({
       }
 
       const onboardingDraft = cleanOnboardingDraft(input.onboardingDraft);
-      const registrationProfile =
-        input.onboardingDraft?.clinicModel && input.onboardingDraft.firstGoal
+      const registrationProfile = input.build
+        ? {
+            clinicModel: input.build.practiceType,
+            firstGoal: buildFirstGoal(input.build.currentSystem),
+          }
+        : input.onboardingDraft?.clinicModel && input.onboardingDraft.firstGoal
           ? {
               clinicModel: input.onboardingDraft.clinicModel,
               firstGoal: input.onboardingDraft.firstGoal,
@@ -257,6 +290,18 @@ export const authRouter = createRouter({
       // adds a card to convert. Access gating keys off the practice's trial
       // columns (see hasHostedFullAccess), independent of any Stripe object.
       const noCardTrial = hostedBilling && noCardTrialEnabled();
+      // Preview before card (A/B): some card-required signups shape their
+      // workspace on sample data first and add the card to start the trial.
+      // The builder already showed the product, so it always gates on the card.
+      const previewSharePercent =
+        hostedBilling && !noCardTrial && !input.build ? previewPercent() : 0;
+      const previewArm =
+        previewSharePercent > 0
+          ? previewArmFor(input.acquisition?.funnelId, previewSharePercent)
+          : null;
+      const previewEndsAt =
+        previewArm === "preview" ? previewEndsAtFrom() : undefined;
+      const billingAccount = newSubscriptionBillingAccount();
       const trialEndsAt = noCardTrial ? trialEndsAtFrom() : undefined;
       let hostedCheckoutLineItems:
         | Array<{
@@ -266,13 +311,16 @@ export const authRouter = createRouter({
           }>
         | undefined;
 
-      if (hostedBilling && !noCardTrial) {
-        const { locationPriceId } = cloudCheckoutPriceIds();
+      const billingCadence = input.billingCadence ?? "month";
+      if (hostedBilling && !noCardTrial && !previewEndsAt) {
+        const { locationPriceId } = cloudCheckoutPriceIds(billingCadence, billingAccount);
         if (!locationPriceId) {
           throw new TRPCError({
             code: "SERVICE_UNAVAILABLE",
             message:
-              "Hosted billing is not configured. Please contact support to finish signup.",
+              billingCadence === "year"
+                ? "Annual billing isn't available right now. Choose monthly to start your trial."
+                : "Hosted billing is not configured. Please contact support to finish signup.",
           });
         }
 
@@ -317,6 +365,32 @@ export const authRouter = createRouter({
       if (onboardingDraft) {
         practiceSettings.onboardingDraft = onboardingDraft;
       }
+      const growthExperiments: Record<string, unknown> = {};
+      if (previewArm) {
+        growthExperiments.previewBeforeCard = {
+          arm: previewArm,
+          assignedAt: registeredAt,
+        };
+      }
+      if (hostedBilling && !noCardTrial && (input.build || builderPercent() > 0)) {
+        growthExperiments.signupFlow = {
+          arm: input.build ? "builder" : "classic",
+          assignedAt: registeredAt,
+        };
+      }
+      if (Object.keys(growthExperiments).length > 0) {
+        practiceSettings.growthExperiments = growthExperiments;
+      }
+      if (input.build) {
+        practiceSettings.brandColor = input.build.brandColor.toLowerCase();
+        practiceSettings.buildFlow = {
+          version: 1,
+          practiceType: input.build.practiceType,
+          currentSystem: input.build.currentSystem,
+          serviceCount: input.build.services.length,
+          completedAt: registeredAt,
+        };
+      }
       if (hostedBilling) {
         practiceSettings.onboardingCompletedAt = null;
       }
@@ -328,6 +402,7 @@ export const authRouter = createRouter({
             .values({
               name: input.practiceName.trim(),
               email,
+              ...(hostedBilling && billingAccount === "openvpm" ? { stripeBillingAccount: billingAccount } : {}),
               country: input.country,
               currency: defaults.currency,
               taxRatePercent: defaults.taxRatePercent,
@@ -341,6 +416,7 @@ export const authRouter = createRouter({
                     trialEndsAt,
                   }
                 : {}),
+              ...(previewEndsAt ? { previewEndsAt } : {}),
             })
             .returning();
 
@@ -394,6 +470,25 @@ export const authRouter = createRouter({
               practiceId: createdPractice.id,
               locationId: createdLocation.id,
             });
+            if (input.build) {
+              await applyBuildServices(
+                tx as unknown as Database,
+                createdPractice.id,
+                input.build.services,
+              );
+              const bookingSlug = await setUpBuildBookingPage(
+                tx as unknown as Database,
+                {
+                  practiceId: createdPractice.id,
+                  clinicName: input.practiceName,
+                  brandColor: input.build.brandColor,
+                },
+              );
+              if (bookingSlug) {
+                (practiceSettings.buildFlow as Record<string, unknown>).bookingSlug =
+                  bookingSlug;
+              }
+            }
             if (hostedBilling) {
               practiceSettings.demoData = await seedDemoData(
                 tx as unknown as Database,
@@ -423,7 +518,8 @@ export const authRouter = createRouter({
                 practiceId: createdPractice.id,
                 customerEmail: email,
                 trialPeriodDays: TRIAL_DAYS,
-                billingCadence: "month",
+                ...(billingAccount === "openvpm" ? { billingAccount } : {}),
+                billingCadence,
                 source: "signup",
                 successUrl: `${base}/login?checkout=success`,
                 cancelUrl: `${base}/login?checkout=cancelled`,
@@ -513,7 +609,7 @@ export const authRouter = createRouter({
         checkoutUrl,
         // Hosted signups (no-card trial) land in the first-run onboarding wizard
         // instead of the bare dashboard.
-        onboardingRequired: noCardTrial,
+        onboardingRequired: noCardTrial || Boolean(previewEndsAt),
       };
 
       if (verificationDispatch && ctx.postCommitEffect) {
@@ -559,6 +655,8 @@ export const authRouter = createRouter({
                   to: user.email,
                   practiceName: input.practiceName.trim(),
                   trialDays: TRIAL_DAYS,
+                  billingRequired: !noCardTrial,
+                  previewEndsAt: previewEndsAt ?? null,
                 }),
             });
           } catch {
@@ -713,13 +811,32 @@ export const authRouter = createRouter({
     .input(z.object({ email: authEmailInput }))
     .mutation(async ({ ctx, input }) => {
       const email = normalizeAuthEmail(input.email);
-      await assertPreAuthRateLimit({
-        key: `pwreset:${email}`,
-        limit: 5,
-        windowMs: 3600000,
-        message: "Too many requests. Please try again later.",
-        logContext: "requestPasswordReset",
-      });
+      // Keyed per requesting network first (IPv6 by /64), so someone else
+      // spamming this address can't use up the owner's own requests. Only a
+      // verified public address gets that bucket: a claimed one can be
+      // forged to spend someone else's. The per-address daily cap bounds how
+      // many reset emails anyone can make us send, but doesn't apply to a
+      // browser that has signed in to this account, so spam from elsewhere
+      // can't block the owner's own reset.
+      const network = loginNetworkBucket(ctx.verifiedIp);
+      if (network) {
+        await assertPreAuthRateLimit({
+          key: `pwreset:${email}:net:${network}`,
+          limit: PASSWORD_RESET_PER_NETWORK_LIMIT,
+          windowMs: 60 * 60 * 1000,
+          message: "Too many requests. Please try again later.",
+          logContext: "requestPasswordReset",
+        });
+      }
+      if (!knownDeviceForAccount(ctx.knownDeviceCookie, email)) {
+        await assertPreAuthRateLimit({
+          key: `pwreset:${email}:day`,
+          limit: PASSWORD_RESET_PER_EMAIL_DAILY_LIMIT,
+          windowMs: 24 * 60 * 60 * 1000,
+          message: "Too many requests. Please try again later.",
+          logContext: "requestPasswordReset",
+        });
+      }
 
       const [user] = await ctx.db
         .select({ id: users.id, email: users.email, name: users.name })
@@ -769,15 +886,25 @@ export const authRouter = createRouter({
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
       const [updated] = await ctx.db
         .update(users)
-        .set({ passwordHash })
+        // A reset signs the account out everywhere, including any session a
+        // person who knew the old password may still hold.
+        .set({ passwordHash, sessionVersion: bumpSessionVersion() })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
-        .returning({ id: users.id });
+        .returning({ id: users.id, email: users.email });
       if (!updated) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "This reset link is invalid or has expired.",
         });
       }
+      // The owner just proved control of the account; a sign-in lock left by
+      // someone else's guesses shouldn't keep them out with the new password.
+      await clearLoginAccountLock(updated.email).catch((err) => {
+        console.error("[resetPassword] login lock reset failed:", err);
+      });
+      // Mailbox control is as strong as a correct password, so this browser
+      // becomes a known device for the account, as after a sign-in.
+      await rememberKnownDevice(ctx.knownDeviceCookie, updated.email);
       return { ok: true };
     }),
 
@@ -802,15 +929,25 @@ export const authRouter = createRouter({
       const passwordHash = await hash(input.password, PASSWORD_HASH_COST);
       const [updated] = await ctx.db
         .update(users)
-        .set({ passwordHash, emailVerifiedAt: new Date() })
+        .set({
+          passwordHash,
+          emailVerifiedAt: new Date(),
+          sessionVersion: bumpSessionVersion(),
+        })
         .where(and(eq(users.id, result.userId), isNull(users.deletedAt)))
-        .returning({ id: users.id });
+        .returning({ id: users.id, email: users.email });
       if (!updated) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "This invite link is invalid or has expired.",
         });
       }
+      // As with a password reset: the invitee proved control of the mailbox,
+      // so earlier failed guesses shouldn't keep them out.
+      await clearLoginAccountLock(updated.email).catch((err) => {
+        console.error("[acceptInvite] login lock reset failed:", err);
+      });
+      await rememberKnownDevice(ctx.knownDeviceCookie, updated.email);
       return { ok: true };
     }),
 

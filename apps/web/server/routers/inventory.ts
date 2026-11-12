@@ -1,8 +1,15 @@
+import { isSupportedQuantity } from "@/lib/quantity";
 import { z } from "zod";
 import { eq, and, isNull, ilike, sql, type SQL } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
-import { practices, products, suppliers } from "@openpims/db";
+import { randomUUID } from "node:crypto";
+import {
+  inventoryStockAdjustments,
+  practices,
+  products,
+  suppliers,
+} from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import {
@@ -21,13 +28,15 @@ import {
   INVENTORY_SUPPLIER_NAME_MAX_LENGTH,
   INVENTORY_SUPPLIER_NOTES_MAX_LENGTH,
   INVENTORY_SUPPLIER_PHONE_MAX_LENGTH,
+  PRODUCT_PRICING_FIELDS,
+  PRODUCT_PRICING_FORBIDDEN_MESSAGE,
+  canManageProductPricing,
   isInventoryCurrencyAmountInputValid,
 } from "@/lib/inventory/policy";
 import { clinicalDateInput } from "@/lib/records/clinical-inputs";
 import { listOffsetInput } from "./pagination";
 import {
   POSTGRES_INTEGER_MAX,
-  integerColumnDeltaInput,
   nonnegativeIntegerColumnInput,
 } from "./storage-bounds";
 
@@ -88,6 +97,9 @@ const nullableOptionalTrimmedString = (label: string, max: number) =>
     ])
     .optional();
 
+const stockQuantityInput = z.number().min(0).max(POSTGRES_INTEGER_MAX)
+  .refine(isSupportedQuantity, "Use at most three decimal places.");
+
 const productCreateInput = z.object({
   name: requiredTrimmedString(
     "Product name",
@@ -101,7 +113,7 @@ const productCreateInput = z.object({
   unitPrice: moneyInput,
   taxable: z.boolean().default(true),
   costPrice: moneyInput.optional(),
-  stockQuantity: nonnegativeIntegerColumnInput.default(0),
+  stockQuantity: stockQuantityInput.default(0),
   reorderPoint: nonnegativeIntegerColumnInput.default(10),
   lotNumber: optionalTrimmedString(
     "Lot number",
@@ -112,7 +124,7 @@ const productCreateInput = z.object({
 
 const productUpdateInput = z
   .object({
-    id: z.string().uuid(),
+    id: z.string().guid(),
     name: requiredTrimmedString(
       "Product name",
       INVENTORY_PRODUCT_NAME_MAX_LENGTH
@@ -141,6 +153,9 @@ type InventoryContext = {
 
 const inventoryManagerProcedure = protectedProcedure.use(
   requireRole("admin", "veterinarian", "technician", "front_desk")
+);
+const productPricingProcedure = protectedProcedure.use(
+  requireRole("admin", "front_desk")
 );
 
 function activePracticePredicate(practiceId: string) {
@@ -186,6 +201,22 @@ async function practiceTimeZone(
 
 export const inventoryRouter = createRouter({
   // --- Products ---
+
+  getById: protectedProcedure
+    .input(z.object({ id: z.string().guid() }))
+    .query(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const [product] = await ctx.db.select().from(products)
+        .where(and(
+          eq(products.id, input.id),
+          eq(products.practiceId, ctx.practiceId),
+          isNull(products.deletedAt),
+        )).limit(1);
+      if (!product) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Inventory item not found." });
+      }
+      return product;
+    }),
 
   list: protectedProcedure
     .input(
@@ -287,7 +318,8 @@ export const inventoryRouter = createRouter({
       };
     }),
 
-  create: inventoryManagerProcedure
+  // A new product carries a selling price, so creating one is a pricing action.
+  create: productPricingProcedure
     .input(productCreateInput)
     .mutation(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
@@ -314,6 +346,15 @@ export const inventoryRouter = createRouter({
   update: inventoryManagerProcedure
     .input(productUpdateInput)
     .mutation(async ({ ctx, input }) => {
+      if (
+        !canManageProductPricing(ctx.user.role) &&
+        PRODUCT_PRICING_FIELDS.some((field) => input[field] !== undefined)
+      ) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: PRODUCT_PRICING_FORBIDDEN_MESSAGE,
+        });
+      }
       const { id, ...updates } = input;
       // Filter out undefined values
       const setValues: Record<string, unknown> = {};
@@ -355,8 +396,8 @@ export const inventoryRouter = createRouter({
   startTracking: inventoryManagerProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
-        stockQuantity: nonnegativeIntegerColumnInput,
+        id: z.string().guid(),
+        stockQuantity: stockQuantityInput,
         reorderPoint: nonnegativeIntegerColumnInput.default(10),
         lotNumber: optionalTrimmedString(
           "Lot number",
@@ -398,86 +439,157 @@ export const inventoryRouter = createRouter({
   adjustStock: inventoryManagerProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
-        adjustment: integerColumnDeltaInput,
+        id: z.string().guid(),
+        adjustment: z.number().min(-POSTGRES_INTEGER_MAX).max(POSTGRES_INTEGER_MAX)
+          .refine(
+            (value) => value !== 0 && isSupportedQuantity(value),
+            "Use a nonzero quantity with at most three decimal places.",
+          ),
         reason: requiredTrimmedString(
           "Reason",
           INVENTORY_ADJUSTMENT_REASON_MAX_LENGTH
         ),
+        // One id per form submission. Repeats of the same submission replay
+        // the original adjustment instead of moving stock twice. Optional so
+        // existing API callers keep working; they get no replay protection.
+        operationId: z.string().guid().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const [current] = await ctx.db
-        .select({
-          id: products.id,
-          inventoryTracked: products.inventoryTracked,
-          stockQuantity: products.stockQuantity,
-        })
-        .from(products)
-        .where(
-          and(
-            eq(products.id, input.id),
-            eq(products.practiceId, ctx.practiceId),
-            activePracticePredicate(ctx.practiceId),
-            isNull(products.deletedAt)
+      const operationId = input.operationId ?? randomUUID();
+      return ctx.db.transaction(async (tx) => {
+        const operationKey = `inventory-stock-adjustment:${ctx.practiceId}:${operationId}`;
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${operationKey}, 0))`
+        );
+        const [existing] = await tx
+          .select({
+            productId: inventoryStockAdjustments.productId,
+            adjustment: inventoryStockAdjustments.adjustment,
+            reason: inventoryStockAdjustments.reason,
+          })
+          .from(inventoryStockAdjustments)
+          .where(
+            and(
+              eq(inventoryStockAdjustments.practiceId, ctx.practiceId),
+              eq(inventoryStockAdjustments.operationId, operationId)
+            )
           )
-        )
-        .limit(1);
+          .limit(1);
+        if (existing) {
+          if (
+            existing.productId !== input.id ||
+            existing.adjustment !== input.adjustment ||
+            existing.reason !== input.reason
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "This stock adjustment was already recorded with different details. Refresh and review stock before adjusting again.",
+            });
+          }
+          const [product] = await tx
+            .select()
+            .from(products)
+            .where(
+              and(
+                eq(products.id, input.id),
+                eq(products.practiceId, ctx.practiceId),
+                activePracticePredicate(ctx.practiceId),
+                isNull(products.deletedAt)
+              )
+            )
+            .limit(1);
+          if (!product) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Product not found",
+            });
+          }
+          return product;
+        }
 
-      if (!current) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Product not found",
-        });
-      }
-
-      if (current.inventoryTracked === false) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            "Start stock tracking with a reviewed opening quantity before recording adjustments.",
-        });
-      }
-
-      if (current.stockQuantity + input.adjustment < 0) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Stock adjustment would make quantity negative.",
-        });
-      }
-      if (current.stockQuantity + input.adjustment > POSTGRES_INTEGER_MAX) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Stock adjustment would exceed the maximum stock quantity.",
-        });
-      }
-
-      const [product] = await ctx.db
-        .update(products)
-        .set({
-          stockQuantity: sql`${products.stockQuantity} + ${input.adjustment}`,
-        })
-        .where(
-          and(
-            eq(products.id, input.id),
-            eq(products.practiceId, ctx.practiceId),
-            eq(products.inventoryTracked, true),
-            activePracticePredicate(ctx.practiceId),
-            isNull(products.deletedAt),
-            sql`${products.stockQuantity} + ${input.adjustment} >= 0`,
-            sql`${products.stockQuantity} + ${input.adjustment} <= ${POSTGRES_INTEGER_MAX}`
+        const [current] = await tx
+          .select({
+            id: products.id,
+            inventoryTracked: products.inventoryTracked,
+            stockQuantity: products.stockQuantity,
+          })
+          .from(products)
+          .where(
+            and(
+              eq(products.id, input.id),
+              eq(products.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(products.deletedAt)
+            )
           )
-        )
-        .returning();
+          .limit(1);
 
-      if (!product) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            "Stock adjustment would move quantity outside the allowed stock range.",
+        if (!current) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Product not found",
+          });
+        }
+
+        if (current.inventoryTracked === false) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Start stock tracking with a reviewed opening quantity before recording adjustments.",
+          });
+        }
+
+        if (current.stockQuantity + input.adjustment < 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Stock adjustment would make quantity negative.",
+          });
+        }
+        if (current.stockQuantity + input.adjustment > POSTGRES_INTEGER_MAX) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Stock adjustment would exceed the maximum stock quantity.",
+          });
+        }
+
+        const [product] = await tx
+          .update(products)
+          .set({
+            stockQuantity: sql`${products.stockQuantity} + ${input.adjustment}`,
+          })
+          .where(
+            and(
+              eq(products.id, input.id),
+              eq(products.practiceId, ctx.practiceId),
+              eq(products.inventoryTracked, true),
+              activePracticePredicate(ctx.practiceId),
+              isNull(products.deletedAt),
+              sql`${products.stockQuantity} + ${input.adjustment} >= 0`,
+              sql`${products.stockQuantity} + ${input.adjustment} <= ${POSTGRES_INTEGER_MAX}`
+            )
+          )
+          .returning();
+
+        if (!product) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "Stock adjustment would move quantity outside the allowed stock range.",
+          });
+        }
+        await tx.insert(inventoryStockAdjustments).values({
+          practiceId: ctx.practiceId,
+          productId: product.id,
+          operationId,
+          adjustment: input.adjustment,
+          quantityAfter: product.stockQuantity,
+          reason: input.reason,
+          adjustedBy: ctx.user.id,
         });
-      }
-      return product;
+        return product;
+      });
     }),
 
   // --- Suppliers ---
@@ -538,7 +650,7 @@ export const inventoryRouter = createRouter({
   updateSupplier: inventoryManagerProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         name: requiredTrimmedString(
           "Supplier name",
           INVENTORY_SUPPLIER_NAME_MAX_LENGTH

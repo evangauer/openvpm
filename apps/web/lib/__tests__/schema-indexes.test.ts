@@ -15,6 +15,7 @@ import {
   clinicalNotes,
   communications,
   controlledSubstanceLog,
+  inventoryStockAdjustments,
   dispenseChargeQueue,
   emailSuppressions,
   invoices,
@@ -95,7 +96,11 @@ describe("hot table indexes", () => {
     [
       "controlled_substance_log",
       controlledSubstanceLog,
-      ["cs_log_practice_drug_date_idx", "cs_log_practice_date_idx"],
+      [
+        "cs_log_practice_drug_date_idx",
+        "cs_log_practice_date_idx",
+        "cs_log_practice_operation_uq",
+      ],
     ],
     ["webhooks", webhooks, ["webhooks_practice_active_idx"]],
     [
@@ -340,6 +345,14 @@ describe("hot table indexes", () => {
       ],
     ],
     ["payments", payments, ["payments_invoice_idx", "payments_external_id_uq"]],
+    [
+      "inventory_stock_adjustments",
+      inventoryStockAdjustments,
+      [
+        "inventory_stock_adjustments_practice_operation_uq",
+        "inventory_stock_adjustments_product_idx",
+      ],
+    ],
     [
       "prescriptions",
       prescriptions,

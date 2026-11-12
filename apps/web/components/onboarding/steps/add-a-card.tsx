@@ -36,9 +36,9 @@ export function AddACardStep({
   return (
     <div className="space-y-5">
       <p className="text-sm leading-6 text-slate-600">
-        This is optional. Your 14-day trial is fully featured and needs no card.
-        Add one whenever you are ready and your plan continues without a gap when
-        the trial ends.
+        {alreadyHasCard
+          ? "Billing is connected. Review your trial end date and manage or cancel your subscription in Plan & Billing."
+          : "Add payment details securely through Stripe. If your trial is already running, checkout preserves its original end date."}
       </p>
 
       <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4">

@@ -17,7 +17,7 @@ import {
 } from "../auth-input-policy";
 
 describe("auth password UI policy", () => {
-  const registerSource = readFileSync("app/(auth)/register/page.tsx", "utf8");
+  const registerSource = readFileSync("app/(auth)/register/register-form.tsx", "utf8");
   const loginSource = readFileSync("app/(auth)/login/page.tsx", "utf8");
   const forgotSource = readFileSync(
     "app/(auth)/forgot-password/page.tsx",
@@ -127,9 +127,9 @@ describe("auth password UI policy", () => {
       "password.length > 0 && password.length <= AUTH_PASSWORD_MAX_LENGTH"
     );
     expect(loginSource).toContain(
-      "emailIsValid && (DEMO_MODE || passwordMeetsPolicy)"
+      "isAuthEmailLengthValid(email) && isValidEmail(email) && passwordMeetsPolicy"
     );
-    expect(loginSource).toContain("if (!canSubmit) return;");
+    expect(loginSource).toContain("if (!canSubmit || loading) return;");
     expect(loginSource).toContain("email.trim().toLowerCase()");
     expect(loginSource).toContain("disabled={!canSubmit || loading}");
     expect(loginSource).not.toContain(

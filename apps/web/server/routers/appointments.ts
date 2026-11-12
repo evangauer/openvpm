@@ -76,6 +76,10 @@ import {
   takeAppointmentSchedulingLock,
   type AppointmentLocationFailure,
 } from "@/lib/scheduling/location";
+import {
+  computeOccurrenceDate,
+  resolveRecurrenceTimeZone,
+} from "@/lib/scheduling/recurrence";
 import { ambulatoryWorkspaceSettings } from "@/lib/ambulatory-workspace";
 import { ambulatoryWorkspaceRolloutEnabled } from "@/server/ambulatory-rollout";
 
@@ -109,8 +113,8 @@ const listAppointmentsInput = z
   .object({
     startDate: appointmentRangeInput,
     endDate: appointmentRangeInput,
-    doctorId: z.string().uuid().optional(),
-    locationId: z.string().uuid().optional(),
+    doctorId: z.string().guid().optional(),
+    locationId: z.string().guid().optional(),
   })
   .superRefine((input, ctx) => {
     if (
@@ -129,12 +133,12 @@ const createAppointmentInput = z
   .object({
     startTime: appointmentDateTimeInput,
     endTime: appointmentDateTimeInput,
-    typeId: z.string().uuid().optional(),
-    patientId: z.string().uuid().optional(),
-    clientId: z.string().uuid().optional(),
-    doctorId: z.string().uuid().optional(),
-    roomId: z.string().uuid().optional(),
-    locationId: z.string().uuid().optional(),
+    typeId: z.string().guid().optional(),
+    patientId: z.string().guid().optional(),
+    clientId: z.string().guid().optional(),
+    doctorId: z.string().guid().optional(),
+    roomId: z.string().guid().optional(),
+    locationId: z.string().guid().optional(),
     notes: appointmentNotesInput,
   })
   .superRefine((input, ctx) => {
@@ -149,12 +153,12 @@ const createAppointmentInput = z
 
 const rescheduleAppointmentInput = z
   .object({
-    id: z.string().uuid(),
+    id: z.string().guid(),
     startTime: appointmentDateTimeInput,
     endTime: appointmentDateTimeInput,
-    doctorId: z.string().uuid().nullable().optional(),
-    roomId: z.string().uuid().nullable().optional(),
-    locationId: z.string().uuid().optional(),
+    doctorId: z.string().guid().nullable().optional(),
+    roomId: z.string().guid().nullable().optional(),
+    locationId: z.string().guid().optional(),
   })
   .superRefine((input, ctx) => {
     if (!isAppointmentDateTimeRangeValid(input.startTime, input.endTime)) {
@@ -176,9 +180,9 @@ const availableSlotsInput = z
       .max(APPOINTMENT_DURATION_MAX_MINUTES)
       .default(30),
     stepMinutes: z.number().int().min(5).max(240).optional(),
-    doctorId: z.string().uuid().optional(),
-    roomId: z.string().uuid().optional(),
-    locationId: z.string().uuid().optional(),
+    doctorId: z.string().guid().optional(),
+    roomId: z.string().guid().optional(),
+    locationId: z.string().guid().optional(),
     dayStartHour: z.number().int().min(0).max(23).default(8),
     dayEndHour: z.number().int().min(1).max(24).default(18),
   })
@@ -194,12 +198,12 @@ const availableSlotsInput = z
 
 const createRecurringInput = z
   .object({
-    patientId: z.string().uuid(),
-    clientId: z.string().uuid().optional(),
-    doctorId: z.string().uuid().optional(),
-    typeId: z.string().uuid().optional(),
-    roomId: z.string().uuid().optional(),
-    locationId: z.string().uuid().optional(),
+    patientId: z.string().guid(),
+    clientId: z.string().guid().optional(),
+    doctorId: z.string().guid().optional(),
+    typeId: z.string().guid().optional(),
+    roomId: z.string().guid().optional(),
+    locationId: z.string().guid().optional(),
     startTime: appointmentDateTimeInput,
     endTime: appointmentDateTimeInput,
     frequency: z.enum(["weekly", "monthly", "annual"]),
@@ -631,7 +635,7 @@ export const appointmentsRouter = createRouter({
   listByPatient: protectedProcedure
     .input(
       z.object({
-        patientId: z.string().uuid(),
+        patientId: z.string().guid(),
         limit: z.number().int().min(1).max(100).default(50),
       }),
     )
@@ -677,7 +681,7 @@ export const appointmentsRouter = createRouter({
     }),
 
   getById: protectedProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const [appt] = await ctx.db
         .select({
@@ -854,8 +858,8 @@ export const appointmentsRouter = createRouter({
     .input(
       z
         .object({
-          patientId: z.string().uuid(),
-          locationId: z.string().uuid().optional(),
+          patientId: z.string().guid(),
+          locationId: z.string().guid().optional(),
         })
         .strict(),
     )
@@ -1036,7 +1040,7 @@ export const appointmentsRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         status: appointmentStatusInput,
         confirmationContactMethod: confirmationContactMethodInput.optional(),
       }),
@@ -1381,8 +1385,8 @@ export const appointmentsRouter = createRouter({
     .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
-        patientId: z.string().uuid(),
+        id: z.string().guid(),
+        patientId: z.string().guid(),
       }),
     )
     .mutation(async ({ ctx, input }) =>
@@ -1510,9 +1514,121 @@ export const appointmentsRouter = createRouter({
       }),
     ),
 
+  delete: protectedProcedure
+    .use(requireRole("admin", "veterinarian", "technician", "front_desk"))
+    .input(
+      z.object({
+        id: z.string().guid(),
+        reason: z.string().trim().min(3).max(500),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const deleted = await ctx.db.transaction(async (tx) => {
+        await takeAppointmentSchedulingLock(
+          tx as unknown as Database,
+          ctx.practiceId,
+        );
+        const [current] = await tx
+          .select()
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.id, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(appointments.deletedAt),
+            ),
+          )
+          .for("update");
+        if (!current)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Appointment not found.",
+          });
+        if (
+          !["scheduled", "confirmed", "cancelled", "no_show"].includes(
+            current.status,
+          )
+        ) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "Visits that have started must be corrected through the encounter workspace.",
+          });
+        }
+        // Keep the appointment visible whenever it owns clinical or financial evidence.
+        const [evidence] = await tx
+          .select({
+            hasRecords: sql<boolean>`
+          exists (select 1 from soap_notes where appointment_id = ${input.id}) or
+          exists (select 1 from vital_signs where appointment_id = ${input.id}) or
+          exists (select 1 from vaccination_records where appointment_id = ${input.id}) or
+          exists (select 1 from lab_results where appointment_id = ${input.id}) or
+          exists (select 1 from procedures where appointment_id = ${input.id}) or
+          exists (select 1 from prescriptions where appointment_id = ${input.id}) or
+          exists (select 1 from invoices where appointment_id = ${input.id}) or
+          exists (select 1 from visit_closeouts where appointment_id = ${input.id} and deleted_at is null) or
+          exists (select 1 from visit_work_items where appointment_id = ${input.id}) or
+          exists (select 1 from consent_requests where appointment_id = ${input.id}) or
+          exists (select 1 from files where appointment_id = ${input.id}) or
+          exists (select 1 from capture_sessions where appointment_id = ${input.id}) or
+          exists (select 1 from case_entries where appointment_id = ${input.id}) or
+          exists (select 1 from visit_treatment_plans where appointment_id = ${input.id})
+        `,
+          })
+          .from(appointments)
+          .where(
+            and(
+              eq(appointments.id, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+            ),
+          );
+        if (!evidence || evidence.hasRecords) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "This appointment has clinical or billing records. Use the encounter workspace to correct it; its records cannot be deleted from the schedule.",
+          });
+        }
+        const now = new Date();
+        const [result] = await tx
+          .update(appointments)
+          .set({ status: "cancelled", deletedAt: now, updatedAt: now })
+          .where(
+            and(
+              eq(appointments.id, input.id),
+              eq(appointments.practiceId, ctx.practiceId),
+              isNull(appointments.deletedAt),
+            ),
+          )
+          .returning();
+        if (!result)
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Appointment changed. Refresh and try again.",
+          });
+        return result;
+      });
+      await dispatchAppointmentWebhookAfterCommit(
+        ctx,
+        ctx.practiceId,
+        "appointment.cancelled",
+        {
+          id: deleted.id,
+          appointmentId: deleted.id,
+          startTime: deleted.startTime,
+          endTime: deleted.endTime,
+          status: "cancelled",
+          source: "dashboard",
+          deleted: true,
+        },
+      );
+      return { id: deleted.id };
+    }),
+
   cancelRecurringSeries: protectedProcedure
     .use(requireRole("admin", "veterinarian", "front_desk"))
-    .input(z.object({ seriesId: z.string().uuid() }))
+    .input(z.object({ seriesId: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const now = new Date();
 
@@ -1862,7 +1978,7 @@ export const appointmentsRouter = createRouter({
   }),
 
   listRooms: protectedProcedure
-    .input(z.object({ locationId: z.string().uuid().optional() }).optional())
+    .input(z.object({ locationId: z.string().guid().optional() }).optional())
     .query(async ({ ctx, input }) => {
       const conditions = [
         eq(rooms.practiceId, ctx.practiceId),
@@ -2054,112 +2170,4 @@ export const appointmentsRouter = createRouter({
 
 function calendarFeedUrl(token: string | null): string | null {
   return token ? `${appBaseUrl()}/api/calendar/${token}.ics` : null;
-}
-
-/** Compute the start date/time for the Nth occurrence (0-based). */
-function computeOccurrenceDate(
-  baseDate: Date,
-  frequency: "weekly" | "monthly" | "annual",
-  interval: number,
-  n: number,
-  timeZone?: string | null,
-): Date {
-  const resolvedTimeZone = resolveRecurrenceTimeZone(timeZone);
-  const base = recurrenceBaseParts(baseDate, resolvedTimeZone);
-  const occurrenceDate = recurrenceDateInput(
-    base.dateInput,
-    frequency,
-    interval,
-    n,
-  );
-
-  return dateInputTimeUtcInstant(
-    occurrenceDate,
-    {
-      hour: base.hour,
-      minute: base.minute,
-      second: base.second,
-    },
-    resolvedTimeZone,
-  );
-}
-
-function resolveRecurrenceTimeZone(timeZone?: string | null): string {
-  const resolved = timeZone?.trim() || "UTC";
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: resolved }).format(
-      new Date(0),
-    );
-    return resolved;
-  } catch {
-    return "UTC";
-  }
-}
-
-function recurrenceBaseParts(
-  date: Date,
-  timeZone: string,
-): { dateInput: string; hour: number; minute: number; second: number } {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).formatToParts(date);
-
-  const value = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((part) => part.type === type)?.value;
-  const year = value("year");
-  const month = value("month");
-  const day = value("day");
-  const hour = Number(value("hour"));
-  const minute = Number(value("minute"));
-  const second = Number(value("second"));
-
-  if (!year || !month || !day || [hour, minute, second].some(Number.isNaN)) {
-    const fallback = new Date(date);
-    return {
-      dateInput: formatDateInputForTimeZone(fallback, "UTC"),
-      hour: fallback.getUTCHours(),
-      minute: fallback.getUTCMinutes(),
-      second: fallback.getUTCSeconds(),
-    };
-  }
-
-  return {
-    dateInput: `${year}-${month}-${day}`,
-    hour,
-    minute,
-    second,
-  };
-}
-
-function recurrenceDateInput(
-  baseDateInput: string,
-  frequency: "weekly" | "monthly" | "annual",
-  interval: number,
-  n: number,
-): string {
-  const [year, month, day] = baseDateInput.split("-").map(Number) as [
-    number,
-    number,
-    number,
-  ];
-  const d = new Date(Date.UTC(year, month - 1, day));
-  switch (frequency) {
-    case "weekly":
-      d.setUTCDate(d.getUTCDate() + 7 * interval * n);
-      break;
-    case "monthly":
-      d.setUTCMonth(d.getUTCMonth() + interval * n);
-      break;
-    case "annual":
-      d.setUTCFullYear(d.getUTCFullYear() + interval * n);
-      break;
-  }
-  return formatDateInputForTimeZone(d, "UTC");
 }

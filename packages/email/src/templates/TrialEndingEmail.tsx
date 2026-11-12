@@ -14,7 +14,31 @@ export interface TrialEndingEmailProps {
   monthlyPrice: string; // e.g. "$79"
   billingUrl: string;
   billingConnected?: boolean;
+  /** What the clinic really did during the trial (sample data excluded). */
+  usage?: TrialUsage | null;
   unsubscribeUrl?: string;
+}
+
+export interface TrialUsage {
+  clients: number;
+  appointments: number;
+  invoices: number;
+  staffCount: number;
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** "12 clients · 30 appointments · 3 team members", or null when empty. */
+export function trialUsageLine(usage: TrialUsage): string | null {
+  const parts = [
+    usage.clients > 0 ? plural(usage.clients, "client") : null,
+    usage.appointments > 0 ? plural(usage.appointments, "appointment") : null,
+    usage.invoices > 0 ? plural(usage.invoices, "invoice") : null,
+    usage.staffCount > 1 ? plural(usage.staffCount, "team member") : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export function TrialEndingEmail({
@@ -25,8 +49,10 @@ export function TrialEndingEmail({
   monthlyPrice,
   billingUrl,
   billingConnected = false,
+  usage = null,
   unsubscribeUrl,
 }: TrialEndingEmailProps) {
+  const usageLine = usage ? trialUsageLine(usage) : null;
   const whenLabel = daysLeft <= 1 ? "tomorrow" : `in ${daysLeft} days`;
   return (
     <EmailLayout
@@ -49,6 +75,19 @@ export function TrialEndingEmail({
         Your schedule, records, and everything you&apos;ve set up stay exactly
         as they are.
       </Paragraph>
+
+      {usageLine ? (
+        <InfoCard tone="brand">
+          <Label>So far in {practiceName}</Label>
+          <Paragraph>{usageLine}</Paragraph>
+        </InfoCard>
+      ) : usage ? (
+        <Paragraph muted>
+          You haven&apos;t added a real client yet. Adding one client and one
+          visit before the trial ends is the quickest way to see whether
+          OpenVPM fits your clinic.
+        </Paragraph>
+      ) : null}
 
       <InfoCard tone="warning">
         <Label>Simple, flat pricing</Label>

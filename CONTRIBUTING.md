@@ -4,21 +4,30 @@ Thank you for your interest in contributing to OpenVPM!
 
 ## Development Setup
 
-1. **Prerequisites**: Node.js 20+, pnpm 9+, Docker
+1. **Prerequisites**: Node.js 24.22.1 or a newer Node.js 24 patch, pnpm 9+, Docker
 2. **Clone and install**:
    ```bash
    git clone https://github.com/evangauer/openvpm.git
    cd openvpm
+   nvm use # when using nvm; see .nvmrc
    cp .env.example .env
+   # set NEXTAUTH_SECRET in .env to the output of: openssl rand -base64 32
    pnpm install --frozen-lockfile
    ```
 3. **Start services**:
    ```bash
-   docker compose -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
+   docker compose --env-file .env -f docker/docker-compose.yml up -d postgres minio minio-bootstrap
    pnpm db:migrate
    pnpm db:seed
    pnpm dev
    ```
+
+Keep `.env` at the repository root beside `.env.example`. `pnpm dev` loads it
+for the web server in `apps/web`; you do not need a second env file there.
+Existing shell exports and app env values take precedence. If `DATABASE_URL`
+is missing, the dev server stops with setup instructions. Restart `pnpm dev`
+after changing the root env file. Production continues to use its deployment
+environment.
 
 ## Project Structure
 

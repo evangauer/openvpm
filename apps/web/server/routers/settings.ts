@@ -51,6 +51,11 @@ import {
 } from "@/lib/onboarding/demo-data-lifecycle";
 import { createAuthToken } from "@/lib/auth-tokens";
 import { PASSWORD_HASH_COST } from "@/lib/auth-hashing";
+import {
+  bumpSessionVersion,
+  bumpSessionVersionOnRestore,
+  bumpSessionVersionOnRoleChange,
+} from "@/lib/session-version";
 import { authPasswordInput } from "@/lib/auth-password";
 import {
   ACCOUNT_DELETION_REASON_MAX_LENGTH,
@@ -97,6 +102,10 @@ import {
   setMarketingEmailPreferenceForRecipient,
 } from "@/lib/platform-email-preferences";
 import { assertOutboundEmailAllowed } from "@/lib/outbound-email-security";
+import {
+  clearLoginAccountLock,
+  loginAccountLocks,
+} from "@/lib/login-throttle";
 import {
   BODY_CONDITION_SCALES,
   MEASUREMENT_SYSTEMS,
@@ -604,6 +613,21 @@ interface PracticeSettings {
   [k: string]: unknown;
 }
 
+// Columns safe to send to an admin's browser about a staff member. Never the
+// password hash or session version.
+const STAFF_USER_COLUMNS = {
+  id: users.id,
+  name: users.name,
+  email: users.email,
+  role: users.role,
+  isVeterinarian: users.isVeterinarian,
+  locationId: users.locationId,
+  phone: users.phone,
+  licenseNumber: users.licenseNumber,
+  createdAt: users.createdAt,
+  deletedAt: users.deletedAt,
+};
+
 export const settingsRouter = createRouter({
   // ── Practice ──────────────────────────────────────────────
 
@@ -625,6 +649,14 @@ export const settingsRouter = createRouter({
       ),
     };
   }),
+
+  /** Self-host configuration problems an admin should fix. */
+  deploymentNotices: adminProcedure.query(({ ctx }) => ({
+    trustedProxyHopsMissing: ctx.untrustedProxy === true,
+    proxyNotForwarding: ctx.proxyNotForwarding
+      ? { address: ctx.proxyNotForwarding.address }
+      : null,
+  })),
 
   getMarketingEmailPreference: adminProcedure.query(async ({ ctx }) => {
     const [practice] = await ctx.db
@@ -1139,7 +1171,7 @@ export const settingsRouter = createRouter({
   updateLocation: adminProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         name: locationNameInput.optional(),
         address: addressInput,
         phone: phoneInput,
@@ -1171,7 +1203,7 @@ export const settingsRouter = createRouter({
     }),
 
   setPrimaryLocation: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const updated = await ctx.db.transaction(async (tx) => {
         await tx.execute(
@@ -1224,7 +1256,7 @@ export const settingsRouter = createRouter({
     }),
 
   deleteLocation: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
         await takeAppointmentSchedulingLock(
@@ -2025,6 +2057,53 @@ export const settingsRouter = createRouter({
       );
   }),
 
+  /** Staff whose sign-in is currently locked after repeated failed attempts. */
+  staffSignInLocks: adminProcedure.query(async ({ ctx }) => {
+    await assertActivePractice(ctx);
+    const staff = await ctx.db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(
+        and(
+          eq(users.practiceId, ctx.practiceId),
+          activePracticePredicate(ctx.practiceId),
+          isNull(users.deletedAt),
+        ),
+      );
+    const locks = await loginAccountLocks(staff.map((user) => user.email));
+    return staff.flatMap((user) => {
+      const lockedUntil = locks.get(user.email);
+      return lockedUntil ? [{ userId: user.id, lockedUntil }] : [];
+    });
+  }),
+
+  /**
+   * Lifts a staff member's sign-in lock so they can try their password again
+   * right away. Recorded in the audit log like other admin mutations.
+   */
+  clearStaffSignInLock: adminProcedure
+    .input(z.object({ id: z.string().guid() }))
+    .mutation(async ({ ctx, input }) => {
+      await assertActivePractice(ctx);
+      const [targetUser] = await ctx.db
+        .select({ id: users.id, email: users.email })
+        .from(users)
+        .where(
+          and(
+            eq(users.id, input.id),
+            eq(users.practiceId, ctx.practiceId),
+            activePracticePredicate(ctx.practiceId),
+            isNull(users.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!targetUser) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+      }
+      await clearLoginAccountLock(targetUser.email);
+      return { id: targetUser.id };
+    }),
+
   /** Weekly veterinarian hours by clinic location, in the practice timezone. */
   providerScheduleSetup: adminProcedure.query(async ({ ctx }) => {
     const [practice] = await ctx.db
@@ -2132,8 +2211,8 @@ export const settingsRouter = createRouter({
   replaceProviderSchedule: adminProcedure
     .input(
       z.object({
-        userId: z.string().uuid(),
-        locationId: z.string().uuid().optional(),
+        userId: z.string().guid(),
+        locationId: z.string().guid().optional(),
         windows: providerScheduleWindowsInput,
         expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
         // Retained briefly so a client loaded before this release fails safe
@@ -2375,6 +2454,7 @@ export const settingsRouter = createRouter({
         practiceCreatedAt: practice.createdAt,
         userId: ctx.user.id,
         userEmailVerifiedAt: ctx.user.emailVerifiedAt,
+        practiceInPreview: ctx.user.practiceInPreview,
         ip: ctx.ip,
         operation: "staff_invite",
       });
@@ -2545,7 +2625,7 @@ export const settingsRouter = createRouter({
   updateUser: adminProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         name: staffNameInput.optional(),
         role: z
           .enum(["admin", "veterinarian", "technician", "front_desk", "viewer"])
@@ -2573,6 +2653,10 @@ export const settingsRouter = createRouter({
           ? { isVeterinarian: true }
           : {}),
       };
+      // A role change signs the staff member out everywhere so every open tab
+      // reloads with the new permissions.
+      const sessionVersion = bumpSessionVersionOnRoleChange(data.role);
+      const updateSet = sessionVersion ? { ...data, sessionVersion } : data;
       if (
         (data.role !== undefined && data.role !== "admin") ||
         data.isVeterinarian === false
@@ -2645,7 +2729,7 @@ export const settingsRouter = createRouter({
 
           const [updated] = await tx
             .update(users)
-            .set(data)
+            .set(updateSet)
             .where(
               and(
                 eq(users.id, id),
@@ -2655,7 +2739,7 @@ export const settingsRouter = createRouter({
                 isNull(users.deletedAt),
               ),
             )
-            .returning();
+            .returning(STAFF_USER_COLUMNS);
 
           if (!updated) {
             throw new TRPCError({
@@ -2670,7 +2754,7 @@ export const settingsRouter = createRouter({
 
       const [updated] = await ctx.db
         .update(users)
-        .set(data)
+        .set(updateSet)
         .where(
           and(
             eq(users.id, id),
@@ -2679,7 +2763,7 @@ export const settingsRouter = createRouter({
             isNull(users.deletedAt),
           ),
         )
-        .returning();
+        .returning(STAFF_USER_COLUMNS);
       if (!updated) {
         throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
       }
@@ -2687,7 +2771,7 @@ export const settingsRouter = createRouter({
     }),
 
   deactivateUser: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       if (input.id === ctx.user.id) {
         throw new TRPCError({
@@ -2788,7 +2872,7 @@ export const settingsRouter = createRouter({
 
         const [updated] = await tx
           .update(users)
-          .set({ deletedAt: new Date() })
+          .set({ deletedAt: new Date(), sessionVersion: bumpSessionVersion() })
           .where(
             and(
               eq(users.id, input.id),
@@ -2816,11 +2900,13 @@ export const settingsRouter = createRouter({
     }),
 
   restoreUser: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const [updated] = await ctx.db
         .update(users)
-        .set({ deletedAt: null })
+        // Restoring an account never revives sessions issued before it was
+        // deactivated; the staff member signs in again.
+        .set({ deletedAt: null, sessionVersion: bumpSessionVersionOnRestore() })
         .where(
           and(
             eq(users.id, input.id),
@@ -2880,7 +2966,7 @@ export const settingsRouter = createRouter({
   updateAppointmentType: adminProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         name: appointmentTypeNameInput.optional(),
         durationMinutes: z
           .number()
@@ -2922,7 +3008,7 @@ export const settingsRouter = createRouter({
     }),
 
   deleteAppointmentType: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
         const [type] = await tx
@@ -3057,7 +3143,7 @@ export const settingsRouter = createRouter({
       z.object({
         name: roomNameInput,
         type: z.enum(["exam", "surgery", "treatment", "boarding"]),
-        locationId: z.string().uuid(),
+        locationId: z.string().guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -3090,7 +3176,7 @@ export const settingsRouter = createRouter({
     }),
 
   deleteRoom: adminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
         await takeAppointmentSchedulingLock(

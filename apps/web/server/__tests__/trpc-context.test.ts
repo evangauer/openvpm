@@ -45,13 +45,14 @@ vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
 }));
 
-const { createTRPCContext } = await import("../trpc");
+const { createRouter, createTRPCContext, protectedProcedure, requireRole } =
+  await import("../trpc");
 const { practices, users } = await import("@openpims/db");
 
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
 const USER_ID = "00000000-0000-0000-0000-000000000001";
 
-function session() {
+function session(overrides: Record<string, unknown> = {}) {
   return {
     user: {
       id: USER_ID,
@@ -59,8 +60,35 @@ function session() {
       name: "Front Desk",
       role: "front_desk",
       practiceId: PRACTICE_ID,
+      sessionVersion: 1,
+      ...overrides,
     },
   };
+}
+
+function activeRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: USER_ID,
+    role: "front_desk",
+    sessionVersion: 1,
+    emailVerifiedAt: null,
+    practiceCreatedAt: new Date("2026-01-01T00:00:00Z"),
+    recoveryHold: false,
+    ...overrides,
+  };
+}
+
+const probeRouter = createRouter({
+  adminOnly: protectedProcedure
+    .use(requireRole("admin"))
+    .query(() => "admin-ok"),
+  write: protectedProcedure.mutation(() => "write-ok"),
+});
+
+async function callerFor(jwt: Record<string, unknown>, row: unknown[]) {
+  mocks.getServerSession.mockResolvedValueOnce(session(jwt));
+  mockActiveUserLookup(row);
+  return probeRouter.createCaller(await createTRPCContext());
 }
 
 function sqlIncludesColumn(
@@ -142,7 +170,7 @@ describe("createTRPCContext session hardening", () => {
 
   it("keeps active sessions and verifies the user and practice inside the tenant", async () => {
     mocks.getServerSession.mockResolvedValueOnce(session());
-    const lookup = mockActiveUserLookup([{ id: USER_ID }]);
+    const lookup = mockActiveUserLookup([activeRow()]);
 
     const ctx = await createTRPCContext({
       req: new Request("https://app.example.test/api/trpc", {
@@ -185,5 +213,112 @@ describe("createTRPCContext session hardening", () => {
       PRACTICE_ID,
       expect.any(Function)
     );
+  });
+
+  it("reads the role and session version in the same per-request lookup", async () => {
+    mocks.getServerSession.mockResolvedValueOnce(session());
+    mockActiveUserLookup([activeRow()]);
+
+    await createTRPCContext();
+
+    expect(mocks.db.select).toHaveBeenCalledTimes(1);
+    const selection = mocks.db.select.mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(selection.role).toBe(users.role);
+    expect(selection.sessionVersion).toBe(users.sessionVersion);
+  });
+
+  it("replaces the sign-in role snapshot with the current database role", async () => {
+    mocks.getServerSession.mockResolvedValueOnce(session({ role: "admin" }));
+    mockActiveUserLookup([activeRow({ role: "technician" })]);
+
+    const ctx = await createTRPCContext();
+
+    expect(ctx.session?.user.role).toBe("technician");
+  });
+
+  it("drops sessions whose version was bumped after they were issued", async () => {
+    mocks.getServerSession.mockResolvedValueOnce(session({ sessionVersion: 1 }));
+    mockActiveUserLookup([activeRow({ sessionVersion: 2 })]);
+
+    const ctx = await createTRPCContext();
+
+    expect(ctx.session).toBeNull();
+  });
+
+  it("keeps sessions issued before versioning while the account is unbumped", async () => {
+    mocks.getServerSession.mockResolvedValueOnce(
+      session({ sessionVersion: undefined }),
+    );
+    mockActiveUserLookup([activeRow({ sessionVersion: 1 })]);
+
+    const ctx = await createTRPCContext();
+
+    expect(ctx.session?.user.id).toBe(USER_ID);
+  });
+
+  it("drops sessions issued before versioning once the account was bumped", async () => {
+    mocks.getServerSession.mockResolvedValueOnce(
+      session({ sessionVersion: undefined }),
+    );
+    mockActiveUserLookup([activeRow({ sessionVersion: 2 })]);
+
+    const ctx = await createTRPCContext();
+
+    expect(ctx.session).toBeNull();
+  });
+});
+
+describe("protected procedures enforce the current role and session", () => {
+  it("refuses admin procedures to a demoted admin on the next request", async () => {
+    const caller = await callerFor({ role: "admin" }, [
+      activeRow({ role: "veterinarian" }),
+    ]);
+
+    await expect(caller.adminOnly()).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+  });
+
+  it("allows admin procedures to a promoted user before they sign in again", async () => {
+    const caller = await callerFor({ role: "front_desk" }, [
+      activeRow({ role: "admin" }),
+    ]);
+
+    await expect(caller.adminOnly()).resolves.toBe("admin-ok");
+  });
+
+  it("blocks writes for a user changed to viewer on the next request", async () => {
+    const caller = await callerFor({ role: "admin" }, [
+      activeRow({ role: "viewer" }),
+    ]);
+
+    await expect(caller.write()).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "Your account has read-only (viewer) access.",
+    });
+  });
+
+  it("returns UNAUTHORIZED for a session revoked by a version bump", async () => {
+    const caller = await callerFor({ role: "admin", sessionVersion: 3 }, [
+      activeRow({ role: "admin", sessionVersion: 4 }),
+    ]);
+
+    await expect(caller.adminOnly()).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    await expect(caller.write()).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+  });
+
+  it("still serves sessions issued before versioning when the account is unbumped", async () => {
+    const caller = await callerFor({ role: "admin", sessionVersion: undefined }, [
+      activeRow({ role: "admin", sessionVersion: 1 }),
+    ]);
+
+    await expect(caller.adminOnly()).resolves.toBe("admin-ok");
   });
 });

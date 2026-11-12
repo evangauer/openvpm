@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 const mocks = vi.hoisted(() => {
   const selectResults: unknown[][] = [];
@@ -34,6 +35,8 @@ const mocks = vi.hoisted(() => {
     selectResults,
     updateReturns,
     updateSet,
+    updateWhere,
+    retrieveOpenvpmSubscription: vi.fn(),
     constructSubscriptionWebhookEvent: vi.fn(),
     retrieveSubscription: vi.fn(),
     claimStripeEvent: vi.fn(async () => true),
@@ -62,6 +65,7 @@ vi.mock("@/lib/tenant-db", () => ({
 
 vi.mock("@/lib/stripe", () => ({
   constructSubscriptionWebhookEvent: mocks.constructSubscriptionWebhookEvent,
+  subscriptionStripe: vi.fn(() => ({ subscriptions: { retrieve: mocks.retrieveOpenvpmSubscription } })),
   stripe: {
     subscriptions: {
       retrieve: mocks.retrieveSubscription,
@@ -97,11 +101,12 @@ vi.mock("@/lib/conversion-milestones", () => ({
 }));
 
 const { POST } = await import("./route");
+const { POST: OPENVPM_POST } = await import("../stripe-openvpm-subscription/route");
 const { STRIPE_WEBHOOK_BODY_MAX_BYTES } =
   await import("@/lib/stripe-webhook-limits");
 
 const ROUTE_SOURCE = readFileSync(
-  new URL("./route.ts", import.meta.url),
+  new URL("../../../../lib/billing/subscription-webhook.ts", import.meta.url),
   "utf8",
 );
 const PRACTICE_ID = "00000000-0000-0000-0000-0000000000aa";
@@ -862,5 +867,37 @@ describe("Stripe subscription webhook", () => {
     expect(ROUTE_SOURCE).toMatch(
       /eq\(practices\.id, practiceId\),\s*isNull\(practices\.deletedAt\)/s,
     );
+  });
+});
+
+
+describe("OpenVPM webhook account isolation", () => {
+  it("uses its own subscription client and scopes signed completion to OpenVPM clinics", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(checkoutCompletedEvent());
+    mocks.retrieveOpenvpmSubscription.mockResolvedValue(stripeSubscription("trialing"));
+    mocks.updateReturns.push([{ id: PRACTICE_ID }], [{ id: PRACTICE_ID }]);
+    const response = await OPENVPM_POST(stripeRequest());
+    expect(response.status).toBe(200);
+    expect(mocks.constructSubscriptionWebhookEvent).toHaveBeenCalledWith("{}", "sig", "openvpm");
+    expect(mocks.retrieveOpenvpmSubscription).toHaveBeenCalledWith(SUBSCRIPTION_ID);
+    expect(mocks.retrieveSubscription).not.toHaveBeenCalled();
+    const dialect = new PgDialect();
+    for (const [condition] of mocks.updateWhere.mock.calls) {
+      const query = dialect.sqlToQuery(condition as never);
+      expect(query.sql).toContain('"practices"."stripe_billing_account"');
+      expect(query.params).toContain("openvpm");
+    }
+  });
+
+  it("cannot grant a trial when the signed clinic link belongs to the other account", async () => {
+    mocks.constructSubscriptionWebhookEvent.mockResolvedValue(checkoutCompletedEvent());
+    // The account predicate matches no legacy clinic, even with valid metadata.
+    mocks.updateReturns.push([]);
+    const response = await OPENVPM_POST(stripeRequest());
+    expect(response.status).toBe(200);
+    expect(mocks.retrieveOpenvpmSubscription).not.toHaveBeenCalled();
+    expect(mocks.syncPracticeSubscriptionQuantities).not.toHaveBeenCalled();
+    expect(mocks.attachStripeEventPractice).not.toHaveBeenCalled();
+    expect(mocks.updateSet).not.toHaveBeenCalledWith(expect.objectContaining({ billingStatus: "trialing" }));
   });
 });

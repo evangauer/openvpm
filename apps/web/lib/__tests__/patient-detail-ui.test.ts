@@ -120,7 +120,7 @@ describe("patient detail UI states", () => {
     expect(source).toContain('title="No weight records yet"');
     expect(source).toContain('title="No vitals recorded yet"');
     expect(source).toContain('title="No vaccination records yet"');
-    expect(source).toContain('title="No medical records yet"');
+    expect(source).toContain('title="No SOAP notes yet"');
     expect(source).toContain('title="No appointments yet"');
     expect(source).toContain('title="No invoices yet"');
   });

@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { LabNavigation } from "@/components/labs/lab-navigation";
 
 type InboxFilter =
   | "action_required"
@@ -303,6 +304,9 @@ function LabResultsInboxContent() {
         </Badge>
       </div>
 
+      {!isFrontDesk && process.env.NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED === "true" ? (
+        <LabNavigation active="results" />
+      ) : null}
       {selectedResultId ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 p-4 text-sm">
           <span className="font-medium">Showing selected result</span>

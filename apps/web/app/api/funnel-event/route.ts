@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@openpims/db/client";
 import { withSystem } from "@/lib/tenant-db";
 import { insertFunnelEvent } from "@/lib/funnel-events-server";
+import { BUILD_SCENES, BUILD_SYSTEMS } from "@/lib/build/catalog";
 import { rateLimit, rateLimitResponseHeaders } from "@/lib/rate-limit";
 import { clientIpFromRequest } from "@/lib/request-ip";
 import {
@@ -28,6 +29,10 @@ const ALLOWED_PROP_KEYS = new Set([
   "model",
   "goal",
   "step",
+  "scene",
+  "system",
+  "ms",
+  "services",
 ]);
 const ALLOWED_CLINIC_MODELS = new Set([
   "companion",
@@ -54,13 +59,17 @@ const ALLOWED_ONBOARDING_STEPS = new Set([
   "allSet",
   "first_action",
 ]);
+const ALLOWED_BUILD_SCENES: ReadonlySet<string> = new Set(BUILD_SCENES);
+const ALLOWED_BUILD_SYSTEMS: ReadonlySet<string> = new Set(BUILD_SYSTEMS);
+/** Time on a scene, capped so one idle tab can't skew the averages. */
+const BUILD_SCENE_MS_MAX = 60 * 60 * 1000;
 const UUID_PATH_SEGMENT_RE =
   /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
 
 const eventSchema = z
   .object({
-    eventId: z.string().uuid(),
-    anonymousId: z.string().uuid(),
+    eventId: z.string().guid(),
+    anonymousId: z.string().guid(),
     name: z.enum([
       "visit",
       "demo_land",
@@ -68,6 +77,10 @@ const eventSchema = z
       "demo_gate_submitted",
       "demo_role_selected",
       "demo_tool_opened",
+      "demo_welcome_viewed",
+      "demo_workflow_selected",
+      "demo_workflow_started",
+      "demo_welcome_skipped",
       "demo_cta_start_clinic",
       "signup_land",
       "signup_profile_viewed",
@@ -82,6 +95,9 @@ const eventSchema = z
       "onboarding_step_completed",
       "onboarding_completed",
       "first_action_selected",
+      "build_scene_viewed",
+      "build_scene_completed",
+      "build_gate_submitted",
     ]),
     source: z
       .string()
@@ -91,7 +107,9 @@ const eventSchema = z
       .regex(/^[a-zA-Z0-9._:/-]+$/)
       .optional(),
     path: z.string().trim().min(1).max(500).startsWith("/").optional(),
-    props: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+    props: z
+      .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+      .optional(),
   })
   .strict();
 
@@ -141,6 +159,28 @@ function cleanProps(
       }
       if (key === "step") {
         return typeof value === "string" && ALLOWED_ONBOARDING_STEPS.has(value);
+      }
+      if (key === "scene") {
+        return typeof value === "string" && ALLOWED_BUILD_SCENES.has(value);
+      }
+      if (key === "system") {
+        return typeof value === "string" && ALLOWED_BUILD_SYSTEMS.has(value);
+      }
+      if (key === "ms") {
+        return (
+          typeof value === "number" &&
+          Number.isInteger(value) &&
+          value >= 0 &&
+          value <= BUILD_SCENE_MS_MAX
+        );
+      }
+      if (key === "services") {
+        return (
+          typeof value === "number" &&
+          Number.isInteger(value) &&
+          value >= 0 &&
+          value <= 50
+        );
       }
       return typeof value !== "string" || value.length <= 200;
     })

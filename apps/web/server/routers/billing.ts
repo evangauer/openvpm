@@ -1,3 +1,4 @@
+import { isSupportedQuantity, quantityLineTotalCents } from "@/lib/quantity";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import {
@@ -302,17 +303,17 @@ const invoiceLineInput = z
     ),
     quantity: z
       .number()
-      .int()
       .min(BILLING_INVOICE_LINE_QUANTITY_MIN)
-      .max(BILLING_INVOICE_LINE_QUANTITY_MAX),
+      .max(BILLING_INVOICE_LINE_QUANTITY_MAX)
+      .refine(isSupportedQuantity, "Use at most three decimal places for quantity"),
     unitPrice: nonNegativeMoneySchema,
     itemType: z.enum(["service", "product"]),
-    itemId: z.string().uuid().optional(),
-    sourcePrescriptionId: z.string().uuid().optional(),
-    sourceDispenseChargeId: z.string().uuid().optional(),
+    itemId: z.string().guid().optional(),
+    sourcePrescriptionId: z.string().guid().optional(),
+    sourceDispenseChargeId: z.string().guid().optional(),
   })
   .superRefine((item, ctx) => {
-    const totalCents = moneyToCents(item.unitPrice) * item.quantity;
+    const totalCents = quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity);
     if (totalCents > BILLING_MAX_MONEY_CENTS) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -341,9 +342,9 @@ const invoiceLineInput = z
 
 const createInvoiceInput = z
   .object({
-    clientId: z.string().uuid(),
-    patientId: z.string().uuid().optional(),
-    appointmentId: z.string().uuid().optional(),
+    clientId: z.string().guid(),
+    patientId: z.string().guid().optional(),
+    appointmentId: z.string().guid().optional(),
     items: z
       .array(invoiceLineInput)
       .max(
@@ -355,7 +356,7 @@ const createInvoiceInput = z
   })
   .superRefine((input, ctx) => {
     const subtotalCents = input.items.reduce(
-      (sum, item) => sum + moneyToCents(item.unitPrice) * item.quantity,
+      (sum, item) => sum + quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity),
       0
     );
     if (subtotalCents > BILLING_MAX_MONEY_CENTS) {
@@ -369,7 +370,7 @@ const createInvoiceInput = z
 
 const updateInvoiceItemsInput = z
   .object({
-    id: z.string().uuid(),
+    id: z.string().guid(),
     expectedUpdatedAt: z.date(),
     items: z
       .array(invoiceLineInput)
@@ -381,7 +382,7 @@ const updateInvoiceItemsInput = z
   })
   .superRefine((input, ctx) => {
     const subtotalCents = input.items.reduce(
-      (sum, item) => sum + moneyToCents(item.unitPrice) * item.quantity,
+      (sum, item) => sum + quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity),
       0
     );
     if (subtotalCents > BILLING_MAX_MONEY_CENTS) {
@@ -1109,7 +1110,7 @@ function invoiceLineTaxTotals(
   try {
     return calculateInvoiceTaxTotals(
       items.map((item) => ({
-        lineTotalCents: moneyToCents(item.unitPrice) * item.quantity,
+        lineTotalCents: quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity),
         taxable:
           item.taxable ??
           invoiceLineTaxable(item, taxabilityByReference ?? new Map()),
@@ -1915,7 +1916,7 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         acknowledgeLegacyReview: z.boolean().default(false),
       }),
     )
@@ -1991,7 +1992,7 @@ export const billingRouter = createRouter({
           .limit(1);
         if (!practice) throw practiceNotFound();
         const subtotalCents =
-          moneyToCents(source.unitPriceSnapshot) * source.quantity;
+          quantityLineTotalCents(moneyToCents(source.unitPriceSnapshot), source.quantity);
         const [sourceProduct] = await tx
           .select({ id: products.id, taxable: products.taxable })
           .from(products)
@@ -2156,7 +2157,7 @@ export const billingRouter = createRouter({
     .use(requireRole("admin"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         reason: z.string().trim().min(5).max(500),
       }),
     )
@@ -2267,7 +2268,7 @@ export const billingRouter = createRouter({
 
   reopenDispenseCharge: protectedProcedure
     .use(requireRole("admin"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       return ctx.db.transaction(async (tx) => {
         const txCtx: BillingContext = { db: tx, practiceId: ctx.practiceId };
@@ -2397,8 +2398,8 @@ export const billingRouter = createRouter({
       z.object({
         status: invoiceStatusSchema.optional(),
         isEstimate: z.boolean().optional(),
-        patientId: z.string().uuid().optional(),
-        appointmentId: z.string().uuid().optional(),
+        patientId: z.string().guid().optional(),
+        appointmentId: z.string().guid().optional(),
         limit: z.number().int().min(1).max(100).default(25),
         offset: listOffsetInput,
       })
@@ -2484,7 +2485,7 @@ export const billingRouter = createRouter({
     }),
 
   getInvoice: protectedProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const [invoice] = await ctx.db
         .select({
@@ -2565,7 +2566,7 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         status: z.enum(["draft", "sent", "paid", "overdue"]),
       })
     )
@@ -2703,7 +2704,7 @@ export const billingRouter = createRouter({
   updateService: billingAdminProcedure
     .input(
       serviceInput.extend({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         expected: serviceInput,
       })
     )
@@ -2746,7 +2747,7 @@ export const billingRouter = createRouter({
   archiveService: billingAdminProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         expected: serviceInput,
       })
     )
@@ -2773,7 +2774,7 @@ export const billingRouter = createRouter({
   restoreService: billingAdminProcedure
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         expected: serviceInput,
       })
     )
@@ -2808,7 +2809,7 @@ export const billingRouter = createRouter({
     }),
 
   patientsByClient: protectedProcedure
-    .input(z.object({ clientId: z.string().uuid() }))
+    .input(z.object({ clientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       return ctx.db
         .select({
@@ -2947,7 +2948,7 @@ export const billingRouter = createRouter({
               quantity: item.quantity,
               unitPrice: item.unitPrice,
               total: centsToMoney(
-                item.quantity * moneyToCents(item.unitPrice),
+                quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity),
               ),
               taxable: invoiceLineTaxable(item, taxabilityByReference),
               itemType: item.itemType as "service" | "product",
@@ -3002,6 +3003,8 @@ export const billingRouter = createRouter({
             patientId: invoices.patientId,
             clientId: invoices.clientId,
             updatedAt: invoices.updatedAt,
+            // Preserve PostgreSQL microseconds for the final compare-and-swap.
+            updatedAtVersion: sql<string>`${invoices.updatedAt}::text`,
           })
           .from(invoices)
           .where(
@@ -3103,7 +3106,7 @@ export const billingRouter = createRouter({
             subtotal: centsToMoney(totals.subtotalCents),
             tax: centsToMoney(totals.taxCents),
             total: centsToMoney(totals.totalCents),
-            updatedAt: new Date(),
+            updatedAt: new Date(Math.max(Date.now(), existing.updatedAt.getTime() + 1)),
           })
           .where(
             and(
@@ -3113,7 +3116,7 @@ export const billingRouter = createRouter({
               eq(invoices.status, "draft"),
               eq(invoices.isEstimate, existing.isEstimate),
               eq(invoices.paidAmount, existing.paidAmount ?? "0.00"),
-              eq(invoices.updatedAt, input.expectedUpdatedAt),
+              sql`${invoices.updatedAt} = ${existing.updatedAtVersion}::timestamptz`,
               noActivePaymentsForInvoice(),
               noActiveAdjustmentsForInvoice()
             )
@@ -3153,7 +3156,7 @@ export const billingRouter = createRouter({
             description: item.description,
             quantity: item.quantity,
             unitPrice: item.unitPrice,
-            total: centsToMoney(moneyToCents(item.unitPrice) * item.quantity),
+            total: centsToMoney(quantityLineTotalCents(moneyToCents(item.unitPrice), item.quantity)),
             taxable: invoiceLineTaxable(item, taxabilityByReference),
             itemType: item.itemType,
             itemId: item.itemId ?? null,
@@ -3201,14 +3204,44 @@ export const billingRouter = createRouter({
         .limit(input.limit);
     }),
 
+  searchProducts: protectedProcedure
+    .input(
+      z.object({
+        search: invoiceSearchInput,
+        cursor: z.number().int().min(0).nullish(),
+        limit: z.number().int().min(1).max(100).default(50),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const conditions: SQL[] = [
+        eq(products.practiceId, ctx.practiceId),
+        isNull(products.deletedAt),
+      ];
+      if (input.search) {
+        conditions.push(ilike(products.name, `%${input.search}%`));
+      }
+
+      const rows = await ctx.db
+        .select()
+        .from(products)
+        .where(and(...conditions))
+        .orderBy(products.name, products.id)
+        .limit(input.limit + 1)
+        .offset(input.cursor ?? 0);
+      return {
+        items: rows.slice(0, input.limit),
+        nextCursor: rows.length > input.limit ? (input.cursor ?? 0) + input.limit : undefined,
+      };
+    }),
+
   // --- Payments ---
 
   recordPayment: protectedProcedure
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        invoiceId: z.string().uuid(),
-        operationId: z.string().uuid(),
+        invoiceId: z.string().guid(),
+        operationId: z.string().guid(),
         amount: paymentAmountSchema,
         method: z.enum(["cash", "credit_card", "debit_card", "check", "online", "other"]),
         notes: billingNotesInput,
@@ -3381,7 +3414,7 @@ export const billingRouter = createRouter({
     }),
 
   listPayments: protectedProcedure
-    .input(z.object({ invoiceId: z.string().uuid() }))
+    .input(z.object({ invoiceId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       await getInvoiceForPractice(ctx, input.invoiceId);
       return ctx.db
@@ -3425,7 +3458,7 @@ export const billingRouter = createRouter({
     .use(requireRole("admin"))
     .input(
       z.object({
-        paymentId: z.string().uuid(),
+        paymentId: z.string().guid(),
         amount: paymentAmountSchema.optional(),
         reason: clinicalTextInput(
           "Refund reason",
@@ -3761,7 +3794,7 @@ export const billingRouter = createRouter({
 
   createCardPaymentCheckout: protectedProcedure
     .use(requireRole("admin", "front_desk"))
-    .input(z.object({ invoiceId: z.string().uuid() }))
+    .input(z.object({ invoiceId: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await assertBillingProviderActionsAllowed(ctx);
       const [invoice] = await ctx.db
@@ -3925,7 +3958,7 @@ export const billingRouter = createRouter({
   // --- Credits, write-offs, and voids ---
 
   listAdjustments: protectedProcedure
-    .input(z.object({ invoiceId: z.string().uuid() }))
+    .input(z.object({ invoiceId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       await getInvoiceForPractice(ctx, input.invoiceId);
       return ctx.db
@@ -3959,8 +3992,8 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        invoiceId: z.string().uuid(),
-        operationId: z.string().uuid(),
+        invoiceId: z.string().guid(),
+        operationId: z.string().guid(),
         type: z.enum(["credit", "write_off"]),
         amount: paymentAmountSchema,
         reason: z
@@ -4141,7 +4174,7 @@ export const billingRouter = createRouter({
     .use(requireRole("admin", "front_desk"))
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         reason: z
           .string()
           .trim()
@@ -4205,6 +4238,18 @@ export const billingRouter = createRouter({
           .returning();
 
         if (!updated) {
+          const [paymentHistory] = await tx
+            .select({ id: payments.id })
+            .from(payments)
+            .where(and(eq(payments.invoiceId, input.id), isNull(payments.deletedAt)))
+            .limit(1);
+          if (paymentHistory) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message:
+                "Invoices with payment or refund history cannot be voided. Apply a credit to cancel the remaining balance while preserving the payment history.",
+            });
+          }
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "Invoice changed while voiding. Refresh and try again.",
@@ -4268,7 +4313,7 @@ export const billingRouter = createRouter({
 
   convertEstimateToInvoice: protectedProcedure
     .use(requireRole("admin", "front_desk"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       const existing = await getInvoiceForPractice(ctx, input.id);
       assertCanConvertEstimate(existing);

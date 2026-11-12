@@ -7,8 +7,9 @@ import {
   numeric,
   timestamp,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { baseColumns } from "./common";
 import { practices } from "./practices";
 import { patients } from "./patients";
@@ -41,6 +42,10 @@ export const controlledSubstanceLog = pgTable(
     performedAt: timestamp("performed_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    // Client-generated per-submission key. A repeated submit (double click,
+    // network retry) replays the original entry instead of writing a second
+    // regulated record. Null for entries written before the key existed.
+    operationId: uuid("operation_id"),
   },
   (table) => ({
     practiceDrugDateIdx: index("cs_log_practice_drug_date_idx").on(
@@ -53,6 +58,9 @@ export const controlledSubstanceLog = pgTable(
       table.deletedAt,
       table.performedAt
     ),
+    practiceOperationUq: uniqueIndex("cs_log_practice_operation_uq")
+      .on(table.practiceId, table.operationId)
+      .where(sql`${table.operationId} is not null`),
   })
 );
 

@@ -2,8 +2,11 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Loopback only: host tools (pnpm db:migrate, pnpm dev) can connect, but the
+    # default credentials below are never reachable from the network. The web
+    # container reaches Postgres over the compose network.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: openpims
       POSTGRES_PASSWORD: openpims
@@ -17,11 +20,15 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    # Keep the service and volume names so existing S3 endpoints still work.
+    # PGSTY Silo maintains the MinIO-compatible server and bundles mcli.
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z@sha256:7bb2aff6b89efe1cb1303c10fc21d579447434ed06649ac9ec05a5e2dbf30ad7
     restart: unless-stopped
+    # Loopback only, like Postgres: files are served to browsers through the
+    # app's authenticated proxy, never directly from MinIO.
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: openpims
       MINIO_ROOT_PASSWORD: openpims123
@@ -30,29 +37,55 @@ services:
     command: server /data --console-address ":9001"
 
   minio-bootstrap:
-    image: minio/mc:latest
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z@sha256:7bb2aff6b89efe1cb1303c10fc21d579447434ed06649ac9ec05a5e2dbf30ad7
     depends_on:
       minio:
         condition: service_started
-    entrypoint: >
-      /bin/sh -c "
-      until mc alias set local http://minio:9000 openpims openpims123; do
-        sleep 1;
-      done;
-      mc mb --ignore-existing local/openpims;
-      "
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        for attempt in $$(seq 1 60); do
+          if mcli alias set local http://minio:9000 openpims openpims123; then
+            exec mcli mb --ignore-existing local/openpims
+          fi
+          sleep 1
+        done
+        echo "Object storage was not ready after 60 attempts" >&2
+        exit 1
 
   web:
     build:
       context: ..
       dockerfile: apps/web/Dockerfile
     restart: unless-stopped
+    # Published on every interface for installs where clients connect to the
+    # app directly (OPENVPM_TRUSTED_PROXY_HOPS unset). That is safe for
+    # sign-in limits: without trusted hops, client addresses aren't used for
+    # sign-in limits at all, so a forged X-Forwarded-For has no effect;
+    # per-account limits apply.
+    #
+    # If you set OPENVPM_TRUSTED_PROXY_HOPS below, the app MUST be reachable
+    # only through your proxy, or anyone can forge X-Forwarded-For and burn
+    # your clinic's sign-in limits. Either:
+    #   - proxy in a container: put it on this Compose network, point it at
+    #     http://web:3000, and delete this `ports:` entry; or
+    #   - proxy on the host: change this to "127.0.0.1:3000:3000".
+    # Docker-published ports bypass host firewalls such as ufw.
     ports:
       - "3000:3000"
     environment:
       DATABASE_URL: "postgresql://openpims:openpims@postgres:5432/openpims"
-      NEXTAUTH_SECRET: "docker-dev-secret-change-in-production"
+      # Signs every staff session. There is deliberately no default: a value
+      # published in this repository would let anyone forge a sign-in.
+      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:?Set NEXTAUTH_SECRET in .env (openssl rand -base64 32) and pass --env-file .env}"
       NEXTAUTH_URL: "http://localhost:3000"
+      # Only if you run a reverse proxy in front of OpenVPM: set to the number
+      # of proxies in front of this container ("1" for nginx or Caddy; count a
+      # CDN such as Cloudflare in front of it as another hop) so sign-in limits
+      # see real client IPs. Then restrict `ports:` above as described there.
+      # See the README section "Reverse proxies and sign-in limits".
+      OPENVPM_TRUSTED_PROXY_HOPS: ""
       S3_ENDPOINT: "http://minio:9000"
       S3_ACCESS_KEY: "openpims"
       S3_SECRET_KEY: "openpims123"

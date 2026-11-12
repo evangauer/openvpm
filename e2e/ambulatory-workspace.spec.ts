@@ -131,9 +131,6 @@ test("runs the synthetic patient-chart to field-closeout flow", async ({
   await expect(page.getByLabel("Subjective")).toHaveValue(
     `Synthetic appetite and gait history ${evidenceTag}.`,
   );
-  await page.getByRole("button", { name: "Finalize SOAP note" }).click();
-  await expect(page.getByText("SOAP note finalized")).toBeVisible();
-
   await page.getByLabel("Temp (F)").fill("101.5");
   const weightInput = page.getByLabel("Weight (lb)");
   await expect(weightInput).toHaveAttribute("min", "0.003");
@@ -182,6 +179,97 @@ test("runs the synthetic patient-chart to field-closeout flow", async ({
   await page.getByRole("button", { name: "Save prescription" }).click();
   await expect(page.getByText("Prescription created")).toBeVisible();
 
+  await page
+    .getByRole("group", {
+      name: "Performed work Synthetic field vaccine",
+      exact: true,
+    })
+    .getByRole("button", { name: "No charge", exact: true })
+    .click();
+  const vaccineReconciliation = page.getByLabel(
+    "Reconciliation reason for Synthetic field vaccine",
+  );
+  await vaccineReconciliation.fill("Synthetic acceptance item — no charge");
+  await page
+    .getByRole("button", { name: "Confirm no charge", exact: true })
+    .click();
+  await expect(vaccineReconciliation).toHaveCount(0);
+
+  await page
+    .getByRole("group", {
+      name: "Performed work Synthetic field medication",
+      exact: true,
+    })
+    .getByRole("button", { name: "No charge", exact: true })
+    .click();
+  const prescriptionReconciliation = page.getByLabel(
+    "Reconciliation reason for Synthetic field medication",
+  );
+  await prescriptionReconciliation.fill(
+    "Synthetic acceptance item — no charge",
+  );
+  const resolutionResponse = page.waitForResponse((response) =>
+    response.url().includes("encounters.resolveVisitWork"),
+  );
+  await page
+    .getByRole("button", { name: "Confirm no charge", exact: true })
+    .click();
+  const resolved = await resolutionResponse;
+  const resolutionPayload = await resolved.json();
+  for (const item of Array.isArray(resolutionPayload)
+    ? resolutionPayload
+    : [resolutionPayload])
+    expect(item).not.toHaveProperty("error");
+  await expect(prescriptionReconciliation).toHaveCount(0);
+  await expect(
+    page
+      .getByText("Items requiring attention")
+      .locator("..")
+      .getByText("0", { exact: true }),
+  ).toBeVisible();
+
+  const fieldVisitUrl = page.url();
+  await page
+    .getByRole("link", { name: "Charges and payment", exact: true })
+    .click();
+  const charges = page.locator("#charge-capture");
+  await charges.getByRole("button", { name: "Search services..." }).click();
+  await charges.getByRole("option").first().click();
+  await charges.getByRole("button", { name: "Add", exact: true }).click();
+  await charges.getByRole("button", { name: "Create visit invoice" }).click();
+  await expect(
+    page.locator('a[href^="/billing?expand="]').first(),
+  ).toBeVisible();
+  await page.locator('a[href^="/billing?expand="]').first().click();
+  await page
+    .getByRole("row")
+    .filter({ has: page.getByRole("cell", { name: "Maple", exact: true }) })
+    .first()
+    .getByTitle("Mark as Sent", { exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Record Payment", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Record Payment", exact: true })
+    .last()
+    .click();
+  await expect(
+    page.getByText("Payment recorded", { exact: true }),
+  ).toBeVisible();
+  await page.goto("/", { waitUntil: "networkidle" });
+  const unfinished = page.getByRole("region", {
+    name: "Unfinished field visits",
+  });
+  await expect(unfinished.getByText("Maple", { exact: true })).toBeVisible();
+  await unfinished.getByRole("link", { name: "Resume visit" }).click();
+  await expect(page).toHaveURL(fieldVisitUrl);
+  await expect(page.getByLabel("Subjective")).toHaveValue(
+    `Synthetic appetite and gait history ${evidenceTag}.`,
+  );
+  await page.getByRole("button", { name: "Finalize SOAP note" }).click();
+  await expect(page.getByText("SOAP note finalized")).toBeVisible();
+
   await page.getByRole("button", { name: "Review and finish" }).click();
   await expect(page.getByText("Finish field visit").first()).toBeVisible();
   await page.getByRole("button", { name: "Copy from Plan" }).click();
@@ -193,38 +281,7 @@ test("runs the synthetic patient-chart to field-closeout flow", async ({
     page.getByText("Clinical handoff finalized").first(),
   ).toBeVisible();
 
-  const vaccineReconciliation = page.getByLabel(
-    "Reconciliation reason for Synthetic field vaccine",
-  );
-  await vaccineReconciliation.fill("Synthetic acceptance item — no charge");
-  await page
-    .getByRole("button", { name: "No charge", exact: true })
-    .first()
-    .click();
-  await expect(vaccineReconciliation).toHaveCount(0);
-
-  const prescriptionReconciliation = page.getByLabel(
-    "Reconciliation reason for Synthetic field medication",
-  );
-  await prescriptionReconciliation.fill(
-    "Synthetic acceptance item — no charge",
-  );
-  await page
-    .getByRole("button", { name: "No charge", exact: true })
-    .first()
-    .click();
-  await expect(prescriptionReconciliation).toHaveCount(0);
-  await expect(
-    page
-      .getByText("Items requiring attention")
-      .locator("..")
-      .getByText("0", { exact: true }),
-  ).toBeVisible();
-
-  await page.getByLabel("Billing disposition").selectOption("no_charge");
-  await page
-    .getByLabel("No-charge reason")
-    .fill("Synthetic no-charge workflow verification");
+  await page.getByLabel("Billing disposition").selectOption("paid");
   await page.getByLabel("Owner handoff").selectOption("verbal");
   await page.getByRole("button", { name: "Complete visit" }).click();
   await expect(page.getByText("Visit completed safely").first()).toBeVisible();
@@ -232,6 +289,12 @@ test("runs the synthetic patient-chart to field-closeout flow", async ({
 
   await page.reload({ waitUntil: "networkidle" });
   await expect(page.getByText("Completed").first()).toBeVisible();
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect(
+    page
+      .getByRole("region", { name: "Unfinished field visits" })
+      .getByText("Maple", { exact: true }),
+  ).toHaveCount(0);
 
   expect(errors, "ambulatory flow logged unexpected browser errors").toEqual(
     [],

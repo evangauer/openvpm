@@ -22,6 +22,7 @@ import {
   TRIAL_DAYS,
   hasHostedFullAccess,
 } from "@/lib/billing/plans";
+import { hasPreviewAccess, isPreviewPractice } from "@/lib/billing/preview";
 import { BILLING_CADENCES, CLOUD_BILLING_OPTIONS } from "@/lib/billing/catalog";
 import { usageForPractice, currentPeriodMonth } from "@/lib/billing/usage";
 import {
@@ -30,6 +31,7 @@ import {
   type BillingSyncState,
 } from "@/lib/billing/subscription-sync";
 import { appBaseUrl } from "@/lib/app-url";
+import { subscriptionBillingAccount, type SubscriptionBillingAccount } from "@/lib/billing/stripe-accounts";
 import { billingContactEmail } from "@/lib/billing/contact";
 import { RECOVERY_HOLD_BLOCK_MESSAGE } from "@/lib/recovery-hold";
 
@@ -44,9 +46,9 @@ function practiceNotFound(): TRPCError {
 }
 
 /** Whether a tier can be bought self-serve (Stripe price configured). */
-function purchasable(tier: keyof typeof PLANS): boolean {
+function purchasable(tier: keyof typeof PLANS, account: SubscriptionBillingAccount): boolean {
   if (tier !== "cloud") return false;
-  return cloudLocationPriceIds().length > 0;
+  return cloudLocationPriceIds(account).length > 0;
 }
 
 export const subscriptionRouter = createRouter({
@@ -59,7 +61,9 @@ export const subscriptionRouter = createRouter({
         trialEndsAt: practices.trialEndsAt,
         timezone: practices.timezone,
         stripeCustomerId: practices.stripeCustomerId,
+        stripeBillingAccount: practices.stripeBillingAccount,
         stripeSubscriptionId: practices.stripeSubscriptionId,
+        previewEndsAt: practices.previewEndsAt,
       })
       .from(practices)
       .where(activePracticeWhere(ctx.practiceId))
@@ -69,6 +73,7 @@ export const subscriptionRouter = createRouter({
       throw practiceNotFound();
     }
 
+    const billingAccount = subscriptionBillingAccount(practice.stripeBillingAccount);
     const enforced = billingEnforced();
     let counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
     let billingSync: BillingSyncState | null = await readBillingSyncState(
@@ -96,6 +101,10 @@ export const subscriptionRouter = createRouter({
         practice.billingStatus,
         practice.trialEndsAt
       ),
+      // Preview before card: set to the window's end while no trial exists.
+      previewEndsAt:
+        enforced && isPreviewPractice(practice) ? practice.previewEndsAt : null,
+      previewActive: enforced && hasPreviewAccess(practice),
       locationCount: counts.locationCount,
       billableSeatCount: counts.billableSeatCount,
       locationUnitPriceMonthlyUsd: CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
@@ -122,7 +131,7 @@ export const subscriptionRouter = createRouter({
                 counts.locationCount,
                 counts.billableSeatCount,
               ),
-        purchasable: !!cloudCheckoutPriceIds(option.cadence).locationPriceId,
+        purchasable: !!cloudCheckoutPriceIds(option.cadence, billingAccount).locationPriceId,
       })),
       billingSyncStatus: billingSync,
       usage: { period, sms: smsUsed, aiRuns: aiUsed },
@@ -142,7 +151,7 @@ export const subscriptionRouter = createRouter({
           aiOveragePriceUsd: p.aiOveragePriceUsd,
           smsOveragePriceUsd: p.smsOveragePriceUsd,
           selfServe: p.selfServe,
-          purchasable: purchasable(t),
+          purchasable: purchasable(t, billingAccount),
         };
       }),
     };
@@ -161,17 +170,10 @@ export const subscriptionRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       const plan = PLANS[input.tier];
-      const { locationPriceId } = cloudCheckoutPriceIds(input.billingCadence);
-      if (!plan.selfServe || !locationPriceId) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "This plan isn't available for checkout yet.",
-        });
-      }
-
       const [practice] = await ctx.db
         .select({
           stripeCustomerId: practices.stripeCustomerId,
+        stripeBillingAccount: practices.stripeBillingAccount,
           stripeSubscriptionId: practices.stripeSubscriptionId,
           email: practices.email,
           billingStatus: practices.billingStatus,
@@ -206,6 +208,11 @@ export const subscriptionRouter = createRouter({
         });
       }
 
+      const billingAccount = subscriptionBillingAccount(practice.stripeBillingAccount);
+      const { locationPriceId } = cloudCheckoutPriceIds(input.billingCadence, billingAccount);
+      if (!plan.selfServe || !locationPriceId) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "This plan isn't available for checkout yet." });
+      }
       const counts = await countBillableLocationsAndSeats(ctx.db, ctx.practiceId);
 
       const base = appBaseUrl();
@@ -231,6 +238,7 @@ export const subscriptionRouter = createRouter({
         lineItems,
         practiceId: ctx.practiceId,
         customerId: practice.stripeCustomerId ?? undefined,
+        ...(billingAccount === "openvpm" ? { billingAccount } : {}),
         customerEmail,
         trialEnd: activeTrialEnd,
         trialPeriodDays: activeTrialEnd || practice.trialEndsAt ? undefined : TRIAL_DAYS,
@@ -260,6 +268,7 @@ export const subscriptionRouter = createRouter({
     const [practice] = await ctx.db
       .select({
         stripeCustomerId: practices.stripeCustomerId,
+        stripeBillingAccount: practices.stripeBillingAccount,
         recoveryHold: practices.recoveryHold,
       })
       .from(practices)
@@ -284,8 +293,10 @@ export const subscriptionRouter = createRouter({
       });
     }
 
+    const billingAccount = subscriptionBillingAccount(practice.stripeBillingAccount);
     const result = await createBillingPortalSession({
       customerId: practice.stripeCustomerId,
+      ...(billingAccount === "openvpm" ? { billingAccount } : {}),
       returnUrl: `${appBaseUrl()}/settings?tab=billing`,
     });
     const portalUrl = result?.url;

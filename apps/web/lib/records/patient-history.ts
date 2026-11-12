@@ -1,5 +1,6 @@
 export const PATIENT_HISTORY_RECORD_TYPES = [
   "soap_note",
+  "chart_note",
   "prescription",
   "vaccination",
   "lab_result",

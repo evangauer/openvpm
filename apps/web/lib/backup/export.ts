@@ -50,6 +50,8 @@ import {
   insurancePolicies,
   historicalAppointments,
   historicalDocuments,
+  labReportReceipts,
+  labReportDecisions,
   labResults,
   labResultEvents,
   labResultReplacements,
@@ -220,6 +222,8 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "vaccinationRecords",
   "labResults",
   "labResultEvents",
+  "labReportReceipts",
+  "labReportDecisions",
   "externalLabReports",
   "externalLabObservations",
   "procedures",
@@ -293,6 +297,8 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   // Backward compatibility for backups created before the lab result safety
   // ledger and clinic-wide review inbox were introduced.
   "labResultEvents",
+  "labReportReceipts",
+  "labReportDecisions",
   "labResultReplacements",
   // Backward compatibility for backups created before the immutable client
   // treatment-plan decision ledger.
@@ -551,6 +557,12 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("labResults", "reviewedBy", "users"),
   optionalRef("labResults", "followUpAssignedTo", "users"),
   optionalRef("labResults", "followUpCompletedBy", "users"),
+  requiredRef("labReportReceipts", "fileId", "files"),
+  requiredRef("labReportReceipts", "receivedBy", "users"),
+  optionalRef("labReportReceipts", "supersedesId", "labReportReceipts"),
+  requiredRef("labReportDecisions", "reportId", "labReportReceipts"),
+  requiredRef("labReportDecisions", "actorId", "users"),
+  optionalRef("labReportDecisions", "patientId", "patients"),
   requiredRef("labResultEvents", "labResultId", "labResults"),
   requiredRef("labResultEvents", "patientId", "patients"),
   optionalRef("labResultEvents", "appointmentId", "appointments"),
@@ -1193,28 +1205,57 @@ export function validatePracticeExportRestore(data: unknown): {
       !Number.isInteger(row.signedFileSizeBytes) ||
       Number(row.signedFileSizeBytes) <= 0
     ) {
-      pushError(`${label} must contain an exact namespaced PDF byte manifest.`);
+      const legacyMissing =
+        row.evidenceProfile === LEGACY_SIGNED_CONSENT_EVIDENCE_PROFILE &&
+        row.signedFileKey === null &&
+        row.signedFileChecksumSha256 === null &&
+        row.signedFileSizeBytes === null;
+      pushError(
+        `${label} must contain an exact namespaced PDF byte manifest.${
+          legacyMissing ? " reason: legacy_frozen_pdf_manifest_missing." : ""
+        }`,
+      );
     }
     const file = typeof row.fileId === "string" ? filesById.get(row.fileId) : undefined;
-    if (
-      !file ||
-      file.practiceId !== row.practiceId ||
-      file.deletedAt != null ||
-      file.idempotencyKey !== row.id ||
-      file.mimeType !== "application/pdf" ||
-      file.category !== "consents" ||
-      file.source !== "consent_signature" ||
-      file.entityType !== "patient" ||
-      file.entityId !== row.patientId ||
-      file.patientId !== row.patientId ||
-      (file.appointmentId ?? null) !== (row.appointmentId ?? null) ||
-      file.fileKey !== row.signedFileKey ||
-      file.checksumSha256 !== row.signedFileChecksumSha256 ||
-      file.fileSizeBytes !== row.signedFileSizeBytes ||
-      Object.prototype.hasOwnProperty.call(file, "objectEtag") ||
-      Object.prototype.hasOwnProperty.call(file, "objectVersionId")
-    ) {
-      pushError(`${label}.fileId must reference its exact portable consent PDF manifest.`);
+    // Report only fixed field names, never the stored values or document bytes.
+    // These are the same exact-binding checks for modern and legacy evidence.
+    const mismatches = file
+      ? [
+          ["practiceId", file.practiceId !== row.practiceId],
+          ["deletedAt", file.deletedAt != null],
+          ["idempotencyKey", file.idempotencyKey !== row.id],
+          ["mimeType", file.mimeType !== "application/pdf"],
+          ["category", file.category !== "consents"],
+          ["source", file.source !== "consent_signature"],
+          ["entityType", file.entityType !== "patient"],
+          ["entityId", file.entityId !== row.patientId],
+          ["patientId", file.patientId !== row.patientId],
+          [
+            "appointmentId",
+            (file.appointmentId ?? null) !== (row.appointmentId ?? null),
+          ],
+          ["fileKey", file.fileKey !== row.signedFileKey],
+          [
+            "checksumSha256",
+            file.checksumSha256 !== row.signedFileChecksumSha256,
+          ],
+          ["fileSizeBytes", file.fileSizeBytes !== row.signedFileSizeBytes],
+          [
+            "objectEtag_forbidden",
+            Object.prototype.hasOwnProperty.call(file, "objectEtag"),
+          ],
+          [
+            "objectVersionId_forbidden",
+            Object.prototype.hasOwnProperty.call(file, "objectVersionId"),
+          ],
+        ]
+          .filter(([, mismatch]) => mismatch)
+          .map(([field]) => field)
+      : ["file_missing"];
+    if (mismatches.length > 0) {
+      pushError(
+        `${label}.fileId must reference its exact portable consent PDF manifest. mismatches: ${mismatches.join(", ")}.`,
+      );
     }
   });
 
@@ -1595,6 +1636,78 @@ export function validatePracticeExportRestore(data: unknown): {
     });
   }
 
+  const receiptRows = rowsById("labReportReceipts");
+  const receiptFiles = rowsById("files");
+  const receiptDigests = new Set<unknown>();
+  for (const receipt of receiptRows.values()) {
+    const file = receiptFiles.get(String(receipt.fileId));
+    if (
+      !file ||
+      file.category !== "lab-results" ||
+      file.mimeType !== "application/pdf" ||
+      file.checksumSha256 !== receipt.checksumSha256 ||
+      !/^[0-9a-f]{64}$/.test(String(receipt.checksumSha256))
+    ) {
+      pushError(
+        "Lab report receipt must identify its original PDF and exact checksum.",
+      );
+    }
+    if (receiptDigests.has(receipt.checksumSha256))
+      pushError("Lab report receipts must have unique checksums.");
+    receiptDigests.add(receipt.checksumSha256);
+    const seen = new Set<string>();
+    let cursor: Row | undefined = receipt;
+    while (cursor) {
+      const id = String(cursor.id);
+      if (seen.has(id)) {
+        pushError("Lab report revisions must not contain a cycle.");
+        break;
+      }
+      seen.add(id);
+      cursor =
+        cursor.supersedesId == null
+          ? undefined
+          : receiptRows.get(String(cursor.supersedesId));
+    }
+  }
+  const reportHistories = new Map<string, Row[]>();
+  for (const decision of rowsFor(data, "labReportDecisions")) {
+    const id = String(decision.reportId);
+    reportHistories.set(id, [...(reportHistories.get(id) ?? []), decision]);
+  }
+  for (const history of reportHistories.values()) {
+    history.sort((a, b) => Number(a.version) - Number(b.version));
+    let state: unknown = "unmatched";
+    let patientId: unknown = null;
+    history.forEach((decision, index) => {
+      const reason =
+        typeof decision.reason === "string" &&
+        decision.reason.trim().length > 0;
+      const valid =
+        decision.version === index + 1 &&
+        ((decision.state === "matched" &&
+          state === "unmatched" &&
+          typeof decision.patientId === "string") ||
+          (decision.state === "reviewed" &&
+            state === "matched" &&
+            decision.patientId === patientId) ||
+          (decision.state === "unmatched" &&
+            state !== "unmatched" &&
+            decision.patientId == null &&
+            reason) ||
+          (decision.state === "dismissed" &&
+            state === "unmatched" &&
+            decision.patientId == null &&
+            reason));
+      if (!valid)
+        pushError(
+          "Lab report decision history must have consecutive versions and valid patient/review transitions.",
+        );
+      state = decision.state;
+      patientId = decision.patientId;
+    });
+  }
+
   const labRows = rowsById("labResults");
   rowsFor(data, "labResultEvents").forEach((row, index) => {
     if (typeof row.labResultId !== "string") return;
@@ -1799,9 +1912,28 @@ export function validatePracticeExportRestore(data: unknown): {
   }
 
   if (Array.isArray(record.dispenseChargeQueue)) {
+    const invoicesById = rowsById("invoices");
     const invoiceItemsByDispense = new Map<string, Row[]>();
-    rowsFor(data, "invoiceItems").forEach((item) => {
+    rowsFor(data, "invoiceItems").forEach((item, index) => {
       if (typeof item.sourceDispenseChargeId !== "string") return;
+      const invoice = invoicesById.get(String(item.invoiceId));
+      // The invoice-line trigger cannot reattach a live source link while its
+      // parent is soft-deleted, even when the queue excludes that history.
+      if (item.deletedAt == null && invoice?.deletedAt != null) {
+        pushError(
+          `invoiceItems[${rowLabel(item, index)}] non-deleted dispense line cannot reference a soft-deleted invoice.`,
+        );
+        return;
+      }
+      // Match protect_dispense_charge_queue's active-line predicate. Retained
+      // void/estimate history is still exported and reference-validated.
+      if (
+        item.deletedAt != null ||
+        invoice?.status === "void" ||
+        invoice?.isEstimate === true
+      ) {
+        return;
+      }
       const rows =
         invoiceItemsByDispense.get(item.sourceDispenseChargeId) ?? [];
       rows.push(item);
@@ -2812,7 +2944,7 @@ async function restoreRows(
   table: any,
   section: PracticeExportSection,
   rows: Row[],
-  opts: { practiceId?: string } = {},
+  opts: { practiceId?: string; requireAllRows?: boolean } = {},
 ): Promise<number> {
   if (rows.length === 0) return 0;
   const sanitizedRows = coerceRowDates(
@@ -2827,6 +2959,9 @@ async function restoreRows(
     .values(values)
     .onConflictDoNothing()
     .returning({ id: table.id });
+  if (opts.requireAllRows && restored.length !== rows.length) {
+    throw new Error(`${section} restore did not insert every expected row.`);
+  }
   return restored.length;
 }
 
@@ -2957,6 +3092,8 @@ export async function exportPracticeData(
     allVaccinationRows,
     labRows,
     labResultEventRows,
+    labReportReceiptRows,
+    labReportDecisionRows,
     externalLabReportRows,
     externalLabObservationRows,
     procedureRows,
@@ -3028,6 +3165,8 @@ export async function exportPracticeData(
     allPracticeRows(db, vaccinationRecords, practiceId),
     allPracticeRows(db, labResults, practiceId),
     allPracticeRows(db, labResultEvents, practiceId),
+    allPracticeRows(db, labReportReceipts, practiceId),
+    allPracticeRows(db, labReportDecisions, practiceId),
     allPracticeRows(db, externalLabReports, practiceId),
     allPracticeRows(db, externalLabObservations, practiceId),
     activeRows(db, procedures, practiceId),
@@ -3061,6 +3200,7 @@ export async function exportPracticeData(
   ]);
 
   const referencedHistoricalFileIds = [
+    ...labReportReceiptRows.map((report) => report.fileId as string),
     ...historicalDocumentRows.map((document) => document.fileId as string),
     ...visitTreatmentPlanResponseRows.map(
       (response) => response.signedFileId as string,
@@ -3158,6 +3298,7 @@ export async function exportPracticeData(
       ...vaccinationRows.map((vaccination) => vaccination.patientId),
       ...labRows.map((result) => result.patientId),
       ...labResultEventRows.map((event) => event.patientId),
+      ...labReportDecisionRows.map((event) => event.patientId),
       ...historicalAppointmentRows.map((appointment) => appointment.patientId),
       ...externalPrescriptionRows.map((prescription) => prescription.patientId),
       ...externalLabReportRows.map((report) => report.patientId),
@@ -3435,6 +3576,8 @@ export async function exportPracticeData(
     vaccinationRecords: vaccinationRows,
     labResults: labRows,
     labResultEvents: labResultEventRows,
+    labReportReceipts: labReportReceiptRows,
+    labReportDecisions: labReportDecisionRows,
     externalLabReports: externalLabReportRows,
     externalLabObservations: externalLabObservationRows,
     procedures: procedureRows,
@@ -3503,6 +3646,46 @@ async function restorePracticeDataRows(
     "dispenseChargeQueue",
   );
   const dispenseChargeRestoreRows = rowsFor(data, "dispenseChargeQueue");
+  const invoiceItemRestoreRows = coerceRowDates(
+    invoiceItems,
+    rowsFor(data, "invoiceItems"),
+  );
+  const invoiceRestoreRows = coerceRowDates(invoices, rowsFor(data, "invoices"));
+  const sourcedItemsByInvoice = new Map<string, Row[]>();
+  for (const row of invoiceItemRestoreRows) {
+    if (
+      typeof row.invoiceId !== "string" ||
+      typeof row.sourceDispenseChargeId !== "string"
+    ) continue;
+    const items = sourcedItemsByInvoice.get(row.invoiceId) ?? [];
+    items.push(row);
+    sourcedItemsByInvoice.set(row.invoiceId, items);
+  }
+  const historicalInvoiceRows = hasDispenseChargeQueue
+    ? invoiceRestoreRows.filter(
+        (row) =>
+          sourcedItemsByInvoice
+            .get(String(row.id))
+            ?.some((item) => item.deletedAt == null) &&
+          (row.status === "void" || row.isEstimate === true),
+      )
+    : [];
+  const historicalAppointmentIds = new Set(
+    historicalInvoiceRows
+      .map((row) => row.appointmentId)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  // A visit can retain several void invoices but only one active invoice.
+  // Keep that current invoice out of the unique index while its history is
+  // reconstructed one invoice at a time, including an empty current invoice.
+  const deferredInvoiceRows = invoiceRestoreRows.filter(
+    (row) =>
+      historicalAppointmentIds.has(String(row.appointmentId)) &&
+      row.deletedAt == null &&
+      row.status !== "void" &&
+      row.isEstimate !== true,
+  );
+  const deferredInvoiceIds = new Set(deferredInvoiceRows.map((row) => row.id));
   const smsConsentRestore = prepareLegacySmsConsentRestore(data);
   const soapNoteRestoreRows = rowsFor(data, "soapNotes").map((row) => {
     const authorName =
@@ -3728,8 +3911,17 @@ async function restorePracticeDataRows(
   await restoreChildRows("treatmentTemplateItems", treatmentTemplateItems);
   await restorePracticeRows("suppliers", suppliers);
   await restorePracticeRows("purchaseOrders", purchaseOrders);
-  await restorePracticeRows("invoices", invoices);
-  const invoiceItemRestoreRows = rowsFor(data, "invoiceItems");
+  // Historical invoices retain their original state initially. Defer current
+  // visit invoices until all historical links for that visit are reconstructed.
+  restored.invoices = await restoreRows(
+    db,
+    invoices,
+    "invoices",
+    invoiceRestoreRows.map((row) =>
+      deferredInvoiceIds.has(row.id) ? { ...row, isEstimate: true } : row,
+    ),
+    { practiceId, requireAllRows: true },
+  );
   restored.invoiceItems = await restoreRows(
     db,
     invoiceItems,
@@ -3740,9 +3932,22 @@ async function restorePracticeDataRows(
           sourceDispenseChargeId: null,
         }))
       : invoiceItemRestoreRows,
+    { requireAllRows: true },
   );
-  await restoreChildRows("payments", payments);
-  await restoreChildRows("invoiceAdjustments", invoiceAdjustments);
+  restored.payments = await restoreRows(
+    db,
+    payments,
+    "payments",
+    rowsFor(data, "payments"),
+    { requireAllRows: true },
+  );
+  restored.invoiceAdjustments = await restoreRows(
+    db,
+    invoiceAdjustments,
+    "invoiceAdjustments",
+    rowsFor(data, "invoiceAdjustments"),
+    { requireAllRows: true },
+  );
   await restorePracticeRows("insuranceClaims", insuranceClaims);
   await restorePracticeRows("problemList", problemList);
   restored.soapNotes = await restoreRows(
@@ -3875,19 +4080,21 @@ async function restorePracticeDataRows(
     "externalPrescriptionFills",
     externalPrescriptionFills,
   );
-  await restorePracticeRows(
-    "legacyFinancialDocuments",
-    legacyFinancialDocuments,
-  );
-  await restorePracticeRows(
-    "legacyFinancialLineItems",
-    legacyFinancialLineItems,
-  );
-  await restorePracticeRows("legacyFinancialPayments", legacyFinancialPayments);
-  await restorePracticeRows(
-    "legacyFinancialAllocations",
-    legacyFinancialAllocations,
-  );
+  // Imported financial records must not disappear on a uniqueness conflict.
+  for (const [section, table] of [
+    ["legacyFinancialDocuments", legacyFinancialDocuments],
+    ["legacyFinancialLineItems", legacyFinancialLineItems],
+    ["legacyFinancialPayments", legacyFinancialPayments],
+    ["legacyFinancialAllocations", legacyFinancialAllocations],
+  ] as const) {
+    restored[section] = await restoreRows(
+      db,
+      table,
+      section,
+      rowsFor(data, section),
+      { practiceId, requireAllRows: true },
+    );
+  }
   // Restore every queue row as pending first. Invoiced rows form an intentional
   // cycle with invoice_items, and the database protection trigger should see
   // the exact active source line before accepting their final status.
@@ -3905,19 +4112,69 @@ async function restorePracticeDataRows(
       resolvedAt: null,
       resolutionReason: null,
     })),
-    { practiceId },
+    { practiceId, requireAllRows: true },
   );
   if (hasDispenseChargeQueue) {
-    for (const row of invoiceItemRestoreRows) {
+    const restoreInvoiceState = async (row: Row, rebuildingHistory = false) => {
+      const status =
+        rebuildingHistory && row.status === "void" ? "draft" : row.status;
+      const updated = await db
+        .update(invoices)
+        .set({
+          status: status as typeof invoices.$inferInsert.status,
+          isEstimate: rebuildingHistory ? false : row.isEstimate === true,
+          updatedAt: row.updatedAt instanceof Date ? row.updatedAt : undefined,
+        })
+        .where(
+          and(eq(invoices.id, String(row.id)), eq(invoices.practiceId, practiceId)),
+        )
+        .returning({ id: invoices.id });
+      if (updated.length !== 1) {
+        throw new Error(
+          "Invoice restore could not reconstruct an expected invoice state.",
+        );
+      }
+    };
+    const restoreItemSource = async (row: Row) => {
       if (
         typeof row.id === "string" &&
         typeof row.sourceDispenseChargeId === "string"
       ) {
-        await db
+        const updated = await db
           .update(invoiceItems)
-          .set({ sourceDispenseChargeId: row.sourceDispenseChargeId })
-          .where(eq(invoiceItems.id, row.id));
+          .set({
+            sourceDispenseChargeId: row.sourceDispenseChargeId,
+            updatedAt: row.updatedAt instanceof Date ? row.updatedAt : undefined,
+          })
+          .where(
+            and(
+              eq(invoiceItems.id, row.id),
+              eq(invoiceItems.invoiceId, String(row.invoiceId)),
+            ),
+          )
+          .returning({ id: invoiceItems.id });
+        if (updated.length !== 1) {
+          throw new Error(
+            "Invoice restore could not reconstruct an expected dispense link.",
+          );
+        }
       }
+    };
+    const historicalInvoiceIds = new Set(
+      historicalInvoiceRows.map((row) => row.id),
+    );
+    for (const row of historicalInvoiceRows) {
+      await restoreInvoiceState(row, true);
+      for (const item of sourcedItemsByInvoice.get(String(row.id)) ?? []) {
+        await restoreItemSource(item);
+      }
+      await restoreInvoiceState(row);
+    }
+    // No historical invoice remains transiently active when current invoices
+    // re-enter the unique index. PostgreSQL rejects invalid duplicate actives.
+    for (const row of deferredInvoiceRows) await restoreInvoiceState(row);
+    for (const row of invoiceItemRestoreRows) {
+      if (!historicalInvoiceIds.has(row.invoiceId)) await restoreItemSource(row);
     }
     for (const row of coerceRowDates(
       dispenseChargeQueue,
@@ -3929,7 +4186,7 @@ async function restorePracticeDataRows(
       ) {
         continue;
       }
-      await db
+      const updated = await db
         .update(dispenseChargeQueue)
         .set({
           status: row.status,
@@ -3952,7 +4209,11 @@ async function restorePracticeDataRows(
             eq(dispenseChargeQueue.id, row.id),
             eq(dispenseChargeQueue.practiceId, practiceId),
           ),
-        );
+        )
+        .returning({ id: dispenseChargeQueue.id });
+      if (updated.length !== 1) {
+        throw new Error("Dispense restore could not resolve an expected queue row.");
+      }
     }
   }
   await restorePracticeRows("visitCloseouts", visitCloseouts);
@@ -3982,6 +4243,30 @@ async function restorePracticeDataRows(
     practiceId,
     signedEvidenceRows,
   );
+  // Revision receipts are restored in dependency order, independent of JSON order.
+  const pendingReports = [...rowsFor(data, "labReportReceipts")];
+  const restoredReportIds = new Set<unknown>();
+  restored.labReportReceipts = 0;
+  while (pendingReports.length) {
+    const index = pendingReports.findIndex(
+      (row) =>
+        row.supersedesId == null || restoredReportIds.has(row.supersedesId),
+    );
+    if (index < 0)
+      throw new Error(
+        "Backup lab report revisions contain a cycle or missing predecessor.",
+      );
+    const [row] = pendingReports.splice(index, 1);
+    restored.labReportReceipts += await restoreRows(
+      db,
+      labReportReceipts,
+      "labReportReceipts",
+      [row!],
+      { practiceId },
+    );
+    restoredReportIds.add(row!.id);
+  }
+  await restorePracticeRows("labReportDecisions", labReportDecisions);
   await restorePracticeRows("visitTreatmentPlans", visitTreatmentPlans);
   await restorePracticeRows(
     "visitTreatmentPlanRevisions",

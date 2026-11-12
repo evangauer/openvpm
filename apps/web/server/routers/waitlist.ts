@@ -211,9 +211,9 @@ export const waitlistRouter = createRouter({
     .use(manageRole)
     .input(
       z.object({
-        clientId: z.string().uuid(),
-        patientId: z.string().uuid().optional(),
-        typeId: z.string().uuid().optional(),
+        clientId: z.string().guid(),
+        patientId: z.string().guid().optional(),
+        typeId: z.string().guid().optional(),
         preferredFrom: waitlistDateInput.optional(),
         preferredTo: waitlistDateInput.optional(),
         notes: waitlistNotesInput,
@@ -244,7 +244,7 @@ export const waitlistRouter = createRouter({
     .use(manageRole)
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         status: z.enum(waitlistStatusValues),
       })
     )
@@ -309,7 +309,7 @@ export const waitlistRouter = createRouter({
     .input(
       z.object({
         date: waitlistDateInput,
-        typeId: z.string().uuid().optional(),
+        typeId: z.string().guid().optional(),
       })
     )
     .query(async ({ ctx, input }) => {

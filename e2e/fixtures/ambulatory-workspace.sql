@@ -19,6 +19,11 @@ ORDER BY created_at
 LIMIT 1
 \gset
 
+-- The solo-practice acceptance clinician also owns billing administration.
+UPDATE users SET role = 'admin', is_veterinarian = true
+WHERE email = 'sarah.chen@neighborhoodvet.example.com'
+  AND practice_id = :'practice_id';
+
 SELECT id AS veterinarian_id
 FROM users
 WHERE practice_id = :'practice_id'

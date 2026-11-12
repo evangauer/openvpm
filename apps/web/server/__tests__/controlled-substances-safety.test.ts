@@ -25,14 +25,15 @@ const USER_ID = "00000000-0000-0000-0000-000000000001";
 const PATIENT_ID = "00000000-0000-0000-0000-000000000002";
 const WITNESS_ID = "00000000-0000-0000-0000-000000000003";
 const ENTRY_ID = "00000000-0000-0000-0000-000000000004";
+const OPERATION_ID = "00000000-0000-4000-8000-000000000005";
 
-function callerWithDb(db: Record<string, unknown>) {
+function callerWithDb(db: Record<string, unknown>, role = "veterinarian") {
   const session = {
     user: {
       id: USER_ID,
-      email: "doctor@example.com",
+      email: `${role}@example.com`,
       name: "Doctor",
-      role: "veterinarian",
+      role,
       practiceId: PRACTICE_ID,
     },
   };
@@ -117,6 +118,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "administered",
@@ -133,6 +135,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "wasted",
@@ -149,6 +152,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "received",
@@ -165,6 +169,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "received",
@@ -175,6 +180,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "received",
@@ -214,6 +220,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "received",
@@ -256,6 +263,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "received",
@@ -270,6 +278,22 @@ describe("controlled substance log safety", () => {
     expect(select).toHaveBeenCalledTimes(5);
     expect(insertValues).not.toHaveBeenCalled();
   });
+
+  it.each(["technician", "front_desk"])(
+    "blocks %s from reading the controlled-substance log or summary",
+    async (role) => {
+      const { db, select } = createDb();
+      const caller = callerWithDb(db, role);
+
+      await expect(caller.list({})).rejects.toMatchObject({
+        code: "FORBIDDEN",
+      });
+      await expect(caller.summary({})).rejects.toMatchObject({
+        code: "FORBIDDEN",
+      });
+      expect(select).not.toHaveBeenCalled();
+    }
+  );
 
   it("lists controlled-substance logs within practice-local date filters", async () => {
     const row = {
@@ -338,6 +362,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "received",
@@ -348,6 +373,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "K".repeat(CONTROLLED_SUBSTANCE_DRUG_NAME_MAX_LENGTH + 1),
         deaSchedule: "III",
         action: "received",
@@ -358,6 +384,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "received",
@@ -369,6 +396,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "received",
@@ -382,14 +410,74 @@ describe("controlled substance log safety", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("replays a repeated submission instead of writing a second entry", async () => {
+    const existing = {
+      id: ENTRY_ID,
+      practiceId: PRACTICE_ID,
+      drugName: "Ketamine",
+      deaSchedule: "III",
+      action: "received",
+      quantity: "10.000",
+      unit: "ml",
+      patientId: null,
+      witnessedBy: null,
+      lotNumber: "LOT-42",
+      notes: null,
+      performedAt: new Date("2026-05-01T12:00:00.000Z"),
+      operationId: OPERATION_ID,
+    };
+    const submission = {
+      operationId: OPERATION_ID,
+      drugName: "Ketamine",
+      deaSchedule: "III" as const,
+      action: "received" as const,
+      quantity: "10",
+      unit: "ml",
+      lotNumber: "LOT-42",
+    };
+    const { db, execute, insertValues } = createDb({
+      selectResults: [
+        [{ id: PRACTICE_ID }],
+        [existing],
+        [{ id: PRACTICE_ID }],
+        [existing],
+      ],
+    });
+
+    await expect(callerWithDb(db).create(submission)).resolves.toBe(existing);
+    await expect(
+      callerWithDb(db).create({ ...submission, quantity: "11" })
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(execute).toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("requires a submission operation id before DB work", async () => {
+    const { db, select } = createDb();
+
+    await expect(
+      callerWithDb(db).create({
+        drugName: "Ketamine",
+        deaSchedule: "III",
+        action: "received",
+        quantity: "1",
+        unit: "ml",
+      } as never)
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(select).not.toHaveBeenCalled();
+  });
+
   it("trims controlled-substance text before writing", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [[{ id: PRACTICE_ID }]],
+      selectResults: [[{ id: PRACTICE_ID }], []],
       insertedRows: [{ id: ENTRY_ID, patientId: null }],
     });
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "  Ketamine  ",
         deaSchedule: "III",
         action: "received",
@@ -412,11 +500,12 @@ describe("controlled substance log safety", () => {
 
   it("requires administered patients to belong to the practice", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [[{ id: PRACTICE_ID }], []],
+      selectResults: [[{ id: PRACTICE_ID }], [], []],
     });
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "administered",
@@ -431,11 +520,12 @@ describe("controlled substance log safety", () => {
 
   it("requires waste witnesses to belong to the practice", async () => {
     const { db, insertValues } = createDb({
-      selectResults: [[{ id: PRACTICE_ID }], []],
+      selectResults: [[{ id: PRACTICE_ID }], [], []],
     });
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "wasted",
@@ -459,18 +549,22 @@ describe("controlled substance log safety", () => {
     const { db, execute, insertValues, transaction } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
+        [],
         [{ id: PATIENT_ID }],
         [balance],
         [{ id: PRACTICE_ID }],
+        [],
         [{ id: WITNESS_ID }],
         [balance],
         [{ id: PRACTICE_ID }],
+        [],
         [balance],
       ],
     });
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "administered",
@@ -485,6 +579,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "wasted",
@@ -496,6 +591,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "returned",
@@ -513,6 +609,7 @@ describe("controlled substance log safety", () => {
     const { db, insertValues } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
+        [],
         [{ id: PATIENT_ID }],
         [
           {
@@ -528,6 +625,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "administered",
@@ -548,12 +646,13 @@ describe("controlled substance log safety", () => {
 
   it("records an explicit performed timestamp after validation", async () => {
     const { db, execute, insertValues, transaction } = createDb({
-      selectResults: [[{ id: PRACTICE_ID }]],
+      selectResults: [[{ id: PRACTICE_ID }], []],
       insertedRows: [{ id: ENTRY_ID, patientId: null }],
     });
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "received",
@@ -582,6 +681,7 @@ describe("controlled substance log safety", () => {
     const { db, insertValues } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
+        [],
         [{ id: WITNESS_ID }],
         [
           {
@@ -597,6 +697,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "wasted",
@@ -619,6 +720,7 @@ describe("controlled substance log safety", () => {
     const { db, insertValues } = createDb({
       selectResults: [
         [{ id: PRACTICE_ID }],
+        [],
         [
           {
             totalReceived: "10.000",
@@ -633,6 +735,7 @@ describe("controlled substance log safety", () => {
 
     await expect(
       callerWithDb(db).create({
+        operationId: OPERATION_ID,
         drugName: "Ketamine",
         deaSchedule: "III",
         action: "returned",

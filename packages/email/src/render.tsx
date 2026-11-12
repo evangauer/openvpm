@@ -1,6 +1,32 @@
+import { NewsletterEmail, newsletterSubject, type NewsletterEmailProps } from "./templates/NewsletterEmail";
 import * as React from "react";
 import { render } from "@react-email/render";
 import { WelcomeEmail, type WelcomeEmailProps } from "./templates/WelcomeEmail";
+import {
+  BuildFollowupEmail,
+  buildFollowupSubject,
+  type BuildFollowupEmailProps,
+} from "./templates/BuildFollowupEmail";
+import {
+  TeamInviteEmail,
+  teamInviteSubject,
+  type TeamInviteEmailProps,
+} from "./templates/TeamInviteEmail";
+import {
+  TrialWinbackEmail,
+  trialWinbackSubject,
+  type TrialWinbackEmailProps,
+} from "./templates/TrialWinbackEmail";
+import {
+  AdoptionEmail,
+  adoptionSubject,
+  type AdoptionEmailProps,
+} from "./templates/AdoptionEmail";
+import {
+  NpsSurveyEmail,
+  npsSurveySubject,
+  type NpsSurveyEmailProps,
+} from "./templates/NpsSurveyEmail";
 import {
   TrialEndingEmail,
   type TrialEndingEmailProps,
@@ -21,6 +47,16 @@ import {
   FirstClinicWinEmail,
   type FirstClinicWinEmailProps,
 } from "./templates/FirstClinicWinEmail";
+import {
+  CheckoutRecoveryEmail,
+  checkoutRecoverySubject,
+  type CheckoutRecoveryEmailProps,
+} from "./templates/CheckoutRecoveryEmail";
+import {
+  DemoFollowupEmail,
+  demoFollowupSubject,
+  type DemoFollowupEmailProps,
+} from "./templates/DemoFollowupEmail";
 
 export interface RenderedEmail {
   subject: string;
@@ -83,4 +119,71 @@ export async function renderFirstClinicWinEmail(
     subject: "Your first real OpenVPM visit is complete",
     html: await render(<FirstClinicWinEmail {...p} />),
   };
+}
+
+export async function renderCheckoutRecoveryEmail(
+  p: CheckoutRecoveryEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: checkoutRecoverySubject(p.step, p.practiceName, p.previewActive),
+    html: await render(<CheckoutRecoveryEmail {...p} />),
+  };
+}
+
+export async function renderDemoFollowupEmail(
+  p: DemoFollowupEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: demoFollowupSubject(p.step, p.tool),
+    html: await render(<DemoFollowupEmail {...p} />),
+  };
+}
+
+export async function renderTeamInviteEmail(
+  p: TeamInviteEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: teamInviteSubject(p.practiceName),
+    html: await render(<TeamInviteEmail {...p} />),
+  };
+}
+
+export async function renderTrialWinbackEmail(
+  p: TrialWinbackEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: trialWinbackSubject(p.step, p.practiceName),
+    html: await render(<TrialWinbackEmail {...p} />),
+  };
+}
+
+export async function renderAdoptionEmail(
+  p: AdoptionEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: adoptionSubject(p.practiceName, p.tips.length),
+    html: await render(<AdoptionEmail {...p} />),
+  };
+}
+
+export async function renderNpsSurveyEmail(
+  p: NpsSurveyEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: npsSurveySubject(),
+    html: await render(<NpsSurveyEmail {...p} />),
+  };
+}
+
+export async function renderBuildFollowupEmail(
+  p: BuildFollowupEmailProps,
+): Promise<RenderedEmail> {
+  return {
+    subject: buildFollowupSubject(p.step, p.clinicName),
+    html: await render(<BuildFollowupEmail {...p} />),
+  };
+}
+
+export async function renderNewsletterEmail(p: NewsletterEmailProps): Promise<RenderedEmail> {
+  return { subject: newsletterSubject(p.step), html: await render(<NewsletterEmail {...p} />) };
 }

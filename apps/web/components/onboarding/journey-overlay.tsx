@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { useSession } from "next-auth/react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { ArrowLeft, ArrowRight, Loader2, ShieldCheck } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -18,8 +18,8 @@ import { BrandBadge } from "@/components/brand/paw-mark";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { firstRunMode } from "@/lib/welcome/first-run";
-import { FUNNEL_EVENTS } from "@/lib/funnel-analytics";
+import { firstRunMode, suppressWelcomeForBilling } from "@/lib/welcome/first-run";
+import { FUNNEL_EVENTS, isDemoMode } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import {
   DEFAULT_ONBOARDING_INTENT,
@@ -71,6 +71,7 @@ export function OnboardingJourneyProvider({
 }: {
   children: React.ReactNode;
 }) {
+  const pathname = usePathname();
   const { data: session, status } = useSession();
   const isAdmin = status === "authenticated" && session?.user?.role === "admin";
 
@@ -128,7 +129,12 @@ export function OnboardingJourneyProvider({
     // greeting; the wizard opens on demand (welcome footer, first-win
     // offer, activation checklist). The personalized builder is the default;
     // NEXT_PUBLIC_FIRST_RUN_MODE=welcome remains the rollback path.
+    // The shared demo has its own short entry flow, never clinic setup.
+    if (isDemoMode()) return;
     if (firstRunMode() === "welcome") return;
+    if (typeof window !== "undefined" && suppressWelcomeForBilling(
+      pathname, new URLSearchParams(window.location.search),
+    )) return;
     // Wait until the setup state is loaded so the resume point is stable.
     if (!onboardingStatus.data || !onboardingState.data) {
       return;
@@ -148,6 +154,7 @@ export function OnboardingJourneyProvider({
     onboardingStatus.data,
     onboardingState.data,
     resumeIndex,
+    pathname,
   ]);
 
   const isOpen = isAdmin && index !== null;
@@ -283,7 +290,7 @@ function JourneyShell({
     [utils, setJourneyProgress],
   );
 
-  const finish = useCallback(async () => {
+  const finish = useCallback(async (finishPath?: string) => {
     await completeOnboarding.mutateAsync();
     if (!state.keepSampleData) {
       try {
@@ -303,14 +310,19 @@ function JourneyShell({
     });
     trackFunnelEvent(FUNNEL_EVENTS.firstActionSelected, {
       goal: state.firstGoal,
-      placement: state.hasImportedData ? "schedule" : "client",
+      placement: finishPath
+        ? "trial_checkout"
+        : state.hasImportedData
+          ? "schedule"
+          : "client",
       step: "first_action",
     });
     setIndex(null);
     router.push(
-      state.hasImportedData
-        ? "/schedule?setup=first-visit"
-        : "/clients/new?setup=first-visit",
+      finishPath ??
+        (state.hasImportedData
+          ? "/schedule?setup=first-visit"
+          : "/clients/new?setup=first-visit"),
     );
   }, [
     completeOnboarding,
@@ -338,7 +350,7 @@ function JourneyShell({
         step: step.id,
       });
       if (isLast) {
-        await finish();
+        await finish(handleRef.current?.finishPath);
       } else {
         handleRef.current = null;
         setContinueLabel(null);

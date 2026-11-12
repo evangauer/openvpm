@@ -60,6 +60,72 @@ export type DeclaredDatabaseObject = {
  */
 export function criticalDatabaseContract(): DeclaredDatabaseObject[] {
   const objects: DeclaredDatabaseObject[] = [
+    ...["lab_report_receipts", "lab_report_decisions"].flatMap(
+      (table): DeclaredDatabaseObject[] => [
+        { kind: "rls_policy", table, name: "tenant_isolation" },
+        { kind: "trigger", table, name: `${table}_immutable` },
+        ...["SELECT", "INSERT"].map((name) => ({
+          kind: "table_privilege" as const,
+          table,
+          name,
+        })),
+        ...["UPDATE", "DELETE"].map((name) => ({
+          kind: "forbidden_table_privilege" as const,
+          table,
+          name,
+        })),
+      ],
+    ),
+    {
+      kind: "constraint",
+      table: "lab_report_receipts",
+      name: "lab_report_receipts_file_tenant_fk",
+    },
+    {
+      kind: "constraint",
+      table: "lab_report_receipts",
+      name: "lab_report_receipts_actor_tenant_fk",
+    },
+    {
+      kind: "constraint",
+      table: "lab_report_receipts",
+      name: "lab_report_receipts_previous_tenant_fk",
+    },
+    {
+      kind: "constraint",
+      table: "lab_report_decisions",
+      name: "lab_report_decisions_report_tenant_fk",
+    },
+    {
+      kind: "constraint",
+      table: "lab_report_decisions",
+      name: "lab_report_decisions_patient_tenant_fk",
+    },
+    {
+      kind: "constraint",
+      table: "lab_report_decisions",
+      name: "lab_report_decisions_actor_tenant_fk",
+    },
+    {
+      kind: "constraint",
+      table: "lab_report_decisions",
+      name: "lab_report_decisions_state_check",
+    },
+    {
+      kind: "index",
+      table: "lab_report_receipts",
+      name: "lab_report_receipts_digest_uq",
+    },
+    {
+      kind: "index",
+      table: "lab_report_decisions",
+      name: "lab_report_decisions_version_uq",
+    },
+    {
+      kind: "index",
+      table: "lab_report_decisions",
+      name: "lab_report_decisions_operation_uq",
+    },
     {
       kind: "constraint",
       table: "practices",
@@ -934,6 +1000,10 @@ export async function findSchemaDrift(db: Queryable): Promise<SchemaDrift> {
         required_absence.privilege_type
       )
     from (values
+      ('lab_report_receipts'::text, 'UPDATE'::text),
+      ('lab_report_receipts'::text, 'DELETE'::text),
+      ('lab_report_decisions'::text, 'UPDATE'::text),
+      ('lab_report_decisions'::text, 'DELETE'::text),
       ('file_storage_events'::text, 'UPDATE'::text),
       ('file_storage_events'::text, 'DELETE'::text),
       ('sms_provider_events'::text, 'DELETE'::text),

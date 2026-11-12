@@ -55,4 +55,15 @@ describe("invoice payment tokens", () => {
       "NEXTAUTH_SECRET is required",
     );
   });
+
+  it("neither issues nor honors links signed with a published secret in production", () => {
+    vi.stubEnv("NEXTAUTH_SECRET", "docker-dev-secret-change-in-production");
+    const forged = createInvoicePaymentToken({ ...IDS, now: NOW });
+
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() => createInvoicePaymentToken({ ...IDS, now: NOW })).toThrow(
+      "NEXTAUTH_SECRET is required",
+    );
+    expect(() => verifyInvoicePaymentToken(forged, { now: NOW })).toThrow();
+  });
 });

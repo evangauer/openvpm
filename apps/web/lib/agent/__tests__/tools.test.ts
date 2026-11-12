@@ -207,6 +207,19 @@ describe("calculate_drug_dose tool (pure)", () => {
 });
 
 describe("agent tool input bounds", () => {
+  it("preserves existing PostgreSQL UUID-shaped identifiers without accepting arbitrary text", () => {
+    const schema = getTool("get_patient_summary")!.zod;
+    const patientId = "11111111-2222-3333-4444-555555555555";
+    expect(schema.parse({ patientId })).toEqual({ patientId });
+    for (const invalid of [
+      "patient-1",
+      "11111111-2222-3333-4444-55555555555g",
+      patientId + " extra",
+    ]) {
+      expect(schema.safeParse({ patientId: invalid }).success).toBe(false);
+    }
+  });
+
   it("bounds and trims free-form tool strings", () => {
     const findClient = getTool("find_client")!;
     const bookAppointment = getTool("book_appointment")!;
@@ -215,7 +228,7 @@ describe("agent tool input bounds", () => {
     const query = findClient.zod.safeParse({ query: "  Ada  " });
     expect(query.success).toBe(true);
     if (!query.success) throw new Error("expected query parse to succeed");
-    expect(query.data.query).toBe("Ada");
+    expect(query.data).toEqual({ query: "Ada" });
 
     expect(
       findClient.zod.safeParse({

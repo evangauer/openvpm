@@ -64,7 +64,11 @@ export const dispenseChargeQueue = pgTable(
     productId: uuid("product_id")
       .notNull()
       .references(() => products.id),
-    quantity: integer("quantity").notNull(),
+    quantity: numeric("quantity", {
+      precision: 13,
+      scale: 3,
+      mode: "number",
+    }).notNull(),
     descriptionSnapshot: varchar("description_snapshot", {
       length: 500,
     }).notNull(),

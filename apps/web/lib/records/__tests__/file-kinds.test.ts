@@ -81,3 +81,9 @@ describe("patientFileLabel", () => {
     ).toBe("wound-day-3.jpg");
   });
 });
+
+describe("external patient documents", () => {
+  it.each(["documents", "lab-results"])("keeps scanned %s in Documents instead of Photos", (category) => {
+    expect(patientFileKind({ category, mimeType: "image/png" })).toBe("document");
+  });
+});

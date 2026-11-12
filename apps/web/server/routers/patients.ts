@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   eq,
+  getTableColumns,
   and,
   isNull,
   isNotNull,
@@ -16,6 +17,7 @@ import { TRPCError } from "@trpc/server";
 import { createRouter, protectedProcedure, requireRole } from "../trpc";
 import {
   patients,
+  users,
   patientWeights,
   patientAllergies,
   clients,
@@ -24,6 +26,7 @@ import {
   soapNotes,
   vaccinationRecords,
   labResults,
+  labReportDecisions,
   procedures,
   clinicalNotes,
   problemList,
@@ -145,15 +148,15 @@ const patientWeightInput = z
   .trim()
   .refine(isPatientWeightInputValid, PATIENT_WEIGHT_ERROR_MESSAGE);
 const patientAllergyInput = z.object({
-  patientId: z.string().uuid(),
+  patientId: z.string().guid(),
   allergen: clinicalTextInput("Allergen", 255),
   reaction: optionalPatientString("Reaction", 2000),
   severity: z.enum(["mild", "moderate", "severe"]).default("moderate"),
 });
 const patientMergePairInput = z
   .object({
-    keepId: z.string().uuid(),
-    mergeId: z.string().uuid(),
+    keepId: z.string().guid(),
+    mergeId: z.string().guid(),
   })
   .refine((input) => input.keepId !== input.mergeId, {
     message: "Cannot merge a patient into itself.",
@@ -172,7 +175,7 @@ const patientMergeInput = patientMergePairInput.and(
         PATIENT_MERGE_REASON_MAX_LENGTH,
         `Merge reason must be at most ${PATIENT_MERGE_REASON_MAX_LENGTH} characters.`,
       ),
-    operationId: z.string().uuid(),
+    operationId: z.string().guid(),
   }),
 );
 type PatientsContext = {
@@ -354,6 +357,7 @@ function immutableMergeHistoryPredicate(
     or exists (select 1 from ${patientAllergies} where ${patientAllergies.patientId} = ${patientId})
     or exists (select 1 from ${soapNotes} where ${soapNotes.practiceId} = ${practiceId} and ${soapNotes.patientId} = ${patientId})
     or exists (select 1 from ${vaccinationRecords} where ${vaccinationRecords.practiceId} = ${practiceId} and ${vaccinationRecords.patientId} = ${patientId})
+    or exists (select 1 from ${labReportDecisions} where ${labReportDecisions.practiceId} = ${practiceId} and ${labReportDecisions.patientId} = ${patientId})
     or exists (select 1 from ${labResults} where ${labResults.practiceId} = ${practiceId} and ${labResults.patientId} = ${patientId})
     or exists (select 1 from ${procedures} where ${procedures.practiceId} = ${practiceId} and ${procedures.patientId} = ${patientId})
     or exists (select 1 from ${clinicalNotes} where ${clinicalNotes.practiceId} = ${practiceId} and ${clinicalNotes.patientId} = ${patientId})
@@ -588,7 +592,7 @@ async function analyzePatientMerge(
       allergies: sql<number>`(select count(*)::int from ${patientAllergies} where ${patientAllergies.patientId} = ${mergeId})`,
       soapNotes: sql<number>`(select count(*)::int from ${soapNotes} where ${soapNotes.practiceId} = ${practiceId} and ${soapNotes.patientId} = ${mergeId})`,
       vaccinations: sql<number>`(select count(*)::int from ${vaccinationRecords} where ${vaccinationRecords.practiceId} = ${practiceId} and ${vaccinationRecords.patientId} = ${mergeId})`,
-      labResults: sql<number>`(select count(*)::int from ${labResults} where ${labResults.practiceId} = ${practiceId} and ${labResults.patientId} = ${mergeId})`,
+      labResults: sql<number>`(select count(*)::int from ${labResults} where ${labResults.practiceId} = ${practiceId} and ${labResults.patientId} = ${mergeId}) + (select count(*)::int from ${labReportDecisions} where ${labReportDecisions.practiceId} = ${practiceId} and ${labReportDecisions.patientId} = ${mergeId})`,
       procedures: sql<number>`(select count(*)::int from ${procedures} where ${procedures.practiceId} = ${practiceId} and ${procedures.patientId} = ${mergeId})`,
       clinicalNotes: sql<number>`(select count(*)::int from ${clinicalNotes} where ${clinicalNotes.practiceId} = ${practiceId} and ${clinicalNotes.patientId} = ${mergeId})`,
       problemList: sql<number>`(select count(*)::int from ${problemList} where ${problemList.practiceId} = ${practiceId} and ${problemList.patientId} = ${mergeId})`,
@@ -955,7 +959,7 @@ export const patientsRouter = createRouter({
     }),
 
   getById: protectedProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       const resolved = await resolveCanonicalPatientDetail(
         ctx.db as Database,
@@ -970,10 +974,20 @@ export const patientsRouter = createRouter({
       }
       const { patient, mergeMetadata } = resolved;
 
-      const [weights, allergyHistory] = await Promise.all([
+      const [weights, allergyHistory, vitalWeights] = await Promise.all([
         ctx.db
-          .select()
+          .select({
+            ...getTableColumns(patientWeights),
+            recordedByName: users.name,
+          })
           .from(patientWeights)
+          .leftJoin(
+            users,
+            and(
+              eq(users.id, patientWeights.recordedBy),
+              eq(users.practiceId, ctx.practiceId),
+            ),
+          )
           .where(
             and(
               eq(patientWeights.patientId, patient.id),
@@ -1032,6 +1046,39 @@ export const patientsRouter = createRouter({
             ),
           )
           .orderBy(desc(patientAllergies.notedAt), desc(patientAllergies.id)),
+        ctx.db
+          .select({
+            id: vitalSigns.id,
+            patientId: vitalSigns.patientId,
+            weightKg: vitalSigns.weightKg,
+            recordedAt: vitalSigns.recordedAt,
+            recordedBy: vitalSigns.recordedBy,
+            recordedByName: users.name,
+            createdAt: vitalSigns.createdAt,
+            updatedAt: vitalSigns.updatedAt,
+            deletedAt: vitalSigns.deletedAt,
+          })
+          .from(vitalSigns)
+          .leftJoin(
+            users,
+            and(
+              eq(users.id, vitalSigns.recordedBy),
+              eq(users.practiceId, ctx.practiceId),
+            ),
+          )
+          .where(
+            and(
+              eq(vitalSigns.patientId, patient.id),
+              eq(vitalSigns.practiceId, ctx.practiceId),
+              activePracticePredicate(ctx.practiceId),
+              isNull(vitalSigns.deletedAt),
+              isNotNull(vitalSigns.weightKg),
+              sql`not exists (select 1 from ${clinicalRecordCorrections}
+            where ${clinicalRecordCorrections.vitalSignId} = ${vitalSigns.id}
+              and ${clinicalRecordCorrections.practiceId} = ${ctx.practiceId})`,
+            ),
+          )
+          .orderBy(desc(vitalSigns.recordedAt)),
       ]);
 
       const allergies = allergyHistory.filter(
@@ -1040,7 +1087,23 @@ export const patientsRouter = createRouter({
 
       return {
         ...patient,
-        weights,
+        weights: [
+          ...weights.map((weight) => ({
+            ...weight,
+            source: "weight" as const,
+          })),
+          ...vitalWeights
+            .filter((weight) => weight.weightKg !== null)
+            .map((weight) => ({
+              ...weight,
+              weightKg: weight.weightKg!,
+              source: "vitals" as const,
+            })),
+        ].sort(
+          (a, b) =>
+            b.recordedAt.getTime() - a.recordedAt.getTime() ||
+            a.id.localeCompare(b.id),
+        ),
         allergies,
         allergyHistory,
         requestedPatientId: input.id,
@@ -1052,7 +1115,7 @@ export const patientsRouter = createRouter({
   create: patientManagerProcedure
     .input(
       z.object({
-        clientId: z.string().uuid(),
+        clientId: z.string().guid(),
         ...patientMutableInput,
       }),
     )
@@ -1084,7 +1147,7 @@ export const patientsRouter = createRouter({
     .input(
       z
         .object({
-          id: z.string().uuid(),
+          id: z.string().guid(),
           name: patientMutableInput.name.optional(),
           species: patientMutableInput.species.optional(),
           breed: patientMutableInput.breed,
@@ -1121,7 +1184,7 @@ export const patientsRouter = createRouter({
 
   delete: protectedProcedure
     .use(requireRole("admin"))
-    .input(z.object({ id: z.string().uuid() }))
+    .input(z.object({ id: z.string().guid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db.transaction(async (tx) => {
         const [existingPatient] = await tx
@@ -1235,8 +1298,15 @@ export const patientsRouter = createRouter({
   addWeight: patientManagerProcedure
     .input(
       z.object({
-        patientId: z.string().uuid(),
+        patientId: z.string().guid(),
         weightKg: patientWeightInput,
+        recordedAt: z
+          .date()
+          .refine(
+            (value) => value.getTime() <= Date.now(),
+            "Measurement time cannot be in the future.",
+          )
+          .optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1245,15 +1315,124 @@ export const patientsRouter = createRouter({
         ctx.practiceId,
         input.patientId,
       );
-      const [weight] = await ctx.db
-        .insert(patientWeights)
-        .values({
-          patientId: input.patientId,
-          weightKg: input.weightKg,
-          recordedBy: ctx.user.id,
-        })
-        .returning();
-      return weight!;
+      return ctx.db.transaction(async (tx) => {
+        const [weight] = await tx
+          .insert(patientWeights)
+          .values({
+            patientId: input.patientId,
+            weightKg: input.weightKg,
+            recordedAt: input.recordedAt ?? new Date(),
+            recordedBy: ctx.user.id,
+          })
+          .returning();
+        if (!weight)
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Weight was not recorded.",
+          });
+        await tx.insert(auditLog).values({
+          practiceId: ctx.practiceId,
+          userId: ctx.user.id,
+          action: "created",
+          entityType: "patient_weight",
+          entityId: weight.id,
+          changes: {
+            patientId: input.patientId,
+            weightKg: weight.weightKg,
+            recordedAt: weight.recordedAt,
+          },
+        });
+        return weight;
+      });
+    }),
+
+  correctWeight: protectedProcedure
+    .use(requireRole("admin", "veterinarian"))
+    .input(
+      z.object({
+        patientId: z.string().guid(),
+        weightId: z.string().guid(),
+        weightKg: patientWeightInput,
+        recordedAt: z
+          .date()
+          .refine(
+            (value) => value.getTime() <= Date.now(),
+            "Measurement time cannot be in the future.",
+          ),
+        reason: z
+          .string()
+          .trim()
+          .min(CLINICAL_CORRECTION_REASON_MIN_LENGTH)
+          .max(CLINICAL_CORRECTION_REASON_MAX_LENGTH),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      await assertPatientBelongsToPractice(
+        ctx.db,
+        ctx.practiceId,
+        input.patientId,
+      );
+      return ctx.db.transaction(async (tx) => {
+        const [source] = await tx
+          .select()
+          .from(patientWeights)
+          .where(
+            and(
+              eq(patientWeights.id, input.weightId),
+              eq(patientWeights.patientId, input.patientId),
+              isNull(patientWeights.deletedAt),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (!source)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message:
+              "Weight is no longer available. Refresh the patient chart.",
+          });
+        const [replacement] = await tx
+          .insert(patientWeights)
+          .values({
+            patientId: input.patientId,
+            weightKg: input.weightKg,
+            recordedAt: input.recordedAt,
+            recordedBy: ctx.user.id,
+          })
+          .returning();
+        if (!replacement)
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Correction was not recorded.",
+          });
+        await tx
+          .update(patientWeights)
+          .set({ deletedAt: new Date() })
+          .where(eq(patientWeights.id, source.id));
+        await tx.insert(auditLog).values({
+          practiceId: ctx.practiceId,
+          userId: ctx.user.id,
+          action: "corrected",
+          entityType: "patient_weight",
+          entityId: replacement.id,
+          changes: {
+            patientId: input.patientId,
+            reason: input.reason,
+            original: {
+              id: source.id,
+              weightKg: source.weightKg,
+              recordedAt: source.recordedAt,
+              recordedBy: source.recordedBy,
+            },
+            replacement: {
+              id: replacement.id,
+              weightKg: replacement.weightKg,
+              recordedAt: replacement.recordedAt,
+            },
+          },
+        });
+        return replacement;
+      });
     }),
 
   addAllergy: patientManagerProcedure
@@ -1278,8 +1457,8 @@ export const patientsRouter = createRouter({
     .use(requireRole("admin", "veterinarian"))
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        recordId: z.string().uuid(),
+        patientId: z.string().guid(),
+        recordId: z.string().guid(),
         reason: z
           .string()
           .trim()

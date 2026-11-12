@@ -39,6 +39,16 @@ import {
 } from "@/lib/email-preferences";
 import { platformEmailIdentityConfigurationReady } from "@/lib/platform-email-preferences";
 import { hostedSmsCredentialIssueCount } from "@/lib/messaging/hosted-sms-readiness";
+import {
+  AUTH_SECRET_SETUP_COMMAND,
+  authSecretProblemMessage,
+  MIN_AUTH_SECRET_LENGTH,
+  nextAuthSecretProblem,
+  nextAuthSecretRejected,
+  nextAuthSecretShortOverrideActive,
+  AUTH_SECRET_ROTATION_ADVISORY,
+} from "@/lib/auth-secret";
+import { portalSessionSecretProblem } from "@/lib/portal/tokens";
 
 export const dynamic = "force-dynamic";
 
@@ -541,6 +551,32 @@ export async function GET() {
     string,
     { ok: boolean; detail?: string; advisory?: boolean }
   > = {};
+
+  if (nextAuthSecretRejected()) {
+    checks.authSecret = {
+      ok: false,
+      detail: `${authSecretProblemMessage(nextAuthSecretProblem() ?? "missing")} Sign-in is disabled; set a new secret (${AUTH_SECRET_SETUP_COMMAND}).`,
+    };
+  } else if (nextAuthSecretShortOverrideActive()) {
+    // Serving, but on borrowed time: visible to operators without failing
+    // readiness, so the override can't take a deployment down by itself.
+    checks.authSecret = {
+      ok: false,
+      advisory: true,
+      // The public endpoint must not advertise that a short secret is in use;
+      // the specific reason is in the startup log.
+      detail: AUTH_SECRET_ROTATION_ADVISORY,
+    };
+  }
+
+  const portalSecretProblem = portalSessionSecretProblem();
+  if (portalSecretProblem) {
+    checks.portalSessionSecret = {
+      ok: false,
+      advisory: true,
+      detail: "Replace or remove PORTAL_SESSION_SECRET; see the server log.",
+    };
+  }
 
   let databaseReachable = false;
   try {

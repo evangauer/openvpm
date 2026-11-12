@@ -27,8 +27,8 @@ const itemStatuses = ["pending", "in_progress", "done", "skipped"] as const;
 
 const createTreatmentPlanInput = z
   .object({
-    patientId: z.string().uuid(),
-    problemId: z.string().uuid().optional(),
+    patientId: z.string().guid(),
+    problemId: z.string().guid().optional(),
     title: clinicalTextInput("Plan title", 255),
     description: optionalClinicalTextInput("Plan description", 2000),
     startDate: clinicalDateInput("Start date").optional(),
@@ -164,7 +164,7 @@ async function assertProblemBelongsToPatient(
 export const treatmentPlansRouter = createRouter({
   /** Plans for a patient, each with its items and a progress summary. */
   listByPatient: protectedProcedure
-    .input(z.object({ patientId: z.string().uuid() }))
+    .input(z.object({ patientId: z.string().guid() }))
     .query(async ({ ctx, input }) => {
       await assertActivePractice(ctx);
       const plans = await ctx.db
@@ -256,7 +256,7 @@ export const treatmentPlansRouter = createRouter({
     .use(clinicalRole)
     .input(
       z.object({
-        id: z.string().uuid(),
+        id: z.string().guid(),
         status: z.enum(planStatuses),
       })
     )
@@ -307,7 +307,7 @@ export const treatmentPlansRouter = createRouter({
     .use(clinicalRole)
     .input(
       z.object({
-        itemId: z.string().uuid(),
+        itemId: z.string().guid(),
         status: z.enum(itemStatuses),
       })
     )

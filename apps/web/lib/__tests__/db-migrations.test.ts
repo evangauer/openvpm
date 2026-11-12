@@ -793,6 +793,39 @@ describe("committed Drizzle migrations", () => {
     }
   });
 
+  it("keeps pre-signup leads and their email ledger system-only", () => {
+    const sql = readRepoFile("packages/db/drizzle/0111_growth_leads.sql");
+    expect(sql).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(sql).toContain('CREATE TABLE "growth_leads"');
+    expect(sql).toContain('CREATE TABLE "growth_lead_emails"');
+    expect(sql).toContain('"disclosure_version" varchar(32) NOT NULL');
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "growth_lead_emails_dedupe_key_uq"',
+    );
+    expect(sql).toContain(
+      'ALTER TABLE "growth_leads" ENABLE ROW LEVEL SECURITY',
+    );
+    expect(sql).toContain(
+      'ALTER TABLE "growth_lead_emails" ENABLE ROW LEVEL SECURITY',
+    );
+
+    const rls = readRepoFile("packages/db/rls/enable-rls.sql");
+    for (const table of ["growth_leads", "growth_lead_emails"]) {
+      const policy = rls.slice(
+        rls.indexOf(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`),
+      );
+      expect(policy).toContain(`CREATE POLICY system_only ON ${table}`);
+      expect(policy.slice(0, 300)).toContain("USING (app_rls_bypass())");
+      expect(policy.slice(0, 300)).not.toContain("app_current_practice_id");
+    }
+    const apiRoleRevokes = rls.slice(
+      rls.indexOf("'REVOKE ALL ON auth_email_attempts"),
+      rls.indexOf("FROM %I', r"),
+    );
+    expect(apiRoleRevokes).toContain("growth_leads");
+    expect(apiRoleRevokes).toContain("growth_lead_emails");
+  });
+
   it("adds durable replica leases and append-only storage evidence", () => {
     const sql = readRepoFile("packages/db/drizzle/0077_gifted_wolverine.sql");
     const eventTable = sql.indexOf('CREATE TABLE "file_storage_events"');
@@ -1399,6 +1432,47 @@ describe("committed Drizzle migrations", () => {
     expect(sql).toContain(
       '("practice_id","appointment_id","deleted_at","recorded_at")',
     );
+  });
+
+  it("adds reminder retry tracking without a full-table validation scan", () => {
+    const journal = JSON.parse(
+      readRepoFile("packages/db/drizzle/meta/_journal.json"),
+    ) as { entries?: Array<{ idx?: number; tag?: string }> };
+    const tags = journal.entries?.map((entry) => entry.tag) ?? [];
+    expect(tags).toContain("0109_reminder_retry_tracking");
+    expect(tags).toContain("0110_reminder_claim_fencing");
+    expect(tags.indexOf("0110_reminder_claim_fencing")).toBe(
+      tags.indexOf("0109_reminder_retry_tracking") + 1,
+    );
+    expect(
+      existsSync(
+        resolve(repoRoot, "packages/db/drizzle/0110_reminder_attempt_started_at.sql"),
+      ),
+    ).toBe(false);
+
+    const retry = readRepoFile(
+      "packages/db/drizzle/0109_reminder_retry_tracking.sql",
+    );
+    expect(retry).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(retry).toContain('ADD COLUMN "reminder_attempt" integer');
+    expect(retry).toContain('ADD COLUMN "reminder_automated_attempts" integer');
+    expect(retry).toContain('ADD COLUMN "reminder_outcome" varchar(32)');
+    expect(retry).toMatch(
+      /ADD CONSTRAINT "communications_reminder_outcome_check" CHECK \([^;]*'staff_failure', 'automated_failure', 'outcome_unknown'\)\) NOT VALID;/,
+    );
+    // Validating in the migration's own transaction would scan the whole
+    // communications table while holding the ADD COLUMN lock.
+    expect(retry).not.toContain("VALIDATE CONSTRAINT");
+
+    const fencing = readRepoFile(
+      "packages/db/drizzle/0110_reminder_claim_fencing.sql",
+    );
+    expect(fencing).toContain("SET LOCAL lock_timeout = '5s'");
+    expect(fencing).toContain(
+      'ADD COLUMN "reminder_attempt_started_at" timestamp with time zone',
+    );
+    expect(fencing).toContain('ADD COLUMN "reminder_claim_token" uuid');
+    expect(fencing).not.toMatch(/DEFAULT|NOT NULL|VALIDATE/);
   });
 
   it("adds an append-only tenant-bound prescription lifecycle ledger", () => {

@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { Fragment, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
   ArrowLeft,
@@ -28,10 +28,21 @@ import {
 import { toast } from "sonner";
 import Link from "next/link";
 import { trpc } from "@/lib/trpc";
+import { WeightCorrectionDialog } from "@/components/records/weight-correction-dialog";
+import {
+  dateTimeLocalInputUtcInstant,
+  formatDateTimeLocalInputForTimeZone,
+} from "@/lib/date-input";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { EmptyState } from "@/components/common/empty-state";
 import { Button } from "@/components/ui/button";
 import { PatientHistorySearch } from "@/components/patients/patient-history-search";
+import { PatientDocumentUpload } from "@/components/records/patient-document-upload";
+import { PatientNotes } from "@/components/patients/patient-notes";
+import {
+  PATIENT_NOTE_LABELS,
+  PATIENT_NOTE_TYPES,
+} from "@/lib/records/patient-note-policy";
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
 import { RecentClinicalItems } from "@/components/records/recent-clinical-items";
@@ -305,9 +316,16 @@ function PatientDetailLoadingPanel({ label }: { label: string }) {
 export default function PatientDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
-  const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [fieldVisitLocationId, setFieldVisitLocationId] = useState("");
+  const activeTab =
+    tabs.find((tab) => tab.id === searchParams.get("tab"))?.id ?? "overview";
+  function setActiveTab(tab: Tab) {
+    const query = new URLSearchParams(searchParams.toString());
+    query.set("tab", tab);
+    router.push(`/patients/${params.id}?${query}`, { scroll: false });
+  }
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoUploadAttemptRef = useRef<ManagedUploadAttempt | null>(null);
@@ -485,6 +503,16 @@ export default function PatientDetailPage() {
     [patient?.weights, recordsSettingsTimeZone],
   );
   const [weightKg, setWeightKg] = useState("");
+  const [weightMeasuredAt, setWeightMeasuredAt] = useState("");
+  const weightMeasuredInstant =
+    weightMeasuredAt && recordsSettingsTimeZone
+      ? dateTimeLocalInputUtcInstant(weightMeasuredAt, recordsSettingsTimeZone)
+      : null;
+  const weightTimeValid =
+    !weightMeasuredAt ||
+    Boolean(
+      weightMeasuredInstant && weightMeasuredInstant.getTime() <= Date.now(),
+    );
   const canonicalPatientWeight = canonicalMeasurementInput(
     weightKg,
     chartMeasurementSystem === "us_customary" ? poundsToKilograms : undefined,
@@ -493,6 +521,7 @@ export default function PatientDetailPage() {
   const addWeight = trpc.patients.addWeight.useMutation({
     onSuccess: () => {
       toast.success("Weight recorded");
+      setWeightMeasuredAt("");
       void refreshPatientDetail();
       setWeightKg("");
     },
@@ -501,6 +530,7 @@ export default function PatientDetailPage() {
   const canSubmitWeight =
     canManagePatientDetail &&
     isPatientWeightInputValid(canonicalPatientWeight) &&
+    weightTimeValid &&
     !addWeight.isPending;
 
   function handleRecordWeight(e: React.FormEvent) {
@@ -509,6 +539,7 @@ export default function PatientDetailPage() {
     addWeight.mutate({
       patientId: patient.id,
       weightKg: canonicalPatientWeight,
+      recordedAt: weightMeasuredInstant ?? undefined,
     });
   }
 
@@ -686,11 +717,15 @@ export default function PatientDetailPage() {
         vaccinationsResult,
         soapNotesResult,
         prescriptionsResult,
+        chartNotesResult,
       ] = await Promise.all([
         problemsQuery.refetch(),
         vaccinationsQuery.refetch(),
         soapNotesQuery.refetch(),
         prescriptionsQuery.refetch(),
+        canSearchPatientHistory
+          ? utils.patientNotes.list.fetch({ patientId: canonicalPatientId })
+          : Promise.resolve(null),
       ]);
 
       const summaryError =
@@ -786,6 +821,23 @@ export default function PatientDetailPage() {
               ),
             })),
           })),
+        chartNotes: chartNotesResult
+          ? {
+              items: chartNotesResult.items.map((note) => ({
+                date: formatClinicalDateTime(note.createdAt, recordsTimeZone),
+                type: PATIENT_NOTE_TYPES.includes(
+                  note.noteType as (typeof PATIENT_NOTE_TYPES)[number],
+                )
+                  ? PATIENT_NOTE_LABELS[
+                      note.noteType as keyof typeof PATIENT_NOTE_LABELS
+                    ]
+                  : "Chart note",
+                authorName: note.authorName ?? "Unknown clinician",
+                content: note.content,
+              })),
+              hasMore: Boolean(chartNotesResult.nextCursor),
+            }
+          : null,
         recordCorrections: [
           ...(patientData.allergyHistory ?? [])
             .filter(
@@ -1070,6 +1122,28 @@ export default function PatientDetailPage() {
                   </p>
                 ) : null}
               </div>
+            ) : null}
+            {process.env.NEXT_PUBLIC_OFFLINE_WORKSPACE_ENABLED === "true" &&
+            (session?.user?.role === "admin" ||
+              session?.user?.role === "veterinarian") ? (
+              <Button size="sm" variant="outline" asChild>
+                <a href={`/offline/index.html#patientId=${patient.id}`}>
+                  Make available offline
+                </a>
+              </Button>
+            ) : null}
+            {canCorrectClinicalRecords ? (
+              <Button size="sm" asChild>
+                <a href="#patient-note-content">Add chart note</a>
+              </Button>
+            ) : null}
+            {session?.user?.role === "admin" ||
+            session?.user?.role === "front_desk" ? (
+              <Button size="sm" variant="outline" asChild>
+                <Link href={`/billing/new?patientId=${patient.id}`}>
+                  New invoice
+                </Link>
+              </Button>
             ) : null}
             {canManagePatientDetail && (
               <>
@@ -1487,6 +1561,10 @@ export default function PatientDetailPage() {
 
         {activeTab === "weight" && (
           <div className="space-y-6">
+            <p className="text-sm text-muted-foreground">
+              Includes weights recorded here and in vitals. Review a vitals
+              entry in the Vitals tab to correct its original clinical record.
+            </p>
             {canManagePatientDetail && (
               <form
                 onSubmit={handleRecordWeight}
@@ -1527,6 +1605,28 @@ export default function PatientDetailPage() {
                       className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/30"
                     />
                   </div>
+                  <label className="block text-xs font-medium text-muted-foreground">
+                    Measured at (
+                    {recordsSettingsTimeZone ?? "loading clinic timezone…"})
+                    <input
+                      type="datetime-local"
+                      value={weightMeasuredAt}
+                      disabled={!recordsSettingsTimeZone}
+                      max={formatDateTimeLocalInputForTimeZone(
+                        new Date(),
+                        recordsSettingsTimeZone,
+                      )}
+                      aria-invalid={!weightTimeValid}
+                      onChange={(event) =>
+                        setWeightMeasuredAt(event.target.value)
+                      }
+                      className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                    />
+                    <span className="mt-1 block font-normal">
+                      Leave blank to record now; set a date for historical
+                      records.
+                    </span>
+                  </label>
                   <Button type="submit" disabled={!canSubmitWeight}>
                     {addWeight.isPending ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1561,6 +1661,11 @@ export default function PatientDetailPage() {
                         <th className="px-4 py-3 text-left font-medium text-muted-foreground">
                           Recorded By
                         </th>
+                        {canCorrectClinicalRecords ? (
+                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                            Correction
+                          </th>
+                        ) : null}
                       </tr>
                     </thead>
                     <tbody>
@@ -1583,8 +1688,31 @@ export default function PatientDetailPage() {
                             )}
                           </td>
                           <td className="px-4 py-3 text-muted-foreground">
-                            {weight.recordedBy ?? "\u2014"}
+                            {weight.recordedByName ?? "\u2014"}
                           </td>
+                          {canCorrectClinicalRecords ? (
+                            <td className="px-4 py-3">
+                              {weight.source === "vitals" ? (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setActiveTab("vitals")}
+                                >
+                                  Review vitals
+                                </Button>
+                              ) : (
+                                <WeightCorrectionDialog
+                                  patientId={patient.id}
+                                  weight={weight}
+                                  measurementSystem={chartMeasurementSystem}
+                                  timeZone={recordsSettingsTimeZone}
+                                  onSaved={() => {
+                                    void refreshPatientDetail();
+                                  }}
+                                />
+                              )}
+                            </td>
+                          ) : null}
                         </tr>
                       ))}
                     </tbody>
@@ -1628,7 +1756,24 @@ export default function PatientDetailPage() {
         )}
 
         {activeTab === "documents" && (
-          <DocumentsTab patientId={patient.id} timeZone={recordsTimeZone} />
+          <div className="space-y-4">
+            {process.env.NEXT_PUBLIC_LAB_REPORT_INTAKE_ENABLED === "true" && session?.user.role !== "front_desk" ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-medium">Lab report PDFs</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Original reports and clinical review status.
+                  </p>
+                </div>
+                <Button asChild variant="outline" size="sm">
+                  <Link href={`/lab-reports?patientId=${patient.id}`}>
+                    View lab reports
+                  </Link>
+                </Button>
+              </div>
+            ) : null}
+            <DocumentsTab patientId={patient.id} timeZone={recordsTimeZone} />
+          </div>
         )}
 
         {activeTab === "appointments" && (
@@ -1637,6 +1782,19 @@ export default function PatientDetailPage() {
 
         {activeTab === "invoices" && <InvoicesTab patientId={patient.id} />}
       </div>
+      {canSearchPatientHistory ? (
+        <PatientNotes
+          key={`${patient.id}:${session?.user.id}:${session?.user.practiceId}:${canCorrectClinicalRecords}`}
+          patientId={patient.id}
+          timeZone={recordsTimeZone}
+          canWrite={canCorrectClinicalRecords}
+          draftScope={session?.user ? {
+            patientId: patient.id,
+            userId: session.user.id,
+            practiceId: session.user.practiceId,
+          } : null}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1674,6 +1832,7 @@ function VitalsTab({
   const record = trpc.vitals.record.useMutation({
     onSuccess: () => {
       toast.success("Vitals recorded");
+      void utils.patients.getById.invalidate();
       utils.vitals.listByPatient.invalidate({ patientId });
       setForm(initialVitalsForm());
     },
@@ -1682,6 +1841,7 @@ function VitalsTab({
   const correctVital = trpc.vitals.markEnteredInError.useMutation({
     onSuccess: async () => {
       toast.success("Vital signs retained and marked entered in error");
+      await utils.patients.getById.invalidate();
       await utils.vitals.listByPatient.invalidate({ patientId });
     },
     onError: (err) => toast.error(err.message),
@@ -2589,7 +2749,7 @@ function MedicalRecordsTab({
         ) : !notes || notes.length === 0 ? (
           <EmptyState
             icon={FileText}
-            title="No medical records yet"
+            title="No SOAP notes yet"
             description="SOAP notes written in Records will show up here."
           />
         ) : (
@@ -3128,7 +3288,11 @@ function PatientFileRows({
                         ? ` · Signed by ${file.consentSignerName}`
                         : ""
                     }`
-                  : "Document"}
+                  : file.category === "lab-results"
+                    ? "Lab report"
+                    : file.category === "documents"
+                      ? "External record"
+                      : "Document"}
                 {" · "}
                 {formatClinicalDateTime(file.createdAt, timeZone, "Unknown")}
               </p>
@@ -3228,11 +3392,15 @@ function VisitDocuments({
   );
 }
 
-const documentFilters: { id: PatientFileKind | "all"; label: string }[] = [
+const documentFilters: {
+  id: PatientFileKind | "all" | "lab";
+  label: string;
+}[] = [
   { id: "all", label: "All" },
   { id: "photo", label: "Photos" },
   { id: "consent", label: "Consents" },
   { id: "document", label: "Documents" },
+  { id: "lab", label: "Lab reports" },
 ];
 
 function DocumentsTab({
@@ -3242,17 +3410,18 @@ function DocumentsTab({
   patientId: string;
   timeZone?: string | null;
 }) {
-  const [filter, setFilter] = useState<PatientFileKind | "all">("all");
+  const [filter, setFilter] = useState<PatientFileKind | "all" | "lab">("all");
   const { data, isLoading, error } = trpc.records.listPatientFiles.useQuery({
     patientId,
   });
   const filesMissing = !isLoading && !error && !data;
 
   const counts = useMemo(() => {
-    const next = { all: 0, photo: 0, consent: 0, document: 0 };
+    const next = { all: 0, photo: 0, consent: 0, document: 0, lab: 0 };
     for (const file of data ?? []) {
       next.all += 1;
       next[patientFileKind(file)] += 1;
+      if (file.category === "lab-results") next.lab += 1;
     }
     return next;
   }, [data]);
@@ -3274,22 +3443,30 @@ function DocumentsTab({
   }
   if (!data || data.length === 0) {
     return (
-      <EmptyState
-        icon={Paperclip}
-        title="No documents yet"
-        description="Photos you capture and consents that get signed show up here."
-      />
+      <div className="space-y-4">
+        <PatientDocumentUpload key={patientId} patientId={patientId} />
+        <EmptyState
+          icon={Paperclip}
+          title="No documents yet"
+          description="Upload outside records and lab reports here. Captured photos and signed consents also appear in this list."
+        />
+      </div>
     );
   }
 
   const visible = data.filter(
-    (file) => filter === "all" || patientFileKind(file) === filter,
+    (file) =>
+      filter === "all" ||
+      (filter === "lab"
+        ? file.category === "lab-results"
+        : patientFileKind(file) === filter),
   );
   const photos = visible.filter((file) => patientFileKind(file) === "photo");
   const documents = visible.filter((file) => patientFileKind(file) !== "photo");
 
   return (
     <div className="space-y-4">
+      <PatientDocumentUpload key={patientId} patientId={patientId} />
       <div className="flex flex-wrap gap-2">
         {documentFilters.map((option) => (
           <button

@@ -67,7 +67,8 @@ const optionalIntakeText = z
   .trim()
   .max(PREVISIT_INTAKE_FIELD_MAX_LENGTH)
   .optional()
-  .transform((value) => value || undefined);
+  .transform((value) => value || undefined)
+  .optional();
 
 /**
  * Owner-reported context collected before a public booking request.

@@ -60,7 +60,7 @@ describe("lab result clinical safety contract", () => {
     expect(inbox).toContain("reviewOperationIds.current.get(resultId)");
     expect(inbox).toContain("operationId: actionPanel.operationId");
     expect(inbox).toContain("More than 100 results match this view");
-    expect(router).toContain("resultId: z.string().uuid().optional()");
+    expect(router).toContain("resultId: z.string().guid().optional()");
     expect(router).toContain("eq(labResults.id, input.resultId)");
     expect(router).toContain("input.resultId ? 2 : input.limit + 1");
     expect(inbox).toContain("UUID_PATTERN.test(requestedResultId)");

@@ -381,7 +381,7 @@ export const portalRouter = createRouter({
     .input(
       z.object({
         token: portalTokenCompatibilityInput,
-        patientId: z.string().uuid(),
+        patientId: z.string().guid(),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -578,8 +578,8 @@ export const portalRouter = createRouter({
     .input(
       z.object({
         token: portalTokenCompatibilityInput,
-        patientId: z.string().uuid(),
-        vaccinationRecordId: z.string().uuid(),
+        patientId: z.string().guid(),
+        vaccinationRecordId: z.string().guid(),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -1125,8 +1125,8 @@ export const portalRouter = createRouter({
           .min(PORTAL_BOOKING_MIN_DURATION_MINUTES)
           .max(PORTAL_BOOKING_MAX_DURATION_MINUTES)
           .default(30),
-        typeId: z.string().uuid().optional(),
-        locationId: z.string().uuid().optional(),
+        typeId: z.string().guid().optional(),
+        locationId: z.string().guid().optional(),
       }),
     )
     .query(async ({ ctx, input }) => {
@@ -1228,9 +1228,9 @@ export const portalRouter = createRouter({
     .input(
       z.object({
         token: portalTokenCompatibilityInput,
-        patientId: z.string().uuid(),
-        typeId: z.string().uuid(),
-        locationId: z.string().uuid().optional(),
+        patientId: z.string().guid(),
+        typeId: z.string().guid(),
+        locationId: z.string().guid().optional(),
         preferredDate: portalBookingDateInput,
         preferredTime: portalBookingTimeInput,
         reason: z.string().trim().min(1).max(PORTAL_BOOKING_REASON_MAX_LENGTH),

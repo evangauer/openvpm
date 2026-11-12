@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { alertOps } from "@/lib/alerts";
+import { PREVIEW_OUTBOUND_BLOCK_MESSAGE } from "@/lib/billing/preview";
 import { rateLimit, type RateLimitResult } from "@/lib/rate-limit";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -33,6 +34,8 @@ export type OutboundEmailSecurityContext = {
   practiceCreatedAt: Date | string | null | undefined;
   userId: string;
   userEmailVerifiedAt: Date | string | null | undefined;
+  /** Preview clinics have no card-backed trial yet; nothing leaves the app. */
+  practiceInPreview?: boolean;
   ip?: string | null;
   operation: OutboundEmailOperation;
   now?: Date;
@@ -83,6 +86,13 @@ export async function assertOutboundEmailAllowed(
       code: "FORBIDDEN",
       message:
         "Free-form email sending from the inbox is disabled for account safety.",
+    });
+  }
+
+  if (context.practiceInPreview) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: PREVIEW_OUTBOUND_BLOCK_MESSAGE,
     });
   }
 

@@ -10,6 +10,72 @@ permissions:
   contents: read
 
 jobs:
+  clinic-drills:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Golden clinic workflow
+            test: golden-clinic
+          - name: Disposable restore drill
+            test: disposable-restore
+          - name: Newsletter consent and delivery
+            test: newsletter
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openpims
+          POSTGRES_PASSWORD: openpims
+          POSTGRES_DB: openpims
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openpims"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Local service credentials only; these jobs have no environment secrets.
+      DATABASE_URL: postgresql://openpims:openpims@localhost:5432/openpims
+      OPENPIMS_APP_DB_PASSWORD: openpims_app
+      GOLDEN_CLINIC_DB_INTEGRATION: "1"
+      DISPOSABLE_RESTORE_DB_INTEGRATION: "1"
+      NEWSLETTER_DB_INTEGRATION: "1"
+      MESSAGING_PROVISIONING_ENABLED: "false"
+      MESSAGING_INBOUND_ENABLED: "false"
+      MESSAGING_SENDING_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      # The fixtures create, migrate, verify, and drop only randomly named
+      # local databases. All clinical/billing actions use openpims_app and the
+      # real protected routers. Restore starts with a second empty database.
+      - run: pnpm --filter @openpims/web exec vitest run server/__tests__/${{ matrix.test }}.integration.test.ts
+      - name: Verify offline clinical reconciliation
+        if: matrix.test == 'golden-clinic'
+        env:
+          OFFLINE_WORKSPACE_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/offline-workspace.integration.test.ts
+      - if: matrix.test == 'newsletter'
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/newsletter-delivery.integration.test.ts
+
+      - name: Verify lab report intake and recovery
+        if: matrix.test == 'golden-clinic'
+        env:
+          LAB_REPORT_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/lab-report-intake.integration.test.ts
+
   build:
     runs-on: ubuntu-latest
 
@@ -18,11 +84,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: "pnpm"
 
       - run: pnpm install --frozen-lockfile
@@ -32,6 +98,9 @@ jobs:
 
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level high
+
+      - name: Audit development dependencies
+        run: pnpm audit --dev --audit-level high
 
       - run: pnpm type-check
 
@@ -53,11 +122,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: "pnpm"
 
       - run: pnpm install --frozen-lockfile
@@ -95,11 +164,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: "pnpm"
 
       - run: pnpm install --frozen-lockfile
@@ -179,7 +248,7 @@ jobs:
           PATIENT_SEARCH_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/patient-search.integration.test.ts
 
-      # Steven Dennis's long-chart workflow crosses multiple clinical tables.
+      # Long-chart workflows cross multiple clinical tables.
       # Exercise the exact read-only POST projection as openpims_app, including
       # literal matching, lifecycle lineage, keyset paging, role gates, RLS,
       # clinic-local dates, and high-cardinality query-plan evidence.
@@ -187,6 +256,36 @@ jobs:
         env:
           PATIENT_HISTORY_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/patient-history.integration.test.ts
+
+      - name: Execute direct patient note contract
+        env:
+          PATIENT_NOTES_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/patient-notes.integration.test.ts
+
+      - name: Execute duplicate submit contract
+        env:
+          DUPLICATE_SUBMIT_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/duplicate-submit-idempotency.integration.test.ts
+
+      # Sign-in limits live in PostgreSQL. Prove as openpims_app that forged
+      # or proxy-hidden addresses can't lock a self-hosted clinic out, a guest
+      # on the clinic's network can't lock out staff on known devices,
+      # responses don't depend on the claimed address, per-account backoff
+      # holds under concurrency, device cookies can't be forged, reset
+      # flooding is bounded, and admins can lift a staff member's lock.
+      - name: Execute sign-in rate limit contract
+        env:
+          SIGN_IN_RATE_LIMIT_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/sign-in-rate-limit.integration.test.ts
+
+      # Staff sessions are signed cookies. Prove as openpims_app that a role
+      # change takes effect on the next request, and that password resets,
+      # role changes, and deactivation revoke every outstanding session while
+      # sessions issued before versioning keep working until a bump.
+      - name: Execute staff session revocation contract
+        env:
+          SESSION_REVOCATION_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/session-revocation.integration.test.ts
 
       # Template catalog selection is a clinic-facing data boundary. Exercise
       # the real router as the least-privilege app role and prove literal,
@@ -196,7 +295,7 @@ jobs:
           TEMPLATE_CATALOG_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/template-catalog-search.integration.test.ts
 
-      # Steven Dennis exposed a real route-level patient merge 500 caused by
+      # Patient merge previously returned a route-level 500 caused by
       # changing isolation inside a nested savepoint. Exercise the protected
       # router as openpims_app and prove the event is written in the outer
       # SERIALIZABLE tenant transaction with replay and RLS cleanup intact.
@@ -236,6 +335,15 @@ jobs:
         env:
           REMINDER_POLICY_DB_INTEGRATION: "1"
         run: pnpm --filter @openpims/web exec vitest run lib/messaging/__tests__/appointment-reminder-eligibility.integration.test.ts
+
+      # A reminder row is claimed by one conditional UPDATE. Race 16 SMS and
+      # email claimers per row state (new, pending, stale, failed, retried,
+      # sent, unknown outcome) on a disposable database and prove at most one
+      # claim wins, so a client is never sent a duplicate reminder.
+      - name: Execute appointment reminder claim concurrency contract
+        env:
+          APPOINTMENT_REMINDER_CLAIM_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run lib/messaging/__tests__/appointment-reminder-claim.integration.test.ts
 
       - name: Prove tenant/RLS pool-reuse isolation
         run: pnpm --filter @openpims/db db:rls:test

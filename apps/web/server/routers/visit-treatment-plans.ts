@@ -57,7 +57,7 @@ const clinicalRole = requireRole("admin", "veterinarian", "technician");
 
 const catalogItemInput = z.object({
   itemType: z.enum(["service", "product"]),
-  itemId: z.string().uuid(),
+  itemId: z.string().guid(),
   quantity: z
     .string()
     .trim()
@@ -81,25 +81,25 @@ const planItemsInput = z
   );
 
 const createPlanInput = z.object({
-  operationId: z.string().uuid(),
-  clientId: z.string().uuid(),
-  patientId: z.string().uuid(),
-  appointmentId: z.string().uuid().optional(),
+  operationId: z.string().guid(),
+  clientId: z.string().guid(),
+  patientId: z.string().guid(),
+  appointmentId: z.string().guid().optional(),
   title: clinicalTextInput("Treatment plan title", 255),
   items: planItemsInput,
 });
 
 const revisePlanInput = z.object({
-  operationId: z.string().uuid(),
-  planId: z.string().uuid(),
+  operationId: z.string().guid(),
+  planId: z.string().guid(),
   expectedRevisionNumber: z.number().int().min(1),
   items: planItemsInput,
 });
 
 const planContextInput = z.object({
-  clientId: z.string().uuid(),
-  patientId: z.string().uuid(),
-  appointmentId: z.string().uuid(),
+  clientId: z.string().guid(),
+  patientId: z.string().guid(),
+  appointmentId: z.string().guid(),
 });
 
 const quotePlanInput = planContextInput.extend({ items: planItemsInput });
@@ -899,7 +899,7 @@ export const visitTreatmentPlansRouter = createRouter({
     .use(clinicalRole)
     .input(
       z.object({
-        planId: z.string().uuid(),
+        planId: z.string().guid(),
         revisionNumber: z.number().int().min(1).optional(),
       }),
     )
@@ -917,8 +917,8 @@ export const visitTreatmentPlansRouter = createRouter({
     .use(clinicalRole)
     .input(
       z.object({
-        planId: z.string().uuid(),
-        revisionId: z.string().uuid(),
+        planId: z.string().guid(),
+        revisionId: z.string().guid(),
       }),
     )
     .mutation(async ({ ctx, input }) => {

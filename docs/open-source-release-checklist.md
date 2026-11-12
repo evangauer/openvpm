@@ -25,8 +25,10 @@ the matching value.
 Run the Quick Start from the public `README.md` in a clean clone with no Vercel,
 Supabase, or operator credentials present:
 
-1. Copy `.env.example` to `.env` and replace every placeholder secret.
-2. Start the Docker Compose PostgreSQL and MinIO services.
+1. Copy `.env.example` to `.env` and replace every placeholder secret
+   (`NEXTAUTH_SECRET` from `openssl rand -base64 32`).
+2. Start the Docker Compose PostgreSQL and MinIO services with
+   `docker compose --env-file .env -f docker/docker-compose.yml up -d postgres minio minio-bootstrap`.
 3. Install with the lockfile, migrate, apply RLS, and run the RLS test.
 4. Seed the synthetic demonstration clinic.
 5. Sign in, search for a synthetic patient, and open a chart.

@@ -58,6 +58,17 @@ describe("outbound email abuse boundary", () => {
     expect(mocks.rateLimit).not.toHaveBeenCalled();
   });
 
+  it("keeps a preview clinic from emailing anyone until its trial starts", async () => {
+    await expect(
+      assertOutboundEmailAllowed({ ...BASE, practiceInPreview: true }),
+    ).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringContaining("Start your free trial"),
+    });
+
+    expect(mocks.rateLimit).not.toHaveBeenCalled();
+  });
+
   it("enforces shared hourly and daily quotas for established practices", async () => {
     await expect(assertOutboundEmailAllowed(BASE)).resolves.toBeUndefined();
 

@@ -17,10 +17,11 @@ export type ManagedUploadCategory =
   | "branding"
   | "patient-photos"
   | "consents"
-  | "documents";
+  | "documents"
+  | "lab-results";
 export type DashboardUploadCategory = Extract<
   ManagedUploadCategory,
-  "branding" | "patient-photos"
+  "branding" | "patient-photos" | "documents" | "lab-results"
 >;
 
 export class ManagedUploadConflictError extends Error {

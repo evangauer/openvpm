@@ -234,6 +234,7 @@ export function EncounterVitalsCard({
       setForm({ ...EMPTY_VITALS_FORM });
       toast.success("Visit vitals recorded");
       await Promise.all([
+        utils.patients.getById.invalidate(),
         utils.vitals.listByAppointment.invalidate({ appointmentId }),
         utils.vitals.listByPatient.invalidate({ patientId }),
       ]);
@@ -244,6 +245,7 @@ export function EncounterVitalsCard({
     onSuccess: async () => {
       toast.success("Vital signs retained and marked entered in error");
       await Promise.all([
+        utils.patients.getById.invalidate(),
         utils.vitals.listByAppointment.invalidate({ appointmentId }),
         utils.vitals.listByPatient.invalidate({ patientId }),
       ]);

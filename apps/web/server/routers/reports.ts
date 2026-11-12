@@ -9,6 +9,7 @@ import {
 } from "../trpc";
 import {
   invoices,
+  payments,
   invoiceItems,
   products,
   appointments,
@@ -104,58 +105,61 @@ export const reportsRouter = createRouter({
       const range = await getReportDateRange(ctx, input);
       const reportTimeZone = sqlStringLiteral(range.timeZone ?? "UTC");
       const reportDay = sql`
-        date_trunc('day', timezone(${reportTimeZone}, ${invoices.createdAt}))
+        date_trunc('day', timezone(${reportTimeZone}, ${payments.receivedAt}))
       `;
       const baseConds = [
         eq(invoices.practiceId, ctx.practiceId),
         activePracticePredicate(ctx.practiceId),
         isNull(invoices.deletedAt),
-        eq(invoices.status, "paid"),
+        isNull(payments.deletedAt),
         eq(invoices.isEstimate, false),
       ];
 
       const [rangeResult, previousResult, dailyRows] = await Promise.all([
         ctx.db
           .select({
-            total: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+            total: sql<string>`coalesce(sum(${payments.amount}::numeric), 0)`,
           })
-          .from(invoices)
+          .from(payments)
+          .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
           .where(
             and(
               ...baseConds,
-              gte(invoices.createdAt, range.start),
-              lt(invoices.createdAt, range.endExclusive)
+              gte(payments.receivedAt, range.start),
+              lt(payments.receivedAt, range.endExclusive)
             )
           ),
 
         ctx.db
           .select({
-            total: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+            total: sql<string>`coalesce(sum(${payments.amount}::numeric), 0)`,
           })
-          .from(invoices)
+          .from(payments)
+          .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
           .where(
             and(
               ...baseConds,
-              gte(invoices.createdAt, range.previousStart),
-              lt(invoices.createdAt, range.previousEndExclusive)
+              gte(payments.receivedAt, range.previousStart),
+              lt(payments.receivedAt, range.previousEndExclusive)
             )
           ),
 
         ctx.db
           .select({
             date: sql<string>`to_char(${reportDay}, 'YYYY-MM-DD')`,
-            amount: sql<string>`coalesce(sum(${invoices.total}::numeric), 0)`,
+            amount: sql<string>`coalesce(sum(${payments.amount}::numeric), 0)`,
           })
-          .from(invoices)
+          .from(payments)
+          .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
           .where(
             and(
               ...baseConds,
-              gte(invoices.createdAt, range.start),
-              lt(invoices.createdAt, range.endExclusive)
+              gte(payments.receivedAt, range.start),
+              lt(payments.receivedAt, range.endExclusive)
             )
           )
           .groupBy(reportDay)
-          .orderBy(sql`min(${invoices.createdAt})`),
+          .orderBy(sql`min(${payments.receivedAt})`),
       ]);
 
       const total = parseFloat(String(rangeResult[0]?.total ?? "0"));

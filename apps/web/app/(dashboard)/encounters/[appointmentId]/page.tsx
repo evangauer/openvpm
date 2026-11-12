@@ -1,5 +1,12 @@
 "use client";
 
+import { browserUuid } from "@/lib/browser-uuid";
+
+import { ReconciliationReasonActions } from "@/components/records/reconciliation-reason-actions";
+
+import { isValidSettingsTaxRate } from "@/lib/settings-policy";
+import { isSupportedQuantity, quantityLineTotalCents } from "@/lib/quantity";
+
 import {
   useCallback,
   useDeferredValue,
@@ -51,6 +58,11 @@ import { tryCalculateInvoiceTaxTotals } from "@/lib/billing/invoice-tax";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes-guard";
 import { useOnlineStatus } from "@/lib/use-online-status";
+import { providerDisplayName } from "@/lib/provider-display-name";
+import {
+  getChargeCaptureLock,
+  type ChargeCaptureLock,
+} from "@/lib/encounters/charge-capture-access";
 import {
   getVisitCompletionAction,
   requiresPrescriptionInventoryUnitReview,
@@ -125,14 +137,6 @@ type ClinicalDraftFields = {
   followUpAssignedTo: string;
   documentationExceptionReason: string;
 };
-
-function providerDisplayName(name: string | null): string {
-  const normalized = name?.trim();
-  if (!normalized) return "Unassigned provider";
-  return /^(dr\.?|doctor)\s/i.test(normalized)
-    ? normalized
-    : `Dr. ${normalized}`;
-}
 
 function chargeItemsFingerprint(items: ChargeItem[]): string {
   return JSON.stringify(
@@ -550,6 +554,30 @@ export default function EncounterWorkspacePage() {
         />
       ) : null}
 
+      {isAmbulatoryWorkspace && appointment.status === "in_exam" ? (
+        <section
+          className="rounded-lg border border-primary/20 bg-primary/5 p-4"
+          aria-label="Field billing and documentation"
+        >
+          <p className="font-medium">Bill now, finish notes later</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Save any notes you have entered, then prepare charges or take
+            payment. Your clinical record stays unfinished until you return to
+            sign it and complete closeout.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {canManageBilling(role) ? (
+              <Button variant="outline" size="sm" asChild>
+                <a href="#charge-capture">Charges and payment</a>
+              </Button>
+            ) : null}
+            <Button variant="outline" size="sm" asChild>
+              <Link href="/">Unfinished field visits</Link>
+            </Button>
+          </div>
+        </section>
+      ) : null}
+
       <header className="flex flex-col gap-4 rounded-lg border border-border bg-card p-5 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -940,6 +968,7 @@ export default function EncounterWorkspacePage() {
                 role === "veterinarian" ||
                 role === "front_desk")
             }
+            canNoCharge={canManageBilling(role)}
             canVoid={role === "admin" || role === "veterinarian"}
           />
         </div>
@@ -949,11 +978,13 @@ export default function EncounterWorkspacePage() {
             appointmentId={appointmentId}
             clientId={appointment.clientId}
             patientId={appointment.patientId}
-            canManage={
-              canManageBilling(role) &&
-              appointment.status === "in_exam" &&
-              closeoutQuery.data?.closeout?.status !== "completed"
-            }
+            lock={getChargeCaptureLock({
+              roleCanManageBilling: canManageBilling(role),
+              appointmentStatus: appointment.status,
+              appointmentStatusLabel:
+                APPOINTMENT_STATUS_LABELS[appointment.status],
+              closeoutStatus: closeoutQuery.data?.closeout?.status,
+            })}
             activeInvoice={
               activeInvoices[0]
                 ? {
@@ -1980,6 +2011,10 @@ function VisitCloseout({
             </div>
           ) : canDraftClinical ? (
             <ClinicalCloseoutForm
+              patientName={appointment.patientName}
+              onRefreshAppointments={() => {
+                void utils.encounters.getCloseout.invalidate({ appointmentId });
+              }}
               diagnosisSummary={diagnosisSummary}
               setDiagnosisSummary={setDiagnosisSummary}
               dischargeInstructions={dischargeInstructions}
@@ -2328,6 +2363,7 @@ function VisitCloseout({
         {clinicalLocked && !isCompleted && canManageVisit(role) ? (
           <OperationalCloseoutForm
             activeInvoice={activeInvoice}
+            canWaiveCharges={canManageBilling(role)}
             chargeDisposition={chargeDisposition}
             setChargeDisposition={setChargeDisposition}
             invoiceDueDate={invoiceDueDate}
@@ -2390,6 +2426,8 @@ function ReadinessTile({ label, value }: { label: string; value: string }) {
 }
 
 type ClinicalCloseoutFormProps = {
+  onRefreshAppointments: () => void;
+  patientName: string | null;
   diagnosisSummary: string;
   setDiagnosisSummary: (value: string) => void;
   dischargeInstructions: string;
@@ -2748,6 +2786,28 @@ function ClinicalCloseoutForm(props: ClinicalCloseoutFormProps) {
               </option>
             ))}
           </select>
+          <Button variant="outline" size="sm" className="mt-2" asChild>
+            <Link
+              href={`/schedule?patient=${encodeURIComponent(props.patientName ?? "")}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Schedule follow-up (opens new tab)
+            </Link>
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="mt-2 ml-2"
+            onClick={props.onRefreshAppointments}
+          >
+            Refresh appointments
+          </Button>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Create the appointment, then refresh appointments here and select it
+            to link the follow-up. Your closeout stays open in this tab.
+          </p>
           {props.followUpAppointments.length === 0 ? (
             <p className="mt-1 text-xs text-muted-foreground">
               No future appointment is scheduled. Save this draft, create the
@@ -3087,6 +3147,7 @@ function FollowUpResolutionPanel({
 
 function OperationalCloseoutForm({
   activeInvoice,
+  canWaiveCharges,
   chargeDisposition,
   setChargeDisposition,
   invoiceDueDate,
@@ -3110,6 +3171,7 @@ function OperationalCloseoutForm({
     balanceDueCents: number;
     dueDate: Date | string | null;
   } | null;
+  canWaiveCharges: boolean;
   chargeDisposition: "" | "paid" | "accounts_receivable" | "no_charge";
   setChargeDisposition: (
     value: "" | "paid" | "accounts_receivable" | "no_charge",
@@ -3148,7 +3210,8 @@ function OperationalCloseoutForm({
     moneyToCents(activeInvoice.adjustedAmount) === 0 &&
     activeInvoice.balanceDueCents === 0,
   );
-  const noChargeReady = !activeInvoice || zeroDollarInvoiceReady;
+  const noChargeReady =
+    canWaiveCharges && (!activeInvoice || zeroDollarInvoiceReady);
   const selectedDispositionReady =
     (chargeDisposition === "paid" && paidReady) ||
     (chargeDisposition === "accounts_receivable" && accountsReceivableReady) ||
@@ -3196,11 +3259,13 @@ function OperationalCloseoutForm({
               Pay later — present with due date
             </option>
             <option value="no_charge" disabled={!noChargeReady}>
-              {zeroDollarInvoiceReady
-                ? "No charge — $0 invoice"
-                : `No charge for this visit${
-                    noChargeReady ? "" : " — invoice has a balance"
-                  }`}
+              {!canWaiveCharges
+                ? "No charge — admin or front desk only"
+                : zeroDollarInvoiceReady
+                  ? "No charge — $0 invoice"
+                  : `No charge for this visit${
+                      noChargeReady ? "" : " — invoice has a balance"
+                    }`}
             </option>
           </select>
         </div>
@@ -3420,11 +3485,13 @@ function VisitWorkReconciliation({
   appointmentId,
   canManage,
   canCorrect,
+  canNoCharge,
   canVoid,
 }: {
   appointmentId: string;
   canManage: boolean;
   canCorrect: boolean;
+  canNoCharge: boolean;
   canVoid: boolean;
 }) {
   const utils = trpc.useUtils();
@@ -3510,6 +3577,8 @@ function VisitWorkReconciliation({
               return (
                 <div
                   key={item.id}
+                  role="group"
+                  aria-label={`Performed work ${item.sourceLabel}`}
                   className="rounded-md border border-border p-4"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-2">
@@ -3585,63 +3654,19 @@ function VisitWorkReconciliation({
                               Link confirmed charge
                             </Button>
                           </div>
-                          <div className="flex flex-col gap-2 sm:flex-row">
-                            <Input
-                              value={reason}
-                              maxLength={500}
-                              placeholder="Reason required for no charge or void/correction"
-                              aria-label={`Reconciliation reason for ${item.sourceLabel}`}
-                              disabled={resolve.isPending || reopen.isPending}
-                              onChange={(event) =>
-                                setReasons((current) => ({
-                                  ...current,
-                                  [item.id]: event.target.value,
-                                }))
-                              }
-                            />
-                            <Button
-                              variant="outline"
-                              disabled={
-                                reason.trim().length < 3 ||
-                                resolve.isPending ||
-                                reopen.isPending
-                              }
-                              onClick={() =>
-                                resolve.mutate({
-                                  appointmentId,
-                                  workItemId: item.id,
-                                  resolution: {
-                                    status: "no_charge",
-                                    reason: reason.trim(),
-                                  },
-                                })
-                              }
-                            >
-                              No charge
-                            </Button>
-                            {canVoid ? (
-                              <Button
-                                variant="outline"
-                                disabled={
-                                  reason.trim().length < 3 ||
-                                  resolve.isPending ||
-                                  reopen.isPending
-                                }
-                                onClick={() =>
-                                  resolve.mutate({
-                                    appointmentId,
-                                    workItemId: item.id,
-                                    resolution: {
-                                      status: "voided",
-                                      reason: reason.trim(),
-                                    },
-                                  })
-                                }
-                              >
-                                Void/corrected
-                              </Button>
-                            ) : null}
-                          </div>
+                          <ReconciliationReasonActions
+                            label={item.sourceLabel}
+                            canNoCharge={canNoCharge}
+                            canVoid={canVoid}
+                            disabled={resolve.isPending || reopen.isPending}
+                            onResolve={(resolution) =>
+                              resolve.mutate({
+                                appointmentId,
+                                workItemId: item.id,
+                                resolution,
+                              })
+                            }
+                          />
                         </>
                       ) : staleCharge ? (
                         <p className="text-sm text-destructive">
@@ -3716,7 +3741,7 @@ function ChargeCapture({
   appointmentId,
   clientId,
   patientId,
-  canManage,
+  lock,
   activeInvoice,
   invoiceStateReady,
   invoiceStateLoading,
@@ -3725,7 +3750,7 @@ function ChargeCapture({
   appointmentId: string;
   clientId: string | null;
   patientId: string | null;
-  canManage: boolean;
+  lock: ChargeCaptureLock | null;
   activeInvoice: { id: string; status: string } | null;
   invoiceStateReady: boolean;
   invoiceStateLoading: boolean;
@@ -3743,9 +3768,12 @@ function ChargeCapture({
     dispenseChargeDescription: string | null;
   }>;
 }) {
+  const canManage = lock === null;
   const utils = trpc.useUtils();
   const isOnline = useOnlineStatus();
   const [selectedCatalogId, setSelectedCatalogId] = useState("");
+  const [productSearch, setProductSearch] = useState("");
+  const [selectedProduct, setSelectedProduct] = useState<RouterOutputs["billing"]["searchProducts"]["items"][number] | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [items, setItems] = useState<ChargeItem[]>([]);
   const [loadedInvoiceId, setLoadedInvoiceId] = useState<string | null>(null);
@@ -3771,9 +3799,11 @@ function ChargeCapture({
       invoiceStateReady &&
       (!activeInvoice || (activeInvoiceIsDraft && invoiceDetailReady)),
   });
-  const productsQuery = trpc.billing.listProducts.useQuery(
-    { limit: 100 },
+  const productsQuery = trpc.billing.searchProducts.useInfiniteQuery(
+    { limit: 50, search: productSearch.trim() || undefined },
     {
+      getNextPageParam: (page) => page.nextCursor,
+      retry: false,
       enabled:
         canManage &&
         configReady &&
@@ -3875,7 +3905,10 @@ function ChargeCapture({
         sourcePrescriptionId: undefined as string | undefined,
         sourceDispenseChargeId: prescription.dispenseChargeId!,
       }));
-    const products = (productsQuery.data ?? [])
+    const fetchedProducts = productsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+    const availableProducts = selectedProduct && !fetchedProducts.some((product) => product.id === selectedProduct.id)
+      ? [...fetchedProducts, selectedProduct] : fetchedProducts;
+    const products = availableProducts
       .filter((product) => !linkedProductIds.has(product.id))
       .map((product) => ({
         id: `product:${product.id}`,
@@ -3894,7 +3927,7 @@ function ChargeCapture({
         sourceDispenseChargeId: undefined as string | undefined,
       }));
     return [...prescriptionCharges, ...services, ...products];
-  }, [linkedPrescriptions, productsQuery.data, servicesQuery.data]);
+  }, [linkedPrescriptions, productsQuery.data, servicesQuery.data, selectedProduct]);
 
   const selected = catalog.find((entry) => entry.id === selectedCatalogId);
   const readyVisitPrescriptionCharges = catalog.filter(
@@ -3917,7 +3950,10 @@ function ChargeCapture({
   }, [selected?.id, selected?.quantity]);
   const previewTotals = tryCalculateInvoiceTaxTotals(
     items.map((item) => ({
-      lineTotalCents: item.quantity * moneyToCents(item.unitPrice || "0"),
+      lineTotalCents: quantityLineTotalCents(
+        moneyToCents(item.unitPrice || "0"),
+        item.quantity,
+      ),
       taxable: item.taxable,
     })),
     configQuery.data?.taxRatePercent ?? "0.00",
@@ -3939,7 +3975,7 @@ function ChargeCapture({
     (selected.stockQuantity !== null && quantity <= selected.stockQuantity);
   const canAdd =
     Boolean(selected) &&
-    Number.isInteger(quantity) &&
+    isSupportedQuantity(quantity) &&
     quantity > 0 &&
     selectedHasStock &&
     items.length < BILLING_INVOICE_MAX_ITEMS;
@@ -4014,7 +4050,7 @@ function ChargeCapture({
     setItems((current) => [
       ...current,
       {
-        key: crypto.randomUUID(),
+        key: browserUuid(),
         description: entry.name,
         quantity: itemQuantity,
         unitPrice: entry.defaultPrice,
@@ -4031,6 +4067,7 @@ function ChargeCapture({
     if (!selected || !canAdd) return;
     addCatalogItem(selected, quantity);
     setSelectedCatalogId("");
+    setSelectedProduct(null);
     setQuantity(1);
   }
 
@@ -4084,10 +4121,9 @@ function ChargeCapture({
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {!canManage ? (
+        {lock ? (
           <div className="rounded-md border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-            Charge capture is read-only for your role. An admin or front desk
-            teammate can create the invoice.
+            {lock.message}
           </div>
         ) : invoiceStateLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -4126,33 +4162,21 @@ function ChargeCapture({
             Charge capture is locked because tax and currency settings could not
             be confirmed. Refresh before creating charges.
           </div>
-        ) : !previewTotals ? (
-          <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
-            Set the practice tax rate between 0 and 100% and keep the invoice
-            total within the supported currency range before saving charges.
-          </div>
         ) : !clientId || !patientId ? (
           <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
             Add both a client and patient to the appointment before capturing
             charges.
           </div>
-        ) : servicesQuery.error || productsQuery.error ? (
+        ) : servicesQuery.error ? (
           <div className="rounded-md border border-destructive bg-destructive/10 p-4 text-sm text-destructive">
             Unable to load the charge catalog. Refresh before creating an
             invoice.
           </div>
-        ) : servicesQuery.isLoading || productsQuery.isLoading ? (
+        ) : servicesQuery.isLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             Loading services and products...
           </div>
-        ) : catalog.length === 0 && items.length === 0 ? (
-          <EmptyState
-            icon={Package}
-            title="Charge catalog is empty"
-            description="Add services or inventory products before building a visit invoice."
-            className="p-8"
-          />
         ) : (
           <div className="flex flex-col gap-4">
             {!isOnline ? (
@@ -4164,6 +4188,16 @@ function ChargeCapture({
                 creating or updating the visit invoice.
               </div>
             ) : null}
+            {!previewTotals && (
+              <p
+                role="alert"
+                className="rounded-md border border-destructive p-3 text-sm text-destructive"
+              >
+                {isValidSettingsTaxRate(configQuery.data?.taxRatePercent ?? "")
+                  ? "Check charge quantities and prices. Use positive quantities with at most three decimals and valid currency amounts within the supported range."
+                  : "Set the practice tax rate between 0 and 100% in Settings before saving charges."}
+              </p>
+            )}
             {readyVisitPrescriptionCharges.length > 0 ? (
               <div className="rounded-md border border-primary/30 bg-primary/[0.04] p-3">
                 <p className="text-sm font-medium">Ready from this visit</p>
@@ -4241,23 +4275,32 @@ function ChargeCapture({
               </div>
             ) : null}
             <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_90px_auto] lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_80px_auto]">
+              {catalog.length === 0 && !productSearch && !productsQuery.isFetching && !productsQuery.error ? <p className="text-sm text-muted-foreground">Charge catalog is empty. Add services or inventory products to get started.</p> : null}
               <ServicePicker
                 services={catalog}
                 value={selectedCatalogId}
-                onSelect={setSelectedCatalogId}
+                onSelect={(id) => {
+                  setSelectedCatalogId(id);
+                  setSelectedProduct(productsQuery.data?.pages.flatMap((page) => page.items).find((product) => `product:${product.id}` === id) ?? null);
+                }}
+                onSearchChange={setProductSearch}
+                loading={productsQuery.isFetching}
+                searchError={productsQuery.error?.message}
+                onRetry={() => void productsQuery.refetch()}
+                hasMore={productsQuery.hasNextPage}
+                onLoadMore={() => void productsQuery.fetchNextPage()}
                 disabled={isSaving}
                 formatPrice={fmt}
               />
               <Input
                 type="number"
-                min={1}
+                min={0.001}
+                step="0.001"
                 max={selected?.stockQuantity ?? undefined}
                 value={quantity}
                 aria-label="Charge quantity"
                 aria-invalid={!selectedHasStock}
-                onChange={(event) =>
-                  setQuantity(Math.max(1, Number(event.target.value) || 1))
-                }
+                onChange={(event) => setQuantity(Number(event.target.value))}
               />
               <Button
                 type="button"
@@ -4301,7 +4344,8 @@ function ChargeCapture({
                         Qty
                         <Input
                           type="number"
-                          min={1}
+                          min={0.001}
+                          step="0.001"
                           max={10000}
                           value={item.quantity}
                           aria-label={`${item.description} quantity`}
@@ -4313,10 +4357,7 @@ function ChargeCapture({
                                 candidate.key === item.key
                                   ? {
                                       ...candidate,
-                                      quantity: Math.max(
-                                        1,
-                                        Number(event.target.value) || 1,
-                                      ),
+                                      quantity: Number(event.target.value),
                                     }
                                   : candidate,
                               ),

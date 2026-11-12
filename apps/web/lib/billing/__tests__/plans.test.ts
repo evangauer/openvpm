@@ -11,6 +11,7 @@ import {
   hasHostedFullAccess,
   normalizeBillingStatus,
   billingEnforced,
+  noCardTrialEnabled,
   estimatedCloudBaseMonthlyUsd,
   estimatedCloudBaseAnnualUsd,
   tierForStripePrice,
@@ -276,5 +277,36 @@ describe("Stripe price mapping", () => {
     expect(tierForStripePrice("")).toBeNull();
     expect(tierForStripePrice("   ")).toBeNull();
     expect(tierForStripePrice("price_location")).toBeNull();
+  });
+});
+
+
+describe("hosted trial payment collection", () => {
+  it.each([undefined, "", "false", " FALSE ", "1", "invalid"])(
+    "requires payment details when the legacy override is %s",
+    (value) => {
+      vi.stubEnv("HOSTED_NO_CARD_TRIAL", value);
+      expect(noCardTrialEnabled()).toBe(false);
+    },
+  );
+
+  it("allows the legacy trial only through an explicit true override", () => {
+    vi.stubEnv("HOSTED_NO_CARD_TRIAL", " TRUE ");
+    expect(noCardTrialEnabled()).toBe(true);
+  });
+});
+
+
+describe("separate OpenVPM price catalog", () => {
+  it("maps both accounts but never falls back across accounts for checkout", () => {
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_legacy");
+    vi.stubEnv("STRIPE_OPENVPM_PRICE_CLOUD_LOCATION", "price_openvpm");
+    vi.stubEnv("STRIPE_OPENVPM_PRICE_CLOUD_LOCATION_ANNUAL", "price_openvpm_annual");
+    expect(cloudCheckoutPriceIds().locationPriceId).toBe("price_legacy");
+    expect(cloudCheckoutPriceIds("month", "openvpm").locationPriceId).toBe("price_openvpm");
+    expect(tierForStripePrice("price_openvpm")).toBe("cloud");
+    expect(billingCadenceForStripePrice("price_openvpm_annual")).toBe("year");
+    vi.stubEnv("STRIPE_OPENVPM_PRICE_CLOUD_LOCATION", "");
+    expect(cloudCheckoutPriceIds("month", "openvpm").locationPriceId).toBeUndefined();
   });
 });

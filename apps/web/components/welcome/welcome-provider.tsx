@@ -144,6 +144,8 @@ export function WelcomeProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    // Demo visitors use /demo-start; manual Guides links still work.
+    if (DEMO_MODE) return;
     if (!welcomeMode) return;
     if (readWelcomeState(userId).seenAt) {
       autoDecided.current = true;

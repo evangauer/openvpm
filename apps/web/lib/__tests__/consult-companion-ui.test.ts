@@ -172,7 +172,7 @@ describe("e-sign consent UI states", () => {
   it("binds every dispatch to a form from the practice library", () => {
     expect(consentModal).toContain("listConsentForms.useQuery");
     expect(consentModal).toContain("handleFormChange");
-    expect(recordsRouter).toContain("formId: z.string().uuid()");
+    expect(recordsRouter).toContain("formId: z.string().guid()");
   });
 
   it("lets staff edit the consent copy before minting the code", () => {

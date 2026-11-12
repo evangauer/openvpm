@@ -11,7 +11,8 @@ import {
   readReplicaObject,
 } from "@/lib/s3";
 import { withSystem } from "@/lib/tenant-db";
-import { hasBlankConfiguredNextAuthSecret } from "@/lib/auth-secret";
+import { nextAuthSecretRejected } from "@/lib/auth-secret";
+import { sessionVersionIsCurrent } from "@/lib/session-version";
 import {
   contentDispositionForFile,
   isAllowedUploadCategory,
@@ -129,7 +130,7 @@ export async function GET(
 
   const isPublic = category === "branding";
   if (!isPublic) {
-    if (hasBlankConfiguredNextAuthSecret()) {
+    if (nextAuthSecretRejected()) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -140,7 +141,7 @@ export async function GET(
 
     const [activeUser] = await withSystem(db, (tx) =>
       tx
-        .select({ id: users.id })
+        .select({ id: users.id, role: users.role, sessionVersion: users.sessionVersion })
         .from(users)
         .innerJoin(
           practices,
@@ -155,7 +156,17 @@ export async function GET(
         )
         .limit(1),
     );
-    if (!activeUser) {
+    if (
+      !activeUser ||
+      !sessionVersionIsCurrent(
+        session.user.sessionVersion,
+        activeUser.sessionVersion,
+      ) ||
+      (category === "lab-results" &&
+        !["admin", "veterinarian", "technician", "viewer"].includes(
+          activeUser.role,
+        ))
+    ) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
   }

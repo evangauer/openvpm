@@ -25,12 +25,24 @@ export function ServicePicker({
   onSelect,
   disabled,
   formatPrice,
+  onSearchChange,
+  loading = false,
+  hasMore = false,
+  onLoadMore,
+  searchError,
+  onRetry,
 }: {
   services: ServicePickerService[];
   value: string;
   onSelect: (serviceId: string) => void;
   disabled?: boolean;
   formatPrice?: (price: string) => string;
+  onSearchChange?: (query: string) => void;
+  loading?: boolean;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
+  searchError?: string;
+  onRetry?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -38,6 +50,11 @@ export function ServicePicker({
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  function changeQuery(next: string) {
+    setQuery(next);
+    onSearchChange?.(next);
+  }
 
   const selected = services.find((s) => s.id === value) ?? null;
 
@@ -51,11 +68,7 @@ export function ServicePicker({
       const code = s.code?.toLowerCase() ?? "";
       const category = s.category?.toLowerCase() ?? "";
       if (name.startsWith(q) || code.startsWith(q)) starts.push(s);
-      else if (
-        name.includes(q) ||
-        code.includes(q) ||
-        category.includes(q)
-      )
+      else if (name.includes(q) || code.includes(q) || category.includes(q))
         contains.push(s);
     }
     return [...starts, ...contains];
@@ -67,7 +80,7 @@ export function ServicePicker({
     function onPointerDown(event: PointerEvent) {
       if (!rootRef.current?.contains(event.target as Node)) {
         setOpen(false);
-        setQuery("");
+        changeQuery("");
       }
     }
     document.addEventListener("pointerdown", onPointerDown);
@@ -81,7 +94,7 @@ export function ServicePicker({
   // Keep the highlighted row in view while arrowing through results.
   useEffect(() => {
     const el = listRef.current?.querySelector<HTMLElement>(
-      `[data-index="${highlight}"]`
+      `[data-index="${highlight}"]`,
     );
     el?.scrollIntoView({ block: "nearest" });
   }, [highlight]);
@@ -89,7 +102,7 @@ export function ServicePicker({
   function choose(service: ServicePickerService) {
     onSelect(service.id);
     setOpen(false);
-    setQuery("");
+    changeQuery("");
   }
 
   function onKeyDown(event: React.KeyboardEvent) {
@@ -100,7 +113,7 @@ export function ServicePicker({
     }
     if (!open) return;
     if (event.key === "ArrowDown") {
-      setHighlight((h) => Math.min(h + 1, results.length - 1));
+      setHighlight((h) => Math.max(0, Math.min(h + 1, results.length - 1)));
       event.preventDefault();
     } else if (event.key === "ArrowUp") {
       setHighlight((h) => Math.max(h - 1, 0));
@@ -111,7 +124,7 @@ export function ServicePicker({
       event.preventDefault();
     } else if (event.key === "Escape") {
       setOpen(false);
-      setQuery("");
+      changeQuery("");
       event.preventDefault();
     }
   }
@@ -132,7 +145,7 @@ export function ServicePicker({
         className={cn(
           "flex h-10 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 text-left text-sm",
           "disabled:cursor-not-allowed disabled:opacity-50",
-          !selected && "text-muted-foreground"
+          !selected && "text-muted-foreground",
         )}
       >
         <span className="truncate">
@@ -142,21 +155,26 @@ export function ServicePicker({
       </button>
 
       {open && (
-        <div className="absolute z-30 mt-1 w-full min-w-[320px] rounded-md border border-border bg-popover shadow-lg">
+        <div className="absolute z-30 mt-1 w-full rounded-md border border-border bg-popover shadow-lg">
           <div className="flex items-center gap-2 border-b border-border px-3 py-2">
             <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
             <input
               ref={inputRef}
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              maxLength={120}
+              onChange={(e) => changeQuery(e.target.value)}
               onKeyDown={onKeyDown}
               placeholder="Type a service name..."
               aria-label="Search services"
               className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
             />
           </div>
-          <div ref={listRef} role="listbox" className="max-h-64 overflow-y-auto p-1">
-            {results.length === 0 ? (
+          <div
+            ref={listRef}
+            role="listbox"
+            className="max-h-64 overflow-y-auto p-1"
+          >
+            {results.length === 0 && !loading && !searchError ? (
               <p className="px-3 py-6 text-center text-sm text-muted-foreground">
                 No services match &quot;{query}&quot;.
               </p>
@@ -172,13 +190,15 @@ export function ServicePicker({
                   onClick={() => choose(service)}
                   className={cn(
                     "flex w-full items-center gap-2 rounded-sm px-2 py-2 text-left text-sm",
-                    index === highlight && "bg-accent"
+                    index === highlight && "bg-accent",
                   )}
                 >
                   <span
                     className={cn(
                       "flex h-4 w-4 shrink-0 items-center justify-center",
-                      service.id === value ? "text-primary" : "text-transparent"
+                      service.id === value
+                        ? "text-primary"
+                        : "text-transparent",
                     )}
                   >
                     <Check className="h-4 w-4" />
@@ -205,6 +225,36 @@ export function ServicePicker({
               ))
             )}
           </div>
+          <div
+            role="status"
+            aria-live="polite"
+            className="px-3 text-xs text-muted-foreground"
+          >
+            {loading
+              ? "Loading products…"
+              : searchError
+                ? "Products could not be loaded."
+                : null}
+          </div>
+          {searchError ? (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="w-full p-2 text-sm"
+            >
+              Retry products
+            </button>
+          ) : null}
+          {hasMore ? (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={onLoadMore}
+              className="w-full p-2 text-sm"
+            >
+              Load more products
+            </button>
+          ) : null}
         </div>
       )}
     </div>

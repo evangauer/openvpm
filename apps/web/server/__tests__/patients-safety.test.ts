@@ -428,6 +428,145 @@ describe("patients mutation safety", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
+  it("combines standalone and vital weights in measurement order without copying records", async () => {
+    const historical = {
+      id: ALLERGY_ID,
+      patientId: PATIENT_ID,
+      weightKg: "10",
+      recordedAt: new Date("2020-01-01"),
+    };
+    const vital = {
+      id: MERGE_EVENT_ID,
+      patientId: PATIENT_ID,
+      weightKg: "12",
+      recordedAt: new Date("2021-01-01"),
+    };
+    const { db, insertValues } = createDb({
+      selectResults: [[{ id: PATIENT_ID }], [historical], [], [vital]],
+    });
+    const detail = await callerWithDb(db).getById({ id: PATIENT_ID });
+    expect(detail.weights.map((weight) => [weight.id, weight.source])).toEqual([
+      [vital.id, "vitals"],
+      [historical.id, "weight"],
+    ]);
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("records historical measurement time and an audit event atomically", async () => {
+    const recordedAt = new Date("2020-02-04T14:30:00Z");
+    const { db, insertValues, transaction } = createDb({
+      selectResults: [[{ id: PATIENT_ID }]],
+      insertedRows: [{ id: ALLERGY_ID, weightKg: "12.4", recordedAt }],
+    });
+    await callerWithDb(db).addWeight({
+      patientId: PATIENT_ID,
+      weightKg: "12.4",
+      recordedAt,
+    });
+    // Protected procedures establish the tenant transaction; the mutation adds its savepoint.
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(insertValues).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ recordedAt, recordedBy: USER_ID }),
+    );
+    expect(insertValues).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        practiceId: PRACTICE_ID,
+        userId: USER_ID,
+        entityType: "patient_weight",
+      }),
+    );
+  });
+
+  it("rejects future weights and unauthorized corrections before database access", async () => {
+    const { db, select, insertValues } = createDb();
+    await expect(
+      callerWithDb(db).addWeight({
+        patientId: PATIENT_ID,
+        weightKg: "12.4",
+        recordedAt: new Date(Date.now() + 86_400_000),
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      callerWithDb(db, "front_desk").correctWeight({
+        patientId: PATIENT_ID,
+        weightId: ALLERGY_ID,
+        weightKg: "12.4",
+        recordedAt: new Date("2020-01-01"),
+        reason: "Transcription error",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      callerWithDb(db, "technician").correctWeight({
+        patientId: PATIENT_ID,
+        weightId: ALLERGY_ID,
+        weightKg: "12.4",
+        recordedAt: new Date("2020-01-01"),
+        reason: "Transcription error",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(select).not.toHaveBeenCalled();
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("preserves the source and correction reason in an attributed weight correction", async () => {
+    const source = {
+      id: ALLERGY_ID,
+      patientId: PATIENT_ID,
+      weightKg: "124",
+      recordedAt: new Date("2020-01-01"),
+      recordedBy: USER_ID,
+    };
+    const replacement = {
+      id: MERGE_EVENT_ID,
+      weightKg: "12.4",
+      recordedAt: new Date("2020-01-02"),
+    };
+    const { db, insertValues, updateSet, transaction } = createDb({
+      selectResults: [[{ id: PATIENT_ID }], [source]],
+      insertedRows: [replacement],
+    });
+    await callerWithDb(db, "veterinarian").correctWeight({
+      patientId: PATIENT_ID,
+      weightId: source.id,
+      weightKg: replacement.weightKg,
+      recordedAt: replacement.recordedAt,
+      reason: "Decimal entry corrected",
+    });
+    // Protected procedures establish the tenant transaction; the mutation adds its savepoint.
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(updateSet).toHaveBeenCalledWith({ deletedAt: expect.any(Date) });
+    expect(insertValues).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        action: "corrected",
+        userId: USER_ID,
+        changes: expect.objectContaining({
+          original: expect.objectContaining({ id: source.id, weightKg: "124" }),
+          reason: "Decimal entry corrected",
+        }),
+      }),
+    );
+  });
+
+  it("rejects foreign patients and already-corrected weights without writing", async () => {
+    for (const selectResults of [[], [[{ id: PATIENT_ID }], []]]) {
+      const { db, insertValues, updateSet } = createDb({ selectResults });
+      await expect(
+        callerWithDb(db).correctWeight({
+          patientId: PATIENT_ID,
+          weightId: ALLERGY_ID,
+          weightKg: "12.4",
+          recordedAt: new Date("2020-01-01"),
+          reason: "Transcription error",
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(insertValues).not.toHaveBeenCalled();
+      expect(updateSet).not.toHaveBeenCalled();
+    }
+  });
+
   it("trims weight and allergy history before writing", async () => {
     const { db, insertValues } = createDb({
       selectResults: [[{ id: PATIENT_ID }], [{ id: PATIENT_ID }]],
@@ -457,7 +596,7 @@ describe("patients mutation safety", () => {
       }),
     );
     expect(insertValues).toHaveBeenNthCalledWith(
-      2,
+      3,
       expect.objectContaining({
         patientId: PATIENT_ID,
         allergen: "Chicken",

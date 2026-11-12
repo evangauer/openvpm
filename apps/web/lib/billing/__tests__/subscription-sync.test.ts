@@ -111,7 +111,7 @@ describe("billing sync practice scoping", () => {
 
     // Checkout carries only the base price; sync adds the metered items and
     // must never duplicate ones that already exist on the subscription.
-    expect(syncState).toContain("cloudMeteredPriceIds()");
+    expect(syncState).toContain("cloudMeteredPriceIds(billingAccount)");
     expect(syncState).toMatch(
       /meteredPriceId &&\s*!items\.some\(\(item\) => item\.price\?\.id === meteredPriceId\)/
     );
@@ -175,7 +175,7 @@ describe("billing sync practice scoping", () => {
       source.length
     );
 
-    expect(syncState).toContain("cloudCheckoutPriceIds()");
+    expect(syncState).toContain('cloudCheckoutPriceIds("month", billingAccount)');
     expect(syncState).toContain(
       "stripePriceIdFromEnv(STRIPE_PRICE_CLOUD_LEGACY_ENV)"
     );

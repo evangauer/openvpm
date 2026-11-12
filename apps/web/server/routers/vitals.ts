@@ -123,7 +123,7 @@ export const vitalsRouter = createRouter({
   listByPatient: protectedProcedure
     .input(
       z.object({
-        patientId: z.string().uuid(),
+        patientId: z.string().guid(),
         limit: z.number().int().min(1).max(100).default(50),
       }),
     )
@@ -162,7 +162,7 @@ export const vitalsRouter = createRouter({
   listByAppointment: protectedProcedure
     .input(
       z.object({
-        appointmentId: z.string().uuid(),
+        appointmentId: z.string().guid(),
         limit: z.number().int().min(1).max(100).default(100),
       }),
     )
@@ -201,8 +201,8 @@ export const vitalsRouter = createRouter({
     .use(correctionRole)
     .input(
       z.object({
-        patientId: z.string().uuid(),
-        recordId: z.string().uuid(),
+        patientId: z.string().guid(),
+        recordId: z.string().guid(),
         reason: z
           .string()
           .trim()
@@ -278,8 +278,8 @@ export const vitalsRouter = createRouter({
     .input(
       z
         .object({
-          patientId: z.string().uuid(),
-          appointmentId: z.string().uuid().optional(),
+          patientId: z.string().guid(),
+          appointmentId: z.string().guid().optional(),
           // Numerics travel as strings into Drizzle numeric columns.
           temperatureC: temperatureInput.optional(),
           heartRateBpm: z
