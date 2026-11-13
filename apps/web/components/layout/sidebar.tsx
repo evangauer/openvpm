@@ -151,20 +151,16 @@ export function Sidebar({
       retry: false,
     },
   );
+  const fieldNav = {
+    href: "/offline/field.html",
+    label: "Field Visits",
+    icon: WifiOff,
+    roles: ["admin"] as UserRole[],
+  };
   const visibleNavItems = canShowNav
-    ? [
-        ...navItems.filter((item) => item.roles.includes(role)),
-        ...(fieldPilot?.enabled
-          ? [
-              {
-                href: "/offline/field.html",
-                label: "Offline Field Visits",
-                icon: WifiOff,
-                roles: ["admin"] as UserRole[],
-              },
-            ]
-          : []),
-      ]
+    ? navItems.filter((item) => item.roles.includes(role)).flatMap((item) =>
+        item.href === "/schedule" && fieldPilot?.enabled ? [item, fieldNav] : [item],
+      )
     : [];
   const unreadInboxCount = Math.max(0, Number(unreadInbox?.total ?? 0));
   const unreadInboxLabel =

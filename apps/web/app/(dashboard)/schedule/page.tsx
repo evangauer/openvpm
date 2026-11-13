@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import { PrepareFieldVisitLink } from "@/components/patients/prepare-field-visit-link";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -1760,6 +1761,9 @@ function AppointmentDetailPopover({
                   <Button size="sm" variant="outline" onClick={() => setConfirmDelete(false)}>Keep appointment</Button>
                 </div>}
               </div>
+            )}
+            {appointment.patientId && ["scheduled", "confirmed", "checked_in"].includes(current) && (
+              <PrepareFieldVisitLink patientId={appointment.patientId} appointmentId={appointment.id} doctorId={appointment.doctorId} />
             )}
             {visibleStatusActions.map((action) => (
               <Button

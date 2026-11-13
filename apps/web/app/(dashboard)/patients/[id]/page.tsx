@@ -35,6 +35,7 @@ import {
 } from "@/lib/date-input";
 import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { EmptyState } from "@/components/common/empty-state";
+import { PrepareFieldVisitLink } from "@/components/patients/prepare-field-visit-link";
 import { Button } from "@/components/ui/button";
 import { PatientHistorySearch } from "@/components/patients/patient-history-search";
 import { PatientDocumentUpload } from "@/components/records/patient-document-upload";
@@ -1123,12 +1124,13 @@ export default function PatientDetailPage() {
                 ) : null}
               </div>
             ) : null}
+            <PrepareFieldVisitLink patientId={patient.id} />
             {process.env.NEXT_PUBLIC_OFFLINE_WORKSPACE_ENABLED === "true" &&
             (session?.user?.role === "admin" ||
               session?.user?.role === "veterinarian") ? (
               <Button size="sm" variant="outline" asChild>
                 <a href={`/offline/index.html#patientId=${patient.id}`}>
-                  Make available offline
+                  Save chart for offline notes
                 </a>
               </Button>
             ) : null}

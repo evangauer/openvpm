@@ -11,7 +11,19 @@ The pilot supports US practices billing in USD and a veterinarian with clinic
 administrator access. Enable `AMBULATORY_WORKSPACE_ENABLED=true`, the practice's
 ambulatory workspace setting, and `OFFLINE_FIELD_VISITS_ENABLED=true` after
 acceptance testing. The last flag defaults to false. The sidebar then exposes
-**Offline Field Visits** at `/offline/field.html`.
+**Field Visits** immediately after **Schedule**, at `/offline/field.html`.
+
+Open **Field Visits** from the main navigation to prepare the day's patients.
+Alternatively, choose **Prepare for field visit** on a patient chart or on an
+assigned, unstarted appointment in **Schedule**. The workspace remembers that
+selection through device setup or unlocking; confirm preparation there before
+leaving connectivity. Preparing from an appointment preserves that appointment
+when the visit synchronizes. These entry points appear only for eligible pilot
+users. **Save chart for offline notes** is the separate chart-note-only workspace.
+
+The field workspace after issuing a receipt, using synthetic patient data:
+
+![Field workspace with OpenVPM navigation and checkout](images/offline-field-workspace.png)
 
 Use HTTPS, a trusted device, and the same browser profile throughout the day.
 Prepare up to 20 existing patients or assigned, unstarted appointments before
@@ -31,11 +43,12 @@ than silently dropping entries.
 1. Sign in online, create or unlock the field workspace, and prepare patients or
    individual appointments. Verify that the expected patient is listed before
    disconnecting. Bookmark `/offline/field.html`.
-2. Start the visit when it occurs. Enter the clinical note and service charges.
+2. Start the visit when it occurs. Work through **Notes**, **Treatments**, and
+   **Checkout**. Enter the clinical note and service charges.
    Record vaccine name, product, manufacturer, lot, expiration, dose type, rabies
    tag and next due date as applicable. Each vaccine uses a distinct charged
    service in this pilot. Administration time is preserved separately from sync.
-3. Record cash or check received, or leave the visit unpaid. Partial payments are
+3. In **Checkout**, record cash or check received, or leave the visit unpaid. Partial payments are
    supported. The bill excludes prior account balances. It does not process cards.
 4. Review and issue the receipt. This freezes its contents and saves it encrypted
    on the device. Print or save a PDF using the browser's print dialog. This is
@@ -43,6 +56,17 @@ than silently dropping entries.
 5. Reconnect, sign in as the same clinician, and select **Synchronize visit**.
    Review and sign the note online. The synchronized visit remains open for that
    clinical completion. Remove a device copy only after successful synchronization.
+
+The field workspace retains OpenVPM navigation and styling while offline. Clinic
+links become available when an authenticated connection is verified and open in
+a separate tab. **Working offline**, **Clinic unreachable**, and **Sign-in needed**
+identify different connection states. Connection checks run when returning to
+the tab and periodically while it is visible; **Check connection** retries immediately.
+
+**Saved on this device** confirms the encrypted local copy. It does not mean the
+visit has reached the clinic. The patient list and **awaiting sync** count identify
+unfinished work; **Selected visit synced to clinic** appears after a successful
+synchronization. Switch visit sections freely without issuing a receipt.
 
 The printer must work without internet independently of OpenVPM. Browser print
 rendering does not certify a particular USB, Bluetooth, Wi-Fi or AirPrint printer.
@@ -57,7 +81,7 @@ A synthetic receipt rendered after an offline browser reopening:
 The passphrase encrypts the workspace in IndexedDB; it is not saved or resettable.
 Keep the device locked when unattended. Do not use a shared or private-browsing
 profile. Download an encrypted backup before a field day and after entering
-important unsynchronized work. Keep the passphrase separately. Clearing browser
+important unsynchronized work from **Device & recovery**. Keep the passphrase separately. Clearing browser
 storage or losing the passphrase can make local work unrecoverable.
 
 A saved backup can be restored into an empty field workspace using its original
