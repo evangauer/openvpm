@@ -61,8 +61,8 @@ describe("care reminder safety contract", () => {
     expect(page).not.toContain("useEffect(() => sendOutreach");
   });
 
-  it("surfaces the reusable queue in primary navigation", () => {
-    expect(read("components/layout/sidebar.tsx")).toContain(
+  it("surfaces the reusable queue in the navigation catalog", () => {
+    expect(read("lib/navigation.ts")).toContain(
       'href: "/care-reminders"',
     );
     expect(read("components/common/command-search.tsx")).toContain(

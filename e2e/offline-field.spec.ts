@@ -424,12 +424,21 @@ test("guided field preparation preserves appointment identity and shows distinct
   });
   if (
     !(await page
-      .getByRole("link", { name: "Field Visits", exact: true })
+      .getByRole("button", { name: "All tools", exact: true })
       .isVisible())
   )
     await page
       .getByRole("button", { name: "Open navigation", exact: true })
       .click();
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  const tools = page.getByRole("dialog", { name: "Tools", exact: true });
+  await tools
+    .getByRole("textbox", { name: "Search tools", exact: true })
+    .fill("field");
+  await tools
+    .getByRole("button", { name: "Pin Field Visits", exact: true })
+    .click();
+  await tools.getByRole("button", { name: "Close tools", exact: true }).click();
   await page.getByRole("link", { name: "Field Visits", exact: true }).click();
   await expect(
     page.getByRole("heading", {
@@ -559,4 +568,165 @@ test("guided field preparation preserves appointment identity and shows distinct
     path: info.outputPath("field-phone.png"),
     fullPage: true,
   });
+});
+
+async function openMainNavigation(page: Page) {
+  if (
+    (page.viewportSize()?.width ?? 1280) < 1024 &&
+    !(await page
+      .getByRole("button", { name: "All tools", exact: true })
+      .isVisible())
+  )
+    await page
+      .getByRole("button", { name: "Open navigation", exact: true })
+      .click();
+  await expect(
+    page.getByRole("button", { name: "All tools", exact: true }),
+  ).toBeVisible();
+}
+
+test("sidebar tools persist per account, stay available after unpinning, and respect roles", async ({
+  page,
+  clinic,
+}, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await login(page.context(), clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await page
+    .getByRole("button", { name: "I'll finish later", exact: true })
+    .click();
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Core navigation" }).getByRole("link"),
+  ).toHaveCount(6);
+  await expect(
+    page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  const tools = page.getByRole("dialog", { name: "Tools", exact: true });
+  const search = tools.getByRole("textbox", {
+    name: "Search tools",
+    exact: true,
+  });
+  await expect(search).toBeFocused();
+  await search.fill("no matching tool");
+  await expect(tools.getByText("No tools match your search.")).toBeVisible();
+  await search.fill("inventory");
+  await tools
+    .getByRole("button", { name: "Pin Inventory", exact: true })
+    .click();
+  await expect(
+    tools.getByRole("button", { name: "Unpin Inventory", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await search.fill("field");
+  await tools
+    .getByRole("button", { name: "Pin Field Visits", exact: true })
+    .click();
+  await page.screenshot({
+    path: info.outputPath("tools-picker.png"),
+    fullPage: true,
+  });
+  await tools.getByRole("button", { name: "Close tools", exact: true }).click();
+  await page.reload();
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
+  ).toHaveText(["Inventory", "Field Visits"]);
+  await page.screenshot({
+    path: info.outputPath("pinned-sidebar.png"),
+    fullPage: true,
+  });
+  await page
+    .getByRole("button", { name: "Unpin Inventory", exact: true })
+    .click();
+  await expect(
+    page
+      .getByRole("list", { name: "Pinned tools" })
+      .getByRole("link", { name: "Inventory", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await tools
+    .getByRole("link", { name: "Open Inventory", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/inventory$/);
+  await openMainNavigation(page);
+  await expect(
+    page
+      .getByLabel("Current tool", { exact: true })
+      .getByRole("link", { name: "Inventory", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  await clinic.sql`update users set role = 'viewer', is_veterinarian = false where email = ${clinic.secondEmail}`;
+  await login(page.context(), clinic, clinic.secondEmail);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await expect(
+    tools.getByRole("link", { name: "Open Field Visits", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    tools.getByRole("link", { name: "Open Reports", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    tools.getByRole("link", {
+      name: "Open Controlled Substances",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await tools
+    .getByRole("button", { name: "Pin Inventory", exact: true })
+    .click();
+  await expect(
+    tools.getByRole("button", { name: "Unpin Inventory", exact: true }),
+  ).toBeVisible();
+  await login(page.context(), clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
+  ).toHaveText(["Field Visits"]);
+  expect(errors).toEqual([]);
+});
+
+test("pinning remains usable when browser storage is blocked", async ({
+  page,
+  clinic,
+}) => {
+  await login(page.context(), clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await page
+    .getByRole("button", { name: "I'll finish later", exact: true })
+    .click();
+  await openMainNavigation(page);
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if (key.startsWith("openvpm.sidebar.v1."))
+        throw new DOMException(
+          "Synthetic blocked storage",
+          "QuotaExceededError",
+        );
+      return original.call(this, key, value);
+    };
+  });
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  const tools = page.getByRole("dialog", { name: "Tools", exact: true });
+  await tools
+    .getByRole("button", { name: "Pin Inventory", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      "Pins updated for this session. Browser storage is unavailable.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await tools.getByRole("button", { name: "Close tools", exact: true }).click();
+  await expect(
+    page
+      .getByRole("list", { name: "Pinned tools" })
+      .getByRole("link", { name: "Inventory", exact: true }),
+  ).toBeVisible();
 });

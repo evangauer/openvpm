@@ -10,10 +10,12 @@ Reconnect to synchronize the visit and review and sign its clinical note online.
 The pilot supports US practices billing in USD and a veterinarian with clinic
 administrator access. Enable `AMBULATORY_WORKSPACE_ENABLED=true`, the practice's
 ambulatory workspace setting, and `OFFLINE_FIELD_VISITS_ENABLED=true` after
-acceptance testing. The last flag defaults to false. The sidebar then exposes
-**Field Visits** immediately after **Schedule**, at `/offline/field.html`.
+acceptance testing. The last flag defaults to false. **All tools** in the sidebar
+then exposes **Field Visits**, at `/offline/field.html`. Select its pin button to
+keep it in **Your tools**. Pins are personal to the account and browser; unpinning
+a tool leaves it available in **All tools**.
 
-Open **Field Visits** from the main navigation to prepare the day's patients.
+Open **All tools → Field Visits**, or its pinned sidebar shortcut, to prepare the day's patients.
 Alternatively, choose **Prepare for field visit** on a patient chart or on an
 assigned, unstarted appointment in **Schedule**. The workspace remembers that
 selection through device setup or unlocking; confirm preparation there before
