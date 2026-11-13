@@ -48,6 +48,10 @@ The printer must work without internet independently of OpenVPM. Browser print
 rendering does not certify a particular USB, Bluetooth, Wi-Fi or AirPrint printer.
 Test the actual device, browser, printer and connection before a house call.
 
+A synthetic receipt rendered after an offline browser reopening:
+
+![Synthetic offline field receipt](images/offline-field-receipt.png)
+
 ## Data safety and recovery
 
 The passphrase encrypts the workspace in IndexedDB; it is not saved or resettable.
