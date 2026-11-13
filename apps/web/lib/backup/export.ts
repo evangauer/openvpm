@@ -50,6 +50,7 @@ import {
   insurancePolicies,
   historicalAppointments,
   historicalDocuments,
+  offlineFieldBatches,
   labReportReceipts,
   labReportDecisions,
   labResults,
@@ -222,6 +223,7 @@ export const PRACTICE_EXPORT_SECTIONS = [
   "vaccinationRecords",
   "labResults",
   "labResultEvents",
+  "offlineFieldBatches",
   "labReportReceipts",
   "labReportDecisions",
   "externalLabReports",
@@ -297,6 +299,7 @@ const PRACTICE_EXPORT_OPTIONAL_RESTORE_SECTIONS = [
   // Backward compatibility for backups created before the lab result safety
   // ledger and clinic-wide review inbox were introduced.
   "labResultEvents",
+  "offlineFieldBatches",
   "labReportReceipts",
   "labReportDecisions",
   "labResultReplacements",
@@ -557,6 +560,8 @@ const RESTORE_REFERENCE_RULES: RestoreReferenceRule[] = [
   optionalRef("labResults", "reviewedBy", "users"),
   optionalRef("labResults", "followUpAssignedTo", "users"),
   optionalRef("labResults", "followUpCompletedBy", "users"),
+  requiredRef("offlineFieldBatches", "userId", "users"),
+  requiredRef("offlineFieldBatches", "patientId", "patients"),
   requiredRef("labReportReceipts", "fileId", "files"),
   requiredRef("labReportReceipts", "receivedBy", "users"),
   optionalRef("labReportReceipts", "supersedesId", "labReportReceipts"),
@@ -1034,6 +1039,9 @@ export function validatePracticeExportRestore(data: unknown): {
   };
 
   const exportRecord = isRecord(data) ? data : {};
+  // Additive v9 section: pre-field backups have neither rows nor a count.
+  const predatesOfflineField = exportRecord.offlineFieldBatches === undefined &&
+    (!isRecord(exportRecord.counts) || exportRecord.counts.offlineFieldBatches === undefined);
   if (
     typeof exportRecord.formatVersion === "number" &&
     exportRecord.formatVersion > PRACTICE_EXPORT_FORMAT_VERSION
@@ -1075,7 +1083,7 @@ export function validatePracticeExportRestore(data: unknown): {
       const countKeys = Object.keys(exportRecord.counts);
       const missingCountKeys = PRACTICE_EXPORT_SECTIONS.filter(
         (section) =>
-          !Object.prototype.hasOwnProperty.call(exportRecord.counts, section),
+          !Object.prototype.hasOwnProperty.call(exportRecord.counts, section) && !(section === "offlineFieldBatches" && predatesOfflineField),
       );
       const unknownCountKeys = countKeys.filter(
         (key) => !PRACTICE_EXPORT_SECTIONS.includes(key as never),
@@ -1091,6 +1099,7 @@ export function validatePracticeExportRestore(data: unknown): {
         );
       }
       for (const section of PRACTICE_EXPORT_SECTIONS) {
+        if (section === "offlineFieldBatches" && predatesOfflineField) continue;
         const count = exportRecord.counts[section];
         if (!Number.isSafeInteger(count) || (count as number) < 0) {
           pushError(
@@ -3092,6 +3101,7 @@ export async function exportPracticeData(
     allVaccinationRows,
     labRows,
     labResultEventRows,
+    offlineFieldBatchRows,
     labReportReceiptRows,
     labReportDecisionRows,
     externalLabReportRows,
@@ -3165,6 +3175,7 @@ export async function exportPracticeData(
     allPracticeRows(db, vaccinationRecords, practiceId),
     allPracticeRows(db, labResults, practiceId),
     allPracticeRows(db, labResultEvents, practiceId),
+    allPracticeRows(db, offlineFieldBatches, practiceId),
     allPracticeRows(db, labReportReceipts, practiceId),
     allPracticeRows(db, labReportDecisions, practiceId),
     allPracticeRows(db, externalLabReports, practiceId),
@@ -3576,6 +3587,7 @@ export async function exportPracticeData(
     vaccinationRecords: vaccinationRows,
     labResults: labRows,
     labResultEvents: labResultEventRows,
+    offlineFieldBatches: offlineFieldBatchRows,
     labReportReceipts: labReportReceiptRows,
     labReportDecisions: labReportDecisionRows,
     externalLabReports: externalLabReportRows,
@@ -4217,6 +4229,7 @@ async function restorePracticeDataRows(
     }
   }
   await restorePracticeRows("visitCloseouts", visitCloseouts);
+  await restorePracticeRows("offlineFieldBatches", offlineFieldBatches);
   await restorePracticeRows("consentForms", consentForms);
   restored.files = await restoreRows(
     db,

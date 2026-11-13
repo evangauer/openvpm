@@ -53,6 +53,7 @@ const PUBLIC_FILE_PATTERN =
 function isPublicPath(pathname: string): boolean {
   return (
     pathname === "/offline/index.html" ||
+    pathname === "/offline/field.html" ||
     PUBLIC_FILE_PATTERN.test(pathname) ||
     PUBLIC_PATH_PREFIXES.some(
       (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),

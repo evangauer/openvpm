@@ -401,7 +401,7 @@ test("deep: wrong passphrases preserve ciphertext and public caches contain no c
     for (const name of await caches.keys()) {
       const cache = await caches.open(name);
       for (const request of await cache.keys()) {
-        if (!/^\/offline\/(index\.html|app\.[a-f0-9]+\.js|style\.[a-f0-9]+\.css)$/.test(new URL(request.url).pathname)) throw new Error("Unexpected cached URL");
+        if (!/^\/offline\/(index\.html|field\.html|app\.[a-f0-9]+\.js|style\.[a-f0-9]+\.css)$/.test(new URL(request.url).pathname)) throw new Error("Unexpected cached URL");
         bodies.push(await (await cache.match(request))!.text());
       }
     }

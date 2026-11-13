@@ -53,7 +53,7 @@ const worker = workerTemplate
   .replace("__VERSION__", version)
   .replace(
     "__ASSETS__",
-    JSON.stringify(["/offline/index.html", script, style]),
+    JSON.stringify(["/offline/index.html", "/offline/field.html", script, style]),
   );
 // Only generated files live here; source and credentials never enter this directory.
 await rm(output, { recursive: true, force: true });
@@ -62,6 +62,7 @@ await Promise.all([
   writeFile(path.join(root, "public", script), javascript),
   writeFile(path.join(root, "public", style), css),
   writeFile(path.join(output, "index.html"), html),
+  writeFile(path.join(output, "field.html"), html.replace("Offline workspace", "Offline field visits")),
   writeFile(path.join(output, "sw.js"), worker),
 ]);
 console.log(

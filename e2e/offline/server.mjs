@@ -50,6 +50,8 @@ Object.assign(env, {
   NEXTAUTH_SECRET: randomBytes(48).toString("hex"),
   NEXTAUTH_URL: publicOrigin,
   NEXT_PUBLIC_APP_URL: publicOrigin,
+  OFFLINE_FIELD_VISITS_ENABLED: "true",
+  AMBULATORY_WORKSPACE_ENABLED: "true",
   NEXT_PUBLIC_OFFLINE_WORKSPACE_ENABLED: "true",
   NEXT_PUBLIC_OFFLINE_CHART_DRAFTS_ENABLED: "true",
   HOSTED_BILLING_ENABLED: "false",
@@ -140,7 +142,7 @@ try {
   }
   proxy = proxyFactory((request, response) => {
     if (!available) return request.socket.destroy();
-    const isSave = request.url?.split("?")[0] === "/api/trpc/offline.saveSoapDraft";
+    const isSave = ["/api/trpc/offline.saveSoapDraft", "/api/trpc/offlineField.sync"].includes(request.url?.split("?")[0]);
     const dropResponse = isSave && dropNextSave;
     if (dropResponse) dropNextSave = false;
     if (isSave && recordSaves) {

@@ -538,7 +538,7 @@ export const protectedProcedure = t.procedure.use(
         });
 
         if (
-          (["patientNotes.create", "offline.saveSoapDraft"].includes(path) ||
+          (["patientNotes.create", "offline.saveSoapDraft", "offlineField.prepare", "offlineField.sync"].includes(path) ||
             path.startsWith("labReports.")) &&
           !result.ok
         ) {
@@ -593,7 +593,7 @@ export const protectedProcedure = t.procedure.use(
     if (
       type === "mutation" &&
       result.ok &&
-      !["patientNotes.create", "offline.saveSoapDraft"].includes(path) &&
+      !["patientNotes.create", "offline.saveSoapDraft", "offlineField.prepare", "offlineField.sync"].includes(path) &&
       !path.startsWith("labReports.")
     ) {
       const rawInput = await getRawInput().catch(() => undefined);

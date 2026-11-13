@@ -1,3 +1,4 @@
+import { offlineFieldRouter } from "./offline-field";
 import { labReportsRouter } from "./lab-reports";
 import { createRouter } from "../trpc";
 import { authRouter } from "./auth";
@@ -49,6 +50,7 @@ export const appRouter = createRouter({
   labReports: labReportsRouter,
   patientNotes: patientNotesRouter,
   offline: offlineRouter,
+  offlineField: offlineFieldRouter,
   billing: billingRouter,
   dashboard: dashboardRouter,
   whiteboard: whiteboardRouter,

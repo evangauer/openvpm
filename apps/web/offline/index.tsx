@@ -1,3 +1,4 @@
+import { FieldApp } from "./field-app";
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createTRPCClient, httpBatchLink, TRPCClientError } from "@trpc/client";
@@ -908,4 +909,4 @@ function OfflineApp() {
   );
 }
 
-createRoot(document.getElementById("offline-root")!).render(<OfflineApp />);
+createRoot(document.getElementById("offline-root")!).render(location.pathname === "/offline/field.html" ? <FieldApp /> : <OfflineApp />);

@@ -66,7 +66,7 @@ jobs:
         if: matrix.test == 'golden-clinic'
         env:
           OFFLINE_WORKSPACE_DB_INTEGRATION: "1"
-        run: pnpm --filter @openpims/web exec vitest run server/__tests__/offline-workspace.integration.test.ts
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/offline-workspace.integration.test.ts server/__tests__/offline-field.integration.test.ts
       - if: matrix.test == 'newsletter'
         run: pnpm --filter @openpims/web exec vitest run server/__tests__/newsletter-delivery.integration.test.ts
 

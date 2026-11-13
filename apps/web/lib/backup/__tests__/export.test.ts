@@ -437,6 +437,14 @@ function signedConsentBackup() {
 }
 
 describe("sealed signed-consent backup v9", () => {
+  it("accepts v9 backups created before offline field records existed", () => {
+    const backup = signedConsentBackup() as Record<string, any>;
+    delete backup.offlineFieldBatches;
+    delete backup.counts.offlineFieldBatches;
+    expect(validatePracticeExportRestore(backup)).toEqual({ valid: true, errors: [] });
+    backup.counts.offlineFieldBatches = 1;
+    expect(validatePracticeExportRestore(backup).valid).toBe(false);
+  });
   it("validates signed evidence, exact referenced form/file, and canonical counts", () => {
     const backup = signedConsentBackup();
 

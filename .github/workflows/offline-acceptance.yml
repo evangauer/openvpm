@@ -45,7 +45,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Type-check the browser drill
-        run: pnpm --filter @openpims/web exec tsc --noEmit --strict --target es2022 --module commonjs --moduleResolution node --esModuleInterop --skipLibCheck ../../playwright.offline.config.ts ../../e2e/offline-workspace.spec.ts
+        run: pnpm --filter @openpims/web exec tsc --noEmit --strict --target es2022 --module commonjs --moduleResolution node --esModuleInterop --skipLibCheck ../../playwright.offline.config.ts ../../e2e/offline-workspace.spec.ts ../../e2e/offline-field.spec.ts
       - run: pnpm exec playwright install --with-deps chromium webkit
       - name: Exercise offline browser recovery
         env:
