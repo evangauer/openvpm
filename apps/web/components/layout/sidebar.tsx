@@ -8,6 +8,7 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
+  WifiOff,
   PawPrint,
   Users,
   Calendar,
@@ -142,8 +143,28 @@ export function Sidebar({
       retry: false,
     },
   );
+  const { data: fieldPilot } = trpc.offlineField.availability.useQuery(
+    undefined,
+    {
+      enabled: canShowNav && role === "admin",
+      staleTime: 300_000,
+      retry: false,
+    },
+  );
   const visibleNavItems = canShowNav
-    ? navItems.filter((item) => item.roles.includes(role))
+    ? [
+        ...navItems.filter((item) => item.roles.includes(role)),
+        ...(fieldPilot?.enabled
+          ? [
+              {
+                href: "/offline/field.html",
+                label: "Offline Field Visits",
+                icon: WifiOff,
+                roles: ["admin"] as UserRole[],
+              },
+            ]
+          : []),
+      ]
     : [];
   const unreadInboxCount = Math.max(0, Number(unreadInbox?.total ?? 0));
   const unreadInboxLabel =

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const assets = [
   "/offline/index.html",
+  "/offline/field.html",
   "/offline/app.synthetic.js",
   "/offline/style.synthetic.css",
 ];
@@ -110,7 +111,7 @@ describe("offline shell cache boundary", () => {
     expect(await respondWith.mock.calls[0]![0]).toBe(
       app.stores.get("openvpm-offline-shell-test")!.get("/offline/index.html"),
     );
-    expect(app.fetch).toHaveBeenCalledTimes(3);
+    expect(app.fetch).toHaveBeenCalledTimes(4);
   });
   it("fails installation closed and leaves unrelated caches intact", async () => {
     const app = worker(true);

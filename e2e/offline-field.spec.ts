@@ -1,0 +1,394 @@
+import {
+  test as base,
+  expect,
+  chromium,
+  webkit,
+  type Page,
+  type BrowserContext,
+} from "@playwright/test";
+import { randomUUID } from "node:crypto";
+import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+
+const require = createRequire(path.resolve("apps/web/package.json"));
+const postgres =
+  require("postgres") as typeof import("../apps/web/node_modules/postgres");
+const { hash } =
+  require("bcryptjs") as typeof import("../apps/web/node_modules/@types/bcryptjs");
+const baseURL = process.env.OFFLINE_E2E_BASE_URL ?? "http://127.0.0.1:3457";
+const passphrase = "Synthetic offline acceptance passphrase";
+const fields = ["Subjective", "Objective", "Assessment", "Plan"] as const;
+const sections = {
+  subjective: "Synthetic history & follow-up",
+  objective: "Synthetic examination <literal text>",
+  assessment: "Synthetic assessment",
+  plan: "Synthetic plan — review after reconnect",
+};
+type Clinic = {
+  patientId: string;
+  appointmentId: string;
+  userId: string;
+  email: string;
+  password: string;
+  secondEmail: string;
+  controlToken: string;
+  certificate?: string;
+  sql: ReturnType<typeof postgres>;
+};
+
+const test = base.extend<{ clinic: Clinic }>({
+  clinic: async ({}, use) => {
+    const directory = process.env.OFFLINE_E2E_DIRECTORY;
+    if (!directory)
+      throw new Error(
+        "Use playwright.offline.config.ts; this suite never attaches to an existing clinic.",
+      );
+    const { ownerUrl, controlToken } = JSON.parse(
+      await readFile(path.join(directory, "fixture.json"), "utf8"),
+    );
+    const certificate = baseURL.startsWith("https:")
+      ? await readFile(path.join(directory, "loopback-cert.pem"), "utf8")
+      : undefined;
+    const url = new URL(ownerUrl);
+    if (
+      !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
+      !/^\/openvpm_offline_e2e_[a-f0-9]{32}$/.test(url.pathname)
+    ) {
+      throw new Error("Unsafe offline acceptance database.");
+    }
+    const sql = postgres(ownerUrl, { max: 1 });
+    try {
+      const [database] = await sql`select current_database() as name`;
+      expect(database!.name).toBe(url.pathname.slice(1));
+      // Browser contexts share one loopback IP. Reset only that test-run IP
+      // budget between independent cases; per-account limiting remains real.
+      await sql`delete from rate_limit_buckets where key like 'login:ip:%'`;
+      const suffix = randomUUID();
+      const password = `Synthetic-${randomUUID()}`;
+      const passwordHash = await hash(password, 10);
+      const [practice] =
+        await sql`insert into practices (name, timezone) values ('Synthetic offline acceptance clinic', 'UTC') returning id`;
+      await sql`update practices set country = 'US', currency = 'usd', tax_rate_percent = 6.00,
+        settings = '{"ambulatoryWorkspace":{"enabled":true}}'::jsonb where id = ${practice!.id}`;
+      await sql`insert into services (practice_id, name, default_price, taxable) values (${practice!.id}, 'Synthetic vaccine', 20.25, true)`;
+      const email = `offline-${suffix}@example.invalid`;
+      const secondEmail = `offline-second-${suffix}@example.invalid`;
+      const [user] =
+        await sql`insert into users (practice_id, email, password_hash, name, role, is_veterinarian, email_verified_at)
+        values (${practice!.id}, ${email}, ${passwordHash}, 'Synthetic Offline Clinician', 'admin', true, now()) returning id`;
+      await sql`insert into users (practice_id, email, password_hash, name, role, is_veterinarian, email_verified_at)
+        values (${practice!.id}, ${secondEmail}, ${passwordHash}, 'Synthetic Second Clinician', 'admin', true, now())`;
+      await sql`insert into locations (practice_id, name, is_primary) values (${practice!.id}, 'Synthetic location', true)`;
+      const [client] =
+        await sql`insert into clients (practice_id, first_name, last_name) values (${practice!.id}, 'Synthetic', 'Owner') returning id`;
+      const [patient] =
+        await sql`insert into patients (practice_id, client_id, name, species)
+        values (${practice!.id}, ${client!.id}, 'Synthetic Offline Patient', 'feline') returning id`;
+      const [appointment] =
+        await sql`insert into appointments (practice_id, patient_id, client_id, doctor_id, status, start_time, end_time)
+        values (${practice!.id}, ${patient!.id}, ${client!.id}, ${user!.id}, 'scheduled', now() + interval '3 hours', now() + interval '4 hours') returning id`;
+      await use({
+        sql,
+        email,
+        secondEmail,
+        password,
+        controlToken,
+        certificate,
+        userId: user!.id,
+        patientId: patient!.id,
+        appointmentId: appointment!.id,
+      });
+    } finally {
+      try {
+        const response = await fetch("http://127.0.0.1:3456/reconnect", {
+          method: "POST",
+          headers: { authorization: `Bearer ${controlToken}` },
+        });
+        expect(response.ok).toBe(true);
+      } finally {
+        await sql.end();
+      }
+    }
+  },
+});
+
+async function login(
+  context: BrowserContext,
+  clinic: Clinic,
+  email = clinic.email,
+) {
+  const csrf = await context.request.get("/api/auth/csrf");
+  expect(csrf.ok()).toBe(true);
+  const { csrfToken } = await csrf.json();
+  const response = await context.request.post(
+    "/api/auth/callback/credentials",
+    {
+      form: {
+        csrfToken,
+        email,
+        password: clinic.password,
+        callbackUrl: "/",
+        json: "true",
+      },
+    },
+  );
+  expect(response.ok()).toBe(true);
+  const session = await context.request.get("/api/auth/session");
+  expect((await session.json()).user?.email).toBe(email);
+}
+
+async function unlock(page: Page, exists = true) {
+  await page.getByLabel("Field passphrase", { exact: true }).fill(passphrase);
+  if (!exists)
+    await page
+      .getByLabel("Confirm field passphrase", { exact: true })
+      .fill(passphrase);
+  await page
+    .getByRole("button", {
+      name: exists ? "Unlock field workspace" : "Create field workspace",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Lock workspace", exact: true }),
+  ).toBeVisible();
+}
+async function prepare(page: Page, clinic: Clinic) {
+  await login(page.context(), clinic);
+  await page.goto("/offline/field.html");
+  await unlock(page, false);
+  await page
+    .getByRole("button", { name: "Find patients", exact: true })
+    .click();
+  await page
+    .getByRole("button", {
+      name: "Prepare Synthetic Offline Patient",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Start field visit" }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => Boolean(navigator.serviceWorker.controller)),
+    )
+    .toBe(true);
+}
+async function issue(page: Page) {
+  await page.getByRole("button", { name: "Start field visit" }).click();
+  await page
+    .getByRole("textbox", { name: "History", exact: true })
+    .fill("Synthetic offline examination history");
+  await page
+    .getByRole("textbox", { name: "Plan and instructions", exact: true })
+    .fill("Synthetic follow-up instructions");
+  await page
+    .getByRole("combobox", { name: "Prepared service", exact: true })
+    .selectOption({ label: "Synthetic vaccine · $20.25" });
+  await page.getByRole("button", { name: "Add charge", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Add vaccination", exact: true })
+    .click();
+  await page.getByLabel("Lot number", { exact: true }).fill("SYNTHETIC-LOT");
+  await page
+    .getByRole("combobox", { name: "Payment received", exact: true })
+    .selectOption("cash");
+  await expect(
+    page.getByRole("button", { name: "Issue field receipt", exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole("button", { name: "Issue field receipt", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Print receipt / Save PDF", exact: true }),
+  ).toBeEnabled();
+}
+async function reopen(page: Page) {
+  const context = page.context();
+  await page.close();
+  const fresh = await context.newPage();
+  const response = await fresh.goto("/offline/field.html");
+  expect(response?.fromServiceWorker()).toBe(true);
+  await unlock(fresh);
+  return fresh;
+}
+async function control(clinic: Clinic, action: string) {
+  const response = await fetch(`http://127.0.0.1:3456/${action}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${clinic.controlToken}` },
+  });
+  expect(response.ok).toBe(true);
+  return response;
+}
+async function posted(clinic: Clinic) {
+  return clinic.sql`select b.id, b.result, b.receipt, i.total, i.paid_amount, i.status, n.subjective, p.method, v.lot_number,
+    v.administered_at, p.received_at, a.origin, n.status as note_status
+    from offline_field_batches b
+    join invoices i on i.id = (b.result->>'invoiceId')::uuid
+    join soap_notes n on n.id = (b.result->>'noteId')::uuid
+    join payments p on p.id = (b.result->>'paymentId')::uuid
+    join vaccination_records v on v.id = (b.result->'vaccinationIds'->>0)::uuid
+    join appointments a on a.id = (b.result->>'appointmentId')::uuid
+    where b.patient_id = ${clinic.patientId}`;
+}
+
+test("field visit survives cold offline reopen, prints its receipt, and posts clinical and financial records together", async ({
+  page,
+  clinic,
+  browserName,
+}, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await prepare(page, clinic);
+  if (browserName === "webkit") await control(clinic, "disconnect");
+  else await page.context().setOffline(true);
+  await issue(page);
+  expect(await posted(clinic)).toHaveLength(0);
+  page = await reopen(page);
+  await expect(page.getByRole("textbox", { name: "History", exact: true })).toHaveValue(
+    "Synthetic offline examination history",
+  );
+  await expect(page.getByRole("textbox", { name: "History", exact: true })).toBeDisabled();
+  await page.emulateMedia({ media: "print" });
+  await expect(page.locator("#field-receipt")).toBeVisible();
+  await expect(page.locator("#field-receipt")).toContainText("$21.47");
+  const originalReceipt = await page.locator("#field-receipt").textContent();
+  await page.screenshot({
+    path: info.outputPath("offline-field-receipt.png"),
+    fullPage: true,
+  });
+  if (browserName === "chromium")
+    await page.pdf({
+      path: info.outputPath("offline-field-receipt.pdf"),
+      format: "A4",
+    });
+  await page.emulateMedia({ media: "screen" });
+  if (browserName === "webkit") await control(clinic, "reconnect");
+  else await page.context().setOffline(false);
+  await page
+    .getByRole("button", { name: "Synchronize visit", exact: true })
+    .click();
+  await expect(
+    page.getByRole("link", { name: "Review and sign online" }),
+  ).toBeVisible();
+  const rows = await posted(clinic);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    total: "21.47",
+    paid_amount: "21.47",
+    status: "paid",
+    method: "cash",
+    lot_number: "SYNTHETIC-LOT",
+    origin: "field",
+    note_status: "draft",
+  });
+  expect(rows[0]!.subjective).toContain(
+    "Synthetic offline examination history",
+  );
+  expect(rows[0]!.receipt.reference).toBe(rows[0]!.id);
+  expect(await page.locator("#field-receipt").textContent()).toBe(
+    originalReceipt,
+  );
+  expect(errors).toEqual([]);
+});
+
+test("a lost sync response can be retried after reopening without duplicate records", async ({
+  page,
+  clinic,
+}) => {
+  await prepare(page, clinic);
+  await issue(page);
+  await control(clinic, "drop-next-save");
+  await page
+    .getByRole("button", { name: "Synchronize visit", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  expect(await posted(clinic)).toHaveLength(1);
+  page = await reopen(page);
+  await page
+    .getByRole("button", { name: "Synchronize visit", exact: true })
+    .click();
+  await expect(
+    page.getByRole("link", { name: "Review and sign online" }),
+  ).toBeVisible();
+  const requests: string[] = await (
+    await control(clinic, "save-requests")
+  ).json();
+  expect(requests).toHaveLength(2);
+  expect(requests[0]).toBe(requests[1]);
+  expect(await posted(clinic)).toHaveLength(1);
+  const [counts] =
+    await clinic.sql`select (select count(*) from invoices where patient_id = ${clinic.patientId}) as invoices,
+    (select count(*) from vaccination_records where patient_id = ${clinic.patientId}) as vaccines,
+    (select count(*) from soap_notes where patient_id = ${clinic.patientId}) as notes`;
+  expect(counts).toEqual({ invoices: "1", vaccines: "1", notes: "1" });
+});
+
+test("changed prices stop the entire posting and preserve the issued receipt", async ({
+  page,
+  clinic,
+}) => {
+  await prepare(page, clinic);
+  await issue(page);
+  await clinic.sql`update services set default_price = 30.00 where practice_id = (select practice_id from patients where id = ${clinic.patientId})`;
+  await page
+    .getByRole("button", { name: "Synchronize visit", exact: true })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "charged service changed",
+  );
+  expect(await posted(clinic)).toHaveLength(0);
+  expect(
+    await clinic.sql`select id from invoices where patient_id = ${clinic.patientId}`,
+  ).toHaveLength(0);
+  expect(
+    await clinic.sql`select id from soap_notes where patient_id = ${clinic.patientId}`,
+  ).toHaveLength(0);
+  await expect(page.locator("#field-receipt")).toContainText("$21.47");
+  await expect(page.getByRole("textbox", { name: "History", exact: true })).toBeDisabled();
+});
+
+test("an audit failure rolls every record back and a retry posts once", async ({
+  page,
+  clinic,
+}) => {
+  await prepare(page, clinic);
+  await issue(page);
+  const functionName = `synthetic_reject_${clinic.userId.replaceAll("-", "")}`;
+  await clinic.sql.unsafe(
+    `create function ${functionName}() returns trigger language plpgsql as $$ begin if new.user_id = '${clinic.userId}' and new.action = 'offline_field_synced' then raise exception 'Synthetic audit failure'; end if; return new; end $$`,
+  );
+  await clinic.sql.unsafe(
+    `create trigger ${functionName} before insert on audit_log for each row execute function ${functionName}()`,
+  );
+  try {
+    await page
+      .getByRole("button", { name: "Synchronize visit", exact: true })
+      .click();
+    await expect(page.getByRole("alert")).toBeVisible();
+    expect(
+      await clinic.sql`select id from invoices where patient_id = ${clinic.patientId}`,
+    ).toHaveLength(0);
+    expect(
+      await clinic.sql`select id from soap_notes where patient_id = ${clinic.patientId}`,
+    ).toHaveLength(0);
+    expect(
+      await clinic.sql`select id from vaccination_records where patient_id = ${clinic.patientId}`,
+    ).toHaveLength(0);
+  } finally {
+    await clinic.sql.unsafe(`drop trigger ${functionName} on audit_log`);
+    await clinic.sql.unsafe(`drop function ${functionName}()`);
+  }
+  await page
+    .getByRole("button", { name: "Synchronize visit", exact: true })
+    .click();
+  await expect(
+    page.getByRole("link", { name: "Review and sign online" }),
+  ).toBeVisible();
+  expect(await posted(clinic)).toHaveLength(1);
+});

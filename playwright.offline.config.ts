@@ -11,7 +11,7 @@ process.env.OFFLINE_E2E_BASE_URL = baseURL;
 
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: "offline-workspace.spec.ts",
+  testMatch: ["offline-workspace.spec.ts", "offline-field.spec.ts"],
   outputDir: process.env.OFFLINE_E2E_ARTIFACT_DIRECTORY ?? path.join(runDirectory, "results"),
   workers: 1,
   fullyParallel: false,

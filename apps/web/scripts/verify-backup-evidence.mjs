@@ -56,6 +56,7 @@ const PRACTICE_EXPORT_SECTIONS = [
   "vaccinationRecords",
   "labResults",
   "labResultEvents",
+  "offlineFieldBatches",
   "labReportReceipts",
   "labReportDecisions",
   "externalLabReports",
@@ -92,7 +93,7 @@ const PRACTICE_EXPORT_SECTIONS = [
   "controlledSubstanceLog",
   "communications",
 ];
-const ADDITIVE_REPORT_SECTIONS = ["labReportReceipts", "labReportDecisions"];
+const ADDITIVE_REPORT_SECTIONS = ["offlineFieldBatches", "labReportReceipts", "labReportDecisions"];
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_PATTERN =
