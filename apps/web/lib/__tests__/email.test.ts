@@ -5,9 +5,9 @@ const mocks = vi.hoisted(() => {
   return {
     billingEnforced: vi.fn(() => false),
     resendSend,
-    Resend: vi.fn(() => ({
-      emails: { send: resendSend },
-    })),
+    Resend: vi.fn(function () {
+      return { emails: { send: resendSend } };
+    }),
   };
 });
 
@@ -37,9 +37,9 @@ afterEach(() => {
   vi.unstubAllEnvs();
   mocks.billingEnforced.mockReturnValue(false);
   mocks.resendSend.mockReset();
-  mocks.Resend.mockImplementation(() => ({
-    emails: { send: mocks.resendSend },
-  }));
+  mocks.Resend.mockImplementation(function () {
+    return { emails: { send: mocks.resendSend } };
+  });
 });
 
 describe("sendEmail", () => {
@@ -543,7 +543,7 @@ describe("appointment reminder email outcomes through the Resend SDK", () => {
   async function sendThroughRealSdk(fetchImpl: typeof fetch) {
     const actual = await vi.importActual<typeof import("resend")>("resend");
     mocks.Resend.mockImplementation(
-      (key?: string) => new actual.Resend(key) as never,
+      function (key?: string) { return new actual.Resend(key) as never; },
     );
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubGlobal("fetch", vi.fn(fetchImpl));
