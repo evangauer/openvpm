@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SidebarSync, type SidebarCommand } from "../sidebar-sync";
+import { sidebarPendingStore, SidebarSync, type SidebarCommand } from "../sidebar-sync";
 import { parseSidebarPreferences, serializeSidebarPreferences, type SidebarPreferences } from "../sidebar-pins";
 
 function server(initial: SidebarPreferences | null = null) {
@@ -17,9 +17,25 @@ function server(initial: SidebarPreferences | null = null) {
     }),
   };
 }
-const setup = (remote: ReturnType<typeof server>, legacy: string | null = null, cached: string | null = null) => {
-  const io = { ...remote, legacy, cached, save: vi.fn(), error: vi.fn() };
-  return { sync: new SidebarSync(io), io };
+function browserStorage() {
+  const values = new Map<string, string>();
+  let locked = Promise.resolve();
+  return {
+    storage: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    },
+    withLock: (work: () => void) => {
+      const result = locked.then(work);
+      locked = result.catch(() => {});
+      return result;
+    },
+  };
+}
+const setup = (remote: ReturnType<typeof server>, legacy: string | null = null, cached: string | null = null, browser = browserStorage()) => {
+  const io = { ...remote, legacy, cached, pending: sidebarPendingStore(browser.storage, "sidebar-test", browser.withLock), save: vi.fn(), error: vi.fn(), rejected: vi.fn(), isRejected: (error: unknown) => error === "unavailable" };
+  return { sync: new SidebarSync(io), io, browser };
 };
 const prefs = (sync: SidebarSync) => parseSidebarPreferences(sync.snapshot());
 
@@ -49,6 +65,7 @@ describe("account sidebar synchronization", () => {
     remote.read.mockImplementationOnce(() => new Promise(r => { resolve = r; }));
     const { sync } = setup(remote);
     const run = sync.sync();
+    await vi.waitFor(() => expect(remote.read).toHaveBeenCalled());
     sync.edit({ kind: "layout", layout: "focused" });
     resolve({ layout: "full", pinned: [] });
     await run;
@@ -57,11 +74,11 @@ describe("account sidebar synchronization", () => {
   it("retains failed edits across remount and retries idempotently", async () => {
     const remote = server({ layout: "full", pinned: [] });
     remote.write.mockRejectedValueOnce(new Error("offline"));
-    const { sync, io } = setup(remote);
+    const { sync, io, browser } = setup(remote);
     sync.edit({ kind: "pin", href: "/inventory", pinned: true });
     await sync.sync();
     expect(io.error).toHaveBeenCalled();
-    const restored = setup(remote, null, io.save.mock.calls.at(-1)![0]).sync;
+    const restored = setup(remote, null, io.save.mock.calls.at(-1)![0], browser).sync;
     await restored.sync();
     expect(prefs(restored).pinned).toEqual(["/inventory"]);
     expect(await remote.read()).toEqual(prefs(restored));
@@ -86,5 +103,66 @@ describe("account sidebar synchronization", () => {
     await Promise.all([a.sync(), b.sync()]);
     expect(prefs(b)).toEqual({ layout: "full", pinned: [] });
     expect(prefs(a).layout).toBe("focused");
+  });
+  it("does not lose unsent edits when another tab refreshes its cache", async () => {
+    const remote = server({ layout: "full", pinned: [] });
+    const write = remote.write.getMockImplementation()!;
+    remote.write.mockRejectedValue(new Error("offline"));
+    const a = setup(remote);
+    a.sync.edit({ kind: "pin", href: "/inventory", pinned: true });
+    await a.sync.sync();
+    const b = setup(remote, null, null, a.browser);
+    await b.sync.sync();
+    // Both tabs close after the second tab overwrites the ordinary cache.
+    const restored = setup(remote, null, b.io.save.mock.calls.at(-1)![0], a.browser);
+    remote.write.mockImplementation(write);
+    await restored.sync.sync();
+    expect(prefs(restored.sync).pinned).toEqual(["/inventory"]);
+    expect(restored.io.pending.read()).toEqual([]);
+  });
+  it("does not acknowledge a newer unsent choice from another tab", async () => {
+    const remote = server({ layout: "full", pinned: [] });
+    const write = remote.write.getMockImplementation()!;
+    let release!: (value: SidebarPreferences) => void;
+    remote.write.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const a = setup(remote);
+    a.sync.edit({ kind: "layout", layout: "focused" });
+    await vi.waitFor(() => expect(remote.write).toHaveBeenCalledTimes(1));
+    remote.write.mockRejectedValue(new Error("offline"));
+    const b = setup(remote, null, null, a.browser);
+    b.sync.edit({ kind: "layout", layout: "full" });
+    await b.sync.sync();
+    release({ layout: "focused", pinned: [] });
+    await a.sync.sync();
+    expect(a.io.pending.read().map(entry => entry.edit)).toEqual([{ kind: "layout", layout: "full" }]);
+    remote.write.mockImplementation(write);
+    const restored = setup(remote, null, null, a.browser);
+    await restored.sync.sync();
+    expect(await remote.read()).toEqual({ layout: "full", pinned: [] });
+  });
+  it("continues syncing other choices after the server rejects a role-restricted pin", async () => {
+    const remote = server({ layout: "full", pinned: [] });
+    let reject!: (error: unknown) => void;
+    remote.write.mockImplementationOnce(() => new Promise((_, r) => { reject = r; }));
+    const { sync, io } = setup(remote);
+    sync.edit({ kind: "pin", href: "/reports", pinned: true });
+    await vi.waitFor(() => expect(remote.write).toHaveBeenCalledTimes(1));
+    sync.edit({ kind: "layout", layout: "focused" });
+    reject("unavailable");
+    await sync.sync();
+    expect(io.rejected).toHaveBeenCalledOnce();
+    expect(io.error).not.toHaveBeenCalled();
+    expect(prefs(sync)).toEqual({ layout: "focused", pinned: [] });
+    expect(io.pending.read()).toEqual([]);
+  });
+  it("saves to the account when browser storage is blocked", async () => {
+    const remote = server();
+    const browser = browserStorage();
+    browser.storage.getItem = () => { throw new Error("blocked"); };
+    browser.storage.setItem = () => { throw new Error("blocked"); };
+    const { sync } = setup(remote, null, null, browser);
+    sync.edit({ kind: "layout", layout: "focused" });
+    await sync.sync();
+    expect(await remote.read()).toEqual({ layout: "focused", pinned: [] });
   });
 });

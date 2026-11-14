@@ -19,8 +19,11 @@ remain Full.
 
 When a connection fails, pending choices stay in this browser and retry on
 reconnect or return to the page. A warning appears when sync is unavailable.
-If browser storage is blocked, current-session changes can still sync to the
-account, but unsent changes cannot survive closing the page. Keep it open until
+Each pending choice is retained separately from the display cache, so refreshing
+another tab cannot discard unsent changes. If a queued pin is no longer allowed
+by your role, it is skipped with a warning and your other choices still sync.
+If browser storage or tab coordination is unavailable, current-session changes
+can still sync to the account, but unsent changes cannot survive closing the page. Keep it open until
 connected. Viewers can save their own navigation choices; their clinical and
 administrative permissions remain read-only.
 
