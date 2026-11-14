@@ -30,9 +30,9 @@ const mocks = vi.hoisted(() => {
 
   const db = { select, update, insert };
   const verify = vi.fn();
-  const Resend = vi.fn(() => ({
-    webhooks: { verify },
-  }));
+  const Resend = vi.fn(function () {
+    return { webhooks: { verify } };
+  });
 
   return {
     db,

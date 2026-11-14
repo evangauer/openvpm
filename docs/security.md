@@ -52,6 +52,32 @@ Public links are capability URLs: possession of the unguessable token is the cre
 
 Passwords are hashed with bcrypt. All dashboard routes require an authenticated session, enforced in middleware. API keys are stored as bcrypt hashes with an indexed lookup prefix; the raw key is shown once and never persisted.
 
+## Dependency security
+
+CI audits both production and development dependencies and fails on advisories at
+low severity or above. Run the same checks locally after installing the committed
+lockfile:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm audit --prod --audit-level low
+pnpm audit --dev --audit-level low
+```
+
+Security overrides live in the root `package.json`. Keep the lockfile in sync and
+validate type checking, tests, and builds when updating them. In particular:
+
+- `qs` is pinned to 6.17.1 to address GHSA-6pq8-jhm2-2vcw.
+- Both test workspaces require Vitest 4.1.12 or later in the 4.x line to address
+  GHSA-82fw-gwwq-j7x9 and GHSA-qxg6-89mg-rqv8.
+- `@react-email/render` is pinned to 2.3.1, including the older copy pinned by
+  `@react-email/components`. Its `html-to-text` 10 dependency uses `deepmerge-ts`,
+  removing the vulnerable `deepmerge` dependency (GHSA-gcqx-w48m-w2h4), which has
+  no patched release.
+
+These checks cover published package advisories; they do not establish that a
+running deployment has received the changes.
+
 ## Responsible disclosure
 
 Please do not report security issues through public GitHub issues. Email **security@openvpm.com** with `[SECURITY]` in the subject line. We acknowledge reports within 48 hours and follow the 90-day coordinated disclosure process described in [SECURITY.md](../SECURITY.md).
