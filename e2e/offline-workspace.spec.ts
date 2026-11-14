@@ -104,7 +104,7 @@ async function prepare(page: Page, clinic: Clinic, fromOnlineEditor = false) {
   await login(page.context(), clinic);
   if (fromOnlineEditor) {
     await page.goto(`/records/new-soap/${clinic.patientId}?appointmentId=${clinic.appointmentId}`);
-    await page.getByRole("link", { name: "Make available offline", exact: true }).click();
+    await page.getByRole("link", { name: "Save chart for offline notes", exact: true }).click();
   } else await page.goto(target(clinic));
   await unlock(page, false);
   await page.getByRole("button", { name: "Prepare selected chart", exact: true }).click();

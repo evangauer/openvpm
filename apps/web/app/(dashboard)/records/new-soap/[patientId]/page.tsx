@@ -893,7 +893,7 @@ export default function NewSoapNotePage() {
             {process.env.NEXT_PUBLIC_OFFLINE_WORKSPACE_ENABLED === "true" && appointmentId ? (
               <Button variant="outline" size="sm" asChild>
                 <a href={`/offline/index.html#patientId=${params.patientId}&appointmentId=${appointmentId}`}>
-                  Make available offline
+                  Save chart for offline notes
                 </a>
               </Button>
             ) : null}

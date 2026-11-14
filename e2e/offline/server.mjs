@@ -50,7 +50,7 @@ Object.assign(env, {
   NEXTAUTH_SECRET: randomBytes(48).toString("hex"),
   NEXTAUTH_URL: publicOrigin,
   NEXT_PUBLIC_APP_URL: publicOrigin,
-  OFFLINE_FIELD_VISITS_ENABLED: "true",
+  OFFLINE_FIELD_VISITS_ENABLED: process.env.OFFLINE_E2E_FIELD_VISITS_ENABLED === "false" ? "false" : "true",
   AMBULATORY_WORKSPACE_ENABLED: "true",
   NEXT_PUBLIC_OFFLINE_WORKSPACE_ENABLED: "true",
   NEXT_PUBLIC_OFFLINE_CHART_DRAFTS_ENABLED: "true",

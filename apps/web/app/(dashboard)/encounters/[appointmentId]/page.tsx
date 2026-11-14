@@ -4274,24 +4274,26 @@ function ChargeCapture({
                 </Button>
               </div>
             ) : null}
-            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_90px_auto] lg:grid-cols-1 xl:grid-cols-[minmax(0,1fr)_80px_auto]">
-              {catalog.length === 0 && !productSearch && !productsQuery.isFetching && !productsQuery.error ? <p className="text-sm text-muted-foreground">Charge catalog is empty. Add services or inventory products to get started.</p> : null}
-              <ServicePicker
-                services={catalog}
-                value={selectedCatalogId}
-                onSelect={(id) => {
-                  setSelectedCatalogId(id);
-                  setSelectedProduct(productsQuery.data?.pages.flatMap((page) => page.items).find((product) => `product:${product.id}` === id) ?? null);
-                }}
-                onSearchChange={setProductSearch}
-                loading={productsQuery.isFetching}
-                searchError={productsQuery.error?.message}
-                onRetry={() => void productsQuery.refetch()}
-                hasMore={productsQuery.hasNextPage}
-                onLoadMore={() => void productsQuery.fetchNextPage()}
-                disabled={isSaving}
-                formatPrice={fmt}
-              />
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+              {catalog.length === 0 && !productSearch && !productsQuery.isFetching && !productsQuery.error ? <p className="col-span-2 text-sm text-muted-foreground">Charge catalog is empty. Add services or inventory products to get started.</p> : null}
+              <div className="col-span-2 min-w-0">
+                <ServicePicker
+                  services={catalog}
+                  value={selectedCatalogId}
+                  onSelect={(id) => {
+                    setSelectedCatalogId(id);
+                    setSelectedProduct(productsQuery.data?.pages.flatMap((page) => page.items).find((product) => `product:${product.id}` === id) ?? null);
+                  }}
+                  onSearchChange={setProductSearch}
+                  loading={productsQuery.isFetching}
+                  searchError={productsQuery.error?.message}
+                  onRetry={() => void productsQuery.refetch()}
+                  hasMore={productsQuery.hasNextPage}
+                  onLoadMore={() => void productsQuery.fetchNextPage()}
+                  disabled={isSaving}
+                  formatPrice={fmt}
+                />
+              </div>
               <Input
                 type="number"
                 min={0.001}
@@ -4328,10 +4330,10 @@ function ChargeCapture({
                 {items.map((item) => (
                   <div
                     key={item.key}
-                    className="flex flex-col gap-3 rounded-md border border-border p-3 sm:flex-row sm:items-center"
+                    className="flex min-w-0 flex-col gap-3 rounded-md border border-border p-3"
                   >
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">
+                      <p className="break-words text-sm font-medium">
                         {item.description}
                       </p>
                       <p className="text-xs capitalize text-muted-foreground">

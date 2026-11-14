@@ -808,7 +808,7 @@ function OfflineApp() {
                   ) : (
                     <p className="rounded-lg border bg-background p-4 text-sm">
                       To write an offline visit note, start the visit online and
-                      choose “Make available offline” in its SOAP editor.
+                      choose “Save chart for offline notes” in its SOAP editor.
                     </p>
                   )}
                   <section className="rounded-xl border bg-background p-5">

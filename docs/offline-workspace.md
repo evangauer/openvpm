@@ -7,7 +7,7 @@ writing SOAP visit notes. It uses the same rich-text editor as the online visit.
 ## Prepare and use a workspace
 
 1. On a trusted device, open a patient chart or an in-exam visit's SOAP editor
-   and choose **Make available offline**.
+   and choose **Save chart for offline notes**.
 2. Choose a separate workspace passphrase of at least 12 characters. Keep it
    safe: it cannot be reset. The workspace belongs to the signed-in person and
    practice; another account cannot prepare or submit its notes.

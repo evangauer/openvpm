@@ -5,8 +5,8 @@ const page = readFileSync(
   new URL("../../app/(dashboard)/migration-archive/page.tsx", import.meta.url),
   "utf8",
 );
-const sidebar = readFileSync(
-  new URL("../../components/layout/sidebar.tsx", import.meta.url),
+const navigation = readFileSync(
+  new URL("../navigation.ts", import.meta.url),
   "utf8",
 );
 const router = readFileSync(
@@ -20,8 +20,8 @@ const checklist = readFileSync(
 
 describe("imported history workspace", () => {
   it("is discoverable and explains its non-operational safety boundary", () => {
-    expect(sidebar).toContain('href: "/migration-archive"');
-    expect(sidebar).toContain('label: "Imported History"');
+    expect(navigation).toContain('href: "/migration-archive"');
+    expect(navigation).toContain('label: "Imported History"');
     expect(page).toContain("Source-attributed history from a prior system");
     expect(page).toContain("do not silently create live");
   });
