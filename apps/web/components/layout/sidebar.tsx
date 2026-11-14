@@ -71,10 +71,11 @@ export function Sidebar({
     (item) => !CORE_PATHS.includes(item.href) && item.href !== "/settings",
   );
   const settingsItem = availableItems.find((item) => item.href === "/settings");
-  const { pinned, togglePin } = useSidebarPins(
+  const { pinned, togglePin, layout, setLayout } = useSidebarPins(
     session?.user?.practiceId,
     session?.user?.id,
   );
+  const focused = layout === "focused";
   const pinnedItems = pinned.flatMap((href) =>
     toolItems.filter((item) => item.href === href),
   );
@@ -161,69 +162,78 @@ export function Sidebar({
         role="navigation"
         aria-label="Main navigation"
       >
-        <ul className="space-y-0.5" aria-label="Core navigation">
-          {coreItems.map((item) => (
+        <ul
+          className="space-y-0.5"
+          aria-label={focused ? "Core navigation" : "Full navigation"}
+        >
+          {(focused ? coreItems : availableItems).map((item) => (
             <li key={item.href}>{navLink(item)}</li>
           ))}
         </ul>
         {canShowNav && (
           <div className="mt-4 border-t border-border pt-3">
-            {!isCollapsed && (
-              <p className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Your tools
-              </p>
-            )}
-            <ul className="space-y-0.5" aria-label="Pinned tools">
-              {pinnedItems.map((item) => (
-                <li key={item.href} className="flex items-center">
-                  {navLink(item)}
-                  {!isCollapsed && (
-                    <button
-                      type="button"
-                      onClick={() => togglePin(item.href)}
-                      aria-label={`Unpin ${item.label}`}
-                      title={`Unpin ${item.label}`}
-                      className="shrink-0 rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
-                    >
-                      <PinOff className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-            {!isCollapsed && !pinnedItems.length && (
-              <p className="px-3 pb-2 text-xs leading-relaxed text-muted-foreground">
-                Keep the tools you use most here.
-              </p>
-            )}
-            {currentTool && (
-              <div className="my-2" aria-label="Current tool">
+            {focused && (
+              <>
                 {!isCollapsed && (
-                  <p className="px-3 text-[10px] uppercase tracking-wide text-muted-foreground">
-                    Currently viewing
+                  <p className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Your tools
                   </p>
                 )}
-                <div className="flex items-center">
-                  {navLink(currentTool)}
-                  {!isCollapsed && (
-                    <button
-                      type="button"
-                      onClick={() => togglePin(currentTool.href)}
-                      aria-label={`Pin ${currentTool.label}`}
-                      title={`Pin ${currentTool.label}`}
-                      className="rounded-md p-2 text-muted-foreground hover:bg-accent"
-                    >
-                      <Pin className="h-3.5 w-3.5" aria-hidden="true" />
-                    </button>
-                  )}
-                </div>
-              </div>
+                <ul className="space-y-0.5" aria-label="Pinned tools">
+                  {pinnedItems.map((item) => (
+                    <li key={item.href} className="flex items-center">
+                      {navLink(item)}
+                      {!isCollapsed && (
+                        <button
+                          type="button"
+                          onClick={() => togglePin(item.href)}
+                          aria-label={`Unpin ${item.label}`}
+                          title={`Unpin ${item.label}`}
+                          className="shrink-0 rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+                        >
+                          <PinOff className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {!isCollapsed && !pinnedItems.length && (
+                  <p className="px-3 pb-2 text-xs leading-relaxed text-muted-foreground">
+                    Keep the tools you use most here.
+                  </p>
+                )}
+                {currentTool && (
+                  <div className="my-2" aria-label="Current tool">
+                    {!isCollapsed && (
+                      <p className="px-3 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Currently viewing
+                      </p>
+                    )}
+                    <div className="flex items-center">
+                      {navLink(currentTool)}
+                      {!isCollapsed && (
+                        <button
+                          type="button"
+                          onClick={() => togglePin(currentTool.href)}
+                          aria-label={`Pin ${currentTool.label}`}
+                          title={`Pin ${currentTool.label}`}
+                          className="rounded-md p-2 text-muted-foreground hover:bg-accent"
+                        >
+                          <Pin className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
             <SidebarTools
               open={toolsOpen}
               onOpenChange={setToolsOpen}
               items={toolItems}
               pinned={pinned}
+              layout={layout}
+              onLayoutChange={setLayout}
               onTogglePin={togglePin}
               onNavigate={onNavigate}
             >
@@ -249,7 +259,7 @@ export function Sidebar({
         )}
       </nav>
 
-      {settingsItem && (
+      {focused && settingsItem && (
         <div className="border-t border-border px-2 py-2">
           {navLink(settingsItem)}
         </div>

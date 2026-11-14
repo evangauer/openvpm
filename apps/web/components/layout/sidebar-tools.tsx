@@ -5,6 +5,7 @@ import Link from "next/link";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Pin, PinOff, Search, X } from "lucide-react";
 import type { NavigationItem } from "@/lib/navigation";
+import type { SidebarLayout } from "@/lib/sidebar-pins";
 import { cn } from "@/lib/utils";
 
 export function SidebarTools({
@@ -13,6 +14,8 @@ export function SidebarTools({
   onOpenChange,
   items,
   pinned,
+  layout,
+  onLayoutChange,
   onTogglePin,
   onNavigate,
 }: {
@@ -21,6 +24,8 @@ export function SidebarTools({
   onOpenChange: (open: boolean) => void;
   items: NavigationItem[];
   pinned: string[];
+  layout: SidebarLayout;
+  onLayoutChange: (layout: SidebarLayout) => void;
   onTogglePin: (href: string) => void;
   onNavigate?: () => void;
 }) {
@@ -52,7 +57,7 @@ export function SidebarTools({
                 Tools
               </Dialog.Title>
               <Dialog.Description className="mt-1 text-sm text-muted-foreground">
-                Open a tool or pin it to your sidebar.
+                Open a tool or pin it for focused navigation.
               </Dialog.Description>
             </div>
             <Dialog.Close
@@ -62,6 +67,53 @@ export function SidebarTools({
               <X className="h-4 w-4" aria-hidden="true" />
             </Dialog.Close>
           </div>
+          <fieldset className="mt-4 shrink-0">
+            <legend className="mb-2 text-xs font-medium text-muted-foreground">
+              Sidebar layout
+            </legend>
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  [
+                    "full",
+                    "Full navigation",
+                    "All tabs in their familiar order",
+                  ],
+                  [
+                    "focused",
+                    "Focused navigation",
+                    "Six core tabs plus your pinned tools",
+                  ],
+                ] as const
+              ).map(([value, label, description]) => (
+                <label
+                  key={value}
+                  className={cn(
+                    "flex cursor-pointer items-start gap-2 rounded-lg border p-3 focus-within:ring-2 focus-within:ring-ring",
+                    layout === value
+                      ? "border-primary bg-primary/5"
+                      : "border-border",
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="sidebar-layout"
+                    value={value}
+                    checked={layout === value}
+                    onChange={() => onLayoutChange(value)}
+                    aria-label={label}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium">{label}</span>
+                    <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                      {description}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
           <label className="my-4 flex shrink-0 items-center gap-2 rounded-md border border-input px-3 focus-within:ring-2 focus-within:ring-ring">
             <Search
               className="h-4 w-4 text-muted-foreground"
@@ -146,7 +198,8 @@ export function SidebarTools({
             </p>
           )}
           <p className="mt-4 shrink-0 border-t pt-3 text-xs text-muted-foreground">
-            Your pins are saved for this account in this browser.
+            Switch layouts anytime. Your layout and pins are saved for this
+            account in this browser.
           </p>
         </Dialog.Content>
       </Dialog.Portal>

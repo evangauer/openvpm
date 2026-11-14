@@ -15,6 +15,12 @@ then exposes **Field Visits**, at `/offline/field.html`. Select its pin button t
 keep it in **Your tools**. Pins are personal to the account and browser; unpinning
 a tool leaves it available in **All tools**.
 
+The sidebar keeps full navigation and the familiar tab order by default. In
+**All tools**, choose **Focused navigation** for six core tabs and **Your tools**.
+Choose **Full navigation** to return at any time; switching layouts preserves
+pins. Existing focused-layout preview preferences are retained. The preference
+is per account and browser, and never changes another staff member's layout.
+
 Open **All tools → Field Visits**, or its pinned sidebar shortcut, to prepare the day's patients.
 Alternatively, choose **Prepare for field visit** on a patient chart or on an
 assigned, unstarted appointment in **Schedule**. The workspace remembers that

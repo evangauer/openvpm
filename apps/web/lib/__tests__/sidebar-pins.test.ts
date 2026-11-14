@@ -8,9 +8,53 @@ import {
   parseSidebarPins,
   serializeSidebarPins,
   sidebarPinsKey,
+  parseSidebarPreferences,
+  serializeSidebarPreferences,
 } from "../sidebar-pins";
 
 describe("personal sidebar tools", () => {
+  it("keeps every familiar destination in its original order for full navigation", () => {
+    expect(availableNavigation("admin").map((item) => item.href)).toEqual([
+      "/",
+      "/patients",
+      "/clients",
+      "/schedule",
+      "/records",
+      "/lab-results",
+      "/billing",
+      "/inventory",
+      "/inbox",
+      "/recalls",
+      "/care-reminders",
+      "/migration-archive",
+      "/whiteboard",
+      "/agent",
+      "/controlled-substances",
+      "/reports",
+      "/settings",
+    ]);
+  });
+
+  it("defaults untouched accounts to full navigation and preserves preview preferences", () => {
+    expect(parseSidebarPreferences(null)).toEqual({
+      layout: "full",
+      pinned: [],
+    });
+    expect(
+      parseSidebarPreferences(serializeSidebarPins(["/inventory"])),
+    ).toEqual({ layout: "focused", pinned: ["/inventory"] });
+    for (const layout of ["full", "focused"] as const) {
+      const preferences = { layout, pinned: ["/inventory", "/reports"] };
+      expect(
+        parseSidebarPreferences(serializeSidebarPreferences(preferences)),
+      ).toEqual(preferences);
+    }
+    expect(
+      parseSidebarPreferences(
+        '{"version":1,"layout":"unknown","pinned":["/inventory"]}',
+      ),
+    ).toEqual({ layout: "full", pinned: ["/inventory"] });
+  });
   it("keeps the core workflow small and field visits optional", () => {
     expect(CORE_PATHS).toEqual([
       "/",
@@ -81,6 +125,7 @@ describe("personal sidebar tools", () => {
     "x".repeat(4097),
   ])("recovers from missing or invalid preferences", (value) => {
     expect(parseSidebarPins(value)).toEqual([]);
+    expect(parseSidebarPreferences(value).layout).toBe("full");
   });
 
   it("identifies nested tools without matching unrelated route prefixes", () => {

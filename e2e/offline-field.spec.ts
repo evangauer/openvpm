@@ -433,6 +433,9 @@ test("guided field preparation preserves appointment identity and shows distinct
   await page.getByRole("button", { name: "All tools", exact: true }).click();
   const tools = page.getByRole("dialog", { name: "Tools", exact: true });
   await tools
+    .getByRole("radio", { name: "Focused navigation", exact: true })
+    .check();
+  await tools
     .getByRole("textbox", { name: "Search tools", exact: true })
     .fill("field");
   await tools
@@ -598,8 +601,27 @@ test("sidebar tools persist per account, stay available after unpinning, and res
     .click();
   await openMainNavigation(page);
   await expect(
-    page.getByRole("list", { name: "Core navigation" }).getByRole("link"),
-  ).toHaveCount(6);
+    page.getByRole("list", { name: "Full navigation" }).getByRole("link"),
+  ).toHaveText([
+    "Dashboard",
+    "Patients",
+    "Clients",
+    "Schedule",
+    "Records",
+    "Lab Inbox",
+    "Billing",
+    "Inventory",
+    "Inbox",
+    "Recalls",
+    "Care Reminders",
+    "Imported History",
+    "Whiteboard",
+    "Agent",
+    "Controlled Substances",
+    "Reports",
+    "Settings",
+    "Field Visits",
+  ]);
   await expect(
     page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
   ).toHaveCount(0);
@@ -610,6 +632,12 @@ test("sidebar tools persist per account, stay available after unpinning, and res
     exact: true,
   });
   await expect(search).toBeFocused();
+  await expect(
+    tools.getByRole("radio", { name: "Full navigation", exact: true }),
+  ).toBeChecked();
+  await tools
+    .getByRole("radio", { name: "Focused navigation", exact: true })
+    .check();
   await search.fill("no matching tool");
   await expect(tools.getByText("No tools match your search.")).toBeVisible();
   await search.fill("inventory");
@@ -633,10 +661,36 @@ test("sidebar tools persist per account, stay available after unpinning, and res
   await expect(
     page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
   ).toHaveText(["Inventory", "Field Visits"]);
+  await expect(
+    page.getByRole("list", { name: "Core navigation" }).getByRole("link"),
+  ).toHaveCount(6);
   await page.screenshot({
     path: info.outputPath("pinned-sidebar.png"),
     fullPage: true,
   });
+  // Switching back restores the familiar order and retains pins for later.
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await tools
+    .getByRole("radio", { name: "Full navigation", exact: true })
+    .check();
+  await tools.getByRole("button", { name: "Close tools", exact: true }).click();
+  await page.reload();
+  await openMainNavigation(page);
+  await expect(
+    page
+      .getByRole("list", { name: "Full navigation" })
+      .getByRole("link")
+      .nth(1),
+  ).toHaveText("Patients");
+  await expect(page.getByRole("list", { name: "Pinned tools" })).toHaveCount(0);
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await expect(
+    tools.getByRole("button", { name: "Unpin Inventory", exact: true }),
+  ).toBeVisible();
+  await tools
+    .getByRole("radio", { name: "Focused navigation", exact: true })
+    .check();
+  await tools.getByRole("button", { name: "Close tools", exact: true }).click();
   await page
     .getByRole("button", { name: "Unpin Inventory", exact: true })
     .click();
@@ -661,6 +715,9 @@ test("sidebar tools persist per account, stay available after unpinning, and res
   await page.goto(`/patients/${clinic.patientId}`);
   await openMainNavigation(page);
   await expect(
+    page.getByRole("list", { name: "Full navigation" }),
+  ).toBeVisible();
+  await expect(
     page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "All tools", exact: true }).click();
@@ -677,6 +734,9 @@ test("sidebar tools persist per account, stay available after unpinning, and res
     }),
   ).toHaveCount(0);
   await tools
+    .getByRole("radio", { name: "Focused navigation", exact: true })
+    .check();
+  await tools
     .getByRole("button", { name: "Pin Inventory", exact: true })
     .click();
   await expect(
@@ -689,6 +749,67 @@ test("sidebar tools persist per account, stay available after unpinning, and res
     page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
   ).toHaveText(["Field Visits"]);
   expect(errors).toEqual([]);
+});
+
+test("sidebar upgrades preserve preview pins, synchronize across tabs, and recover corrupt preferences", async ({
+  page,
+  clinic,
+}) => {
+  await login(page.context(), clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await page
+    .getByRole("button", { name: "I'll finish later", exact: true })
+    .click();
+  const [user] =
+    await clinic.sql`select practice_id from users where id = ${clinic.userId}`;
+  const key = `openvpm.sidebar.v1.${user!.practice_id}.${clinic.userId}`;
+  await page.evaluate(
+    (key) =>
+      localStorage.setItem(
+        key,
+        JSON.stringify({ version: 1, pinned: ["/inventory"] }),
+      ),
+    key,
+  );
+  await page.reload();
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Core navigation" }).getByRole("link"),
+  ).toHaveCount(6);
+  await expect(
+    page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
+  ).toHaveText(["Inventory"]);
+
+  const peer = await page.context().newPage();
+  try {
+    await peer.goto(`/patients/${clinic.patientId}`);
+    await openMainNavigation(peer);
+    await peer.getByRole("button", { name: "All tools", exact: true }).click();
+    const tools = peer.getByRole("dialog", { name: "Tools", exact: true });
+    await tools
+      .getByRole("radio", { name: "Full navigation", exact: true })
+      .check();
+    await tools
+      .getByRole("button", { name: "Close tools", exact: true })
+      .click();
+    await expect(
+      page.getByRole("list", { name: "Full navigation" }).getByRole("link"),
+    ).toHaveCount(18);
+  } finally {
+    await peer.close();
+  }
+  await page.evaluate(
+    (key) => localStorage.setItem(key, "corrupt preference"),
+    key,
+  );
+  await page.reload();
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Full navigation" }).getByRole("link"),
+  ).toHaveCount(18);
+  await expect(
+    page.getByRole("link", { name: "Settings", exact: true }),
+  ).toBeVisible();
 });
 
 test("pinning remains usable when browser storage is blocked", async ({
@@ -715,11 +836,14 @@ test("pinning remains usable when browser storage is blocked", async ({
   await page.getByRole("button", { name: "All tools", exact: true }).click();
   const tools = page.getByRole("dialog", { name: "Tools", exact: true });
   await tools
+    .getByRole("radio", { name: "Focused navigation", exact: true })
+    .check();
+  await tools
     .getByRole("button", { name: "Pin Inventory", exact: true })
     .click();
   await expect(
     page.getByText(
-      "Pins updated for this session. Browser storage is unavailable.",
+      "Sidebar updated for this session. Browser storage is unavailable.",
       { exact: true },
     ),
   ).toBeVisible();
@@ -729,4 +853,96 @@ test("pinning remains usable when browser storage is blocked", async ({
       .getByRole("list", { name: "Pinned tools" })
       .getByRole("link", { name: "Inventory", exact: true }),
   ).toBeVisible();
+});
+
+test("sidebar preserves familiar navigation for every clinic staff role", async ({
+  page,
+  clinic,
+}) => {
+  const familiar = [
+    "Dashboard",
+    "Patients",
+    "Clients",
+    "Schedule",
+    "Records",
+    "Lab Inbox",
+    "Billing",
+    "Inventory",
+    "Inbox",
+    "Recalls",
+    "Care Reminders",
+    "Imported History",
+    "Whiteboard",
+    "Agent",
+    "Controlled Substances",
+    "Reports",
+    "Settings",
+  ];
+  const restricted: Record<string, string[]> = {
+    admin: [],
+    veterinarian: ["Settings"],
+    technician: [
+      "Recalls",
+      "Agent",
+      "Controlled Substances",
+      "Reports",
+      "Settings",
+    ],
+    front_desk: ["Agent", "Controlled Substances", "Reports", "Settings"],
+    viewer: [
+      "Recalls",
+      "Agent",
+      "Controlled Substances",
+      "Reports",
+      "Settings",
+    ],
+  };
+  for (const [role, hidden] of Object.entries(restricted)) {
+    await clinic.sql`update users set role = ${role}, is_veterinarian = ${role === "veterinarian"} where email = ${clinic.secondEmail}`;
+    await login(page.context(), clinic, clinic.secondEmail);
+    await page.goto(`/patients/${clinic.patientId}`);
+    if (role === "admin")
+      await page
+        .getByRole("button", { name: "I'll finish later", exact: true })
+        .click();
+    await openMainNavigation(page);
+    await expect(
+      page.getByRole("list", { name: "Full navigation" }).getByRole("link"),
+    ).toHaveText(familiar.filter((label) => !hidden.includes(label)));
+    // Practice admin alone must never grant clinical field preparation.
+    await expect(
+      page.getByRole("link", { name: "Prepare for field visit", exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "All tools", exact: true }).click();
+    const tools = page.getByRole("dialog", { name: "Tools", exact: true });
+    await expect(
+      tools.getByRole("link", { name: "Open Field Visits", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      tools.getByRole("link", { name: "Open Reports", exact: true }),
+    ).toHaveCount(hidden.includes("Reports") ? 0 : 1);
+    await tools
+      .getByRole("radio", { name: "Focused navigation", exact: true })
+      .check();
+    await tools
+      .getByRole("link", { name: "Open Records", exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/records$/);
+    await openMainNavigation(page);
+    await expect(
+      page.getByRole("list", { name: "Core navigation" }).getByRole("link"),
+    ).toHaveCount(6);
+    await expect(
+      page
+        .getByLabel("Current tool", { exact: true })
+        .getByRole("link", { name: "Records", exact: true }),
+    ).toHaveAttribute("aria-current", "page");
+    await page.getByRole("button", { name: "All tools", exact: true }).click();
+    await tools
+      .getByRole("radio", { name: "Full navigation", exact: true })
+      .check();
+    await tools
+      .getByRole("button", { name: "Close tools", exact: true })
+      .click();
+  }
 });
