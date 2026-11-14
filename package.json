@@ -49,14 +49,15 @@
       "postcss": "8.5.26",
       "postcss-selector-parser": "6.1.5",
       "prismjs": "1.30.0",
-      "qs": "6.16.0",
+      "qs": "6.17.1",
       "sharp": "0.35.5",
       "source-map-js": "1.2.2",
       "tinypool": "2.1.2",
       "undici@6": "6.29.1",
       "uuid": "11.1.1",
       "vite@7": "7.3.7",
-      "zod@4": "4.6.7"
+      "zod@4": "4.6.7",
+      "@react-email/render": "2.3.1"
     }
   },
   "packageManager": "pnpm@9.15.0",
