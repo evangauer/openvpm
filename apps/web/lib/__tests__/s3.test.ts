@@ -9,11 +9,11 @@ const mocks = vi.hoisted(() => {
 
   return {
     send,
-    S3Client: vi.fn(() => ({ send })),
-    PutObjectCommand: vi.fn((input: unknown) => ({ input })),
-    GetObjectCommand: vi.fn((input: unknown) => ({ input })),
-    DeleteObjectCommand: vi.fn((input: unknown) => ({ input })),
-    HeadBucketCommand: vi.fn((input: unknown) => ({ input })),
+    S3Client: vi.fn(function () { return { send }; }),
+    PutObjectCommand: vi.fn(function (input: unknown) { return { input }; }),
+    GetObjectCommand: vi.fn(function (input: unknown) { return { input }; }),
+    DeleteObjectCommand: vi.fn(function (input: unknown) { return { input }; }),
+    HeadBucketCommand: vi.fn(function (input: unknown) { return { input }; }),
     getSignedUrl: vi.fn(),
     blobPut,
     blobGet,

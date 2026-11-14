@@ -99,10 +99,10 @@ jobs:
         run: pnpm verify:oss-release
 
       - name: Audit production dependencies
-        run: pnpm audit --prod --audit-level high
+        run: pnpm audit --prod --audit-level low
 
       - name: Audit development dependencies
-        run: pnpm audit --dev --audit-level high
+        run: pnpm audit --dev --audit-level low
 
       - run: pnpm type-check
 

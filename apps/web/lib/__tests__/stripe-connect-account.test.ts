@@ -5,9 +5,9 @@ const accountsCreate = vi.fn(async (_params: Record<string, unknown>) => ({
 }));
 
 vi.mock("stripe", () => ({
-  default: vi.fn(() => ({
-    accounts: { create: accountsCreate },
-  })),
+  default: vi.fn(function () {
+    return { accounts: { create: accountsCreate } };
+  }),
 }));
 
 vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_unit");
