@@ -855,6 +855,89 @@ test("pinning remains usable when browser storage is blocked", async ({
   ).toBeVisible();
 });
 
+test("sidebar clinic-day checkout preserves readable charges and refreshes collections without reloading", async ({
+  page,
+  clinic,
+}, info) => {
+  test.setTimeout(120_000);
+  page.setDefaultTimeout(15_000);
+  const serviceName = "Comprehensive wellness examination with preventive care consultation";
+  await clinic.sql`update services set name = ${serviceName}, code = 'WELLNESS-CONSULT', category = 'Preventive medicine'
+    where practice_id = (select practice_id from users where id = ${clinic.userId})`;
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("dialog", (dialog) => dialog.accept());
+  await login(page.context(), clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await page.getByRole("button", { name: "I'll finish later", exact: true }).click();
+  await openMainNavigation(page);
+  if (process.env.OFFLINE_E2E_FIELD_VISITS_ENABLED === "false") {
+    await expect(page.getByRole("link", { name: "Field Visits", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Prepare for field visit", exact: true })).toHaveCount(0);
+  }
+  await page.getByRole("list", { name: "Full navigation" })
+    .getByRole("link", { name: "Schedule", exact: true }).click();
+  await page.getByRole("button", { name: /Synthetic Offline Patient/ }).first().click();
+  await page.getByRole("link", { name: "Open visit", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/encounters/${clinic.appointmentId}`));
+  await page.getByRole("button", { name: "Check in", exact: true }).click();
+  await page.getByRole("button", { name: "Start exam", exact: true }).click();
+  await page.getByRole("button", { name: "Search services...", exact: true }).click();
+  const option = page.getByRole("option", { name: new RegExp(serviceName) });
+  const name = option.getByText(serviceName, { exact: true });
+  await expect(name).toBeVisible();
+  expect(await name.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await option.click();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const line = page.locator("div.rounded-md").filter({
+    has: page.getByRole("button", { name: `Remove ${serviceName}`, exact: true }),
+  }).last();
+  const description = line.getByText(serviceName, { exact: true });
+  await expect(description).toBeVisible();
+  expect(await description.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await line.screenshot({ path: info.outputPath("readable-visit-charge.png") });
+  await page.getByRole("button", { name: "Create visit invoice", exact: true }).click();
+  await expect.poll(async () => {
+    const rows = await clinic.sql`select id from invoices where appointment_id = ${clinic.appointmentId}`;
+    return rows.length;
+  }).toBe(1);
+  const [invoice] = await clinic.sql`select id from invoices where appointment_id = ${clinic.appointmentId}`;
+
+  await page.goto(`/records/new-soap/${clinic.patientId}?appointmentId=${clinic.appointmentId}`);
+  const editors = page.locator('[contenteditable="true"]');
+  await expect(editors).toHaveCount(4);
+  for (const [index, value] of Object.values(sections).entries()) await editors.nth(index).fill(value);
+  await page.getByRole("button", { name: "Finalize SOAP note", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/encounters/${clinic.appointmentId}`));
+  await page.getByLabel("Home-care instructions").fill("Synthetic home-care instructions reviewed with the owner.");
+  await page.getByLabel("Prescriptions", { exact: false }).selectOption("not_needed");
+  await page.locator("#closeout-follow-up").selectOption("none");
+  await page.getByRole("button", { name: "Finalize clinical handoff", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "1. Clinical handoff finalized" })).toBeVisible();
+
+  await page.goto(`/billing?expand=${invoice!.id}`);
+  const collections = page.getByText("Collected this month", { exact: true }).locator("..");
+  await expect(collections).toContainText("$0.00");
+  await page.getByTitle("Mark as Sent", { exact: true }).click();
+  await page.getByRole("button", { name: "Record Payment", exact: true }).click();
+  await page.getByRole("button", { name: "Record Payment", exact: true }).last().click();
+  await expect(collections).toContainText("$21.47");
+  const [paid] = await clinic.sql`select status, paid_amount from invoices where id = ${invoice!.id}`;
+  expect(paid!.status).toBe("paid");
+  expect(Number(paid!.paid_amount)).toBe(21.47);
+  await page.screenshot({ path: info.outputPath("collections-after-payment.png"), fullPage: true });
+
+  await page.goto(`/encounters/${clinic.appointmentId}`);
+  await page.getByLabel("Billing disposition", { exact: true }).selectOption("paid");
+  await page.getByLabel("Owner handoff", { exact: true }).selectOption("verbal");
+  await page.getByRole("button", { name: "Complete visit", exact: true }).click();
+  await expect.poll(async () => {
+    const [appointment] = await clinic.sql`select status from appointments where id = ${clinic.appointmentId}`;
+    return appointment!.status;
+  }).toBe("checked_out");
+  expect(errors).toEqual([]);
+});
+
 test("sidebar preserves familiar navigation for every clinic staff role", async ({
   page,
   clinic,

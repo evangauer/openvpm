@@ -130,7 +130,7 @@ export function ServicePicker({
   }
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative min-w-0">
       <button
         type="button"
         disabled={disabled}
@@ -143,12 +143,12 @@ export function ServicePicker({
         aria-haspopup="listbox"
         aria-expanded={open}
         className={cn(
-          "flex h-10 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 text-left text-sm",
+          "flex min-h-10 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 text-left text-sm",
           "disabled:cursor-not-allowed disabled:opacity-50",
           !selected && "text-muted-foreground",
         )}
       >
-        <span className="truncate">
+        <span className="min-w-0 whitespace-normal break-words">
           {selected ? selected.name : "Search services..."}
         </span>
         <ChevronsUpDown className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -189,7 +189,7 @@ export function ServicePicker({
                   onMouseEnter={() => setHighlight(index)}
                   onClick={() => choose(service)}
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-sm px-2 py-2 text-left text-sm",
+                    "flex w-full items-start gap-2 rounded-sm px-2 py-2 text-left text-sm",
                     index === highlight && "bg-accent",
                   )}
                 >
@@ -203,19 +203,23 @@ export function ServicePicker({
                   >
                     <Check className="h-4 w-4" />
                   </span>
-                  <span className="min-w-0 flex-1 truncate font-medium">
-                    {service.name}
+                  <span className="min-w-0 flex-1">
+                    <span className="block whitespace-normal break-words font-medium">
+                      {service.name}
+                    </span>
+                    {service.code || service.category ? (
+                      <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                        {service.code ? (
+                          <span className="break-all font-mono">{service.code}</span>
+                        ) : null}
+                        {service.category ? (
+                          <span className="max-w-full whitespace-normal break-words rounded-full bg-muted px-2 py-0.5">
+                            {service.category}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : null}
                   </span>
-                  {service.code ? (
-                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                      {service.code}
-                    </span>
-                  ) : null}
-                  {service.category ? (
-                    <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-                      {service.category}
-                    </span>
-                  ) : null}
                   <span className="shrink-0 tabular-nums text-muted-foreground">
                     {formatPrice
                       ? formatPrice(service.defaultPrice)
