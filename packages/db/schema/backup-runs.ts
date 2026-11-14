@@ -18,9 +18,9 @@ export const backupRunStatusEnum = pgEnum("backup_run_status", [
 ]);
 
 /**
- * Dormant, aggregate-only compatibility storage for database backup evidence.
+ * Aggregate-only evidence of completed scheduled database backup attempts.
  *
- * This schema declaration deliberately activates no scheduler or backup job.
+ * Written by the existing backup cron after object read-back verification.
  * Rows contain no clinic identity, patient data, object key, provider
  * credential, or provider error text. The migration and RLS baseline restrict
  * access to explicit system context.

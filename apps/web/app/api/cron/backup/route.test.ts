@@ -11,9 +11,11 @@ type PracticeExportFixture = {
 
 const mocks = vi.hoisted(() => {
   const db = {};
+  const insertValues = vi.fn(async (_row: unknown) => undefined);
 
   return {
     db,
+    insertValues,
     alertOps: vi.fn(async () => undefined),
     backupKey: vi.fn(
       (practiceId: string, dateYmd: string) =>
@@ -77,10 +79,12 @@ const mocks = vi.hoisted(() => {
       ready: false,
       detail: "Independent object replica is not configured",
     })),
+    replicaStorageRequired: vi.fn(() => false),
     replicaStorageRolloutEnabled: vi.fn(() => false),
     replicaStorageIncludesPractice: vi.fn(() => true),
     withSystem: vi.fn(async (_db: unknown, fn: (tx: unknown) => unknown) =>
       fn({
+        insert: vi.fn(() => ({ values: insertValues })),
         select: vi.fn(() => ({
           from: vi.fn(() => ({
             where: vi.fn(async () => [
@@ -133,6 +137,7 @@ vi.mock("@/lib/s3", () => ({
   readReplicaObject: mocks.readReplicaObject,
   replicaStorageIncludesPractice: mocks.replicaStorageIncludesPractice,
   replicaStorageReadiness: mocks.replicaStorageReadiness,
+  replicaStorageRequired: mocks.replicaStorageRequired,
   replicaStorageRolloutEnabled: mocks.replicaStorageRolloutEnabled,
 }));
 
@@ -214,7 +219,7 @@ describe("backup cron", () => {
       replicaFailed: 0,
     });
 
-    expect(mocks.withSystem).toHaveBeenCalledTimes(1);
+    expect(mocks.withSystem).toHaveBeenCalledTimes(2);
     expect(mocks.withTenantReadOnlySnapshot).toHaveBeenCalledTimes(2);
     expect(mocks.exportPracticeData).toHaveBeenNthCalledWith(
       1,
@@ -705,5 +710,50 @@ describe("backup cron", () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+});
+
+
+describe("durable aggregate backup evidence", () => {
+  const request = () => new Request("https://openvpm.test/api/cron/backup");
+
+  it("records verified totals without identifiers or raw errors before callbacks", async () => {
+    await GET(request());
+    expect(mocks.insertValues).toHaveBeenCalledWith({
+      startedAt: expect.any(Date), completedAt: expect.any(Date),
+      runDateUtc: "2026-06-28", status: "ok", practices: 2,
+      primaryVerified: 2, primaryFailed: 0, oversized: 0, nearLimit: 0,
+      maxExportBytes: expect.any(Number), replicaEnabled: false,
+      replicaRequired: false, replicaVerified: 0, replicaFailed: 0,
+    });
+    expect(mocks.insertValues.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.reportCronHeartbeat.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("retains partial export failure evidence without marking failed bytes verified", async () => {
+    mocks.exportPracticeData.mockRejectedValueOnce(new Error("synthetic invalid signed manifest"));
+    await GET(request());
+    expect(mocks.insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      status: "degraded", practices: 2, primaryVerified: 1, primaryFailed: 1,
+    }));
+    expect(JSON.stringify(mocks.insertValues.mock.calls)).not.toContain("signed manifest");
+  });
+
+  it("records an enumeration crash as failed without claiming any backups", async () => {
+    mocks.withSystem.mockRejectedValueOnce(new Error("synthetic database failure"));
+    const response = await GET(request());
+    expect(response.status).toBe(500);
+    expect(mocks.insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed", practices: 0, primaryVerified: 0, primaryFailed: 0,
+    }));
+  });
+
+  it("fails visibly if completed backup evidence cannot be retained", async () => {
+    mocks.insertValues.mockRejectedValueOnce(new Error("synthetic insert failure"));
+    const response = await GET(request());
+    expect(response.status).toBe(500);
+    expect(mocks.insertValues).toHaveBeenCalledTimes(1);
+    expect(mocks.reportCronHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ status: "failed" }));
   });
 });

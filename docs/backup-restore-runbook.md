@@ -65,6 +65,27 @@ drill pass.
   `otherFailed`, count exports at or above 80% of the cap as `nearLimit`, and
   report `maxExportBytes` against `backupMaxBytes` for capacity planning.
 
+The existing cron records aggregate results in `backup_runs` after verifying
+objects, before external heartbeat delivery. `ok` means all attempted copies
+passed; `degraded` means at least one primary or replica failed. `failed` with
+zero practices records an enumeration crash, not a successful empty sweep.
+Evidence-write failure returns HTTP 500 and reports a failed heartbeat. Rows
+contain no clinic identifiers, object keys, clinical data, or raw provider errors.
+Only system context can read or insert them. These records do not certify a
+restore, provider snapshots, or practices outside the replica rollout cohort.
+A missing recent row requires investigation of cron invocation and logs; it
+must never be interpreted as proof that provider backups are absent. Historical
+versions did not write this table, so empty history before deployment is expected.
+
+An owner can inspect recent runs without accessing clinical data:
+
+```sql
+SELECT completed_at, run_date_utc, status, practices, primary_verified,
+       primary_failed, replica_enabled, replica_required, replica_verified,
+       replica_failed, oversized, near_limit, max_export_bytes
+FROM public.backup_runs ORDER BY completed_at DESC LIMIT 14;
+```
+
 Admins can also download the identical payload on demand:
 **Settings → Data → Export Database Backup**.
 
