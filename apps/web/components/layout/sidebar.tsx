@@ -7,113 +7,23 @@ import { signOut, useSession } from "next-auth/react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
-  LayoutDashboard,
-  WifiOff,
-  PawPrint,
-  Users,
-  Calendar,
-  FileText,
-  Receipt,
-  Package,
-  MessageSquare,
-  Syringe,
-  BellRing,
-  ClipboardList,
-  BarChart3,
-  Settings,
-  ShieldAlert,
-  Bot,
-  FlaskConical,
-  Archive,
   ChevronLeft,
   ChevronRight,
   LogOut,
+  Grid2X2,
+  Pin,
+  PinOff,
 } from "lucide-react";
+import {
+  availableNavigation,
+  CORE_PATHS,
+  isUserRole,
+  isNavigationActive,
+  type NavigationItem,
+} from "@/lib/navigation";
+import { useSidebarPins } from "@/lib/use-sidebar-pins";
+import { SidebarTools } from "./sidebar-tools";
 import { PawMark } from "@/components/brand/paw-mark";
-
-type UserRole =
-  | "admin"
-  | "veterinarian"
-  | "technician"
-  | "front_desk"
-  | "viewer";
-
-const allRoles: UserRole[] = [
-  "admin",
-  "veterinarian",
-  "technician",
-  "front_desk",
-  "viewer",
-];
-
-function isUserRole(role?: string | null): role is UserRole {
-  return allRoles.includes(role as UserRole);
-}
-
-const navItems: {
-  href: string;
-  label: string;
-  icon: React.ElementType;
-  roles: UserRole[];
-}[] = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard, roles: allRoles },
-  { href: "/patients", label: "Patients", icon: PawPrint, roles: allRoles },
-  { href: "/clients", label: "Clients", icon: Users, roles: allRoles },
-  { href: "/schedule", label: "Schedule", icon: Calendar, roles: allRoles },
-  { href: "/records", label: "Records", icon: FileText, roles: allRoles },
-  {
-    href: "/lab-results",
-    label: "Lab Inbox",
-    icon: FlaskConical,
-    roles: ["admin", "veterinarian", "technician", "front_desk", "viewer"],
-  },
-  { href: "/billing", label: "Billing", icon: Receipt, roles: allRoles },
-  { href: "/inventory", label: "Inventory", icon: Package, roles: allRoles },
-  { href: "/inbox", label: "Inbox", icon: MessageSquare, roles: allRoles },
-  {
-    href: "/recalls",
-    label: "Recalls",
-    icon: Syringe,
-    roles: ["admin", "veterinarian", "front_desk"],
-  },
-  {
-    href: "/care-reminders",
-    label: "Care Reminders",
-    icon: BellRing,
-    roles: allRoles,
-  },
-  {
-    href: "/migration-archive",
-    label: "Imported History",
-    icon: Archive,
-    roles: allRoles,
-  },
-  {
-    href: "/whiteboard",
-    label: "Whiteboard",
-    icon: ClipboardList,
-    roles: allRoles,
-  },
-  {
-    href: "/agent",
-    label: "Agent",
-    icon: Bot,
-    roles: ["admin", "veterinarian"],
-  },
-  {
-    href: "/controlled-substances",
-    label: "Controlled Substances",
-    icon: ShieldAlert,
-    roles: ["admin", "veterinarian"],
-  },
-  {
-    href: "/reports",
-    label: "Reports",
-    icon: BarChart3,
-    roles: ["admin", "veterinarian"],
-  },
-  { href: "/settings", label: "Settings", icon: Settings, roles: ["admin"] },
-];
 
 type SidebarProps = {
   className?: string;
@@ -151,24 +61,71 @@ export function Sidebar({
       retry: false,
     },
   );
-  const visibleNavItems = canShowNav
-    ? [
-        ...navItems.filter((item) => item.roles.includes(role)),
-        ...(fieldPilot?.enabled
-          ? [
-              {
-                href: "/offline/field.html",
-                label: "Offline Field Visits",
-                icon: WifiOff,
-                roles: ["admin"] as UserRole[],
-              },
-            ]
-          : []),
-      ]
+  const availableItems = canShowNav
+    ? availableNavigation(role, fieldPilot?.enabled)
     : [];
+  const coreItems = CORE_PATHS.flatMap((href) =>
+    availableItems.filter((item) => item.href === href),
+  );
+  const toolItems = availableItems.filter(
+    (item) => !CORE_PATHS.includes(item.href) && item.href !== "/settings",
+  );
+  const settingsItem = availableItems.find((item) => item.href === "/settings");
+  const { pinned, togglePin, layout, setLayout } = useSidebarPins(
+    session?.user?.practiceId,
+    session?.user?.id,
+  );
+  const focused = layout === "focused";
+  const pinnedItems = pinned.flatMap((href) =>
+    toolItems.filter((item) => item.href === href),
+  );
+  const currentTool = toolItems.find(
+    (item) =>
+      !pinned.includes(item.href) && isNavigationActive(item.href, pathname),
+  );
+  const [toolsOpen, setToolsOpen] = useState(false);
   const unreadInboxCount = Math.max(0, Number(unreadInbox?.total ?? 0));
   const unreadInboxLabel =
     unreadInboxCount > 99 ? "99+" : String(unreadInboxCount);
+
+  function navLink(item: NavigationItem) {
+    const active = isNavigationActive(item.href, pathname);
+    return (
+      <Link
+        href={item.href}
+        data-tour={`nav-${item.href}`}
+        aria-label={item.label}
+        title={isCollapsed ? item.label : undefined}
+        aria-current={active ? "page" : undefined}
+        onClick={onNavigate}
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+          active
+            ? "bg-primary/10 text-primary"
+            : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+        )}
+      >
+        <span className="relative shrink-0">
+          <item.icon className="h-4 w-4" aria-hidden="true" />
+          {isCollapsed && item.href === "/inbox" && unreadInboxCount > 0 && (
+            <span
+              aria-label={`${unreadInboxCount} unread inbox conversations`}
+              className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-primary ring-2 ring-surface"
+            />
+          )}
+        </span>
+        {!isCollapsed && <span className="truncate">{item.label}</span>}
+        {!isCollapsed && item.href === "/inbox" && unreadInboxCount > 0 && (
+          <span
+            aria-label={`${unreadInboxCount} unread inbox conversations`}
+            className="ml-auto rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary-foreground"
+          >
+            {unreadInboxLabel}
+          </span>
+        )}
+      </Link>
+    );
+  }
 
   return (
     <aside
@@ -205,58 +162,108 @@ export function Sidebar({
         role="navigation"
         aria-label="Main navigation"
       >
-        <ul className="space-y-0.5">
-          {visibleNavItems.map((item) => {
-            const isActive =
-              item.href === "/"
-                ? pathname === "/"
-                : pathname.startsWith(item.href) ||
-                  (item.href === "/lab-results" && pathname === "/lab-reports");
-
-            return (
-              <li key={item.href}>
-                <Link
-                  href={item.href}
-                  data-tour={`nav-${item.href}`}
-                  aria-current={isActive ? "page" : undefined}
-                  onClick={onNavigate}
-                  className={cn(
-                    "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                  )}
-                >
-                  <span className="relative shrink-0">
-                    <item.icon className="h-4 w-4" />
-                    {isCollapsed &&
-                    item.href === "/inbox" &&
-                    unreadInboxCount > 0 ? (
-                      <span
-                        aria-label={`${unreadInboxCount} unread inbox conversations`}
-                        className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-primary ring-2 ring-surface"
-                      />
-                    ) : null}
-                  </span>
-                  {!isCollapsed && (
-                    <span className="truncate">{item.label}</span>
-                  )}
-                  {!isCollapsed &&
-                  item.href === "/inbox" &&
-                  unreadInboxCount > 0 ? (
-                    <span
-                      aria-label={`${unreadInboxCount} unread inbox conversations`}
-                      className="ml-auto rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary-foreground"
-                    >
-                      {unreadInboxLabel}
-                    </span>
-                  ) : null}
-                </Link>
-              </li>
-            );
-          })}
+        <ul
+          className="space-y-0.5"
+          aria-label={focused ? "Core navigation" : "Full navigation"}
+        >
+          {(focused ? coreItems : availableItems).map((item) => (
+            <li key={item.href}>{navLink(item)}</li>
+          ))}
         </ul>
+        {canShowNav && (
+          <div className="mt-4 border-t border-border pt-3">
+            {focused && (
+              <>
+                {!isCollapsed && (
+                  <p className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Your tools
+                  </p>
+                )}
+                <ul className="space-y-0.5" aria-label="Pinned tools">
+                  {pinnedItems.map((item) => (
+                    <li key={item.href} className="flex items-center">
+                      {navLink(item)}
+                      {!isCollapsed && (
+                        <button
+                          type="button"
+                          onClick={() => togglePin(item.href)}
+                          aria-label={`Unpin ${item.label}`}
+                          title={`Unpin ${item.label}`}
+                          className="shrink-0 rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+                        >
+                          <PinOff className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                {!isCollapsed && !pinnedItems.length && (
+                  <p className="px-3 pb-2 text-xs leading-relaxed text-muted-foreground">
+                    Keep the tools you use most here.
+                  </p>
+                )}
+                {currentTool && (
+                  <div className="my-2" aria-label="Current tool">
+                    {!isCollapsed && (
+                      <p className="px-3 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        Currently viewing
+                      </p>
+                    )}
+                    <div className="flex items-center">
+                      {navLink(currentTool)}
+                      {!isCollapsed && (
+                        <button
+                          type="button"
+                          onClick={() => togglePin(currentTool.href)}
+                          aria-label={`Pin ${currentTool.label}`}
+                          title={`Pin ${currentTool.label}`}
+                          className="rounded-md p-2 text-muted-foreground hover:bg-accent"
+                        >
+                          <Pin className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+            <SidebarTools
+              open={toolsOpen}
+              onOpenChange={setToolsOpen}
+              items={toolItems}
+              pinned={pinned}
+              layout={layout}
+              onLayoutChange={setLayout}
+              onTogglePin={togglePin}
+              onNavigate={onNavigate}
+            >
+              <button
+                type="button"
+                aria-label="All tools"
+                title={isCollapsed ? "All tools" : undefined}
+                className="mt-1 flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <Grid2X2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                {!isCollapsed && (
+                  <>
+                    <span>All tools</span>
+                    <ChevronRight
+                      className="ml-auto h-3.5 w-3.5"
+                      aria-hidden="true"
+                    />
+                  </>
+                )}
+              </button>
+            </SidebarTools>
+          </div>
+        )}
       </nav>
+
+      {focused && settingsItem && (
+        <div className="border-t border-border px-2 py-2">
+          {navLink(settingsItem)}
+        </div>
+      )}
 
       {/* User & Collapse */}
       <div className="border-t border-border p-2">

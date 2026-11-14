@@ -154,7 +154,7 @@ async function unlock(page: Page, exists = true) {
     })
     .click();
   await expect(
-    page.getByRole("button", { name: "Lock workspace", exact: true }),
+    page.getByRole("heading", { name: "Patients on this device", exact: true }),
   ).toBeVisible();
 }
 async function prepare(page: Page, clinic: Clinic) {
@@ -188,6 +188,9 @@ async function issue(page: Page) {
     .getByRole("textbox", { name: "Plan and instructions", exact: true })
     .fill("Synthetic follow-up instructions");
   await page
+    .getByRole("button", { name: "Continue to treatments", exact: true })
+    .click();
+  await page
     .getByRole("combobox", { name: "Prepared service", exact: true })
     .selectOption({ label: "Synthetic vaccine · $20.25" });
   await page.getByRole("button", { name: "Add charge", exact: true }).click();
@@ -195,6 +198,9 @@ async function issue(page: Page) {
     .getByRole("button", { name: "Add vaccination", exact: true })
     .click();
   await page.getByLabel("Lot number", { exact: true }).fill("SYNTHETIC-LOT");
+  await page
+    .getByRole("button", { name: "Continue to checkout", exact: true })
+    .click();
   await page
     .getByRole("combobox", { name: "Payment received", exact: true })
     .selectOption("cash");
@@ -250,10 +256,13 @@ test("field visit survives cold offline reopen, prints its receipt, and posts cl
   await issue(page);
   expect(await posted(clinic)).toHaveLength(0);
   page = await reopen(page);
-  await expect(page.getByRole("textbox", { name: "History", exact: true })).toHaveValue(
-    "Synthetic offline examination history",
-  );
-  await expect(page.getByRole("textbox", { name: "History", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "1. Notes", exact: true }).click();
+  await expect(
+    page.getByRole("textbox", { name: "History", exact: true }),
+  ).toHaveValue("Synthetic offline examination history");
+  await expect(
+    page.getByRole("textbox", { name: "History", exact: true }),
+  ).toBeDisabled();
   await page.emulateMedia({ media: "print" });
   await expect(page.locator("#field-receipt")).toBeVisible();
   await expect(page.locator("#field-receipt")).toContainText("$21.47");
@@ -268,6 +277,7 @@ test("field visit survives cold offline reopen, prints its receipt, and posts cl
       format: "A4",
     });
   await page.emulateMedia({ media: "screen" });
+  await page.getByRole("button", { name: "3. Checkout", exact: true }).click();
   if (browserName === "webkit") await control(clinic, "reconnect");
   else await page.context().setOffline(false);
   await page
@@ -350,7 +360,10 @@ test("changed prices stop the entire posting and preserve the issued receipt", a
     await clinic.sql`select id from soap_notes where patient_id = ${clinic.patientId}`,
   ).toHaveLength(0);
   await expect(page.locator("#field-receipt")).toContainText("$21.47");
-  await expect(page.getByRole("textbox", { name: "History", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "1. Notes", exact: true }).click();
+  await expect(
+    page.getByRole("textbox", { name: "History", exact: true }),
+  ).toBeDisabled();
 });
 
 test("an audit failure rolls every record back and a retry posts once", async ({
@@ -391,4 +404,545 @@ test("an audit failure rolls every record back and a retry posts once", async ({
     page.getByRole("link", { name: "Review and sign online" }),
   ).toBeVisible();
   expect(await posted(clinic)).toHaveLength(1);
+});
+
+test("guided field preparation preserves appointment identity and shows distinct device and clinic state", async ({
+  page,
+  clinic,
+}, info) => {
+  await login(page.context(), clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await page
+    .getByRole("button", { name: "I'll finish later", exact: true })
+    .click();
+  await expect(
+    page.getByRole("link", { name: "Prepare for field visit", exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: info.outputPath("patient-field-entry.png"),
+    fullPage: true,
+  });
+  if (
+    !(await page
+      .getByRole("button", { name: "All tools", exact: true })
+      .isVisible())
+  )
+    await page
+      .getByRole("button", { name: "Open navigation", exact: true })
+      .click();
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  const tools = page.getByRole("dialog", { name: "Tools", exact: true });
+  await tools
+    .getByRole("radio", { name: "Focused navigation", exact: true })
+    .check();
+  await tools
+    .getByRole("textbox", { name: "Search tools", exact: true })
+    .fill("field");
+  await tools
+    .getByRole("button", { name: "Pin Field Visits", exact: true })
+    .click();
+  await tools.getByRole("button", { name: "Close tools", exact: true }).click();
+  await page.getByRole("link", { name: "Field Visits", exact: true }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Prepare a trusted device",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: info.outputPath("field-device-setup.png"),
+    fullPage: true,
+  });
+  await page.goto(`/patients/${clinic.patientId}`);
+  await page
+    .getByRole("link", { name: "Prepare for field visit", exact: true })
+    .click();
+  await expect(page).toHaveURL(new RegExp(`patientId=${clinic.patientId}$`));
+  await unlock(page, false);
+  await expect(
+    page.getByRole("button", { name: "Prepare selected patient", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Start field visit", exact: true }),
+  ).toHaveCount(0);
+  // The selected appointment is scheduled today in the fixture clinic's UTC zone.
+  await clinic.sql`update appointments set start_time = date_trunc('day', now()) + interval '12 hours',
+    end_time = date_trunc('day', now()) + interval '13 hours' where id = ${clinic.appointmentId}`;
+  await page.goto("/schedule");
+  await page.getByRole("button", { name: /Synthetic Offline Patient/ }).click();
+  await page
+    .getByRole("link", { name: "Prepare for field visit", exact: true })
+    .click();
+  await expect(page).toHaveURL(
+    new RegExp(`appointmentId=${clinic.appointmentId}$`),
+  );
+  await unlock(page);
+  await page.getByRole("link", { name: "Field Visits", exact: true }).click();
+  await expect(page).toHaveURL(
+    new RegExp(`appointmentId=${clinic.appointmentId}$`),
+  );
+  await page
+    .getByRole("button", { name: "Prepare selected appointment", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Start field visit", exact: true }),
+  ).toBeVisible();
+  await expect(page).toHaveURL(/\/offline\/field.html$/);
+  await expect(
+    page.getByRole("navigation", { name: "Clinic navigation" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Device save status")).toContainText(
+    "Saved on this device",
+  );
+  await expect(page.getByLabel("Device save status")).toContainText(
+    "not yet clinic records",
+  );
+  await control(clinic, "disconnect");
+  await page
+    .getByRole("button", { name: "Check connection", exact: true })
+    .click();
+  await expect(
+    page.getByText("Clinic unreachable", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "Back to clinic" })).toHaveCount(
+    0,
+  );
+  await issue(page);
+  await expect(
+    page.getByRole("textbox", { name: "History", exact: true }),
+  ).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({
+    path: info.outputPath("field-checkout.png"),
+    fullPage: true,
+  });
+  await page
+    .getByRole("button", { name: "2. Treatments", exact: true })
+    .click();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({
+    path: info.outputPath("field-treatments.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "3. Checkout", exact: true }).click();
+  await control(clinic, "reconnect");
+  await page
+    .getByRole("button", { name: "Check connection", exact: true })
+    .click();
+  await expect(
+    page.getByText("Clinic connected", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Synchronize visit", exact: true })
+    .click();
+  await expect(
+    page.getByRole("link", { name: "Review and sign online" }),
+  ).toBeVisible();
+  const rows = await posted(clinic);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.result.appointmentId).toBe(clinic.appointmentId);
+  await expect(page.getByLabel("Device save status")).toContainText(
+    "synced to clinic",
+  );
+  await page.context().clearCookies();
+  await page
+    .getByRole("button", { name: "Check connection", exact: true })
+    .click();
+  await expect(page.getByText("Sign-in needed", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Sign in online", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Device save status")).toContainText(
+    "synced to clinic",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({
+    path: info.outputPath("field-phone.png"),
+    fullPage: true,
+  });
+});
+
+async function openMainNavigation(page: Page) {
+  if (
+    (page.viewportSize()?.width ?? 1280) < 1024 &&
+    !(await page
+      .getByRole("button", { name: "All tools", exact: true })
+      .isVisible())
+  )
+    await page
+      .getByRole("button", { name: "Open navigation", exact: true })
+      .click();
+  await expect(
+    page.getByRole("button", { name: "All tools", exact: true }),
+  ).toBeVisible();
+}
+
+test("sidebar tools persist per account, stay available after unpinning, and respect roles", async ({
+  page,
+  clinic,
+}, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await login(page.context(), clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await page
+    .getByRole("button", { name: "I'll finish later", exact: true })
+    .click();
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Full navigation" }).getByRole("link"),
+  ).toHaveText([
+    "Dashboard",
+    "Patients",
+    "Clients",
+    "Schedule",
+    "Records",
+    "Lab Inbox",
+    "Billing",
+    "Inventory",
+    "Inbox",
+    "Recalls",
+    "Care Reminders",
+    "Imported History",
+    "Whiteboard",
+    "Agent",
+    "Controlled Substances",
+    "Reports",
+    "Settings",
+    "Field Visits",
+  ]);
+  await expect(
+    page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  const tools = page.getByRole("dialog", { name: "Tools", exact: true });
+  const search = tools.getByRole("textbox", {
+    name: "Search tools",
+    exact: true,
+  });
+  await expect(search).toBeFocused();
+  await expect(
+    tools.getByRole("radio", { name: "Full navigation", exact: true }),
+  ).toBeChecked();
+  await tools
+    .getByRole("radio", { name: "Focused navigation", exact: true })
+    .check();
+  await search.fill("no matching tool");
+  await expect(tools.getByText("No tools match your search.")).toBeVisible();
+  await search.fill("inventory");
+  await tools
+    .getByRole("button", { name: "Pin Inventory", exact: true })
+    .click();
+  await expect(
+    tools.getByRole("button", { name: "Unpin Inventory", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await search.fill("field");
+  await tools
+    .getByRole("button", { name: "Pin Field Visits", exact: true })
+    .click();
+  await page.screenshot({
+    path: info.outputPath("tools-picker.png"),
+    fullPage: true,
+  });
+  await tools.getByRole("button", { name: "Close tools", exact: true }).click();
+  await page.reload();
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
+  ).toHaveText(["Inventory", "Field Visits"]);
+  await expect(
+    page.getByRole("list", { name: "Core navigation" }).getByRole("link"),
+  ).toHaveCount(6);
+  await page.screenshot({
+    path: info.outputPath("pinned-sidebar.png"),
+    fullPage: true,
+  });
+  // Switching back restores the familiar order and retains pins for later.
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await tools
+    .getByRole("radio", { name: "Full navigation", exact: true })
+    .check();
+  await tools.getByRole("button", { name: "Close tools", exact: true }).click();
+  await page.reload();
+  await openMainNavigation(page);
+  await expect(
+    page
+      .getByRole("list", { name: "Full navigation" })
+      .getByRole("link")
+      .nth(1),
+  ).toHaveText("Patients");
+  await expect(page.getByRole("list", { name: "Pinned tools" })).toHaveCount(0);
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await expect(
+    tools.getByRole("button", { name: "Unpin Inventory", exact: true }),
+  ).toBeVisible();
+  await tools
+    .getByRole("radio", { name: "Focused navigation", exact: true })
+    .check();
+  await tools.getByRole("button", { name: "Close tools", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Unpin Inventory", exact: true })
+    .click();
+  await expect(
+    page
+      .getByRole("list", { name: "Pinned tools" })
+      .getByRole("link", { name: "Inventory", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await tools
+    .getByRole("link", { name: "Open Inventory", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/inventory$/);
+  await openMainNavigation(page);
+  await expect(
+    page
+      .getByLabel("Current tool", { exact: true })
+      .getByRole("link", { name: "Inventory", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  await clinic.sql`update users set role = 'viewer', is_veterinarian = false where email = ${clinic.secondEmail}`;
+  await login(page.context(), clinic, clinic.secondEmail);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Full navigation" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  await expect(
+    tools.getByRole("link", { name: "Open Field Visits", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    tools.getByRole("link", { name: "Open Reports", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    tools.getByRole("link", {
+      name: "Open Controlled Substances",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await tools
+    .getByRole("radio", { name: "Focused navigation", exact: true })
+    .check();
+  await tools
+    .getByRole("button", { name: "Pin Inventory", exact: true })
+    .click();
+  await expect(
+    tools.getByRole("button", { name: "Unpin Inventory", exact: true }),
+  ).toBeVisible();
+  await login(page.context(), clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
+  ).toHaveText(["Field Visits"]);
+  expect(errors).toEqual([]);
+});
+
+test("sidebar upgrades preserve preview pins, synchronize across tabs, and recover corrupt preferences", async ({
+  page,
+  clinic,
+}) => {
+  await login(page.context(), clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await page
+    .getByRole("button", { name: "I'll finish later", exact: true })
+    .click();
+  const [user] =
+    await clinic.sql`select practice_id from users where id = ${clinic.userId}`;
+  const key = `openvpm.sidebar.v1.${user!.practice_id}.${clinic.userId}`;
+  await page.evaluate(
+    (key) =>
+      localStorage.setItem(
+        key,
+        JSON.stringify({ version: 1, pinned: ["/inventory"] }),
+      ),
+    key,
+  );
+  await page.reload();
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Core navigation" }).getByRole("link"),
+  ).toHaveCount(6);
+  await expect(
+    page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
+  ).toHaveText(["Inventory"]);
+
+  const peer = await page.context().newPage();
+  try {
+    await peer.goto(`/patients/${clinic.patientId}`);
+    await openMainNavigation(peer);
+    await peer.getByRole("button", { name: "All tools", exact: true }).click();
+    const tools = peer.getByRole("dialog", { name: "Tools", exact: true });
+    await tools
+      .getByRole("radio", { name: "Full navigation", exact: true })
+      .check();
+    await tools
+      .getByRole("button", { name: "Close tools", exact: true })
+      .click();
+    await expect(
+      page.getByRole("list", { name: "Full navigation" }).getByRole("link"),
+    ).toHaveCount(18);
+  } finally {
+    await peer.close();
+  }
+  await page.evaluate(
+    (key) => localStorage.setItem(key, "corrupt preference"),
+    key,
+  );
+  await page.reload();
+  await openMainNavigation(page);
+  await expect(
+    page.getByRole("list", { name: "Full navigation" }).getByRole("link"),
+  ).toHaveCount(18);
+  await expect(
+    page.getByRole("link", { name: "Settings", exact: true }),
+  ).toBeVisible();
+});
+
+test("pinning remains usable when browser storage is blocked", async ({
+  page,
+  clinic,
+}) => {
+  await login(page.context(), clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await page
+    .getByRole("button", { name: "I'll finish later", exact: true })
+    .click();
+  await openMainNavigation(page);
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if (key.startsWith("openvpm.sidebar.v1."))
+        throw new DOMException(
+          "Synthetic blocked storage",
+          "QuotaExceededError",
+        );
+      return original.call(this, key, value);
+    };
+  });
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  const tools = page.getByRole("dialog", { name: "Tools", exact: true });
+  await tools
+    .getByRole("radio", { name: "Focused navigation", exact: true })
+    .check();
+  await tools
+    .getByRole("button", { name: "Pin Inventory", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      "Sidebar updated for this session. Browser storage is unavailable.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await tools.getByRole("button", { name: "Close tools", exact: true }).click();
+  await expect(
+    page
+      .getByRole("list", { name: "Pinned tools" })
+      .getByRole("link", { name: "Inventory", exact: true }),
+  ).toBeVisible();
+});
+
+test("sidebar preserves familiar navigation for every clinic staff role", async ({
+  page,
+  clinic,
+}) => {
+  const familiar = [
+    "Dashboard",
+    "Patients",
+    "Clients",
+    "Schedule",
+    "Records",
+    "Lab Inbox",
+    "Billing",
+    "Inventory",
+    "Inbox",
+    "Recalls",
+    "Care Reminders",
+    "Imported History",
+    "Whiteboard",
+    "Agent",
+    "Controlled Substances",
+    "Reports",
+    "Settings",
+  ];
+  const restricted: Record<string, string[]> = {
+    admin: [],
+    veterinarian: ["Settings"],
+    technician: [
+      "Recalls",
+      "Agent",
+      "Controlled Substances",
+      "Reports",
+      "Settings",
+    ],
+    front_desk: ["Agent", "Controlled Substances", "Reports", "Settings"],
+    viewer: [
+      "Recalls",
+      "Agent",
+      "Controlled Substances",
+      "Reports",
+      "Settings",
+    ],
+  };
+  for (const [role, hidden] of Object.entries(restricted)) {
+    await clinic.sql`update users set role = ${role}, is_veterinarian = ${role === "veterinarian"} where email = ${clinic.secondEmail}`;
+    await login(page.context(), clinic, clinic.secondEmail);
+    await page.goto(`/patients/${clinic.patientId}`);
+    if (role === "admin")
+      await page
+        .getByRole("button", { name: "I'll finish later", exact: true })
+        .click();
+    await openMainNavigation(page);
+    await expect(
+      page.getByRole("list", { name: "Full navigation" }).getByRole("link"),
+    ).toHaveText(familiar.filter((label) => !hidden.includes(label)));
+    // Practice admin alone must never grant clinical field preparation.
+    await expect(
+      page.getByRole("link", { name: "Prepare for field visit", exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "All tools", exact: true }).click();
+    const tools = page.getByRole("dialog", { name: "Tools", exact: true });
+    await expect(
+      tools.getByRole("link", { name: "Open Field Visits", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      tools.getByRole("link", { name: "Open Reports", exact: true }),
+    ).toHaveCount(hidden.includes("Reports") ? 0 : 1);
+    await tools
+      .getByRole("radio", { name: "Focused navigation", exact: true })
+      .check();
+    await tools
+      .getByRole("link", { name: "Open Records", exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/records$/);
+    await openMainNavigation(page);
+    await expect(
+      page.getByRole("list", { name: "Core navigation" }).getByRole("link"),
+    ).toHaveCount(6);
+    await expect(
+      page
+        .getByLabel("Current tool", { exact: true })
+        .getByRole("link", { name: "Records", exact: true }),
+    ).toHaveAttribute("aria-current", "page");
+    await page.getByRole("button", { name: "All tools", exact: true }).click();
+    await tools
+      .getByRole("radio", { name: "Full navigation", exact: true })
+      .check();
+    await tools
+      .getByRole("button", { name: "Close tools", exact: true })
+      .click();
+  }
 });
