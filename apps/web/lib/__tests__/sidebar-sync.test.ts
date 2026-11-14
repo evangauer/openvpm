@@ -66,6 +66,19 @@ describe("account sidebar synchronization", () => {
     expect(prefs(restored).pinned).toEqual(["/inventory"]);
     expect(await remote.read()).toEqual(prefs(restored));
   });
+  it("keeps a newer opposite choice when an earlier write completes late", async () => {
+    const remote = server({ layout: "full", pinned: [] });
+    let release!: (value: SidebarPreferences) => void;
+    remote.write.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const { sync } = setup(remote);
+    sync.edit({ kind: "layout", layout: "focused" });
+    await vi.waitFor(() => expect(remote.write).toHaveBeenCalledTimes(1));
+    sync.edit({ kind: "layout", layout: "full" });
+    release({ layout: "focused", pinned: [] });
+    await sync.sync();
+    expect(prefs(sync).layout).toBe("full");
+    expect(remote.write).toHaveBeenLastCalledWith({ kind: "layout", layout: "full" });
+  });
   it("isolates delayed responses to their original identity", async () => {
     const remoteA = server({ layout: "focused", pinned: ["/inventory"] });
     const remoteB = server();
