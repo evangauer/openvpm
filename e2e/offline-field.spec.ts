@@ -751,8 +751,9 @@ test("sidebar tools persist per account, stay available after unpinning, and res
   expect(errors).toEqual([]);
 });
 
-test("sidebar upgrades preserve preview pins, synchronize across tabs, and recover corrupt preferences", async ({
+test("sidebar upgrades preserve preview pins, synchronize across devices, and recover corrupt preferences", async ({
   page,
+  browser,
   clinic,
 }) => {
   await login(page.context(), clinic);
@@ -780,10 +781,14 @@ test("sidebar upgrades preserve preview pins, synchronize across tabs, and recov
     page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
   ).toHaveText(["Inventory"]);
 
-  const peer = await page.context().newPage();
+  // A separate browser context has no shared cookies or localStorage.
+  const secondDevice = await browser.newContext({ baseURL, ignoreHTTPSErrors: true });
+  await login(secondDevice, clinic);
+  const peer = await secondDevice.newPage();
   try {
     await peer.goto(`/patients/${clinic.patientId}`);
     await openMainNavigation(peer);
+    await expect(peer.getByRole("list", { name: "Pinned tools" }).getByRole("link")).toHaveText(["Inventory"]);
     await peer.getByRole("button", { name: "All tools", exact: true }).click();
     const tools = peer.getByRole("dialog", { name: "Tools", exact: true });
     await tools
@@ -792,11 +797,17 @@ test("sidebar upgrades preserve preview pins, synchronize across tabs, and recov
     await tools
       .getByRole("button", { name: "Close tools", exact: true })
       .click();
+    await expect.poll(async () => {
+      const [saved] = await clinic.sql`select sidebar_preferences from users where id = ${clinic.userId}`;
+      return saved?.sidebar_preferences?.layout;
+    }).toBe("full");
+    await page.bringToFront();
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect(
       page.getByRole("list", { name: "Full navigation" }).getByRole("link"),
     ).toHaveCount(18);
   } finally {
-    await peer.close();
+    await secondDevice.close();
   }
   await page.evaluate(
     (key) => localStorage.setItem(key, "corrupt preference"),
