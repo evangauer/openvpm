@@ -243,6 +243,71 @@ async function posted(clinic: Clinic) {
     where b.patient_id = ${clinic.patientId}`;
 }
 
+test("sidebar field entry respects billing region while an existing receipt remains recoverable", async ({ page, clinic }, info) => {
+  await prepare(page, clinic);
+  await issue(page);
+  await clinic.sql`update practices set country = 'GB', currency = 'gbp'
+    where id = (select practice_id from users where id = ${clinic.userId})`;
+  await Promise.all([
+    page.waitForResponse(response => response.url().includes("offlineField.availability") && response.ok()),
+    page.goto(`/patients/${clinic.patientId}`),
+  ]);
+  await page.getByRole("button", { name: "I'll finish later", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Prepare for field visit", exact: true })).toHaveCount(0);
+  await openMainNavigation(page);
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  const tools = page.getByRole("dialog", { name: "Tools", exact: true });
+  await tools.getByRole("textbox", { name: "Search tools", exact: true }).fill("field");
+  await expect(tools.getByRole("link", { name: "Open Field Visits", exact: true })).toHaveCount(0);
+  await tools.getByRole("button", { name: "Close tools", exact: true }).click();
+  // Hiding new preparation must not destroy a clinician's issued receipt.
+  await page.goto("/offline/field.html");
+  await unlock(page);
+  await expect(page.getByRole("button", { name: "Print receipt / Save PDF", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Synchronize visit", exact: true }).click();
+  await expect(page.getByText(/Clinic currency or tax settings changed/)).toBeVisible();
+  expect(await posted(clinic)).toHaveLength(0);
+  await page.screenshot({ path: info.outputPath("field-region-recovery.png"), fullPage: true });
+  await clinic.sql`update practices set country = 'US', currency = 'usd'
+    where id = (select practice_id from users where id = ${clinic.userId})`;
+  await page.getByRole("button", { name: "Synchronize visit", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Review and sign online" })).toBeVisible();
+  expect(await posted(clinic)).toHaveLength(1);
+});
+
+test("guided field large-animal visit retains chart weight and posts once after offline work", async ({ page, clinic }, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await clinic.sql`update patients set species = 'bovine' where id = ${clinic.patientId}`;
+  await login(page.context(), clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await page.getByRole("button", { name: "I'll finish later", exact: true }).click();
+  await page.getByRole("tab", { name: "Weight History", exact: true }).click();
+  await page.getByRole("spinbutton").fill("650");
+  await page.getByRole("button", { name: "Record weight", exact: true }).click();
+  await expect(page.getByRole("cell", { name: "650 kg", exact: true })).toBeVisible();
+  await page.reload();
+  await page.getByRole("tab", { name: "Weight History", exact: true }).click();
+  await expect(page.getByRole("cell", { name: "650 kg", exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("large-animal-chart-weight.png"), fullPage: true });
+  await prepare(page, clinic);
+  await expect(page.getByText(/bovine ·/)).toBeVisible();
+  await control(clinic, "disconnect");
+  await issue(page);
+  const fresh = await reopen(page);
+  await expect(fresh.getByRole("button", { name: "Print receipt / Save PDF", exact: true })).toBeEnabled();
+  await control(clinic, "reconnect");
+  await fresh.getByRole("button", { name: "Check connection", exact: true }).click();
+  await expect(fresh.getByText("Clinic connected", { exact: true })).toBeVisible();
+  await fresh.getByRole("button", { name: "Synchronize visit", exact: true }).click();
+  await expect(fresh.getByRole("link", { name: "Review and sign online" })).toBeVisible();
+  expect(await posted(clinic)).toHaveLength(1);
+  const weights = await clinic.sql`select weight_kg from patient_weights where patient_id = ${clinic.patientId}`;
+  expect(weights).toHaveLength(1);
+  expect(Number(weights[0]!.weight_kg)).toBe(650);
+  expect(errors).toEqual([]);
+});
+
 test("field visit survives cold offline reopen, prints its receipt, and posts clinical and financial records together", async ({
   page,
   clinic,
