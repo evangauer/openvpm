@@ -60,6 +60,12 @@ import { assertVisitInvoiceReadyForFinancialAction } from "../visit-billing-inte
 
 const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
+function supportsFieldBillingRegion(practice: {
+  country: string | null;
+  currency: string | null;
+}): boolean {
+  return practice.country === "US" && practice.currency?.toLowerCase() === "usd";
+}
 function fail(
   message: string,
   code:
@@ -118,6 +124,8 @@ export const offlineFieldRouter = createRouter({
         veterinarian: users.isVeterinarian,
         settings: practices.settings,
         recoveryHold: practices.recoveryHold,
+        country: practices.country,
+        currency: practices.currency,
       })
       .from(users)
       .innerJoin(practices, eq(practices.id, users.practiceId))
@@ -134,6 +142,7 @@ export const offlineFieldRouter = createRouter({
       enabled:
         !!row?.veterinarian &&
         !row.recoveryHold &&
+        supportsFieldBillingRegion(row) &&
         effectiveAmbulatoryWorkspaceSettings(row.settings).enabled,
     };
   }),
@@ -143,6 +152,7 @@ export const offlineFieldRouter = createRouter({
     name: ctx.user.name,
     enabled:
       process.env.OFFLINE_FIELD_VISITS_ENABLED === "true" &&
+      supportsFieldBillingRegion(ctx.fieldActor.practice) &&
       effectiveAmbulatoryWorkspaceSettings(ctx.fieldActor.practice.settings)
         .enabled,
   })),
@@ -238,10 +248,7 @@ export const offlineFieldRouter = createRouter({
         fail(
           "Enable the offline field pilot and the clinic's ambulatory workspace before preparing visits.",
         );
-      if (
-        practice.country !== "US" ||
-        practice.currency?.toLowerCase() !== "usd"
-      )
+      if (!supportsFieldBillingRegion(practice))
         fail("This field billing pilot supports US clinics billing in USD.");
       const [identity] = await ctx.db
         .select({ patient: patients, client: clients })

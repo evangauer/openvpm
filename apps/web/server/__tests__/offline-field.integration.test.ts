@@ -104,6 +104,26 @@ integration("offline field clinic isolation and replay", () => {
       await expect(
         caller().prepare({ patientId: otherPatient!.id }),
       ).rejects.toThrow();
+      expect(await caller().availability()).toEqual({ enabled: true });
+      expect(await caller().session()).toMatchObject({ enabled: true });
+      // An entry point must not invite a clinician into a preparation flow
+      // that the same clinic's country or currency makes unavailable.
+      for (const region of [
+        { country: "GB", currency: "gbp" },
+        { country: "US", currency: "cad" },
+        { country: "CA", currency: "usd" },
+      ]) {
+        await db.update(schema.practices).set(region)
+          .where(eq(schema.practices.id, practice!.id));
+        expect(await caller().availability()).toEqual({ enabled: false });
+        expect(await caller().session()).toMatchObject({ enabled: false });
+        await expect(caller().prepare({ patientId: patient!.id }))
+          .rejects.toThrow(/US clinics billing in USD/);
+      }
+      await db.update(schema.practices).set({ country: "US", currency: "USD" })
+        .where(eq(schema.practices.id, practice!.id));
+      expect(await caller().availability()).toEqual({ enabled: true });
+      expect(await caller().session()).toMatchObject({ enabled: true });
       const packet = await caller().prepare({ patientId: patient!.id });
       const input: FieldSubmission = {
         packet,
