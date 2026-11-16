@@ -1,5 +1,103 @@
 # Repository recovery and cleanup ledger
 
+## Current cleanup checkpoint — 2026-11-16
+
+This checkpoint supersedes the older inventory below for the items named here.
+The earlier entries remain historical evidence, not a live open-PR list.
+The initial inventory contains 14 open pull requests and 24 remote branches.
+Source refs are Main `6cab4d32223a0e73264408bc89a7fb31aa81b1ff`, Development
+`91e55f0ca43563c3cbe06ac2e29a62f0bd771447`, and Staging
+`e6770cec3cdfc2f550b9d62abd813eccf84c6227`. These are Git refs, not new
+deployment or acceptance evidence.
+
+The first batch is PR disposition and dependency-queue coordination. All
+source branches remain retained. A verified all-refs bundle includes the fork
+head of #340; tracked patches and untracked-file archives preserve the six
+dirty working copies found during the local inventory. Preservation metadata
+and checksums remain private. This local backup is not evidence that the
+independent-storage or retirement-grace requirements have been completed.
+
+### Approved PR closeouts
+
+The maintainer authorized this cleanup batch. The following approvals apply
+only to closing the named PR at the recorded head, with a successor explanation.
+They do not approve branch deletion, deployment, or canonical-branch changes.
+Recheck each live PR head before closing; a changed head requires reclassification.
+
+| PR | Exact head | Decision | Successor and retained work |
+| --- | --- | --- | --- |
+| [#340](https://github.com/evangauer/openvpm/pull/340) | `a1b78ef87a61a60a014b1683f9e804398f282b36` | `close-approved` | Main's Dockerfile already accepts `BUILD_NODE_OPTIONS` and passes it as `NODE_OPTIONS` only during the build, through #412 (`0135519`). This fulfills the configurable-build-memory request with a build-scoped default. Retain the contributor's original head. |
+| [#347](https://github.com/evangauer/openvpm/pull/347) | `6f0cc9ff9e6e8cc1e5d27dc2d4388a8ce450d45c` | `close-approved` | #433 merged the identical `actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1` pin into Development's CI and migration workflows. Close this duplicate integration path, retain its branch, and carry the pin through the normal release flow. Main still has the older pin; closure is not production delivery. |
+
+Execution: pending final head recheck and public closure comments.
+
+### Remaining PR queue
+
+The owner column names the responsible maintenance role for the next action;
+it does not change GitHub assignments or claim an independent review.
+
+| PR | Disposition | Owner | Next action / completion boundary |
+| --- | --- | --- | --- |
+| #332 — Vitest 4 | `recreate` | Toolchain maintainer | Prepare a focused current-Development test-runner upgrade and select its supported version deliberately. #426 proposes Vitest 5, not an equivalent replacement. Keep #332 open until its successor exists; do not silently accept either major upgrade. |
+| #425 — pnpm action | `recreate` | CI maintainer | Recover the pinned action update on current Development, verify workflow compatibility, then close the Main-targeted source with the successor link. |
+| #426 — development dependencies | `recreate` | Toolchain maintainer | Generate current-Development updates after routing promotion; separate test-runner and TypeScript major changes from routine updates. Keep the source until the replacement scope is preserved. |
+| #441 — production dependencies | `recreate` | Runtime maintainer | Generate a current-Development candidate, separate security repairs from broad upgrades, and verify runtime compatibility before superseding this source. |
+| #345 — balances and demo guards | `recover` | Application maintainer | Map each behavior to current code and recover remaining clinical-balance, sample-workflow, and demo-guard changes as focused PRs. Conflicts are not grounds to discard them. |
+| #371 — follow-ups and imported history | `recover` | Records maintainer | Recover remaining behavior on current Development; reconcile the follow-up constraint migration against the current append-only history. Do not replay the old migration ordinal. |
+| #419 — account reporting release | `hold` | Release maintainer | Refresh the conflicted release candidate and Staging acceptance, preserving current Main fixes; obtain the normal production review. Historical acceptance is not acceptance of a refreshed source. |
+| #442 — Field trigger hardening | Active repair | Database maintainer | Complete the Main repair's existing release review/migration approval and record forward-porting. It is a prerequisite of #444; retain the source. |
+| #443 — backup evidence | Active repair | Operations maintainer | Complete current checks and release review. Retained run totals do not themselves certify backup restoration. |
+| #444 — sidebar synchronization | Active feature | Application maintainer | Keep the #442 prerequisite explicit; review the remaining feature separately after that prerequisite lands. Preserve both appended migrations. |
+| #445 — email identity diagnosis | Active repair | Operations maintainer | Complete review of the read-only diagnosis tool; key rotation or preference re-registration remains a separate operational decision. |
+| #447 — staff waitlist | Active feature | Scheduling maintainer | Finish authenticated desktop/mobile verification and screenshots, then complete Development review. |
+
+### Dependency routing promotion
+
+Development already contains `target-branch: development` for npm and GitHub
+Actions. Main and Staging do not. [#448](https://github.com/evangauer/openvpm/pull/448)
+promotes that exact configuration into Staging with only two added lines.
+After Staging checks and review, a separate Main promotion must retain the
+same file. Do not merge the divergent canonical histories to deliver these
+two lines, and do not retarget existing Main-based topic branches wholesale.
+
+Routing becomes operational only when the configuration reaches the default
+branch. GitHub's security-update exception remains unchanged. Existing
+dependency PRs need explicit replacements or dispositions; this configuration
+does not prove any package upgrade safe. See the [Dependabot target-branch
+reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#target-branch).
+
+### Branch-only recovery and retirement candidates
+
+None of the 21 remote topic tips was a direct ancestor of a canonical tip at
+inventory time. Squash merges can explain this; neither an ahead count nor a
+closed PR proves that unique work is disposable. Keep each ref until its
+patch/tree equivalence, dependencies, and preservation record are checked.
+
+| Retained branch | Provenance | Current disposition |
+| --- | --- | --- |
+| `review/pr375-codeql` | Closed validation PR #376; original #375 merged | Retirement candidate after exact contribution-preservation and deployment-dependency checks. |
+| `docs/contributing-translating` | #363 closed without merging; newer guidance in #434 | Compare all five documentation files with the successor before retirement. |
+| `fix/acceptance-regressions-staging` | #401 closed without merging | Map the scoped setup/collection fixes into current Staging before retirement. |
+| `codex/email-preferences` | #172 merged | Preserve until squash equivalence and migration/provider retirement requirements are proven. |
+| `codex/backup-export-validation-20261029` | #372 closed without merging | Recover or prove equivalent backup/financial-history protections; retain the source. |
+| `codex/clinic-readiness-stabilization-20260829` | #276 closed without merging | Hold for domain-by-domain security, recovery, and migration provenance review. |
+| `feat/newsletter-funnel` | #404 closed without merging | Preserve the default-off messaging/migration work until an explicit recovery decision. |
+| `codex/rc-315-316` | No matching PR found by head search | Hold for ownership, constituent-PR, migration, and release-history mapping. |
+
+### Local inventory boundary
+
+The initial inventory found 91 local branches, including seven intentional
+archive branches, and 43 worktree registrations. Six working copies are dirty;
+five temporary registrations have missing Git administration links even though
+their directories still exist. A prune dry run identified those five records.
+No worktree, directory, local branch, or remote branch is removed by this batch.
+The [retirement register](repository-retirement-register.md) retains its
+preservation, owner-notice, grace, and final-revalidation requirements. A new
+itemized retirement proposal must distinguish registration-only cleanup from
+directory or branch removal and account for ignored/private files separately.
+
+## Historical consolidation — 2026-08-25
+
 This ledger is the review record for the 2026-08-25 repository consolidation.
 It turns the branch and pull-request backlog into explicit recovery decisions.
 It is intentionally conservative: an item remains preserved until its successor
