@@ -32,8 +32,10 @@ Recheck each live PR head before closing; a changed head requires reclassificati
 Execution: both live heads matched the recorded values immediately before
 closure. #340 was closed at `2026-11-16T16:39:56Z` and #347 at
 `2026-11-16T16:40:00Z`, each with a public explanation linking its successor
-and this cleanup record. Both source heads remain preserved. No branch was
-deleted, and the remaining PR dispositions below are still outstanding.
+and this cleanup record. Dependabot automatically removed #347's branch when
+the PR closed; the branch was restored to the exact recorded head and verified
+against the live remote. Both source heads remain preserved. No branch was
+retired, and the remaining PR dispositions below are still outstanding.
 
 ### Remaining PR queue
 
