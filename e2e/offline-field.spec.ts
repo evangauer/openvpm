@@ -825,6 +825,9 @@ test("sidebar upgrades preserve preview pins, synchronize across tabs, and recov
   await page
     .getByRole("button", { name: "I'll finish later", exact: true })
     .click();
+  // Dismissal is persisted before the dialog closes. A reload while it is
+  // still saving can cancel that request and reopen setup on the next page.
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   const [user] =
     await clinic.sql`select practice_id from users where id = ${clinic.userId}`;
   const key = `openvpm.sidebar.v1.${user!.practice_id}.${clinic.userId}`;
@@ -967,6 +970,11 @@ test("sidebar clinic-day checkout preserves readable charges and refreshes colle
     return rows.length;
   }).toBe(1);
   const [invoice] = await clinic.sql`select id from invoices where appointment_id = ${clinic.appointmentId}`;
+
+  // The database commit precedes the UI's invoice refresh. Wait for the saved
+  // charges to render before navigating away from the in-flight detail query.
+  await expect(page.getByRole("button", { name: "Update visit invoice", exact: true })).toBeEnabled();
+  await expect(description).toBeVisible();
 
   await page.goto(`/records/new-soap/${clinic.patientId}?appointmentId=${clinic.appointmentId}`);
   const editors = page.locator('[contenteditable="true"]');
