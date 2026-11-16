@@ -530,6 +530,57 @@ fingerprints and keyed hashes. Keep the former key configured until the legacy
 link retention period is over and a separately reviewed retirement migration
 is ready; simply deleting it causes readiness to fail closed.
 
+#### Demo identity key recovery
+
+A deployment whose configured identity key does not match the fingerprint in
+its own database's `platform_email_identity` fails closed for optional
+platform email and reports not ready. The demo has its own database, so this
+happens when the demo's key was replaced or never matched the key that first
+registered its database. Do not rotate or delete anything to clear it. First
+find out which key the database was registered with:
+
+```bash
+cd apps/web
+DIAGNOSE_DATABASE_URL='<demo database url>' \
+DEMO_CURRENT='<demo key>' APP_CURRENT='<app key>' \
+  pnpm email-identity:diagnose --candidate DEMO_CURRENT --candidate APP_CURRENT
+```
+
+Supply candidates through a private shell or secret manager, never shared
+history. The command runs one read-only transaction and prints only key
+fingerprints, record counts and the candidate's variable name. Act on the verdict:
+
+- `candidate_matches`: set that key as `EMAIL_PREFERENCE_IDENTITY_SECRET` on
+  the deployment, redeploy and confirm `/api/health`. No database change;
+  every unsubscribe and suppression is preserved.
+- `no_match_no_preferences`: the database holds no preference records, so
+  nothing can be lost. Re-register slot 1 to the intended key's fingerprint
+  in one transaction, then redeploy:
+
+  ```sql
+  BEGIN;
+  SELECT pg_advisory_xact_lock(
+    hashtextextended('openvpm-platform-email-identity-rotation', 0)
+  );
+  UPDATE platform_email_identity
+  SET identity_key_fingerprint = '<intended-fingerprint>'
+  WHERE key_slot = 1
+    AND identity_key_fingerprint = '<registered-fingerprint>'
+    AND previous_identity_key_fingerprint IS NULL
+    AND NOT EXISTS (SELECT 1 FROM platform_email_preferences)
+    AND NOT EXISTS (SELECT 1 FROM platform_email_preference_events)
+    AND NOT EXISTS (SELECT 1 FROM platform_email_identity_aliases)
+  RETURNING key_slot, identity_key_fingerprint;
+  COMMIT;
+  ```
+
+  Roll back unless exactly one row is returned.
+- `no_match_with_preferences` (exit code 2): stop. Records are keyed by a key
+  no candidate matches. Keep looking for the original key in earlier
+  deployments and secret-manager history, and do not re-register or delete
+  records while recipients' choices could be lost.
+- `rotation_in_progress`: follow the rotation procedure above instead.
+
 `EMAIL_PREFERENCE_BASE_URL` must be the canonical HTTPS origin
 `https://app.openvpm.com` in every hosted deployment. This ensures demo and
 campaign email writes recipient choices to the canonical hosted database rather
