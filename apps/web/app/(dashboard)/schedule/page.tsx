@@ -2865,6 +2865,10 @@ function SchedulePageContent() {
             </select>
           </div>
 
+          <Button variant="outline" size="sm" className="h-11 sm:h-9" asChild>
+            <Link href="/schedule/waitlist">Waitlist</Link>
+          </Button>
+
           {/* New Appointment button */}
           {canCreateAppointments && (
             <Button
