@@ -29,7 +29,11 @@ Recheck each live PR head before closing; a changed head requires reclassificati
 | [#340](https://github.com/evangauer/openvpm/pull/340) | `a1b78ef87a61a60a014b1683f9e804398f282b36` | `close-approved` | Main's Dockerfile already accepts `BUILD_NODE_OPTIONS` and passes it as `NODE_OPTIONS` only during the build, through #412 (`0135519`). This fulfills the configurable-build-memory request with a build-scoped default. Retain the contributor's original head. |
 | [#347](https://github.com/evangauer/openvpm/pull/347) | `6f0cc9ff9e6e8cc1e5d27dc2d4388a8ce450d45c` | `close-approved` | #433 merged the identical `actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1` pin into Development's CI and migration workflows. Close this duplicate integration path, retain its branch, and carry the pin through the normal release flow. Main still has the older pin; closure is not production delivery. |
 
-Execution: pending final head recheck and public closure comments.
+Execution: both live heads matched the recorded values immediately before
+closure. #340 was closed at `2026-11-16T16:39:56Z` and #347 at
+`2026-11-16T16:40:00Z`, each with a public explanation linking its successor
+and this cleanup record. Both source heads remain preserved. No branch was
+deleted, and the remaining PR dispositions below are still outstanding.
 
 ### Remaining PR queue
 
