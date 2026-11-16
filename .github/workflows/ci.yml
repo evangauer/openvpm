@@ -62,6 +62,12 @@ jobs:
       # local databases. All clinical/billing actions use openpims_app and the
       # real protected routers. Restore starts with a second empty database.
       - run: pnpm --filter @openpims/web exec vitest run server/__tests__/${{ matrix.test }}.integration.test.ts
+      - name: Verify personal sidebar isolation and concurrent devices
+        if: matrix.test == 'golden-clinic'
+        env:
+          SIDEBAR_DB_INTEGRATION: "1"
+        run: pnpm --filter @openpims/web exec vitest run server/__tests__/sidebar.integration.test.ts
+
       - name: Verify offline clinical reconciliation
         if: matrix.test == 'golden-clinic'
         env:

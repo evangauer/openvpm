@@ -816,8 +816,9 @@ test("sidebar tools persist per account, stay available after unpinning, and res
   expect(errors).toEqual([]);
 });
 
-test("sidebar upgrades preserve preview pins, synchronize across tabs, and recover corrupt preferences", async ({
+test("sidebar upgrades preserve preview pins, synchronize across devices, and recover corrupt preferences", async ({
   page,
+  browser,
   clinic,
 }) => {
   await login(page.context(), clinic);
@@ -845,10 +846,14 @@ test("sidebar upgrades preserve preview pins, synchronize across tabs, and recov
     page.getByRole("list", { name: "Pinned tools" }).getByRole("link"),
   ).toHaveText(["Inventory"]);
 
-  const peer = await page.context().newPage();
+  // A separate browser context has no shared cookies or localStorage.
+  const secondDevice = await browser.newContext({ baseURL, ignoreHTTPSErrors: true });
+  await login(secondDevice, clinic);
+  const peer = await secondDevice.newPage();
   try {
     await peer.goto(`/patients/${clinic.patientId}`);
     await openMainNavigation(peer);
+    await expect(peer.getByRole("list", { name: "Pinned tools" }).getByRole("link")).toHaveText(["Inventory"]);
     await peer.getByRole("button", { name: "All tools", exact: true }).click();
     const tools = peer.getByRole("dialog", { name: "Tools", exact: true });
     await tools
@@ -857,11 +862,17 @@ test("sidebar upgrades preserve preview pins, synchronize across tabs, and recov
     await tools
       .getByRole("button", { name: "Close tools", exact: true })
       .click();
+    await expect.poll(async () => {
+      const [saved] = await clinic.sql`select sidebar_preferences from users where id = ${clinic.userId}`;
+      return saved?.sidebar_preferences?.layout;
+    }).toBe("full");
+    await page.bringToFront();
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect(
       page.getByRole("list", { name: "Full navigation" }).getByRole("link"),
     ).toHaveCount(18);
   } finally {
-    await peer.close();
+    await secondDevice.close();
   }
   await page.evaluate(
     (key) => localStorage.setItem(key, "corrupt preference"),
@@ -875,6 +886,44 @@ test("sidebar upgrades preserve preview pins, synchronize across tabs, and recov
   await expect(
     page.getByRole("link", { name: "Settings", exact: true }),
   ).toBeVisible();
+});
+
+test("sidebar retains unsent choices when another tab refreshes and the original tab closes", async ({ page, clinic }) => {
+  const context = page.context();
+  await login(context, clinic);
+  await page.goto(`/patients/${clinic.patientId}`);
+  await page.getByRole("button", { name: "I'll finish later", exact: true }).click();
+  await openMainNavigation(page);
+  const updates = (url: URL) => url.pathname.includes("sidebar.update");
+  await context.route(updates, route => route.abort("failed"));
+  await page.getByRole("button", { name: "All tools", exact: true }).click();
+  const tools = page.getByRole("dialog", { name: "Tools", exact: true });
+  await tools.getByRole("radio", { name: "Focused navigation", exact: true }).check();
+  await tools.getByRole("button", { name: "Pin Inventory", exact: true }).click();
+  await expect(page.getByText("Sidebar choices are kept on this device. Account sync will retry when connected.", { exact: true })).toBeVisible();
+  const [user] = await clinic.sql`select practice_id from users where id = ${clinic.userId}`;
+  const prefix = `openvpm.sidebar.v1.${user!.practice_id}.${clinic.userId}.sync-v2.pending.`;
+  await expect.poll(() => page.evaluate(prefix => Object.keys(localStorage).filter(key => key.startsWith(prefix)).length, prefix)).toBe(2);
+
+  const peer = await context.newPage();
+  try {
+    await peer.goto(`/patients/${clinic.patientId}`);
+    await openMainNavigation(peer);
+    await expect(peer.getByRole("list", { name: "Pinned tools" }).getByRole("link")).toHaveText(["Inventory"]);
+    await page.close();
+    await context.unroute(updates);
+    await peer.reload();
+    await openMainNavigation(peer);
+    await expect.poll(async () => {
+      const [saved] = await clinic.sql`select sidebar_preferences from users where id = ${clinic.userId}`;
+      return saved?.sidebar_preferences;
+    }).toEqual({ version: 1, layout: "focused", pinned: ["/inventory"] });
+    await expect(peer.getByRole("list", { name: "Pinned tools" }).getByRole("link")).toHaveText(["Inventory"]);
+    await expect.poll(() => peer.evaluate(prefix => Object.keys(localStorage).filter(key => key.startsWith(prefix)).length, prefix)).toBe(0);
+  } finally {
+    await context.unroute(updates);
+    await peer.close();
+  }
 });
 
 test("pinning remains usable when browser storage is blocked", async ({
