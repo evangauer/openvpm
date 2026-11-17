@@ -345,6 +345,18 @@ function hostedAppUrlCheck(): { ok: boolean; detail: string } {
   return { ok: true, detail: "Hosted app URLs are valid HTTPS origins" };
 }
 
+/**
+ * When the OpenVPM Stripe account is in use, report whether its subscription
+ * webhook secret is configured. Boolean only — the secret value is never read
+ * into the response.
+ */
+function openvpmSubscriptionWebhookSecretCheck(): { ok: boolean } | undefined {
+  if (!configured("STRIPE_OPENVPM_ACCOUNT_ID")) return undefined;
+  return {
+    ok: configured("STRIPE_OPENVPM_SUBSCRIPTION_WEBHOOK_SECRET"),
+  };
+}
+
 function hostedSubscriptionTaxCheck(): { ok: boolean; detail: string } {
   const ok = envFlagEnabled(HOSTED_SUBSCRIPTION_TAX_ENV_NAME);
   return {
@@ -644,6 +656,11 @@ export async function GET() {
       HOSTED_BILLING_ENV_NAMES,
       "Hosted billing envs present",
     );
+    const openvpmSubscriptionWebhookSecret =
+      openvpmSubscriptionWebhookSecretCheck();
+    if (openvpmSubscriptionWebhookSecret) {
+      checks.openvpmSubscriptionWebhookSecret = openvpmSubscriptionWebhookSecret;
+    }
     checks.hostedSubscriptionTax = hostedSubscriptionTaxCheck();
     const hostedStorageEnv = hostedStorageEnvCheck();
     checks.hostedStorage = hostedStorageEnv.ok

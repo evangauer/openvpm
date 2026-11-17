@@ -95,6 +95,31 @@ describe("claimStripeEvent", () => {
     });
   });
 
+  it("can store unmapped evidence with an explicit null practice id", async () => {
+    const values = vi.fn(() => ({
+      onConflictDoNothing: vi.fn(() => ({
+        returning: vi.fn(async () => [{ eventId: "evt_unmapped" }]),
+      })),
+    }));
+    const db = { insert: vi.fn(() => ({ values })) };
+
+    await expect(
+      claimStripeEvent(db as never, {
+        eventId: "evt_unmapped",
+        endpoint: "subscription",
+        eventType: "customer.subscription.updated",
+        practiceId: null,
+      }),
+    ).resolves.toBe(true);
+
+    expect(values).toHaveBeenCalledWith({
+      eventId: "evt_unmapped",
+      endpoint: "subscription",
+      eventType: "customer.subscription.updated",
+      practiceId: null,
+    });
+  });
+
   it("attaches evidence once and rejects a missing or differently-owned row", async () => {
     const returning = vi
       .fn()
