@@ -52,6 +52,29 @@ Public links are capability URLs: possession of the unguessable token is the cre
 
 Passwords are hashed with bcrypt. All dashboard routes require an authenticated session, enforced in middleware. API keys are stored as bcrypt hashes with an indexed lookup prefix; the raw key is shown once and never persisted.
 
+## Dependency advisory exceptions
+
+CI audits production and development dependencies (`pnpm audit --audit-level high`).
+An advisory is ignored only when no fixed release exists, the affected code is
+reviewed, and the exception is recorded here with its scope and removal criteria.
+Every other advisory keeps failing the build.
+
+- `GHSA-fc5q-39xc-vjpf` (picomatch regular-expression denial of service,
+  versions `<=4.0.7`) is listed in `pnpm.auditConfig.ignoreGhsas`.
+  - **Why:** no patched picomatch release exists, so an override cannot select
+    a fixed version. The advisory requires an attacker to supply the glob
+    pattern.
+  - **Scope:** the installed copies (`picomatch@2.3.x` and `@4.0.x`) come from
+    build and test tooling — Tailwind, Vite, and Vitest — and are not
+    production dependencies; `pnpm audit --prod` does not report them. Next.js
+    also bundles its own copy, which compiles only patterns written in
+    configuration (build tracing, middleware matchers, and image patterns).
+    OpenVPM configures no custom image patterns, so request data never becomes
+    a pattern.
+  - **Remove when:** a patched picomatch release is published. Then delete the
+    ignore entry, update the lockfile, and confirm the audit passes without it.
+    Re-review this exception by 2026-12-18 even if no fix has shipped.
+
 ## Responsible disclosure
 
 Please do not report security issues through public GitHub issues. Email **security@openvpm.com** with `[SECURITY]` in the subject line. We acknowledge reports within 48 hours and follow the 90-day coordinated disclosure process described in [SECURITY.md](../SECURITY.md).
