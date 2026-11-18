@@ -62,4 +62,14 @@ describe("clinic jurisdiction evidence", () => {
       "if (!isClinicRegionCode(current.country)) return",
     );
   });
+
+  it("shows the sample-data notice for non-US countries in the clinic builder signup", () => {
+    // The builder signup offers every clinic region, so it must carry the
+    // same rollout disclosure as standard registration.
+    const builderSource = readFileSync("components/build/build-flow.tsx", "utf8");
+    expect(builderSource).toContain("CLINIC_REGION_OPTIONS.map");
+    expect(builderSource).toContain('country && country !== "US" ?');
+    expect(builderSource).toContain("supported design-partner rollout");
+    expect(builderSource).toContain("Explore with sample data only");
+  });
 });
