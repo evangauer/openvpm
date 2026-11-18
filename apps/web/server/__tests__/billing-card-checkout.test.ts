@@ -128,7 +128,7 @@ afterEach(() => {
 });
 
 describe("billing card checkout", () => {
-  it.each(["jpy", "JPY", "kwd", "zzz"])(
+  it.each(["mxn", "MXN", "jpy", "JPY", "kwd", "zzz"])(
     "refuses %s before creating a card checkout with a hundredths amount",
     async (currency) => {
       const { db } = createDb([

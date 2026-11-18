@@ -266,7 +266,7 @@ describe("buildInvoiceCheckoutSessionParams", () => {
     cancelUrl: "https://app.example.com/cancel",
   };
 
-  it.each(["jpy", "JPY", "kwd", "zzz", ""])(
+  it.each(["mxn", "MXN", "jpy", "JPY", "kwd", "zzz", ""])(
     "rejects %s at the provider boundary before hundredths can be mischarged",
     (currency) => {
       expect(() => buildInvoiceCheckoutSessionParams({

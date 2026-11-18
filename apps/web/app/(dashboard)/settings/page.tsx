@@ -65,6 +65,7 @@ import {
 } from "@/lib/billing/invoice-card-currency";
 import {
   CLINIC_REGION_OPTIONS,
+  CLINIC_TIMEZONES,
   isClinicRegionCode,
   type ClinicRegionCode,
 } from "@/lib/locale/clinic-regions";
@@ -179,22 +180,7 @@ const tabs: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: "billing", label: "Plan & Billing", icon: CreditCard },
 ];
 
-const TIMEZONES = [
-  "America/New_York",
-  "America/Chicago",
-  "America/Denver",
-  "America/Los_Angeles",
-  "America/Phoenix",
-  "America/Anchorage",
-  "Pacific/Honolulu",
-  "America/Toronto",
-  "Europe/London",
-  "Europe/Dublin",
-  "Australia/Sydney",
-  "Asia/Tokyo",
-];
-
-const CURRENCIES = ["usd", "gbp", "eur", "cad", "aud", "jpy"];
+const CURRENCIES = ["usd", "gbp", "eur", "cad", "aud", "jpy", "mxn"];
 
 const PRESET_COLORS = [
   "#0d9488",
@@ -743,7 +729,7 @@ function PracticeInfoTab() {
                 value={current.timezone}
                 onChange={(e) => handleChange("timezone", e.target.value)}
               >
-                {TIMEZONES.map((tz) => (
+                {CLINIC_TIMEZONES.map((tz) => (
                   <option key={tz} value={tz}>
                     {tz.replace(/_/g, " ")}
                   </option>
