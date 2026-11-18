@@ -18,6 +18,18 @@ import {
 } from "@openpims/db";
 import type { Database } from "@openpims/db/client";
 import { migrationImportFingerprint } from "./fingerprint";
+import {
+  aggregateHistoricalPlanHash,
+  classifyHistoricalPlacement,
+  HISTORY_IMPORT_PLAN_VERSION,
+  historicalDomainReviewedPlanHash,
+  historicalEntityKind,
+  mapScalarLabObservation,
+  reconcileHistoricalPlacement,
+  type HistoricalPlacementRow,
+  type HistoryDomain,
+  type HistoryPlacement,
+} from "./historical-placement";
 import type {
   ClientContactImportRecord,
   ExternalLabObservationImportRecord,
@@ -32,19 +44,7 @@ import type {
   ShepherdHistoryAdaptation,
 } from "./shepherd-history-adapter";
 
-export const HISTORY_IMPORT_PLAN_VERSION = "history-v1";
-
-type HistoryDomain =
-  | "client_contacts"
-  | "historical_appointments"
-  | "external_prescriptions"
-  | "external_prescription_fills"
-  | "external_lab_reports"
-  | "external_lab_observations"
-  | "legacy_financial_documents"
-  | "legacy_financial_line_items"
-  | "legacy_financial_payments"
-  | "legacy_financial_allocations";
+export { HISTORY_IMPORT_PLAN_VERSION } from "./historical-placement";
 
 type HistoryInput = Pick<
   ShepherdHistoryAdaptation,
@@ -78,9 +78,14 @@ interface PlannedDomain {
   rows: Record<string, unknown>[];
   duplicateCount: number;
   unmatchedCount: number;
+  inRecordCount: number;
+  archiveOnlyCount: number;
+  needsReviewCount: number;
+  placements: HistoricalPlacementRow[];
   errors: HistoryImportError[];
   sourcePayloadHash: string;
   sourcePayloadSizeBytes: number;
+  reviewedPlanHash: string;
 }
 
 export interface HistoricalImportPlan {
@@ -95,6 +100,9 @@ export interface HistoricalImportPlan {
     duplicateCount: number;
     unmatchedCount: number;
     errorCount: number;
+    inRecordCount: number;
+    archiveOnlyCount: number;
+    needsReviewCount: number;
   };
   domains: Array<{
     mode: HistoryDomain;
@@ -103,7 +111,11 @@ export interface HistoricalImportPlan {
     duplicateCount: number;
     unmatchedCount: number;
     errorCount: number;
+    inRecordCount: number;
+    archiveOnlyCount: number;
+    needsReviewCount: number;
     sourcePayloadHash: string;
+    reviewedPlanHash: string;
   }>;
   errors: HistoryImportError[];
   /** Internal insert plan. Never serialize this property into shared evidence. */
@@ -131,6 +143,7 @@ type ExistingIdentity = {
   externalId: string;
   importFingerprint: string;
   deletedAt: Date | null;
+  attributionStatus?: "matched" | "needs_review" | null;
 };
 
 type IdentityState = {
@@ -177,14 +190,19 @@ async function existingIdentityState(
   table: any,
   practiceId: string,
   source: string,
+  options?: { withAttribution?: boolean },
 ): Promise<IdentityState> {
+  const projection = {
+    id: table.id,
+    externalId: table.externalId,
+    importFingerprint: table.importFingerprint,
+    deletedAt: table.deletedAt,
+    ...(options?.withAttribution
+      ? { attributionStatus: table.attributionStatus }
+      : {}),
+  };
   const rows = (await db
-    .select({
-      id: table.id,
-      externalId: table.externalId,
-      importFingerprint: table.importFingerprint,
-      deletedAt: table.deletedAt,
-    })
+    .select(projection)
     .from(table)
     .where(
       and(eq(table.practiceId, practiceId), eq(table.externalSource, source)),
@@ -270,10 +288,56 @@ function domainPlan(
     rows: [],
     duplicateCount: 0,
     unmatchedCount: 0,
+    inRecordCount: 0,
+    archiveOnlyCount: 0,
+    needsReviewCount: 0,
+    placements: [],
     errors: [],
     sourcePayloadHash: payload.hash,
     sourcePayloadSizeBytes: payload.size,
+    reviewedPlanHash: "",
   };
+}
+
+function trackError(plan: PlannedDomain, rowIndex: number) {
+  plan.placements.push({ rowIndex, action: "error" });
+}
+
+function rejectRow(
+  plan: PlannedDomain,
+  rowIndex: number,
+  code: HistoryImportError["code"],
+) {
+  plan.errors.push({ domain: plan.mode, rowIndex, code });
+  trackError(plan, rowIndex);
+}
+
+function trackPlaced(
+  plan: PlannedDomain,
+  rowIndex: number,
+  action: "insert" | "duplicate",
+  placement: HistoryPlacement,
+) {
+  if (action === "duplicate") plan.duplicateCount++;
+  plan.placements.push({ rowIndex, action, placement });
+  if (placement === "in_record") plan.inRecordCount++;
+  else if (placement === "archive_only") plan.archiveOnlyCount++;
+  else plan.needsReviewCount++;
+}
+
+/** Returns true only when the caller should append an insert row. */
+function continueInsert(
+  plan: PlannedDomain,
+  rowIndex: number,
+  action: "insert" | "duplicate" | "error",
+  placement: HistoryPlacement,
+): boolean {
+  if (action === "error") {
+    trackError(plan, rowIndex);
+    return false;
+  }
+  trackPlaced(plan, rowIndex, action, placement);
+  return action === "insert";
 }
 
 function date(value: string | undefined): Date | null {
@@ -287,24 +351,37 @@ function checkedId(
   return externalId ? (map.get(externalId) ?? null) : null;
 }
 
-function planHashFor(domains: PlannedDomain[], practiceId: string, source: string) {
-  return sha256(
-    JSON.stringify({
-      version: HISTORY_IMPORT_PLAN_VERSION,
-      practiceId,
-      source,
-      domains: domains.map((domain) => ({
-        mode: domain.mode,
-        sourceRows: domain.sourceRows,
-        unmatched: domain.unmatchedCount,
-        errors: domain.errors.map((error) => ({
-          rowIndex: error.rowIndex,
-          code: error.code,
-        })),
-        sourcePayloadHash: domain.sourcePayloadHash,
-      })),
-    }),
-  );
+function bindDomainReview(
+  domain: PlannedDomain,
+  source: string,
+) {
+  reconcileHistoricalPlacement({
+    sourceRows: domain.sourceRows,
+    inRecord: domain.inRecordCount,
+    archiveOnly: domain.archiveOnlyCount,
+    needsReview: domain.needsReviewCount,
+    errorCount: domain.errors.length,
+  });
+  if (domain.placements.length !== domain.sourceRows) {
+    throw new HistoricalImportError(
+      "Historical placement rows do not reconcile.",
+    );
+  }
+  domain.reviewedPlanHash = historicalDomainReviewedPlanHash({
+    mode: domain.mode,
+    source,
+    sourcePayloadHash: domain.sourcePayloadHash,
+    sourceRows: domain.sourceRows,
+    plannedInsertCount: domain.rows.length,
+    duplicateCount: domain.duplicateCount,
+    unmatchedCount: domain.unmatchedCount,
+    errorCount: domain.errors.length,
+    inRecord: domain.inRecordCount,
+    archiveOnly: domain.archiveOnlyCount,
+    needsReview: domain.needsReviewCount,
+    entityKind: historicalEntityKind(domain.mode),
+    placements: domain.placements,
+  });
 }
 
 export async function planHistoricalImport(
@@ -345,11 +422,7 @@ export async function planHistoricalImport(
       const unmatched = record.attributionStatus === "needs_review";
       if (unmatched) contacts.unmatchedCount++;
       if (!unmatched && !clientId) {
-        contacts.errors.push({
-          domain: contacts.mode,
-          rowIndex,
-          code: "missing_client",
-        });
+        rejectRow(contacts, rowIndex, "missing_client");
         return;
       }
       const fingerprint = recordFingerprint(
@@ -374,11 +447,11 @@ export async function planHistoricalImport(
         contactState,
         contacts.errors,
       );
-      if (action === "duplicate") {
-        contacts.duplicateCount++;
-        return;
-      }
-      if (action === "error") return;
+      const placement = classifyHistoricalPlacement({
+        domain: contacts.mode,
+        unmatched,
+      });
+      if (!continueInsert(contacts, rowIndex, action, placement)) return;
       const id = randomUUID();
       contacts.rows.push({
         id,
@@ -413,11 +486,11 @@ export async function planHistoricalImport(
       const clientId = checkedId(clientIds, record.externalClientId);
       const patientId = checkedId(patientIds, record.externalPatientId);
       if (!clientId || !patientId) {
-        appointmentsPlan.errors.push({
-          domain: appointmentsPlan.mode,
+        rejectRow(
+          appointmentsPlan,
           rowIndex,
-          code: clientId ? "missing_patient" : "missing_client",
-        });
+          clientId ? "missing_patient" : "missing_client",
+        );
         return;
       }
       const fingerprint = recordFingerprint(
@@ -443,11 +516,11 @@ export async function planHistoricalImport(
         appointmentState,
         appointmentsPlan.errors,
       );
-      if (action === "duplicate") {
-        appointmentsPlan.duplicateCount++;
-        return;
-      }
-      if (action === "error") return;
+      const placement = classifyHistoricalPlacement({
+        domain: appointmentsPlan.mode,
+        unmatched: false,
+      });
+      if (!continueInsert(appointmentsPlan, rowIndex, action, placement)) return;
       const id = randomUUID();
       appointmentsPlan.rows.push({
         id,
@@ -493,11 +566,7 @@ export async function planHistoricalImport(
     (record: ExternalPrescriptionImportRecord, rowIndex) => {
       const patientId = checkedId(patientIds, record.externalPatientId);
       if (!patientId) {
-        prescriptionsPlan.errors.push({
-          domain: prescriptionsPlan.mode,
-          rowIndex,
-          code: "missing_patient",
-        });
+        rejectRow(prescriptionsPlan, rowIndex, "missing_patient");
         return;
       }
       const fingerprint = recordFingerprint(
@@ -524,11 +593,13 @@ export async function planHistoricalImport(
         prescriptionState,
         prescriptionsPlan.errors,
       );
-      if (action === "duplicate") {
-        prescriptionsPlan.duplicateCount++;
+      const placement = classifyHistoricalPlacement({
+        domain: prescriptionsPlan.mode,
+        unmatched: false,
+      });
+      if (!continueInsert(prescriptionsPlan, rowIndex, action, placement)) {
         return;
       }
-      if (action === "error") return;
       const id = randomUUID();
       prescriptionsPlan.rows.push({
         id,
@@ -571,11 +642,7 @@ export async function planHistoricalImport(
     (record: ExternalPrescriptionFillImportRecord, rowIndex) => {
       const prescriptionId = prescriptionIds.get(record.externalPrescriptionId);
       if (!prescriptionId) {
-        fillsPlan.errors.push({
-          domain: fillsPlan.mode,
-          rowIndex,
-          code: "missing_parent",
-        });
+        rejectRow(fillsPlan, rowIndex, "missing_parent");
         return;
       }
       const fingerprint = recordFingerprint(
@@ -598,11 +665,11 @@ export async function planHistoricalImport(
         fillState,
         fillsPlan.errors,
       );
-      if (action === "duplicate") {
-        fillsPlan.duplicateCount++;
-        return;
-      }
-      if (action === "error") return;
+      const placement = classifyHistoricalPlacement({
+        domain: fillsPlan.mode,
+        unmatched: false,
+      });
+      if (!continueInsert(fillsPlan, rowIndex, action, placement)) return;
       const id = randomUUID();
       fillsPlan.rows.push({
         id,
@@ -629,11 +696,18 @@ export async function planHistoricalImport(
     externalLabReports,
     input.practiceId,
     input.source,
+    { withAttribution: true },
   );
   const labReportIds = new Map(
     [...labReportState.byExternalId].map(([externalId, row]) => [
       externalId,
       row.id,
+    ]),
+  );
+  const reportPlacement = new Map<string, HistoryPlacement>(
+    [...labReportState.byExternalId].map(([externalId, row]) => [
+      externalId,
+      row.attributionStatus === "needs_review" ? "needs_review" : "in_record",
     ]),
   );
   input.records.externalLabReports.forEach(
@@ -642,11 +716,7 @@ export async function planHistoricalImport(
       const unmatched = record.attributionStatus === "needs_review";
       if (unmatched) labReportsPlan.unmatchedCount++;
       if (!unmatched && !patientId) {
-        labReportsPlan.errors.push({
-          domain: labReportsPlan.mode,
-          rowIndex,
-          code: "missing_patient",
-        });
+        rejectRow(labReportsPlan, rowIndex, "missing_patient");
         return;
       }
       const fingerprint = recordFingerprint(
@@ -672,11 +742,14 @@ export async function planHistoricalImport(
         labReportState,
         labReportsPlan.errors,
       );
-      if (action === "duplicate") {
-        labReportsPlan.duplicateCount++;
-        return;
+      const placement = classifyHistoricalPlacement({
+        domain: labReportsPlan.mode,
+        unmatched,
+      });
+      if (action !== "error") {
+        reportPlacement.set(record.externalLabReportId, placement);
       }
-      if (action === "error") return;
+      if (!continueInsert(labReportsPlan, rowIndex, action, placement)) return;
       const id = randomUUID();
       labReportsPlan.rows.push({
         id,
@@ -717,12 +790,9 @@ export async function planHistoricalImport(
   input.records.externalLabObservations.forEach(
     (record: ExternalLabObservationImportRecord, rowIndex) => {
       const reportId = labReportIds.get(record.externalLabReportId);
-      if (!reportId) {
-        observationsPlan.errors.push({
-          domain: observationsPlan.mode,
-          rowIndex,
-          code: "missing_parent",
-        });
+      const parentPlacement = reportPlacement.get(record.externalLabReportId);
+      if (!reportId || !parentPlacement) {
+        rejectRow(observationsPlan, rowIndex, "missing_parent");
         return;
       }
       const fingerprint = recordFingerprint(
@@ -747,11 +817,12 @@ export async function planHistoricalImport(
         observationState,
         observationsPlan.errors,
       );
-      if (action === "duplicate") {
-        observationsPlan.duplicateCount++;
-        return;
-      }
-      if (action === "error") return;
+      const placement = classifyHistoricalPlacement({
+        domain: observationsPlan.mode,
+        unmatched: parentPlacement === "needs_review",
+        scalarLab: mapScalarLabObservation(record) !== null,
+      });
+      if (!continueInsert(observationsPlan, rowIndex, action, placement)) return;
       const id = randomUUID();
       observationsPlan.rows.push({
         id,
@@ -797,11 +868,11 @@ export async function planHistoricalImport(
       const clientId = checkedId(clientIds, record.externalClientId);
       const patientId = checkedId(patientIds, record.externalPatientId);
       if (!clientId || (record.externalPatientId && !patientId)) {
-        documentsPlan.errors.push({
-          domain: documentsPlan.mode,
+        rejectRow(
+          documentsPlan,
           rowIndex,
-          code: clientId ? "missing_patient" : "missing_client",
-        });
+          clientId ? "missing_patient" : "missing_client",
+        );
         return;
       }
       const fingerprint = recordFingerprint(
@@ -832,11 +903,11 @@ export async function planHistoricalImport(
         documentState,
         documentsPlan.errors,
       );
-      if (action === "duplicate") {
-        documentsPlan.duplicateCount++;
-        return;
-      }
-      if (action === "error") return;
+      const placement = classifyHistoricalPlacement({
+        domain: documentsPlan.mode,
+        unmatched: false,
+      });
+      if (!continueInsert(documentsPlan, rowIndex, action, placement)) return;
       const id = randomUUID();
       documentsPlan.rows.push({
         id,
@@ -883,11 +954,11 @@ export async function planHistoricalImport(
       const documentId = documentIds.get(record.externalDocumentId);
       const patientId = checkedId(patientIds, record.externalPatientId);
       if (!documentId || (record.externalPatientId && !patientId)) {
-        lineItemsPlan.errors.push({
-          domain: lineItemsPlan.mode,
+        rejectRow(
+          lineItemsPlan,
           rowIndex,
-          code: documentId ? "missing_patient" : "missing_parent",
-        });
+          documentId ? "missing_patient" : "missing_parent",
+        );
         return;
       }
       const fingerprint = recordFingerprint(
@@ -915,11 +986,11 @@ export async function planHistoricalImport(
         lineItemState,
         lineItemsPlan.errors,
       );
-      if (action === "duplicate") {
-        lineItemsPlan.duplicateCount++;
-        return;
-      }
-      if (action === "error") return;
+      const placement = classifyHistoricalPlacement({
+        domain: lineItemsPlan.mode,
+        unmatched: false,
+      });
+      if (!continueInsert(lineItemsPlan, rowIndex, action, placement)) return;
       const id = randomUUID();
       lineItemsPlan.rows.push({
         id,
@@ -969,11 +1040,7 @@ export async function planHistoricalImport(
       const unmatched = record.attributionStatus === "needs_review";
       if (unmatched) paymentsPlan.unmatchedCount++;
       if (!unmatched && !clientId) {
-        paymentsPlan.errors.push({
-          domain: paymentsPlan.mode,
-          rowIndex,
-          code: "missing_client",
-        });
+        rejectRow(paymentsPlan, rowIndex, "missing_client");
         return;
       }
       const fingerprint = recordFingerprint(
@@ -1000,11 +1067,11 @@ export async function planHistoricalImport(
         paymentState,
         paymentsPlan.errors,
       );
-      if (action === "duplicate") {
-        paymentsPlan.duplicateCount++;
-        return;
-      }
-      if (action === "error") return;
+      const placement = classifyHistoricalPlacement({
+        domain: paymentsPlan.mode,
+        unmatched,
+      });
+      if (!continueInsert(paymentsPlan, rowIndex, action, placement)) return;
       const id = randomUUID();
       paymentsPlan.rows.push({
         id,
@@ -1047,11 +1114,7 @@ export async function planHistoricalImport(
       const documentId = documentIds.get(record.externalDocumentId);
       const paymentId = paymentIds.get(record.externalPaymentId);
       if (!documentId || !paymentId) {
-        allocationsPlan.errors.push({
-          domain: allocationsPlan.mode,
-          rowIndex,
-          code: "missing_parent",
-        });
+        rejectRow(allocationsPlan, rowIndex, "missing_parent");
         return;
       }
       const fingerprint = recordFingerprint(
@@ -1074,11 +1137,11 @@ export async function planHistoricalImport(
         allocationState,
         allocationsPlan.errors,
       );
-      if (action === "duplicate") {
-        allocationsPlan.duplicateCount++;
-        return;
-      }
-      if (action === "error") return;
+      const placement = classifyHistoricalPlacement({
+        domain: allocationsPlan.mode,
+        unmatched: false,
+      });
+      if (!continueInsert(allocationsPlan, rowIndex, action, placement)) return;
       const id = randomUUID();
       allocationsPlan.rows.push({
         id,
@@ -1113,6 +1176,9 @@ export async function planHistoricalImport(
     paymentsPlan,
     allocationsPlan,
   ];
+  for (const domain of domains) {
+    bindDomainReview(domain, input.source);
+  }
   const errors = domains.flatMap((domain) => domain.errors);
   const totals = domains.reduce(
     (result, domain) => ({
@@ -1121,6 +1187,9 @@ export async function planHistoricalImport(
       duplicateCount: result.duplicateCount + domain.duplicateCount,
       unmatchedCount: result.unmatchedCount + domain.unmatchedCount,
       errorCount: result.errorCount + domain.errors.length,
+      inRecordCount: result.inRecordCount + domain.inRecordCount,
+      archiveOnlyCount: result.archiveOnlyCount + domain.archiveOnlyCount,
+      needsReviewCount: result.needsReviewCount + domain.needsReviewCount,
     }),
     {
       sourceRows: 0,
@@ -1128,13 +1197,30 @@ export async function planHistoricalImport(
       duplicateCount: 0,
       unmatchedCount: 0,
       errorCount: 0,
+      inRecordCount: 0,
+      archiveOnlyCount: 0,
+      needsReviewCount: 0,
     },
   );
+  reconcileHistoricalPlacement({
+    sourceRows: totals.sourceRows,
+    inRecord: totals.inRecordCount,
+    archiveOnly: totals.archiveOnlyCount,
+    needsReview: totals.needsReviewCount,
+    errorCount: totals.errorCount,
+  });
   return {
     version: HISTORY_IMPORT_PLAN_VERSION,
     practiceId: input.practiceId,
     source: input.source,
-    planHash: planHashFor(domains, input.practiceId, input.source),
+    planHash: aggregateHistoricalPlanHash({
+      practiceId: input.practiceId,
+      source: input.source,
+      domains: domains.map((domain) => ({
+        mode: domain.mode,
+        reviewedPlanHash: domain.reviewedPlanHash,
+      })),
+    }),
     ready: errors.length === 0,
     totals,
     domains: domains.map((domain) => ({
@@ -1144,14 +1230,39 @@ export async function planHistoricalImport(
       duplicateCount: domain.duplicateCount,
       unmatchedCount: domain.unmatchedCount,
       errorCount: domain.errors.length,
+      inRecordCount: domain.inRecordCount,
+      archiveOnlyCount: domain.archiveOnlyCount,
+      needsReviewCount: domain.needsReviewCount,
       sourcePayloadHash: domain.sourcePayloadHash,
+      reviewedPlanHash: domain.reviewedPlanHash,
     })),
     errors,
     _domains: domains,
   };
 }
 
-const TABLE_BY_DOMAIN: Record<HistoryDomain, any> = {
+/**
+ * Archive tables this commit writes. Live appointments, prescriptions,
+ * invoices, and lab results are intentionally absent: historical visits never
+ * become calendar work, and imported medications are never dispensable.
+ */
+export const HISTORICAL_IMPORT_TARGET_TABLES = [
+  "client_contacts",
+  "historical_appointments",
+  "external_prescriptions",
+  "external_prescription_fills",
+  "external_lab_reports",
+  "external_lab_observations",
+  "legacy_financial_documents",
+  "legacy_financial_line_items",
+  "legacy_financial_payments",
+  "legacy_financial_allocations",
+] as const;
+
+const TABLE_BY_DOMAIN: Record<
+  (typeof HISTORICAL_IMPORT_TARGET_TABLES)[number],
+  any
+> = {
   client_contacts: clientContacts,
   historical_appointments: historicalAppointments,
   external_prescriptions: externalPrescriptions,
@@ -1260,7 +1371,7 @@ export async function commitHistoricalImport(
         mode: domain.mode,
         source: input.source,
         fileHash: domain.sourcePayloadHash,
-        reviewedPlanHash: plan.planHash,
+        reviewedPlanHash: domain.reviewedPlanHash,
         fileSizeBytes: domain.sourcePayloadSizeBytes,
         status: "committed",
         sourceRowCount: domain.sourceRows,

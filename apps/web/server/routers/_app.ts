@@ -38,6 +38,7 @@ import { messagingRouter } from "./messaging";
 import { bookingRouter } from "./booking";
 import { careRemindersRouter } from "./care-reminders";
 import { migrationArchiveRouter } from "./migration-archive";
+import { patientImportedHistoryRouter } from "./patient-imported-history";
 import { visitTreatmentPlansRouter } from "./visit-treatment-plans";
 
 export const appRouter = createRouter({
@@ -80,6 +81,7 @@ export const appRouter = createRouter({
   booking: bookingRouter,
   careReminders: careRemindersRouter,
   migrationArchive: migrationArchiveRouter,
+  patientImportedHistory: patientImportedHistoryRouter,
   visitTreatmentPlans: visitTreatmentPlansRouter,
 });
 

@@ -1,7 +1,14 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { Fragment, useEffect, useMemo, useState, useRef } from "react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useState,
+  useRef,
+  type ReactNode,
+} from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
@@ -47,6 +54,7 @@ import {
 import { CapturePhotos } from "@/components/records/capture-photos";
 import { ConsentSign } from "@/components/records/consent-sign";
 import { RecentClinicalItems } from "@/components/records/recent-clinical-items";
+import { ShepherdChartHistory } from "@/components/patients/shepherd-chart-history";
 import { ClinicalCorrectionControl } from "@/components/records/clinical-correction-control";
 import { cn } from "@/lib/utils";
 import {
@@ -1487,6 +1495,7 @@ export default function PatientDetailPage() {
         className="mt-6"
       >
         {activeTab === "overview" && (
+          <div className="space-y-6">
           <div className="rounded-lg border border-border bg-card p-6">
             <h3 className="font-heading text-base font-semibold mb-4">
               Basic Information
@@ -1558,6 +1567,11 @@ export default function PatientDetailPage() {
                 </dd>
               </div>
             </dl>
+          </div>
+          <ShepherdChartHistory
+            patientId={patient.id}
+            timeZone={recordsTimeZone}
+          />
           </div>
         )}
 
@@ -3092,32 +3106,36 @@ function AppointmentsTab({
   const visitsMissing = !isLoading && !error && !visits;
   const [expandedVisitId, setExpandedVisitId] = useState<string | null>(null);
 
+  const importedVisits = (
+    <ShepherdChartHistory
+      patientId={patientId}
+      timeZone={timeZone}
+      focus="visits"
+    />
+  );
+  let schedule: ReactNode;
   if (error) {
-    return (
+    schedule = (
       <PatientDetailErrorPanel
         message={`Unable to load appointments. ${error.message}`}
       />
     );
-  }
-  if (visitsMissing) {
-    return (
+  } else if (visitsMissing) {
+    schedule = (
       <PatientDetailErrorPanel message="Unable to load appointments. Please retry." />
     );
-  }
-  if (isLoading) {
-    return <PatientDetailLoadingPanel label="Loading appointments..." />;
-  }
-  if (!visits || visits.length === 0) {
-    return (
+  } else if (isLoading) {
+    schedule = <PatientDetailLoadingPanel label="Loading appointments..." />;
+  } else if (!visits || visits.length === 0) {
+    schedule = (
       <EmptyState
         icon={CalendarDays}
         title="No appointments yet"
         description="Visits booked on the schedule will show up here."
       />
     );
-  }
-
-  return (
+  } else {
+    schedule = (
     <div className="overflow-x-auto rounded-lg border border-border">
       <table className="w-full text-sm">
         <thead>
@@ -3224,6 +3242,14 @@ function AppointmentsTab({
           })}
         </tbody>
       </table>
+    </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {importedVisits}
+      {schedule}
     </div>
   );
 }
