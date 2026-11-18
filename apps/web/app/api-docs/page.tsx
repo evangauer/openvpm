@@ -37,7 +37,7 @@ const sections: Section[] = [
         description: "Register a new practice with an admin user account.",
         input: `{
   practiceName: string,
-  country: "US" | "CA" | "GB" | "IE" | "AU" | "JP",
+  country: "US" | "CA" | "GB" | "IE" | "AU" | "JP" | "MX",
   name?: string,
   email: string,
   password: string   // min 8 characters
