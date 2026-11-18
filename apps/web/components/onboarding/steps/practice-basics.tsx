@@ -14,25 +14,10 @@ import type { StepHandle } from "../journey-types";
 import { regionDefaults } from "@/lib/locale/format";
 import {
   CLINIC_REGION_OPTIONS,
+  CLINIC_TIMEZONES,
   isClinicRegionCode,
   type ClinicRegionCode,
 } from "@/lib/locale/clinic-regions";
-
-// Mirrors the TIMEZONES list on the settings page.
-const TIMEZONES = [
-  "America/New_York",
-  "America/Chicago",
-  "America/Denver",
-  "America/Los_Angeles",
-  "America/Phoenix",
-  "America/Anchorage",
-  "Pacific/Honolulu",
-  "America/Toronto",
-  "Europe/London",
-  "Europe/Dublin",
-  "Australia/Sydney",
-  "Asia/Tokyo",
-];
 
 const selectClass =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
@@ -223,7 +208,7 @@ export function PracticeBasicsStep({
             value={timezone}
             onChange={(e) => setTimezone(e.target.value)}
           >
-            {TIMEZONES.map((tz) => (
+            {CLINIC_TIMEZONES.map((tz) => (
               <option key={tz} value={tz}>
                 {tz.replace(/_/g, " ")}
               </option>
