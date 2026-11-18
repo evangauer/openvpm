@@ -205,7 +205,7 @@ afterEach(() => {
 });
 
 describe("portal checkout route", () => {
-  it.each(["jpy", "JPY", "kwd", "zzz"])(
+  it.each(["mxn", "MXN", "jpy", "JPY", "kwd", "zzz"])(
     "refuses %s without contacting the payment provider",
     async (currency) => {
       mocks.selectResults.push(
