@@ -36,4 +36,15 @@ test.describe("Hosted build walkthrough regressions", () => {
     await expect(page.getByText("Synthetic clinic", { exact: true }).first()).toBeVisible();
     await expect(page.getByRole("radio", { name: /monthly/i })).toBeVisible();
   });
+
+  test("shows the sample-data notice for clinics outside the US", async ({ page }) => {
+    await page.goto("/start");
+    const country = page.getByLabel("Clinic country", { exact: true });
+    const notice = page.getByRole("note").filter({ hasText: "supported design-partner rollout" });
+    await expect(notice).toHaveCount(0);
+    await country.selectOption("MX");
+    await expect(notice).toContainText("Explore with sample data only");
+    await country.selectOption("US");
+    await expect(notice).toHaveCount(0);
+  });
 });
