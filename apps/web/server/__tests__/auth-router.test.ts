@@ -549,24 +549,22 @@ describe("auth router input validation", () => {
     });
   });
 
-  it("registers a Japanese clinic with regional defaults and explicit jurisdiction", async () => {
+  it.each([
+    { country: "JP", currency: "jpy", taxRatePercent: "10.00", timezone: "Asia/Tokyo" },
+    { country: "MX", currency: "mxn", taxRatePercent: "16.00", timezone: "America/Mexico_City" },
+  ] as const)("registers a $country clinic with regional defaults and explicit jurisdiction", async (region) => {
     const { db, insertValues, updateSet } = createRegistrationDb();
     await callerWithDb(db).register({
       email: "owner@example.com",
       password: "password123",
-      practiceName: "Sample Japan Clinic",
-      country: "JP",
+      practiceName: "Sample Clinic",
+      country: region.country,
     });
-    expect(insertValues).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      country: "JP",
-      currency: "jpy",
-      taxRatePercent: "10.00",
-      timezone: "Asia/Tokyo",
-    }));
+    expect(insertValues).toHaveBeenNthCalledWith(1, expect.objectContaining(region));
     expect(updateSet).toHaveBeenCalledWith(expect.objectContaining({
       settings: expect.objectContaining({
         onboardingState: expect.objectContaining({
-          jurisdictionCountry: "JP",
+          jurisdictionCountry: region.country,
           jurisdictionSource: "registration",
         }),
       }),

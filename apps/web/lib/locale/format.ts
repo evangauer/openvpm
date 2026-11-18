@@ -11,6 +11,7 @@ const COUNTRY_LOCALE: Record<string, string> = {
   CA: "en-CA",
   AU: "en-AU",
   JP: "ja-JP",
+  MX: "es-MX",
 };
 
 export function localeForCountry(country?: string | null): string {
@@ -66,6 +67,8 @@ export function regionDefaults(country?: string | null): RegionDefaults {
       return { currency: "cad", taxRatePercent: "5.00", timezone: "America/Toronto" };
     case "AU":
       return { currency: "aud", taxRatePercent: "10.00", timezone: "Australia/Sydney" };
+    case "MX":
+      return { currency: "mxn", taxRatePercent: "16.00", timezone: "America/Mexico_City" };
     case "JP":
       // Editable standard-rate default, not a Japanese tax-compliance engine.
       return { currency: "jpy", taxRatePercent: "10.00", timezone: "Asia/Tokyo" };

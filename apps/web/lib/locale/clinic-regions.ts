@@ -1,4 +1,4 @@
-export const CLINIC_REGION_CODES = ["US", "CA", "GB", "IE", "AU", "JP"] as const;
+export const CLINIC_REGION_CODES = ["US", "CA", "GB", "IE", "AU", "JP", "MX"] as const;
 
 export type ClinicRegionCode = (typeof CLINIC_REGION_CODES)[number];
 export type JurisdictionSelectionSource =
@@ -16,6 +16,29 @@ export const CLINIC_REGION_OPTIONS: ReadonlyArray<{
   { code: "IE", label: "Ireland" },
   { code: "AU", label: "Australia" },
   { code: "JP", label: "Japan" },
+  { code: "MX", label: "Mexico" },
+];
+
+export const CLINIC_TIMEZONES = [
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Phoenix",
+  "America/Anchorage",
+  "Pacific/Honolulu",
+  "America/Toronto",
+  "America/Mexico_City",
+  "America/Cancun",
+  "America/Mazatlan",
+  "America/Hermosillo",
+  "America/Tijuana",
+  "America/Ciudad_Juarez",
+  "America/Matamoros",
+  "Europe/London",
+  "Europe/Dublin",
+  "Australia/Sydney",
+  "Asia/Tokyo",
 ];
 
 export function isClinicRegionCode(value: string): value is ClinicRegionCode {

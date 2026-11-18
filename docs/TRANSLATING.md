@@ -59,7 +59,7 @@ The existing implementation is in `apps/web/lib/locale/`:
   `formatDate`, and `regionDefaults`.
 - `clinic-regions.ts`: `CLINIC_REGION_CODES` and `CLINIC_REGION_OPTIONS`, the
   countries selectable at signup and in settings. Current choices are US,
-  CA, GB, IE, AU, and JP.
+  CA, GB, IE, AU, JP, and MX.
 - `useCurrency.ts`: the currency formatter bound to a practice.
 - `__tests__/format.test.ts` and `__tests__/clinic-regions.test.ts`: checks for
   formatting and selectable regions.
