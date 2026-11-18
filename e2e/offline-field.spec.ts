@@ -932,6 +932,10 @@ test("sidebar clinic-day checkout preserves readable charges and refreshes colle
   const serviceName = "Comprehensive wellness examination with preventive care consultation";
   await clinic.sql`update services set name = ${serviceName}, code = 'WELLNESS-CONSULT', category = 'Preventive medicine'
     where practice_id = (select practice_id from users where id = ${clinic.userId})`;
+  // The fixture books the visit three hours ahead, which is tomorrow in the
+  // clinic's UTC zone after 21:00 UTC. Keep it on today's schedule.
+  await clinic.sql`update appointments set start_time = date_trunc('day', now()) + interval '12 hours',
+    end_time = date_trunc('day', now()) + interval '13 hours' where id = ${clinic.appointmentId}`;
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("dialog", (dialog) => dialog.accept());
