@@ -82,6 +82,16 @@ describe("regionDefaults", () => {
       timezone: "Europe/London",
     });
   });
+  it("uses Mexican clinic defaults and formats peso balances and dates", () => {
+    expect(regionDefaults("mx")).toEqual({
+      currency: "mxn",
+      taxRatePercent: "16.00",
+      timezone: "America/Mexico_City",
+    });
+    expect(localeForCountry("MX")).toBe("es-MX");
+    expect(formatCurrency("4500.50", "mxn", "MX")).toBe("$4,500.50");
+    expect(formatDate("2026-06-07", "MX")).toBe("07/06/2026");
+  });
   it("returns JPY/10%/Asia/Tokyo for Japan", () => {
     expect(regionDefaults("JP")).toEqual({
       currency: "jpy",
