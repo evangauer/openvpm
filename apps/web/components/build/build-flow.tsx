@@ -15,6 +15,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { AnimatePresence, motion, MotionConfig } from "motion/react";
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Check,
@@ -1016,6 +1017,20 @@ function GateForm({
             </option>
           ))}
         </select>
+        {country && country !== "US" ? (
+          <div
+            role="note"
+            className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-left text-xs leading-5 text-amber-950"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>
+              OpenVPM can format this workspace for your region, but the
+              supported design-partner rollout is currently limited to US
+              clinics. Explore with sample data only; do not move live clinic
+              work yet.
+            </p>
+          </div>
+        ) : null}
       </div>
 
       <button
