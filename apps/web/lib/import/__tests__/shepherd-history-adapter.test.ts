@@ -193,6 +193,56 @@ describe("Shepherd history adapter", () => {
     );
   });
 
+  it("maps a scalar lab row and keeps a panel in the archive report", () => {
+    const source = bundle();
+    source.lab_order = [
+      {
+        id: "lab-scalar",
+        patientid: "patient-1",
+        datecreated: "2024-01-10T14:15:00Z",
+        orderid: "LAB-S",
+        testname: "ALT",
+        resultvalue: "42",
+        resultunit: "U/L",
+        referencerange: "10-40",
+        resultflag: "H",
+      },
+      {
+        id: "lab-panel",
+        patientid: "patient-1",
+        datecreated: "2024-01-11T14:15:00Z",
+        orderid: "LAB-P",
+        testname: "CBC",
+        resultvalue: "WBC 5.1; RBC 6.2",
+      },
+    ];
+    const result = adaptShepherdHistory(source, new Date("2025-01-01T00:00:00Z"));
+
+    expect(result.externalLabObservations).toEqual([
+      expect.objectContaining({
+        externalLabReportId: "lab-scalar",
+        name: "ALT",
+        value: "42",
+        unit: "U/L",
+      }),
+    ]);
+    expect(result.coverage.externalLabObservations).toEqual({
+      sourceRows: 2,
+      plannedRows: 1,
+      deferredRows: 1,
+      excludedRows: 0,
+      errorRows: 0,
+    });
+    expect(result.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          domain: "external_lab_reports",
+          code: "unstructured_lab_result",
+        }),
+      ]),
+    );
+  });
+
   it("keeps imported records separate from live operational concepts", () => {
     const result = adaptShepherdHistory(bundle());
     const serialized = JSON.stringify(result);
