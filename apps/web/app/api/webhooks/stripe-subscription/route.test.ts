@@ -558,7 +558,46 @@ describe("Stripe subscription webhook", () => {
       ignored: true,
     });
     expect(mocks.updateSet).not.toHaveBeenCalled();
-    expect(mocks.alertOps).not.toHaveBeenCalled();
+    expect(mocks.claimStripeEvent).toHaveBeenLastCalledWith(mocks.db, {
+      eventId: "evt_subscription",
+      endpoint: "subscription",
+      eventType: "customer.subscription.updated",
+      practiceId: null,
+    });
+    expect(mocks.withSystem).toHaveBeenCalledTimes(2);
+    expect(mocks.alertOps).toHaveBeenCalledWith(
+      "Unmanaged Stripe subscription event",
+      "type=customer.subscription.updated id=evt_subscription account=legacy",
+    );
+  });
+
+  it("logs the legacy endpoint when signature verification fails without leaking secrets", async () => {
+    const secret = "whsec_legacy_should_not_leak";
+    const signature = "t=1710000000,v1=legacy_signature_material";
+    mocks.constructSubscriptionWebhookEvent.mockRejectedValueOnce(
+      new Error(`No signatures found matching ${secret} header ${signature}`),
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await POST(
+      new Request("https://openvpm.test/api/webhooks/stripe-subscription", {
+        method: "POST",
+        headers: { "stripe-signature": signature },
+        body: "{}",
+      }) as never,
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "Invalid signature" });
+    expect(mocks.withSystem).not.toHaveBeenCalled();
+    const logged = JSON.stringify(errorSpy.mock.calls);
+    expect(logged).toContain(
+      "endpoint=/api/webhooks/stripe-subscription account=legacy",
+    );
+    expect(logged).not.toContain(secret);
+    expect(logged).not.toContain(signature);
+    expect(logged).not.toContain("whsec_");
+    errorSpy.mockRestore();
   });
 
   it("alerts and retries when metadata-free mapping is ambiguous", async () => {

@@ -25,6 +25,11 @@ export async function claimStripeEvent(
     eventId: string;
     endpoint: "client-invoice" | "client-invoice-connect" | "subscription";
     eventType: string;
+    /**
+     * Explicit null keeps unmapped evidence durable. Omit it on the first
+     * claim inside the billing transaction; a later attach sets the practice.
+     */
+    practiceId?: string | null;
     evidence?: StripeConversionEvidenceInput;
   }
 ): Promise<boolean> {
@@ -34,6 +39,7 @@ export async function claimStripeEvent(
       eventId: opts.eventId,
       endpoint: opts.endpoint,
       eventType: opts.eventType,
+      ...(opts.practiceId !== undefined ? { practiceId: opts.practiceId } : {}),
       ...(opts.evidence
         ? {
             eventCreatedAt: opts.evidence.eventCreatedAt,

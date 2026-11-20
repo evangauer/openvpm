@@ -31,6 +31,7 @@ import {
 } from "@/lib/email";
 import { sendTrackedVerificationEmail } from "@/lib/auth-email-delivery";
 import { sendOptionalPlatformEmail } from "@/lib/email-lifecycle";
+import { notifyNewClinic } from "@/lib/new-clinic-alert";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
 import { newSubscriptionBillingAccount } from "@/lib/billing/stripe-accounts";
 import { BILLING_CADENCES } from "@/lib/billing/catalog";
@@ -636,6 +637,21 @@ export const authRouter = createRouter({
               "[register] post-commit verification dispatch failed",
             );
           }
+        });
+      }
+
+      // Ops notice for a new practice. Scheduled after the outer transaction
+      // commits and not awaited, so a slow or failed send cannot block or
+      // fail signup. Unset NEW_CLINIC_ALERT_EMAIL makes this a no-op.
+      if (ctx.postCommitEffect) {
+        const createdPracticeId = practice.id;
+        const createdPracticeName = input.practiceName.trim();
+        ctx.postCommitEffect(() => {
+          void notifyNewClinic({
+            practiceId: createdPracticeId,
+            practiceName: createdPracticeName,
+          });
+          return Promise.resolve();
         });
       }
 

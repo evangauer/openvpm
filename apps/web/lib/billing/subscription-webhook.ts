@@ -34,6 +34,12 @@ class UnmanagedStripeSubscriptionError extends Error {
   }
 }
 
+function subscriptionWebhookEndpoint(account: SubscriptionBillingAccount): string {
+  return account === "openvpm"
+    ? "/api/webhooks/stripe-openvpm-subscription"
+    : "/api/webhooks/stripe-subscription";
+}
+
 function payloadTooLargeResponse() {
   return NextResponse.json(
     { error: "Stripe webhook payload too large" },
@@ -77,10 +83,11 @@ export function createSubscriptionWebhookHandler(account: SubscriptionBillingAcc
       event = account === "legacy"
         ? await constructSubscriptionWebhookEvent(body.text, signature)
         : await constructSubscriptionWebhookEvent(body.text, signature, account);
-    } catch (err) {
+    } catch {
+      // The verifier error can echo the signing secret or signature header.
+      // Log only the endpoint and account so operators can tell the routes apart.
       console.error(
-        "[Stripe Subscription Webhook] signature verification failed:",
-        err,
+        `[Stripe Subscription Webhook] signature verification failed endpoint=${subscriptionWebhookEndpoint(account)} account=${account}`,
       );
       return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
     }
@@ -92,15 +99,16 @@ export function createSubscriptionWebhookHandler(account: SubscriptionBillingAcc
     }
 
     const conversionEvidence = conversionEvidenceForEvent(event);
+    const claim = {
+      eventId: event.id,
+      endpoint: "subscription" as const,
+      eventType: event.type,
+      ...(conversionEvidence ? { evidence: conversionEvidence } : {}),
+    };
     const postCommitEffects: Array<() => Promise<unknown>> = [];
     try {
       await withSystem(db, async (tx) => {
-        const claimed = await claimStripeEvent(tx, {
-          eventId: event.id,
-          endpoint: "subscription",
-          eventType: event.type,
-          ...(conversionEvidence ? { evidence: conversionEvidence } : {}),
-        });
+        const claimed = await claimStripeEvent(tx, claim);
         if (!claimed) return;
 
         switch (event.type) {
@@ -346,9 +354,39 @@ export function createSubscriptionWebhookHandler(account: SubscriptionBillingAcc
       }
     } catch (err) {
       if (err instanceof UnmanagedStripeSubscriptionError) {
+        // The billing transaction rolled the claim back with the failed
+        // mapping. Store the same signed evidence, with no practice, in its
+        // own transaction before acknowledging Stripe. Reconciliation can
+        // attach the clinic later; a 200 without this row would drop it.
+        try {
+          await withSystem(db, async (tx) => {
+            await claimStripeEvent(tx, { ...claim, practiceId: null });
+          });
+        } catch (persistErr) {
+          console.error(
+            `[Stripe Subscription Webhook] failed to persist unmanaged event endpoint=${subscriptionWebhookEndpoint(account)} account=${account} type=${event.type} id=${event.id}`,
+            persistErr,
+          );
+          await alertOps(
+            "Subscription webhook evidence was not stored",
+            `type=${event.type} id=${event.id} account=${account}`,
+          );
+          return NextResponse.json({ error: "Handler error" }, { status: 500 });
+        }
         console.info(
-          `[Stripe Subscription Webhook] ignored unmanaged event type=${event.type}`,
+          `[Stripe Subscription Webhook] stored unmanaged event endpoint=${subscriptionWebhookEndpoint(account)} account=${account} type=${event.type} id=${event.id}`,
         );
+        try {
+          await alertOps(
+            "Unmanaged Stripe subscription event",
+            `type=${event.type} id=${event.id} account=${account}`,
+          );
+        } catch (alertErr) {
+          console.error(
+            `[Stripe Subscription Webhook] unmanaged event alert failed account=${account} type=${event.type} id=${event.id}`,
+            alertErr,
+          );
+        }
         return NextResponse.json({ received: true, ignored: true });
       }
       console.error("[Stripe Subscription Webhook] handler error:", err);
