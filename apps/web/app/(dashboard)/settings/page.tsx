@@ -1,6 +1,7 @@
 "use client";
 
 import { ImportRowIssues } from "@/components/settings/import-row-issues";
+import { useCheckoutReturnFunnelEvent } from "@/lib/use-checkout-return-funnel";
 
 import { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useSession } from "next-auth/react";
@@ -1447,6 +1448,9 @@ function redirectToClientPaymentUrl(url: unknown) {
 function BillingTab() {
   const utils = trpc.useUtils();
   const searchParams = useSearchParams();
+  useCheckoutReturnFunnelEvent("settings_billing", {
+    checkout: searchParams.get("checkout"),
+  });
   const [selectedCadence, setSelectedCadence] = useState<BillingCadence>(() =>
     billingCadenceFromQuery(searchParams.get("plan")),
   );

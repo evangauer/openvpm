@@ -10,6 +10,12 @@ import {
   type ActivationFunnel,
 } from "@/lib/admin/activation-funnel";
 import {
+  BILLING_REGIMES,
+  formatBillingRegimeLine,
+  formatSignupPaidReadout,
+  formatTrialNotYetEnded,
+} from "@/lib/admin/billing-regime";
+import {
   computeJourneyFunnel,
   type JourneyFunnel,
 } from "@/lib/admin/journey-funnel";
@@ -18,9 +24,9 @@ import { loadClinicPilotQueue } from "@/lib/admin/clinic-pilots";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-// Weekly trial-funnel digest for the founder/operators: signups -> setup ->
-// activated -> payment method collected -> first positive payment for the past
-// 7 and 30 days. Current subscription state is shown separately.
+// Weekly trial-funnel digest: signups -> checkout started -> card collected ->
+// paid, split by billing regime, for the past 7 and 30 days. Open trials are
+// counted separately so zero paid is not read as a failed conversion.
 // Reporting only — it must never 500-loop, so failures alert ops and still
 // return a non-throwing response.
 export async function GET(request: Request) {
@@ -96,13 +102,16 @@ function pct(rate: number): string {
 function funnelSection(title: string, funnel: ActivationFunnel): string {
   const {
     signups,
+    checkoutStarted,
     setupStarted,
     setupCompleted,
     activated,
     firstVisitCompleted,
     paymentMethodCollected,
     firstPositivePayment,
+    trialNotYetEnded,
     currentlyActive,
+    checkoutStartRate,
     setupStartRate,
     setupCompletionRate,
     activationRate,
@@ -115,25 +124,31 @@ function funnelSection(title: string, funnel: ActivationFunnel): string {
 <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;">
   <tr style="text-align:left;color:#6b7280;font-size:13px;">
     <th style="padding:4px 12px 4px 0;font-weight:500;">Signups</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Checkout started</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Setup started</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Setup complete</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Activated</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">First visit done</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">Payment method</th>
     <th style="padding:4px 12px 4px 0;font-weight:500;">First positive payment</th>
+    <th style="padding:4px 12px 4px 0;font-weight:500;">Trial not yet ended</th>
     <th style="padding:4px 0;font-weight:500;">Currently active</th>
   </tr>
   <tr style="font-size:20px;color:#111827;font-weight:600;">
     <td style="padding:2px 12px 2px 0;">${signups}</td>
+    <td style="padding:2px 12px 2px 0;">${checkoutStarted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(checkoutStartRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${setupStarted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(setupStartRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${setupCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(setupCompletionRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${activated} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(activationRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${firstVisitCompleted} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(firstVisitCompletionRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${paymentMethodCollected} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(paymentMethodRate)}</span></td>
     <td style="padding:2px 12px 2px 0;">${firstPositivePayment} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(positivePaymentRate)}</span></td>
+    <td style="padding:2px 12px 2px 0;">${trialNotYetEnded}</td>
     <td style="padding:2px 0;">${currentlyActive} <span style="font-size:13px;color:#6b7280;font-weight:400;">${pct(currentlyActiveRate)}</span></td>
   </tr>
 </table>
+<p style="margin:8px 0 0;color:#111827;font-size:14px;line-height:1.5;"><strong>Signup to paid:</strong> ${formatSignupPaidReadout(funnel.totals)}. ${formatTrialNotYetEnded(trialNotYetEnded)}.</p>
+<p style="margin:8px 0 0;color:#374151;font-size:13px;line-height:1.5;"><strong>Billing regime:</strong> ${BILLING_REGIMES.map((regime) => formatBillingRegimeLine(regime, funnel.billingRegimes[regime])).join(" · ")}.</p>
 <p style="margin:8px 0 0;color:#374151;font-size:13px;line-height:1.5;"><strong>Jurisdiction cohorts:</strong> US ${funnel.jurisdictionCohorts.confirmedUs.signups} signup(s) → ${funnel.jurisdictionCohorts.confirmedUs.activated} activated (${pct(funnel.jurisdictionCohorts.confirmedUs.activationRate)}) · non-US ${funnel.jurisdictionCohorts.confirmedNonUs.signups} → ${funnel.jurisdictionCohorts.confirmedNonUs.activated} (${pct(funnel.jurisdictionCohorts.confirmedNonUs.activationRate)}) · historical unknown ${funnel.jurisdictionCohorts.unknown.signups} → ${funnel.jurisdictionCohorts.unknown.activated} (${pct(funnel.jurisdictionCohorts.unknown.activationRate)}).</p>
 <p style="margin:8px 0 0;color:#374151;font-size:13px;line-height:1.5;"><strong>First real visit → billing setup:</strong> ${funnel.firstVisitBillingConversion.convertedWithin24Hours}/${funnel.firstVisitBillingConversion.opportunities} within 24h (${pct(funnel.firstVisitBillingConversion.conversionWithin24HoursRate)}) · ${funnel.firstVisitBillingConversion.convertedWithin72Hours}/${funnel.firstVisitBillingConversion.opportunities} within 72h (${pct(funnel.firstVisitBillingConversion.conversionWithin72HoursRate)}) · ${funnel.firstVisitBillingConversion.alreadyConnectedAtVisit} already connected at first visit. Only first visits at least 72 hours old are included.</p>
 <p style="margin:8px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Evidence quality: ${funnel.dataQuality.legacyBusinessStageRows} excluded legacy stage row(s) · ${funnel.dataQuality.unknownPaymentMethodPractices} clinic(s) with unknown payment-method evidence · ${funnel.dataQuality.unknownPositivePaymentPractices} clinic(s) with unknown positive-payment evidence · ${funnel.dataQuality.missingRegistrationMilestones} missing registration projection(s) · ${funnel.dataQuality.missingActivationMilestones} missing activation projection(s) · ${funnel.dataQuality.unprojectedStripeEvidence} unprojected Stripe evidence row(s) · ${funnel.dataQuality.unmappedStripeEvidence} unmapped Stripe evidence row(s). Unknown is not zero and receives no synthetic date.</p>`;
@@ -227,7 +242,7 @@ function digestHtml(
               ${funnelSection("Past 7 days", week)}
               ${funnelSection("Past 30 days", month)}
               ${pilotSection(pilots)}
-              <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Activated = added a real client and booked a real visit. First visit done = completed the clinical and billing closeout; its rate is measured from signups. Payment method = signed subscription Checkout completion with collection required and is also measured from signups because billing can be connected before activation. First positive payment = signed positive subscription invoice payment. Currently active is current billing state, not a historical milestone. Legacy business-stage rows are excluded; demo data never counts.</p>
+              <p style="margin:24px 0 0;color:#6b7280;font-size:13px;line-height:1.5;">Checkout started = a server-recorded Checkout URL, not a browser ping. Card collected = signed subscription Checkout completion with collection required. Paid = signed positive subscription invoice payment. Trial not yet ended = a future trial end and no positive payment yet, so zero paid during an open trial is not a failed conversion. Card required = created at or after 2026-10-01T19:32:46Z on the OpenVPM billing account. Before the card gate = every other signup. Activated = added a real client and booked a real visit. First visit done = completed the clinical and billing closeout; its rate is measured from signups. Currently active is current billing state, not a historical milestone. Legacy business-stage rows are excluded; demo data never counts.</p>
             </td>
           </tr>
           <tr>

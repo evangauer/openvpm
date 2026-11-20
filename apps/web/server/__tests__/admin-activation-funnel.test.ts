@@ -1,5 +1,10 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  formatBillingRegimeLine,
+  formatSignupPaidReadout,
+  formatTrialNotYetEnded,
+} from "@/lib/admin/billing-regime";
 
 const mocks = vi.hoisted(() => {
   const executeResults: unknown[][] = [];
@@ -131,35 +136,42 @@ describe("admin activation funnel", () => {
       {
         weekStart: "2026-06-15",
         signups: 4,
+        checkoutStarted: 0,
         setupStarted: 3,
         setupCompleted: 1,
         activated: 2,
         firstVisitCompleted: 1,
         paymentMethodCollected: 2,
         firstPositivePayment: 1,
+        trialNotYetEnded: 0,
         currentlyActive: 1,
       },
       {
         weekStart: "2026-06-22",
         signups: 6,
+        checkoutStarted: 0,
         setupStarted: 4,
         setupCompleted: 2,
         activated: 3,
         firstVisitCompleted: 2,
         paymentMethodCollected: 3,
         firstPositivePayment: 2,
+        trialNotYetEnded: 0,
         currentlyActive: 2,
       },
     ]);
     expect(result.totals).toEqual({
       signups: 10,
+      checkoutStarted: 0,
       setupStarted: 7,
       setupCompleted: 3,
       activated: 5,
       firstVisitCompleted: 3,
       paymentMethodCollected: 5,
       firstPositivePayment: 3,
+      trialNotYetEnded: 0,
       currentlyActive: 3,
+      checkoutStartRate: 0,
       setupStartRate: 0.7,
       setupCompletionRate: 0.3,
       activationRate: 0.5,
@@ -264,13 +276,16 @@ describe("admin activation funnel", () => {
 
     expect(result.totals).toEqual({
       signups: 0,
+      checkoutStarted: 0,
       setupStarted: 0,
       setupCompleted: 0,
       activated: 0,
       firstVisitCompleted: 0,
       paymentMethodCollected: 0,
       firstPositivePayment: 0,
+      trialNotYetEnded: 0,
       currentlyActive: 0,
+      checkoutStartRate: 0,
       setupStartRate: 0,
       setupCompletionRate: 0,
       activationRate: 0,
@@ -310,6 +325,93 @@ describe("admin activation funnel", () => {
     expect(result.totals.activationRate).toBe(0.5);
   });
 
+  it("groups fixture rows on both sides of the card gate", async () => {
+    vi.stubEnv("PLATFORM_ADMIN_EMAILS", "ops@example.com");
+    mocks.executeResults.push(
+      [
+        {
+          weekStart: "2026-09-28",
+          jurisdictionCohort: "confirmedUs",
+          billingRegime: "pre_card_gate",
+          signups: 2,
+          checkoutStarted: 1,
+          setupStarted: 1,
+          setupCompleted: 0,
+          activated: 1,
+          firstVisitCompleted: 0,
+          paymentMethodCollected: 1,
+          firstPositivePayment: 1,
+          trialNotYetEnded: 0,
+          currentlyActive: 1,
+        },
+        {
+          weekStart: "2026-10-05",
+          jurisdictionCohort: "confirmedUs",
+          billingRegime: "card_required",
+          signups: 3,
+          checkoutStarted: 3,
+          setupStarted: 1,
+          setupCompleted: 0,
+          activated: 0,
+          firstVisitCompleted: 0,
+          paymentMethodCollected: 2,
+          firstPositivePayment: 0,
+          trialNotYetEnded: 2,
+          currentlyActive: 0,
+        },
+      ],
+      [],
+      [],
+    );
+
+    const result = await caller().activationFunnel({ days: 30 });
+
+    expect(result.totals).toMatchObject({
+      signups: 5,
+      checkoutStarted: 4,
+      paymentMethodCollected: 3,
+      firstPositivePayment: 1,
+      trialNotYetEnded: 2,
+      checkoutStartRate: 0.8,
+    });
+    expect(result.billingRegimes.pre_card_gate).toMatchObject({
+      signups: 2,
+      checkoutStarted: 1,
+      paymentMethodCollected: 1,
+      firstPositivePayment: 1,
+      trialNotYetEnded: 0,
+    });
+    expect(result.billingRegimes.card_required).toMatchObject({
+      signups: 3,
+      checkoutStarted: 3,
+      paymentMethodCollected: 2,
+      firstPositivePayment: 0,
+      trialNotYetEnded: 2,
+    });
+    expect(formatSignupPaidReadout(result.totals)).toBe(
+      "5 signups → 4 checkout started → 3 card collected → 1 paid",
+    );
+    expect(formatTrialNotYetEnded(result.totals.trialNotYetEnded)).toBe(
+      "2 trial not yet ended",
+    );
+    expect(
+      formatBillingRegimeLine(
+        "card_required",
+        result.billingRegimes.card_required,
+      ),
+    ).toBe(
+      "Card required: 3 signups → 3 checkout started → 2 card collected → 0 paid · 2 trial not yet ended",
+    );
+    expect(
+      formatBillingRegimeLine(
+        "pre_card_gate",
+        result.billingRegimes.pre_card_gate,
+      ),
+    ).toBe(
+      "Before the card gate: 2 signups → 1 checkout started → 1 card collected → 1 paid · 0 trial not yet ended",
+    );
+  });
+
   it("uses canonical milestones and reports current billing state separately", () => {
     const source = readFileSync("lib/admin/activation-funnel.ts", "utf8");
 
@@ -325,6 +427,11 @@ describe("admin activation funnel", () => {
     expect(source).toContain("pcm.milestone = 'activated'");
     expect(source).toContain("pcm.milestone = 'payment_method_collected'");
     expect(source).toContain("pcm.milestone = 'first_positive_payment'");
+    expect(source).toContain("fe.event_name = 'checkout_started'");
+    expect(source).toContain("s.trial_ends_at > now()");
+    expect(source).toContain("p.stripe_billing_account = 'openvpm'");
+    expect(source).toContain("${CARD_GATE_AT}::timestamptz");
+    expect(source).toContain('s.billing_regime as "billingRegime"');
     expect(source).toContain("onboardingIntentSelectedAt");
     expect(source).toContain(
       "paymentMethodRate: funnelRate(paymentMethodCollected, signups)",

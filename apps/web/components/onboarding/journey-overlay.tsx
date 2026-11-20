@@ -19,7 +19,11 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { firstRunMode, suppressWelcomeForBilling } from "@/lib/welcome/first-run";
-import { FUNNEL_EVENTS, isDemoMode } from "@/lib/funnel-analytics";
+import {
+  FUNNEL_EVENTS,
+  isDemoMode,
+  trackCheckoutReturn,
+} from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import {
   DEFAULT_ONBOARDING_INTENT,
@@ -102,6 +106,20 @@ export function OnboardingJourneyProvider({
     if (!isAdmin) return;
     setIndex(resumeIndex);
   }, [isAdmin, resumeIndex]);
+
+  // Checkout return on /?setup=resume&checkout=... This effect is declared
+  // before the one that strips `setup`, so the event still sees both params.
+  const trackedSetupCheckout = useRef(false);
+  useEffect(() => {
+    if (trackedSetupCheckout.current || typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const tracked = trackCheckoutReturn(
+      "setup_resume",
+      { checkout: params.get("checkout"), setup: params.get("setup") },
+      (name, props) => trackFunnelEvent(name, props),
+    );
+    if (tracked) trackedSetupCheckout.current = true;
+  }, []);
 
   // Returning from Stripe Checkout during setup: ?setup=resume reopens the
   // journey at the saved step (the card step persisted "allSet" before the

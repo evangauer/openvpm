@@ -59,7 +59,10 @@ import {
   AUTH_PRACTICE_NAME_MAX_LENGTH,
 } from "@/lib/auth-input-policy";
 import { ACQUISITION_VALUE_MAX_LENGTH } from "@/lib/acquisition";
-import { recordRegistration } from "@/lib/funnel-events-server";
+import {
+  recordCheckoutStarted,
+  recordRegistration,
+} from "@/lib/funnel-events-server";
 import { regionDefaults } from "@/lib/locale/format";
 import {
   CLINIC_REGION_CODES,
@@ -544,6 +547,11 @@ export const authRouter = createRouter({
                   "Could not start hosted billing checkout. Please try again.",
               });
             }
+
+            await recordCheckoutStarted(tx as unknown as Database, {
+              practiceId: createdPractice.id,
+              source: "signup",
+            });
           }
 
           return {

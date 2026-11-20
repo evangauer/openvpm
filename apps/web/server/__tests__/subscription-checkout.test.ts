@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   syncPracticeSubscriptionQuantities: vi.fn(),
   usageForPractice: vi.fn(async () => 0),
   recordAuditLog: vi.fn(async () => undefined),
+  recordCheckoutStarted: vi.fn(async () => true),
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -40,6 +41,10 @@ vi.mock("@/lib/billing/usage", () => ({
 
 vi.mock("@/lib/audit", () => ({
   recordAuditLog: mocks.recordAuditLog,
+}));
+
+vi.mock("@/lib/funnel-events-server", () => ({
+  recordCheckoutStarted: mocks.recordCheckoutStarted,
 }));
 
 vi.mock("@/lib/tenant-db", () => ({
@@ -287,6 +292,10 @@ describe("subscription checkout", () => {
           "https://app.example.com/settings?tab=billing&checkout=cancelled&plan=month",
       })
     );
+    expect(mocks.recordCheckoutStarted).toHaveBeenCalledWith(db, {
+      practiceId: PRACTICE_ID,
+      source: "settings",
+    });
   });
 
   it("uses the configured annual price when annual billing is selected", async () => {
@@ -414,6 +423,7 @@ describe("subscription checkout", () => {
       code: "PRECONDITION_FAILED",
       message: "Billing is not configured on this server.",
     });
+    expect(mocks.recordCheckoutStarted).not.toHaveBeenCalled();
   });
 
   it("fails closed when Stripe returns an unsafe hosted checkout URL", async () => {
@@ -429,6 +439,7 @@ describe("subscription checkout", () => {
       code: "PRECONDITION_FAILED",
       message: "Billing is not configured on this server.",
     });
+    expect(mocks.recordCheckoutStarted).not.toHaveBeenCalled();
   });
 
   it("fails closed when Stripe returns an unsafe billing portal URL", async () => {

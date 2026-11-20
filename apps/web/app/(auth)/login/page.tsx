@@ -14,6 +14,7 @@ import { DemoLogin } from "@/components/demo/demo-login";
 import { isValidEmail } from "@/lib/utils";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
 import { loginErrorMessage } from "@/lib/login-error-message";
+import { useCheckoutReturnFunnelEvent } from "@/lib/use-checkout-return-funnel";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
@@ -35,6 +36,7 @@ function PracticeLogin() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const checkoutState = searchParams.get("checkout");
+  useCheckoutReturnFunnelEvent("login", { checkout: checkoutState });
   const nextPath = safeAuthNextPath(
     searchParams.get("next"),
     checkoutState === "cancelled" ? "/settings?tab=billing" : "/post-login",
