@@ -19,6 +19,13 @@ import { SmsRecoveryConsole } from "@/components/admin/sms-recovery-console";
 import { ClinicPilotConsole } from "@/components/admin/clinic-pilot-console";
 import { BUILD_SCENE_LABELS } from "@/lib/build/catalog";
 import { DEMO_DISCLOSURE_FOLLOWUP_V2 } from "@/lib/growth/demo-disclosure";
+import {
+  BILLING_REGIMES,
+  CARD_GATE_AT,
+  formatBillingRegimeLine,
+  formatSignupPaidReadout,
+  formatTrialNotYetEnded,
+} from "@/lib/admin/billing-regime";
 
 const EMPTY_UUID = "00000000-0000-4000-8000-000000000000";
 const MESSAGING_HISTORY_LIMIT = 50;
@@ -1597,11 +1604,20 @@ export default function AdminPage() {
         </div>
         {funnel ? (
           <>
-            <div className="mt-3 grid gap-4 sm:grid-cols-3 xl:grid-cols-8">
+            <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
               <div>
                 <p className="text-sm text-muted-foreground">Signups</p>
                 <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
                   {funnel.totals.signups}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Checkout started</p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {funnel.totals.checkoutStarted}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    {formatPct(funnel.totals.checkoutStartRate)}
+                  </span>
                 </p>
               </div>
               <div>
@@ -1664,6 +1680,14 @@ export default function AdminPage() {
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">
+                  Trial not yet ended
+                </p>
+                <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
+                  {funnel.totals.trialNotYetEnded}
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">
                   Currently active
                 </p>
                 <p className="mt-1 font-heading text-2xl font-bold tabular-nums">
@@ -1674,15 +1698,33 @@ export default function AdminPage() {
                 </p>
               </div>
             </div>
+            <p className="mt-3 text-sm text-foreground">
+              {formatSignupPaidReadout(funnel.totals)}.{" "}
+              {formatTrialNotYetEnded(funnel.totals.trialNotYetEnded)}.
+            </p>
+            <div className="mt-3 space-y-1 text-sm text-muted-foreground">
+              {BILLING_REGIMES.map((regime) => (
+                <p key={regime}>
+                  {formatBillingRegimeLine(
+                    regime,
+                    funnel.billingRegimes[regime],
+                  )}
+                </p>
+              ))}
+            </div>
             <p className="mt-3 text-xs text-muted-foreground">
-              Setup progress comes from the guided clinic setup. Activated =
-              added a real client and booked a real visit. First visit done
-              requires a completed clinical and billing closeout; its rate is
-              measured from activated clinics. Payment method = a signed
-              subscription Checkout completed with collection required. First
-              positive payment = a signed, positive subscription invoice
-              payment. Currently active is current billing state, not a
-              historical conversion milestone.
+              Checkout started is recorded on the server when Checkout returns
+              a URL. Card collected = a signed subscription Checkout completed
+              with collection required. Paid = a signed, positive subscription
+              invoice payment. Trial not yet ended means the trial end is still
+              in the future and no positive payment has posted, so zero paid is
+              not a failed conversion. Card required starts at {CARD_GATE_AT}{" "}
+              for clinics on the OpenVPM billing account. Setup progress comes
+              from the guided clinic setup. Activated = added a real client and
+              booked a real visit. First visit done requires a completed
+              clinical and billing closeout; its rate is measured from
+              activated clinics. Currently active is current billing state, not
+              a historical conversion milestone.
             </p>
 
             <div className="mt-4 rounded-lg border border-primary/15 bg-primary/5 p-4">

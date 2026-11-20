@@ -34,6 +34,11 @@ describe("admin UI", () => {
     );
     expect(source).toContain("Trial funnel (30 days)");
     expect(source).toContain("{funnel.totals.signups}");
+    expect(source).toContain("{funnel.totals.checkoutStarted}");
+    expect(source).toContain("{funnel.totals.trialNotYetEnded}");
+    expect(source).toContain("formatSignupPaidReadout(funnel.totals)");
+    expect(source).toContain("formatBillingRegimeLine(");
+    expect(source).toContain("funnel.billingRegimes[regime]");
     expect(source).toContain("{funnel.totals.setupStarted}");
     expect(source).toContain("{funnel.totals.setupCompleted}");
     expect(source).toContain("{funnel.totals.activated}");
@@ -54,6 +59,8 @@ describe("admin UI", () => {
     expect(compactSource).toContain("completed clinical and billing closeout");
     expect(compactSource).toContain("rate is measured from");
     expect(compactSource).toContain("signed subscription Checkout");
+    expect(compactSource).toContain("zero paid is not a failed conversion");
+    expect(source).toContain("CARD_GATE_AT");
     expect(compactSource).toContain("Legacy business-stage rows are excluded");
     expect(source).toContain("Could not load the funnel.");
   });

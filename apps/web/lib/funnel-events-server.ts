@@ -3,6 +3,10 @@ import type { Database } from "@openpims/db/client";
 import { funnelEvents, practices } from "@openpims/db";
 import { withSystem } from "@/lib/tenant-db";
 import { upsertPracticeConversionMilestone } from "@/lib/conversion-milestones";
+import {
+  FUNNEL_EVENTS,
+  type CheckoutFunnelSource,
+} from "@/lib/funnel-analytics";
 
 export {
   projectActivationMilestone,
@@ -238,4 +242,75 @@ export async function recordRegistration(
       evidenceKey: `practice:${practice.id}`,
     });
   });
+}
+
+const CHECKOUT_STARTED_PATH: Record<CheckoutFunnelSource, string> = {
+  signup: "/register",
+  settings: "/settings",
+};
+
+/**
+ * Vercel custom event for a server-owned checkout start. Hosted analytics only
+ * runs on Vercel; the durable row below is what the activation digest counts.
+ */
+async function emitServerCheckoutStarted(
+  source: CheckoutFunnelSource,
+): Promise<void> {
+  if (process.env.VERCEL !== "1") return;
+  try {
+    const analytics = (await import("@vercel/analytics/server")) as {
+      track?: (
+        name: string,
+        properties?: Record<string, string>,
+      ) => Promise<void>;
+    };
+    if (typeof analytics.track !== "function") return;
+    await analytics.track(FUNNEL_EVENTS.checkoutStarted, { source });
+  } catch (error) {
+    console.error("[funnel] checkout_started analytics failed:", error);
+  }
+}
+
+/**
+ * One server-owned checkout_started row per practice.
+ *
+ * Browser analytics can be blocked, and `practice_conversion_milestones` only
+ * accepts registration, activation, and signed Stripe evidence. This ledger
+ * row is the milestone for "Checkout URL was issued" without a new enum.
+ * Repeats keep the first source. The insert is idempotent via NOT EXISTS;
+ * a duplicate from a race still counts once because the funnel uses EXISTS.
+ */
+export async function recordCheckoutStarted(
+  db: Database,
+  input: { practiceId: string; source: CheckoutFunnelSource },
+): Promise<boolean> {
+  await emitServerCheckoutStarted(input.source);
+  try {
+    return await withSystem(db, async (tx) => {
+      const eventName = FUNNEL_EVENTS.checkoutStarted;
+      const result = await tx.execute(sql`
+        insert into funnel_events (
+          event_name, practice_id, source, path, metadata
+        )
+        select
+          ${eventName},
+          ${input.practiceId}::uuid,
+          ${input.source},
+          ${CHECKOUT_STARTED_PATH[input.source]},
+          jsonb_build_object('serverOwned', true)
+        where not exists (
+          select 1
+          from funnel_events existing
+          where existing.practice_id = ${input.practiceId}::uuid
+            and existing.deleted_at is null
+            and existing.event_name = ${eventName}
+        )
+        returning id
+      `);
+      return rowsFromExecute(result).length > 0;
+    });
+  } catch (error) {
+    console.error("[funnel] durable checkout_started failed:", error);
+    return false;
+  }
 }

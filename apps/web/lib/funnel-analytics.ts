@@ -24,6 +24,9 @@ export const FUNNEL_EVENTS = {
   signupAccountViewed: "signup_account_viewed",
   signupSubmitted: "signup_submitted",
   signupSucceeded: "signup_succeeded",
+  checkoutStarted: "checkout_started",
+  checkoutSucceeded: "checkout_succeeded",
+  checkoutCancelled: "checkout_cancelled",
   onboardingModelSelected: "onboarding_model_selected",
   onboardingGoalSelected: "onboarding_goal_selected",
   onboardingPlanBuilt: "onboarding_plan_built",
@@ -207,4 +210,60 @@ export function cloudSignupAppOrigin(): string | undefined {
 
 export function isDemoMode(): boolean {
   return process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
+}
+
+export const CHECKOUT_FUNNEL_SOURCES = ["signup", "settings"] as const;
+
+export type CheckoutFunnelSource = (typeof CHECKOUT_FUNNEL_SOURCES)[number];
+
+/** Pages Stripe Checkout sends the clinic back to. */
+export type CheckoutReturnPage = "login" | "settings_billing" | "setup_resume";
+
+export interface CheckoutReturnFunnelEvent {
+  name:
+    | typeof FUNNEL_EVENTS.checkoutSucceeded
+    | typeof FUNNEL_EVENTS.checkoutCancelled;
+  source: CheckoutFunnelSource;
+  path: string;
+}
+
+/**
+ * Map a Checkout return URL onto the success or cancelled funnel event.
+ * `setup_resume` only counts when the workspace was reopened from Checkout
+ * (`/?setup=resume&checkout=...`). Other query values stay silent.
+ */
+export function checkoutReturnFunnelEvent(
+  page: CheckoutReturnPage,
+  params: { checkout: string | null; setup?: string | null },
+): CheckoutReturnFunnelEvent | null {
+  if (page === "setup_resume" && params.setup !== "resume") return null;
+  const name =
+    params.checkout === "success"
+      ? FUNNEL_EVENTS.checkoutSucceeded
+      : params.checkout === "cancelled"
+        ? FUNNEL_EVENTS.checkoutCancelled
+        : null;
+  if (!name) return null;
+  if (page === "login") {
+    return { name, source: "signup", path: "/login" };
+  }
+  if (page === "settings_billing") {
+    return { name, source: "settings", path: "/settings?tab=billing" };
+  }
+  return { name, source: "settings", path: "/?setup=resume" };
+}
+
+/** Fire the return event for one page. Returns false when the URL is not a return. */
+export function trackCheckoutReturn(
+  page: CheckoutReturnPage,
+  params: { checkout: string | null; setup?: string | null },
+  track: (
+    name: CheckoutReturnFunnelEvent["name"],
+    props: { source: CheckoutFunnelSource; path: string },
+  ) => void,
+): boolean {
+  const event = checkoutReturnFunnelEvent(page, params);
+  if (!event) return false;
+  track(event.name, { source: event.source, path: event.path });
+  return true;
 }

@@ -693,6 +693,12 @@ describe("auth router input validation", () => {
         cancelUrl: "http://localhost:3000/login?checkout=cancelled",
       }),
     );
+    expect(JSON.stringify((db.execute as { mock: { calls: unknown[] } }).mock.calls)).toContain(
+      "checkout_started",
+    );
+    expect(JSON.stringify((db.execute as { mock: { calls: unknown[] } }).mock.calls)).toContain(
+      "signup",
+    );
   });
 
   it("grants a card-free trial at signup without any Stripe checkout", async () => {
@@ -750,6 +756,9 @@ describe("auth router input validation", () => {
     expect(practiceInsert.trialEndsAt).toBeInstanceOf(Date);
     // Card-free trial never touches Stripe Checkout.
     expect(mocks.createSubscriptionCheckoutSession).not.toHaveBeenCalled();
+    expect(
+      JSON.stringify((db.execute as { mock: { calls: unknown[] } }).mock.calls),
+    ).not.toContain("checkout_started");
     expect(mocks.sendTrackedVerificationEmail).toHaveBeenCalledWith({
       practiceId: "practice-1",
       userId: "user-1",

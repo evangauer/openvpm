@@ -51,6 +51,7 @@ vi.mock("@/lib/conversion-milestones", () => ({
 const {
   ensureRegistrationFirstTouch,
   reconcileRegistrationFirstTouches,
+  recordCheckoutStarted,
   recordRegistration,
 } = await import("../funnel-events-server");
 
@@ -196,6 +197,57 @@ describe("registration funnel attribution", () => {
     expect(source).toContain("missingFunnelIdHistoricalUnknown");
     expect(source).not.toMatch(/from demo_accesses|client_ip/i);
     expect(mocks.execute).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("durable checkout_started", () => {
+  it("inserts one server-owned row and keeps the first source", async () => {
+    mocks.executeResults.push([{ id: "checkout-1" }]);
+
+    await expect(
+      recordCheckoutStarted(mocks.db as never, {
+        practiceId: PRACTICE_ID,
+        source: "signup",
+      }),
+    ).resolves.toBe(true);
+
+    const statement = JSON.stringify(mocks.execute.mock.calls);
+    expect(statement).toContain("checkout_started");
+    expect(statement).toContain("signup");
+    expect(statement).toContain("/register");
+    expect(statement).toContain("serverOwned");
+    expect(statement).toContain("not exists");
+  });
+
+  it("does not insert a second row when checkout already started", async () => {
+    mocks.executeResults.push([]);
+
+    await expect(
+      recordCheckoutStarted(mocks.db as never, {
+        practiceId: PRACTICE_ID,
+        source: "settings",
+      }),
+    ).resolves.toBe(false);
+
+    expect(JSON.stringify(mocks.execute.mock.calls)).toContain("/settings");
+  });
+
+  it("does not fail checkout when the durable write fails", async () => {
+    mocks.execute.mockRejectedValueOnce(new Error("funnel_events unavailable"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      recordCheckoutStarted(mocks.db as never, {
+        practiceId: PRACTICE_ID,
+        source: "settings",
+      }),
+    ).resolves.toBe(false);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[funnel] durable checkout_started failed:",
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
   });
 });
 

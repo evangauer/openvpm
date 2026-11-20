@@ -34,6 +34,7 @@ import { appBaseUrl } from "@/lib/app-url";
 import { subscriptionBillingAccount, type SubscriptionBillingAccount } from "@/lib/billing/stripe-accounts";
 import { billingContactEmail } from "@/lib/billing/contact";
 import { RECOVERY_HOLD_BLOCK_MESSAGE } from "@/lib/recovery-hold";
+import { recordCheckoutStarted } from "@/lib/funnel-events-server";
 
 const adminProcedure = protectedProcedure.use(requireRole("admin"));
 
@@ -260,6 +261,10 @@ export const subscriptionRouter = createRouter({
           message: "Billing is not configured on this server.",
         });
       }
+      await recordCheckoutStarted(ctx.db, {
+        practiceId: ctx.practiceId,
+        source: "settings",
+      });
       return { url: checkoutUrl };
     }),
 

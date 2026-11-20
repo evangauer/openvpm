@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActivationFunnel } from "@/lib/admin/activation-funnel";
+import {
+  formatBillingRegimeLine,
+  formatSignupPaidReadout,
+  formatTrialNotYetEnded,
+} from "@/lib/admin/billing-regime";
 import type { JourneyFunnel } from "@/lib/admin/journey-funnel";
 
 const mocks = vi.hoisted(() => ({
@@ -53,13 +58,16 @@ function jurisdictionTotals(
 ): ActivationFunnel["totals"] {
   return {
     signups,
+    checkoutStarted: 0,
     setupStarted: 0,
     setupCompleted: 0,
     activated,
     firstVisitCompleted: 0,
     paymentMethodCollected: 0,
     firstPositivePayment: 0,
+    trialNotYetEnded: 0,
     currentlyActive: 0,
+    checkoutStartRate: 0,
     setupStartRate: 0,
     setupCompletionRate: 0,
     activationRate: signups > 0 ? activated / signups : 0,
@@ -79,13 +87,16 @@ function funnel(
     weeks: [],
     totals: {
       signups: 5,
+      checkoutStarted: 4,
       setupStarted: 3,
       setupCompleted: 2,
       activated: 2,
       firstVisitCompleted: 1,
       paymentMethodCollected: 2,
       firstPositivePayment: 1,
+      trialNotYetEnded: 2,
       currentlyActive: 1,
+      checkoutStartRate: 0.8,
       setupStartRate: 0.6,
       setupCompletionRate: 0.4,
       activationRate: 0.4,
@@ -108,6 +119,23 @@ function funnel(
       convertedWithin72Hours: 1,
       conversionWithin24HoursRate: 0,
       conversionWithin72HoursRate: 1,
+    },
+    billingRegimes: {
+      pre_card_gate: {
+        ...jurisdictionTotals(2, 1),
+        checkoutStarted: 1,
+        checkoutStartRate: 0.5,
+      },
+      card_required: {
+        ...jurisdictionTotals(3, 1),
+        checkoutStarted: 3,
+        paymentMethodCollected: 2,
+        firstPositivePayment: 1,
+        trialNotYetEnded: 2,
+        checkoutStartRate: 1,
+        paymentMethodRate: 2 / 3,
+        positivePaymentRate: 0.5,
+      },
     },
     dataQuality: {
       confirmedUsSignups: 3,
@@ -292,6 +320,19 @@ describe("activation digest cron", () => {
       (
         mocks.sendEmail.mock.calls as unknown as Array<[{ html: string }]>
       )[0]?.[0].html ?? "";
+    const week = funnel(7);
+    const digestReadout = [
+      `Signup to paid:</strong> ${formatSignupPaidReadout(week.totals)}. ${formatTrialNotYetEnded(week.totals.trialNotYetEnded)}.`,
+      `Billing regime:</strong> ${formatBillingRegimeLine("pre_card_gate", week.billingRegimes.pre_card_gate)} · ${formatBillingRegimeLine("card_required", week.billingRegimes.card_required)}.`,
+    ].join("\n");
+    expect(digestReadout).toMatchInlineSnapshot(`
+      "Signup to paid:</strong> 5 signups → 4 checkout started → 2 card collected → 1 paid. 2 trial not yet ended.
+      Billing regime:</strong> Before the card gate: 2 signups → 1 checkout started → 0 card collected → 0 paid · 0 trial not yet ended · Card required: 3 signups → 3 checkout started → 2 card collected → 1 paid · 2 trial not yet ended."
+    `);
+    expect(html).toContain(digestReadout.split("\n")[0]);
+    expect(html).toContain(digestReadout.split("\n")[1]);
+    expect(html).toContain("Checkout started");
+    expect(html).toContain("Trial not yet ended");
     expect(html).not.toContain("North &lt;Clinic&gt;");
     expect(html).not.toContain("North <Clinic>");
     expect(html).toContain("aggregate-only");

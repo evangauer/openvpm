@@ -172,6 +172,35 @@ describe("/api/funnel-event", () => {
     expect(mocks.insertFunnelEvent).not.toHaveBeenCalled();
   });
 
+  it.each(["checkout_succeeded", "checkout_cancelled"])(
+    "accepts the Checkout return event %s",
+    async (name) => {
+      const response = await POST(
+        request(
+          {
+            ...validEvent,
+            name,
+            source: name === "checkout_succeeded" ? "signup" : "settings",
+            path:
+              name === "checkout_succeeded"
+                ? "/login"
+                : "/settings?tab=billing",
+          },
+          "https://app.openvpm.com",
+        ),
+      );
+
+      expect(response.status).toBe(202);
+      expect(mocks.insertFunnelEvent).toHaveBeenCalledWith(
+        {},
+        expect.objectContaining({
+          eventName: name,
+          source: name === "checkout_succeeded" ? "signup" : "settings",
+        }),
+      );
+    },
+  );
+
   it("rejects malformed or unknown events", async () => {
     const response = await POST(request({ ...validEvent, name: "email" }));
     expect(response.status).toBe(400);

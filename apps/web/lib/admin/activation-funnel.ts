@@ -1,12 +1,18 @@
 import { sql } from "drizzle-orm";
 import type { Database } from "@openpims/db/client";
 import { withSystem } from "@/lib/tenant-db";
+import {
+  CARD_GATE_AT,
+  type BillingRegime,
+} from "@/lib/admin/billing-regime";
 
 /**
  * Canonical practice conversion funnel.
  *
  * - signup: a practice created inside the window (soft-deleted and explicitly
  *   analytics-excluded internal/test practices are excluded).
+ * - checkout started: a server-owned funnel_events row written when Checkout
+ *   returned a URL. Browser analytics is not the source.
  * - activated: exact, repairable milestone projected from the first real
  *   client and first real appointment creation timestamps.
  * - first visit completed: a real appointment has a completed visit_closeout.
@@ -16,6 +22,10 @@ import { withSystem } from "@/lib/tenant-db";
  *   with payment_method_collection=always.
  * - first positive payment: signed subscription invoice.payment_succeeded with
  *   amount_paid > 0. Current subscription state is reported separately.
+ * - trial not yet ended: a signup with a future trial_ends_at and no positive
+ *   payment. Zero paid during that window is not a failed conversion.
+ * - billing regime: card_required when created_at >= CARD_GATE_AT and
+ *   stripe_billing_account is openvpm; otherwise pre_card_gate.
  *
  * Shared by the platform-admin tRPC query and the weekly digest cron so both
  * always report the same numbers.
@@ -27,12 +37,14 @@ export interface ActivationFunnelWeek {
   /** ISO date (YYYY-MM-DD) of the Monday the week starts on. */
   weekStart: string;
   signups: number;
+  checkoutStarted: number;
   setupStarted: number;
   setupCompleted: number;
   activated: number;
   firstVisitCompleted: number;
   paymentMethodCollected: number;
   firstPositivePayment: number;
+  trialNotYetEnded: number;
   currentlyActive: number;
 }
 
@@ -64,13 +76,18 @@ export interface FirstVisitBillingConversion {
 
 export interface ActivationFunnelTotals {
   signups: number;
+  checkoutStarted: number;
   setupStarted: number;
   setupCompleted: number;
   activated: number;
   firstVisitCompleted: number;
   paymentMethodCollected: number;
   firstPositivePayment: number;
+  /** Open trial and no positive payment yet. */
+  trialNotYetEnded: number;
   currentlyActive: number;
+  /** checkoutStarted / signups; 0 when there are no signups. */
+  checkoutStartRate: number;
   /** setupStarted / signups; 0 when there are no signups. */
   setupStartRate: number;
   /** setupCompleted / signups; 0 when there are no signups. */
@@ -100,6 +117,7 @@ export interface ActivationFunnel {
     ActivationFunnelJurisdictionCohort,
     ActivationFunnelTotals
   >;
+  billingRegimes: Record<BillingRegime, ActivationFunnelTotals>;
   dataQuality: ActivationFunnelDataQuality;
   firstVisitBillingConversion: FirstVisitBillingConversion;
 }
@@ -112,13 +130,16 @@ export function funnelRate(part: number, whole: number): number {
 interface FunnelRow {
   weekStart: string;
   jurisdictionCohort?: string;
+  billingRegime?: string;
   signups: number | string;
+  checkoutStarted: number | string;
   setupStarted: number | string;
   setupCompleted: number | string;
   activated: number | string;
   firstVisitCompleted: number | string;
   paymentMethodCollected: number | string;
   firstPositivePayment: number | string;
+  trialNotYetEnded: number | string;
   currentlyActive: number | string;
 }
 
@@ -150,18 +171,24 @@ function emptyWeek(weekStart: string): ActivationFunnelWeek {
   return {
     weekStart,
     signups: 0,
+    checkoutStarted: 0,
     setupStarted: 0,
     setupCompleted: 0,
     activated: 0,
     firstVisitCompleted: 0,
     paymentMethodCollected: 0,
     firstPositivePayment: 0,
+    trialNotYetEnded: 0,
     currentlyActive: 0,
   };
 }
 
 function summarizeWeeks(weeks: ActivationFunnelWeek[]): ActivationFunnelTotals {
   const signups = weeks.reduce((sum, week) => sum + week.signups, 0);
+  const checkoutStarted = weeks.reduce(
+    (sum, week) => sum + week.checkoutStarted,
+    0,
+  );
   const setupStarted = weeks.reduce((sum, week) => sum + week.setupStarted, 0);
   const setupCompleted = weeks.reduce(
     (sum, week) => sum + week.setupCompleted,
@@ -180,19 +207,26 @@ function summarizeWeeks(weeks: ActivationFunnelWeek[]): ActivationFunnelTotals {
     (sum, week) => sum + week.firstPositivePayment,
     0,
   );
+  const trialNotYetEnded = weeks.reduce(
+    (sum, week) => sum + week.trialNotYetEnded,
+    0,
+  );
   const currentlyActive = weeks.reduce(
     (sum, week) => sum + week.currentlyActive,
     0,
   );
   return {
     signups,
+    checkoutStarted,
     setupStarted,
     setupCompleted,
     activated,
     firstVisitCompleted,
     paymentMethodCollected,
     firstPositivePayment,
+    trialNotYetEnded,
     currentlyActive,
+    checkoutStartRate: funnelRate(checkoutStarted, signups),
     setupStartRate: funnelRate(setupStarted, signups),
     setupCompletionRate: funnelRate(setupCompleted, signups),
     activationRate: funnelRate(activated, signups),
@@ -213,6 +247,10 @@ function jurisdictionCohort(
   return "unknown";
 }
 
+function billingRegime(value: string | undefined): BillingRegime {
+  return value === "card_required" ? "card_required" : "pre_card_gate";
+}
+
 export async function computeActivationFunnel(
   db: Database,
   days: number,
@@ -229,7 +267,14 @@ export async function computeActivationFunnel(
           p.id,
           p.created_at,
           p.billing_status,
+          p.trial_ends_at,
           p.settings,
+          case
+            when p.created_at >= ${CARD_GATE_AT}::timestamptz
+              and p.stripe_billing_account = 'openvpm'
+              then 'card_required'
+            else 'pre_card_gate'
+          end as billing_regime,
           case
             when nullif(
               p.settings -> 'onboardingState' ->> 'jurisdictionSelectedAt',
@@ -276,7 +321,18 @@ export async function computeActivationFunnel(
       select
         to_char(s.week_start, 'YYYY-MM-DD') as "weekStart",
         s.jurisdiction_cohort as "jurisdictionCohort",
+        s.billing_regime as "billingRegime",
         count(*) filter (where mt.registered_at is not null)::int as "signups",
+        count(*) filter (
+          where mt.registered_at is not null
+            and exists (
+              select 1
+              from funnel_events fe
+              where fe.practice_id = s.id
+                and fe.deleted_at is null
+                and fe.event_name = 'checkout_started'
+            )
+        )::int as "checkoutStarted",
         count(*) filter (
           where mt.registered_at is not null
             and (
@@ -324,12 +380,18 @@ export async function computeActivationFunnel(
             and mt.positive_payment_at is not null
         )::int as "firstPositivePayment",
         count(*) filter (
+          where mt.registered_at is not null
+            and mt.positive_payment_at is null
+            and s.trial_ends_at is not null
+            and s.trial_ends_at > now()
+        )::int as "trialNotYetEnded",
+        count(*) filter (
           where mt.registered_at is not null and s.billing_status = 'active'
         )::int as "currentlyActive"
       from signups s
       left join milestone_times mt on mt.practice_id = s.id
-      group by s.week_start, s.jurisdiction_cohort
-      order by s.week_start, s.jurisdiction_cohort
+      group by s.week_start, s.jurisdiction_cohort, s.billing_regime
+      order by s.week_start, s.jurisdiction_cohort, s.billing_regime
     `);
 
       const qualityResult = await tx.execute(sql`
@@ -495,13 +557,16 @@ export async function computeActivationFunnel(
   const rawWeeks = rowsFromExecute<FunnelRow>(cohortResult).map((row) => ({
     ...emptyWeek(String(row.weekStart)),
     jurisdictionCohort: jurisdictionCohort(row.jurisdictionCohort),
+    billingRegime: billingRegime(row.billingRegime),
     signups: Number(row.signups) || 0,
+    checkoutStarted: Number(row.checkoutStarted) || 0,
     setupStarted: Number(row.setupStarted) || 0,
     setupCompleted: Number(row.setupCompleted) || 0,
     activated: Number(row.activated) || 0,
     firstVisitCompleted: Number(row.firstVisitCompleted) || 0,
     paymentMethodCollected: Number(row.paymentMethodCollected) || 0,
     firstPositivePayment: Number(row.firstPositivePayment) || 0,
+    trialNotYetEnded: Number(row.trialNotYetEnded) || 0,
     currentlyActive: Number(row.currentlyActive) || 0,
   }));
   const weekly = new Map<string, ActivationFunnelWeek>();
@@ -509,12 +574,14 @@ export async function computeActivationFunnel(
     const aggregate = weekly.get(row.weekStart) ?? emptyWeek(row.weekStart);
     for (const key of [
       "signups",
+      "checkoutStarted",
       "setupStarted",
       "setupCompleted",
       "activated",
       "firstVisitCompleted",
       "paymentMethodCollected",
       "firstPositivePayment",
+      "trialNotYetEnded",
       "currentlyActive",
     ] as const) {
       aggregate[key] += row[key];
@@ -532,7 +599,7 @@ export async function computeActivationFunnel(
         cohort,
         rawWeeks
           .filter((week) => week.jurisdictionCohort === cohort)
-          .map(({ jurisdictionCohort: _cohort, ...week }) => week),
+          .map(({ jurisdictionCohort: _cohort, billingRegime: _regime, ...week }) => week),
       ] as const,
   );
   const quality = rowsFromExecute<DataQualityRow>(qualityResult)[0];
@@ -543,12 +610,26 @@ export async function computeActivationFunnel(
   const jurisdictionCohorts = Object.fromEntries(
     cohortWeeks.map(([cohort, rows]) => [cohort, summarizeWeeks(rows)]),
   ) as Record<ActivationFunnelJurisdictionCohort, ActivationFunnelTotals>;
+  const billingRegimes = Object.fromEntries(
+    (["pre_card_gate", "card_required"] as const).map((regime) => [
+      regime,
+      summarizeWeeks(
+        rawWeeks
+          .filter((week) => week.billingRegime === regime)
+          .map(
+            ({ jurisdictionCohort: _cohort, billingRegime: _regime, ...week }) =>
+              week,
+          ),
+      ),
+    ]),
+  ) as Record<BillingRegime, ActivationFunnelTotals>;
 
   return {
     days,
     weeks,
     totals: summarizeWeeks(weeks),
     jurisdictionCohorts,
+    billingRegimes,
     firstVisitBillingConversion: {
       maturedFirstVisits: Number(firstVisitBilling?.maturedFirstVisits) || 0,
       alreadyConnectedAtVisit:
