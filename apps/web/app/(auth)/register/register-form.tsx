@@ -36,6 +36,7 @@ import {
   isRequiredAuthTextValid,
 } from "@/lib/auth-input-policy";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
+import { checkoutTrialSummary } from "@/lib/billing/checkout-summary";
 import {
   acquisitionFromSearchParams,
   acquisitionWithFunnelVisitorId,
@@ -820,6 +821,12 @@ function RegisterPageInner({
                 required
               />
             </FormField>
+
+            {cardFirst ? (
+              <p className="rounded-md border border-emerald-100 bg-emerald-50/70 px-3 py-2 text-center text-sm font-medium text-slate-800">
+                {checkoutTrialSummary({ configuredPriceUsd: monthlyPriceUsd }).text}
+              </p>
+            ) : null}
 
             <Button
               type="submit"

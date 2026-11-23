@@ -5,10 +5,12 @@ import { BuildFlow } from "@/components/build/build-flow";
 import {
   billingEnforced,
   cloudCheckoutPriceIds,
-  CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD,
-  CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
   TRIAL_DAYS,
 } from "@/lib/billing/plans";
+import {
+  resolveCheckoutAnnualPriceUsd,
+  resolveCheckoutMonthlyPriceUsd,
+} from "@/lib/billing/checkout-summary";
 import { newSubscriptionBillingAccount } from "@/lib/billing/stripe-accounts";
 
 export const metadata: Metadata = {
@@ -35,9 +37,9 @@ export default function StartPage() {
     <Suspense fallback={null}>
       <BuildFlow
         trialDays={TRIAL_DAYS}
-        monthlyPriceUsd={CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD}
+        monthlyPriceUsd={resolveCheckoutMonthlyPriceUsd()}
         annualPriceUsd={
-          annualAvailable ? CLOUD_LOCATION_UNIT_PRICE_ANNUAL_USD : null
+          annualAvailable ? resolveCheckoutAnnualPriceUsd() : null
         }
       />
     </Suspense>

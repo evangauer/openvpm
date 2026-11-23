@@ -61,6 +61,7 @@ import { FUNNEL_EVENTS } from "@/lib/funnel-analytics";
 import { trackFunnelEvent } from "@/lib/track-funnel-event";
 import { getFunnelVisitorId } from "@/lib/funnel-visitor";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
+import { checkoutTrialSummary } from "@/lib/billing/checkout-summary";
 import {
   CLINIC_REGION_OPTIONS,
   type ClinicRegionCode,
@@ -850,14 +851,10 @@ function GateForm({
   const [country, setCountry] = useState<ClinicRegionCode | "">("");
   const [error, setError] = useState("");
   const annual = annualPriceUsd !== null && cadence === "year";
-  const trialEnds = useMemo(
-    () =>
-      new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toLocaleDateString(
-        "en-US",
-        { month: "long", day: "numeric" },
-      ),
-    [trialDays],
-  );
+  const trialSummary = checkoutTrialSummary({
+    configuredPriceUsd: annual ? annualPriceUsd : monthlyPriceUsd,
+    cadence: annual ? "year" : "month",
+  });
   const then = annual
     ? `$${annualPriceUsd.toLocaleString("en-US")}/year`
     : `$${monthlyPriceUsd}/month`;
@@ -964,13 +961,9 @@ function GateForm({
       )}
 
       <div className="mt-4 rounded-lg bg-slate-50 px-3.5 py-3 text-sm">
-        <div className="flex items-center justify-between">
-          <span className="font-medium text-slate-800">{trialDays}-day free trial</span>
-          <span className="font-semibold tabular-nums">$0.00 today</span>
-        </div>
+        <p className="font-medium text-slate-800">{trialSummary.text}</p>
         <p className="mt-0.5 text-xs text-slate-500">
-          Then {then} per location from {trialEnds}. Cancel before then and
-          you won&apos;t be charged.
+          Cancel before then and you won&apos;t be charged. Card required.
         </p>
       </div>
 

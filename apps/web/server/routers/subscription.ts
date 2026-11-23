@@ -22,6 +22,7 @@ import {
   TRIAL_DAYS,
   hasHostedFullAccess,
 } from "@/lib/billing/plans";
+import { canResumeHostedCheckout } from "@/lib/billing/checkout-summary";
 import { hasPreviewAccess, isPreviewPractice } from "@/lib/billing/preview";
 import { BILLING_CADENCES, CLOUD_BILLING_OPTIONS } from "@/lib/billing/catalog";
 import { usageForPractice, currentPeriodMonth } from "@/lib/billing/usage";
@@ -95,6 +96,12 @@ export const subscriptionRouter = createRouter({
       timezone: practice.timezone ?? null,
       hasBillingAccount: !!practice.stripeCustomerId,
       hasSubscription: !!practice.stripeSubscriptionId,
+      canResumeCheckout: canResumeHostedCheckout({
+        billingEnforced: enforced,
+        hasSubscription: !!practice.stripeSubscriptionId,
+        billingStatus: practice.billingStatus,
+        trialEndsAt: practice.trialEndsAt,
+      }),
       billingEnforced: enforced,
       hasFullAccess: hasHostedFullAccess(
         practice.tier,
