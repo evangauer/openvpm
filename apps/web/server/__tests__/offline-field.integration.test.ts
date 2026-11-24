@@ -21,6 +21,19 @@ integration("offline field clinic isolation and replay", () => {
     vi.stubEnv("OFFLINE_FIELD_VISITS_ENABLED", "true");
     vi.stubEnv("AMBULATORY_WORKSPACE_ENABLED", "true");
     try {
+      const [guard] = await fixture.owner`
+        select p.prosecdef, p.proconfig,
+          has_function_privilege('openpims_app', p.oid, 'EXECUTE') as app_execute,
+          has_function_privilege('public', p.oid, 'EXECUTE') as public_execute
+        from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public' and p.proname = 'guard_offline_field_batch'
+      `;
+      expect(guard).toMatchObject({
+        prosecdef: false,
+        proconfig: ['search_path=""'],
+        app_execute: false,
+        public_execute: false,
+      });
       const db = fixture.ownerDb;
       const [practice, otherPractice] = await db
         .insert(schema.practices)

@@ -255,6 +255,7 @@ const PREVIEW_BLOCKED_MUTATION_PREFIXES: readonly string[] = [
 ];
 
 const HOSTED_READ_ONLY_MUTATION_ALLOWLIST = new Set([
+  "sidebar.update",
   "auth.resendVerification",
   "settings.requestAccountDeletion",
   "settings.setMarketingEmailPreference",
@@ -444,15 +445,15 @@ export const protectedProcedure = t.procedure.use(
     if (!ctx.session?.user) {
       throw new TRPCError({ code: "UNAUTHORIZED" });
     }
-    // Global read-only guard: viewers can run any query but no mutation. This
-    // makes the role enforceable everywhere without touching each router.
-    if (type === "mutation" && ctx.session.user.role === "viewer") {
+    // Viewers may only change their own navigation preferences. Clinical and
+    // administrative mutations remain blocked, including during recovery holds.
+    if (type === "mutation" && ctx.session.user.role === "viewer" && path !== "sidebar.update") {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "Your account has read-only (viewer) access.",
       });
     }
-    if (type === "mutation" && ctx.session.user.recoveryHold === true) {
+    if (type === "mutation" && ctx.session.user.recoveryHold === true && path !== "sidebar.update") {
       throw new TRPCError({
         code: "FORBIDDEN",
         message:

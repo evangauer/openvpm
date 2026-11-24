@@ -1,3 +1,4 @@
+import { sidebarRouter } from "./sidebar";
 import { offlineFieldRouter } from "./offline-field";
 import { labReportsRouter } from "./lab-reports";
 import { createRouter } from "../trpc";
@@ -41,6 +42,7 @@ import { migrationArchiveRouter } from "./migration-archive";
 import { visitTreatmentPlansRouter } from "./visit-treatment-plans";
 
 export const appRouter = createRouter({
+  sidebar: sidebarRouter,
   auth: authRouter,
   clients: clientsRouter,
   patients: patientsRouter,

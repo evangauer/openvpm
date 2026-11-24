@@ -45,6 +45,12 @@ export const users = pgTable(
       .notNull()
       .references(() => practices.id),
     locationId: uuid("location_id").references(() => locations.id),
+    // Null distinguishes an untouched account from an explicit Full/empty choice.
+    sidebarPreferences: jsonb("sidebar_preferences").$type<{
+      version: 1;
+      layout: "full" | "focused";
+      pinned: string[];
+    }>(),
     avatarUrl: varchar("avatar_url", { length: 512 }),
     licenseNumber: varchar("license_number", { length: 64 }),
     phone: varchar("phone", { length: 32 }),
