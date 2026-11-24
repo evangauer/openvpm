@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { isNull } from "drizzle-orm";
 import { db } from "@openpims/db/client";
-import { practices } from "@openpims/db";
+import { backupRuns, practices } from "@openpims/db";
 import { exportPracticeData, backupKey } from "@/lib/backup/export";
 import {
   readPrimaryObject,
@@ -9,6 +9,7 @@ import {
   normalizeS3VersionId,
   replicaStorageIncludesPractice,
   replicaStorageReadiness,
+  replicaStorageRequired,
   replicaStorageRolloutEnabled,
   uploadManagedFile,
   uploadReplicaFile,
@@ -92,6 +93,19 @@ export async function GET(request: Request) {
   let maxExportBytes = 0;
   let replicaOk = 0;
   let replicaFailed = 0;
+  let evidenceAttempted = false;
+  const alerts: Promise<void>[] = [];
+  const replicaEnabled = replicaStorageRolloutEnabled();
+  const replicaRequired = replicaStorageRequired();
+  const persistEvidence = async (status: "ok" | "degraded" | "failed") => {
+    evidenceAttempted = true;
+    await withSystem(db, (tx) => tx.insert(backupRuns).values({
+      startedAt, completedAt: new Date(), runDateUtc, status,
+      practices: ok + failed, primaryVerified: ok, primaryFailed: failed,
+      oversized, nearLimit, maxExportBytes, replicaEnabled, replicaRequired,
+      replicaVerified: replicaOk, replicaFailed,
+    }));
+  };
 
   try {
     // Cross-tenant sweep → system context (RLS bypass).
@@ -156,7 +170,6 @@ export async function GET(request: Request) {
         }
 
         const replicaReadiness = replicaStorageReadiness();
-        const replicaEnabled = replicaStorageRolloutEnabled();
         if (
           replicaEnabled &&
           replicaReadiness.ready &&
@@ -194,10 +207,10 @@ export async function GET(request: Request) {
             replicaOk++;
           } catch {
             replicaFailed++;
-            void alertOps(
+            alerts.push(alertOps(
               "Independent practice backup failed",
               `practice ${p.id}: replica write or verification failed`,
-            );
+            ));
           }
         } else if (replicaEnabled && !replicaReadiness.ready) {
           replicaFailed++;
@@ -205,15 +218,21 @@ export async function GET(request: Request) {
         ok++;
       } catch (err) {
         failed++;
-        void alertOps(
+        alerts.push(alertOps(
           "Practice backup failed",
           `practice ${p.id}: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        ));
       }
     }
 
+    // Persist only aggregate evidence after read-back verification, before the
+    // external heartbeat. No clinical rows, object keys or provider errors.
+    await persistEvidence(failed > 0 || replicaFailed > 0 ? "degraded" : "ok");
+    // Complete bounded alert deliveries without serially delaying each export.
+    await Promise.allSettled(alerts);
+
     if (failed > 0 || replicaFailed > 0) {
-      void alertOps(
+      await alertOps(
         "Scheduled backup had failures",
         `${failed} primary and ${replicaFailed} independent backup copies failed for UTC run ${runDateUtc}.`,
       );
@@ -250,8 +269,16 @@ export async function GET(request: Request) {
       replicaFailed,
     });
   } catch (error) {
+    await Promise.allSettled(alerts);
+    if (!evidenceAttempted) {
+      try {
+        await persistEvidence("failed");
+      } catch {
+        await alertOps("Backup run evidence unavailable", "Could not persist aggregate backup results.");
+      }
+    }
     const message = error instanceof Error ? error.message : String(error);
-    void alertOps("Backup cron job crashed", message);
+    await alertOps("Backup cron job crashed", message);
     console.error("Cron backup job failed:", error);
     await reportCronHeartbeat({
       job: "backup",
