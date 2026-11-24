@@ -45,6 +45,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/start",
   "/treatment-plan",
   "/verify-email",
+  "/welcome",
 ];
 
 const PUBLIC_FILE_PATTERN =

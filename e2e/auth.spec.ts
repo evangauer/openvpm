@@ -17,10 +17,12 @@ test.describe("Authentication", () => {
   test("register page renders correctly", async ({ page }) => {
     await page.goto("/register");
     await expect(
-      page.getByRole("heading", { name: /a platform truly built for your clinic/i })
+      page.getByRole("heading", { name: /create your clinic workspace/i })
     ).toBeVisible();
-    await page.getByRole("button", { name: "Show my workflows" }).click();
     await expect(page.getByLabel(/practice name/i)).toBeVisible();
+    await expect(page.getByLabel(/work email/i)).toBeVisible();
+    await expect(page.getByLabel(/password/i)).toBeVisible();
+    await expect(page.getByLabel("Clinic country", { exact: true })).toBeVisible();
   });
 
   test("shows validation error on empty login", async ({ page }) => {

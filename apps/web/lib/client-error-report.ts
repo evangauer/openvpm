@@ -53,6 +53,7 @@ const STATIC_ROUTES = new Set([
   "/schedule",
   "/settings",
   "/verify-email",
+  "/welcome",
   "/whiteboard",
 ]);
 

@@ -51,34 +51,12 @@ import {
   type ClinicRegionCode,
 } from "@/lib/locale/clinic-regions";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
-import { ClinicIntentBuilder } from "@/components/onboarding/clinic-intent-builder";
-import { FirstDayRecommendations } from "@/components/onboarding/first-day-recommendations";
-import {
-  CLINIC_MODELS,
-  DEFAULT_CLINIC_MODEL,
-  DEFAULT_FIRST_GOAL,
-  FIRST_GOALS,
-  clinicModelOption,
-  type ClinicModel,
-  type FirstGoal,
-} from "@/lib/onboarding/clinic-profile";
 
 type RegistrationCountry = ClinicRegionCode | "OTHER" | "";
-type RegistrationStage = "profile" | "workflow" | "preview" | "account";
-
-const REGISTRATION_PROFILE_STORAGE_KEY = "openvpm:registration-profile:v1";
+type RegistrationStage = "details" | "review";
 
 const selectClass =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
-
-const onboardingStageMainClass =
-  "min-h-screen bg-[radial-gradient(circle_at_top_left,#fff7ed_0%,transparent_34%),radial-gradient(circle_at_top_right,#ede9fe_0%,transparent_36%),linear-gradient(180deg,#ffffff_0%,#f5fbf8_100%)] px-4 py-4 sm:px-6 sm:py-6";
-const onboardingStageFrameClass =
-  "mx-auto flex max-w-6xl flex-col overflow-hidden rounded-[28px] border border-white/80 bg-white/95 shadow-[0_30px_90px_-54px_rgba(15,23,42,0.48)] backdrop-blur sm:min-h-[650px] lg:h-[calc(100dvh-5rem)] lg:min-h-[680px] lg:max-h-[730px]";
-const onboardingStageHeaderClass =
-  "flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-9";
-const onboardingStageFooterClass =
-  "relative flex shrink-0 flex-col-reverse gap-3 border-t border-slate-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-9";
 
 export interface RegisterFormProps {
   hostedBilling: boolean;
@@ -153,11 +131,7 @@ function RegisterPageInner({
   const cloudIntent = searchParams.get("intent") === "cloud";
   const nextPath = safeAuthNextPath(searchParams.get("next"), "/");
   const acquisition = acquisitionFromSearchParams(searchParams);
-  const [stage, setStage] = useState<RegistrationStage>("profile");
-  const [profileRestored, setProfileRestored] = useState(false);
-  const [clinicModel, setClinicModel] =
-    useState<ClinicModel>(DEFAULT_CLINIC_MODEL);
-  const [firstGoal, setFirstGoal] = useState<FirstGoal>(DEFAULT_FIRST_GOAL);
+  const [stage, setStage] = useState<RegistrationStage>("details");
   const [practiceName, setPracticeName] = useState("");
   const [country, setCountry] = useState<RegistrationCountry>("");
   const [email, setEmail] = useState("");
@@ -180,6 +154,9 @@ function RegisterPageInner({
   }, []);
   const previewFirst = cardRequired && previewArm === "preview";
   const cardFirst = cardRequired && !previewFirst;
+  const trialSummary = checkoutTrialSummary({
+    configuredPriceUsd: monthlyPriceUsd,
+  });
 
   useEffect(() => {
     trackFunnelEvent(FUNNEL_EVENTS.signupLand, {
@@ -192,90 +169,35 @@ function RegisterPageInner({
   }, []);
 
   useEffect(() => {
-    try {
-      const raw = window.sessionStorage.getItem(
-        REGISTRATION_PROFILE_STORAGE_KEY,
-      );
-      if (!raw) {
-        return;
-      }
-      const saved = JSON.parse(raw) as {
-        stage?: unknown;
-        clinicModel?: unknown;
-        firstGoal?: unknown;
-      };
-      if (
-        typeof saved.clinicModel === "string" &&
-        CLINIC_MODELS.includes(saved.clinicModel as ClinicModel)
-      ) {
-        setClinicModel(saved.clinicModel as ClinicModel);
-      }
-      if (
-        typeof saved.firstGoal === "string" &&
-        FIRST_GOALS.includes(saved.firstGoal as FirstGoal)
-      ) {
-        setFirstGoal(saved.firstGoal as FirstGoal);
-      }
-      if (
-        saved.stage === "workflow" ||
-        saved.stage === "preview" ||
-        saved.stage === "account"
-      ) {
-        // Practice name and email intentionally stay out of sessionStorage.
-        // A refresh from the security step returns to the identity step so the
-        // user can re-enter them instead of landing on a hidden invalid state.
-        setStage("workflow");
-      }
-    } catch {
-      window.sessionStorage.removeItem(REGISTRATION_PROFILE_STORAGE_KEY);
-    } finally {
-      setProfileRestored(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!profileRestored) return;
-    try {
-      window.sessionStorage.setItem(
-        REGISTRATION_PROFILE_STORAGE_KEY,
-        JSON.stringify({ stage, clinicModel, firstGoal }),
-      );
-    } catch {
-      // Session continuity is helpful but must never block registration.
-    }
-  }, [profileRestored, stage, clinicModel, firstGoal]);
-
-  useEffect(() => {
-    if (!profileRestored) return;
-    if (stage === "workflow" || stage === "preview") return;
-    trackFunnelEvent(
-      stage === "profile"
-        ? FUNNEL_EVENTS.signupProfileViewed
-        : FUNNEL_EVENTS.signupAccountViewed,
-      {
-        source: acquisition?.source ?? "none",
-        step: stage,
-      },
-    );
-  }, [acquisition?.source, profileRestored, stage]);
+    if (stage !== "details") return;
+    trackFunnelEvent(FUNNEL_EVENTS.signupAccountViewed, {
+      source: acquisition?.source ?? "none",
+      step: "account",
+    });
+  }, [acquisition?.source, stage]);
 
   const registerMutation = trpc.auth.register.useMutation({
     onSuccess: async (data) => {
       trackFunnelEvent(FUNNEL_EVENTS.signupSucceeded, {
-        model: clinicModel,
-        goal: firstGoal,
         step: "account",
       });
-      try {
-        window.sessionStorage.removeItem(REGISTRATION_PROFILE_STORAGE_KEY);
-      } catch {
-        // The account is created even when storage is unavailable.
-      }
       if (data.checkoutUrl) {
         if (!isSafeCheckoutRedirectUrl(data.checkoutUrl)) {
           toast.error("Hosted checkout is unavailable. Please try again.");
           setLoading(false);
           return;
+        }
+        // The Checkout success page needs this browser's session. Sign in
+        // before leaving for Stripe; if that fails, Checkout still opens and
+        // the confirmation offers sign-in.
+        try {
+          await signIn("credentials", {
+            email: email.trim().toLowerCase(),
+            password,
+            redirect: false,
+          });
+        } catch {
+          // Checkout still proceeds.
         }
         window.location.href = data.checkoutUrl;
         return;
@@ -334,23 +256,10 @@ function RegisterPageInner({
     password.length >= AUTH_PASSWORD_MIN_LENGTH &&
     password.length <= AUTH_PASSWORD_MAX_LENGTH;
 
-  const canContinueFromWorkflow =
-    isRequiredAuthTextValid(practiceName, AUTH_PRACTICE_NAME_MAX_LENGTH, 2) &&
-    isAuthEmailLengthValid(email) &&
-    isValidEmail(email);
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const message = validate();
-    if (message) {
-      setError(message);
-      return;
-    }
+  function startRegistration() {
     setError("");
     setLoading(true);
     trackFunnelEvent(FUNNEL_EVENTS.signupSubmitted, {
-      model: clinicModel,
-      goal: firstGoal,
       step: "account",
     });
     const registrationAcquisition = acquisitionWithFunnelVisitorId(
@@ -362,316 +271,113 @@ function RegisterPageInner({
       password,
       practiceName: practiceName.trim(),
       country: country as ClinicRegionCode,
-      onboardingDraft: { clinicModel, firstGoal },
       acquisition: registrationAcquisition,
     });
   }
 
-  function selectClinicModel(model: ClinicModel) {
-    const nextGoal =
-      model === "exploring" || firstGoal !== "self_host"
-        ? firstGoal
-        : "explore_sample";
-    setClinicModel(model);
-    setFirstGoal(nextGoal);
-    trackFunnelEvent(FUNNEL_EVENTS.onboardingModelSelected, {
-      model,
-      step: "profile",
-    });
-  }
-
-  function selectFirstGoal(goal: FirstGoal) {
-    setFirstGoal(goal);
-    trackFunnelEvent(FUNNEL_EVENTS.onboardingGoalSelected, {
-      model: clinicModel,
-      goal,
-      step: "workflow",
-    });
-  }
-
-  function showStage(nextStage: RegistrationStage) {
-    window.scrollTo({ top: 0, behavior: "auto" });
-    setStage(nextStage);
-  }
-
-  function continueToWorkflow() {
-    setError("");
-    showStage("workflow");
-  }
-
-  function continueToPreview() {
-    if (!canContinueFromWorkflow) {
-      setError(
-        practiceName.trim().length < 2
-          ? "Add your practice name to continue."
-          : "Add a valid work email.",
-      );
+  function onDetailsSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const message = validate();
+    if (message) {
+      setError(message);
       return;
     }
     setError("");
-    trackFunnelEvent(FUNNEL_EVENTS.signupProfileCompleted, {
-      model: clinicModel,
-      goal: firstGoal,
-      step: "workflow",
-    });
-    trackFunnelEvent(FUNNEL_EVENTS.onboardingPlanBuilt, {
-      model: clinicModel,
-      goal: firstGoal,
-      step: "workflow",
-    });
-    showStage("preview");
+    if (cardFirst) {
+      window.scrollTo({ top: 0, behavior: "auto" });
+      setStage("review");
+      return;
+    }
+    startRegistration();
   }
 
-  function continueToAccount() {
-    setError("");
-    showStage("account");
+  function onReviewSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const message = validate();
+    if (message) {
+      setError(message);
+      setStage("details");
+      return;
+    }
+    startRegistration();
   }
 
-  if (stage === "profile") {
+  if (stage === "review" && cardFirst) {
     return (
-      <main className={onboardingStageMainClass}>
-        <div className={onboardingStageFrameClass}>
-          <header className={onboardingStageHeaderClass}>
+      <main className="flex min-h-screen items-center justify-center bg-white px-4 py-10">
+        <div className="w-full max-w-lg">
+          <div className="flex items-center justify-between gap-4">
             <Link
               href="/"
-              className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
+              className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-primary"
             >
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
-                <PawMark className="h-5 w-5" />
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                <PawMark className="h-4 w-4" />
               </span>
               OpenVPM
             </Link>
-            <div className="flex items-center gap-2 text-xs font-medium text-slate-500 sm:gap-3 sm:text-sm">
-              <span className="whitespace-nowrap">Step 1 of 4</span>
-              <span className="flex gap-1" aria-hidden="true">
-                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
-                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
-                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
-                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
-              </span>
-            </div>
-          </header>
-
-          <section className="flex-1 px-5 py-7 sm:px-9 sm:py-10 lg:px-12">
-            <div className="mb-8 max-w-3xl">
-              <h1 className="font-heading text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
-                A platform truly built for your clinic.
-              </h1>
-              <p className="mt-3 text-sm leading-6 text-slate-600 sm:text-base">
-                Tell us what your team needs first. We’ll shape a useful first
-                day before asking you to create the workspace.
-              </p>
-            </div>
-
-            <ClinicIntentBuilder
-              clinicModel={clinicModel}
-              firstGoal={firstGoal}
-              onClinicModelChange={selectClinicModel}
-              onFirstGoalChange={selectFirstGoal}
-              intro={null}
-              showFirstGoal={false}
-            />
-          </section>
-
-          <footer className={cn(onboardingStageFooterClass, "sm:justify-end")}>
+            <span className="text-xs font-medium text-slate-500">
+              Step 2 of 2
+            </span>
+          </div>
+          <h1 className="mt-8 font-heading text-3xl font-bold tracking-tight text-slate-950">
+            Confirm your trial, then checkout.
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            {practiceName.trim()} · {email.trim().toLowerCase()}
+          </p>
+          <form onSubmit={onReviewSubmit} className="mt-8 grid gap-4">
+            {error ? (
+              <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+                {error}
+              </div>
+            ) : null}
+            <p className="rounded-md border border-emerald-100 bg-emerald-50/70 px-3 py-3 text-center text-sm font-medium text-slate-800">
+              {trialSummary.text}
+            </p>
+            <p className="text-center text-sm text-slate-600">
+              Card required. No charge today.
+            </p>
             <Button
-              type="button"
-              onClick={continueToWorkflow}
-              className="h-11 rounded-xl px-6 text-sm font-semibold shadow-[0_12px_28px_-16px_rgba(5,150,105,0.8)]"
+              type="submit"
+              disabled={!canSubmit || loading || registerMutation.isPending}
+              className="mt-1 w-full"
             >
-              Show my workflows
-              <ArrowRight className="ml-2 h-4 w-4" />
+              {loading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating your workspace
+                </>
+              ) : (
+                <>
+                  Continue to secure checkout
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </>
+              )}
             </Button>
-          </footer>
-        </div>
-      </main>
-    );
-  }
-
-  if (stage === "workflow") {
-    return (
-      <main className={onboardingStageMainClass}>
-        <div className={onboardingStageFrameClass}>
-          <header className={onboardingStageHeaderClass}>
-            <Link
-              href="/"
-              className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
-            >
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
-                <PawMark className="h-5 w-5" />
-              </span>
-              OpenVPM
-            </Link>
-            <div className="flex items-center gap-2 text-xs font-medium text-slate-500 sm:gap-3 sm:text-sm">
-              <span className="whitespace-nowrap">Step 2 of 4</span>
-              <span className="flex gap-1" aria-hidden="true">
-                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
-                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
-                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
-                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
-              </span>
-            </div>
-          </header>
-
-          <section className="flex-1 px-5 py-6 sm:px-9 sm:py-7 lg:px-10">
-            <ClinicIntentBuilder
-              clinicModel={clinicModel}
-              firstGoal={firstGoal}
-              onClinicModelChange={selectClinicModel}
-              onFirstGoalChange={selectFirstGoal}
-              intro={null}
-              showClinicModel={false}
-              goalLegend="Choose your first useful workflow"
-              beforeChoices={
-                <div className="max-w-3xl">
-                  <h1 className="font-heading text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
-                    What would you like to see?
-                  </h1>
-                  <p className="mt-2 text-sm leading-6 text-slate-600 sm:text-base">
-                    Pick one useful workflow and we’ll shape your first day
-                    around it.
-                  </p>
-                </div>
-              }
-              afterChoices={
-                <div className="mt-5 border-t border-slate-100 pt-5">
-                  <p className="text-sm font-semibold text-slate-950 sm:text-base">
-                    Start your workspace
-                  </p>
-
-                  {error ? (
-                    <div className="mt-4 rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
-                      {error}
-                    </div>
-                  ) : null}
-
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <FormField label="Practice name" htmlFor="practiceName">
-                      <Input
-                        id="practiceName"
-                        name="practiceName"
-                        value={practiceName}
-                        onChange={(event) => {
-                          setPracticeName(event.target.value);
-                          setError("");
-                        }}
-                        placeholder="Neighborhood Veterinary"
-                        autoComplete="organization"
-                        autoFocus
-                        maxLength={AUTH_PRACTICE_NAME_MAX_LENGTH}
-                        required
-                      />
-                    </FormField>
-                    <FormField label="Work email" htmlFor="email">
-                      <Input
-                        id="email"
-                        name="email"
-                        type="email"
-                        value={email}
-                        onChange={(event) => {
-                          setEmail(event.target.value);
-                          setError("");
-                        }}
-                        placeholder="you@clinic.com"
-                        autoComplete="email"
-                        maxLength={AUTH_EMAIL_MAX_LENGTH}
-                        required
-                      />
-                    </FormField>
-                  </div>
-                </div>
-              }
-            />
-          </section>
-
-          <footer className={onboardingStageFooterClass}>
+            <p className="flex items-center justify-center gap-1.5 text-xs text-slate-500">
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+              Free for {trialDays} days.
+            </p>
+            <p className="text-center text-xs leading-5 text-slate-500">
+              After your {trialDays}-day trial, ${monthlyPriceUsd} USD/month per
+              active location, plus applicable taxes and usage overages.
+              Billing starts automatically. Cancel in Settings → Plan &amp;
+              Billing before the trial ends to avoid a subscription charge.
+            </p>
+            <TermsNotice />
             <button
               type="button"
               onClick={() => {
                 setError("");
-                showStage("profile");
+                setStage("details");
               }}
-              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium text-slate-600 transition hover:bg-slate-50 hover:text-primary"
+              className="mx-auto inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-primary"
             >
-              <ArrowLeft className="h-4 w-4" />
+              <ArrowLeft className="h-3.5 w-3.5" />
               Back
             </button>
-            <Button
-              type="button"
-              onClick={continueToPreview}
-              className="h-11 rounded-xl px-6 text-sm font-semibold shadow-[0_12px_28px_-16px_rgba(5,150,105,0.8)]"
-            >
-              See my first day
-              <ArrowRight className="ml-2 h-4 w-4" />
-            </Button>
-          </footer>
-        </div>
-      </main>
-    );
-  }
-
-  if (stage === "preview") {
-    return (
-      <main className={onboardingStageMainClass}>
-        <div className={onboardingStageFrameClass}>
-          <header className={onboardingStageHeaderClass}>
-            <Link
-              href="/"
-              className="inline-flex items-center gap-3 font-heading text-lg font-semibold tracking-tight text-slate-950 sm:text-xl"
-            >
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
-                <PawMark className="h-5 w-5" />
-              </span>
-              OpenVPM
-            </Link>
-            <div className="flex items-center gap-2 text-xs font-medium text-slate-500 sm:gap-3 sm:text-sm">
-              <span className="whitespace-nowrap">Step 3 of 4</span>
-              <span className="flex gap-1" aria-hidden="true">
-                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
-                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
-                <span className="h-1.5 w-6 rounded-full bg-primary sm:w-10" />
-                <span className="h-1.5 w-6 rounded-full bg-slate-200 sm:w-10" />
-              </span>
-            </div>
-          </header>
-
-          <section className="flex-1 px-5 py-6 sm:px-9 sm:py-7 lg:px-10">
-            <div className="mb-6 max-w-3xl">
-              <h1 className="font-heading text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
-                Your first day is ready.
-              </h1>
-              <p className="mt-3 text-sm leading-6 text-slate-600 sm:text-base">
-                Here’s a useful starting point for {practiceName.trim()}. You
-                can change any of it once you’re inside.
-              </p>
-            </div>
-
-            <FirstDayRecommendations primaryGoal={firstGoal} />
-          </section>
-
-          <footer className={onboardingStageFooterClass}>
-            <button
-              type="button"
-              onClick={() => showStage("workflow")}
-              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium text-slate-600 transition hover:bg-slate-50 hover:text-primary"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              Back
-            </button>
-            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:gap-4">
-              <p className="text-center text-xs text-slate-500">
-                {previewFirst ? "No card needed to look around." : cardFirst ? "Card required. No charge today." : hostedBilling ? "No card required." : "Free to self-host."}
-              </p>
-              <Button
-                type="button"
-                onClick={continueToAccount}
-                className="h-11 rounded-xl px-6 text-sm font-semibold shadow-[0_12px_28px_-16px_rgba(5,150,105,0.8)]"
-              >
-                Secure my workspace
-                <ArrowRight className="ml-2 h-4 w-4" />
-              </Button>
-            </div>
-          </footer>
+          </form>
         </div>
       </main>
     );
@@ -679,7 +385,6 @@ function RegisterPageInner({
 
   return (
     <div className="grid min-h-screen min-w-0 overflow-x-hidden lg:grid-cols-2">
-      {/* Left pane: the form, on clean white */}
       <div className="flex min-w-0 items-start justify-center bg-white px-6 py-10 sm:px-10">
         <div className="min-w-0 w-full max-w-md">
           <div className="flex items-center justify-between gap-4">
@@ -692,54 +397,67 @@ function RegisterPageInner({
               </span>
               OpenVPM {cloudIntent ? "Cloud" : ""}
             </Link>
-            <span className="text-xs font-medium text-slate-500">
-              Step 4 of 4
-            </span>
+            {cardFirst ? (
+              <span className="text-xs font-medium text-slate-500">
+                Step 1 of 2
+              </span>
+            ) : null}
           </div>
 
           <h1 className="mt-8 font-heading text-3xl font-bold tracking-tight text-slate-950">
-            Secure your workspace.
+            Create your clinic workspace.
           </h1>
           <p className="mt-2 text-sm leading-6 text-slate-600">
-            Choose your clinic country and create a password.
-            {previewFirst
-              ? " Next, explore your workspace with sample data. Add a card when you're ready to start your free trial."
-              : cardFirst
-              ? " Next, add your card securely through Stripe to start your free trial."
-              : hostedBilling
-                ? " Your free trial starts immediately."
-                : " Your self-hosted workspace is free."}
+            Practice name, work email, password, and country.
+            {cardFirst
+              ? " Next, confirm the trial date, then continue to Checkout."
+              : previewFirst
+                ? " Next, explore your workspace with sample data. Add a card when you're ready to start your free trial."
+                : hostedBilling
+                  ? " Your free trial starts immediately."
+                  : " Your self-hosted workspace is free."}
           </p>
 
-          <form onSubmit={handleSubmit} className="mt-8 grid min-w-0 gap-4">
+          <form onSubmit={onDetailsSubmit} className="mt-8 grid min-w-0 gap-4">
             {error ? (
               <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
                 {error}
               </div>
             ) : null}
 
-            <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-emerald-700">
-                Your workspace
-              </p>
-              <p className="mt-1 truncate text-sm font-semibold text-slate-950">
-                {practiceName.trim()}
-              </p>
-              <p className="mt-0.5 truncate text-xs text-slate-600">
-                {email.trim().toLowerCase()}
-              </p>
-            </div>
+            <FormField label="Practice name" htmlFor="practiceName">
+              <Input
+                id="practiceName"
+                name="practiceName"
+                value={practiceName}
+                onChange={(event) => {
+                  setPracticeName(event.target.value);
+                  setError("");
+                }}
+                placeholder="Neighborhood Veterinary"
+                autoComplete="organization"
+                autoFocus
+                maxLength={AUTH_PRACTICE_NAME_MAX_LENGTH}
+                required
+              />
+            </FormField>
 
-            <input
-              type="email"
-              name="email"
-              value={email.trim().toLowerCase()}
-              autoComplete="username"
-              className="sr-only"
-              tabIndex={-1}
-              aria-hidden="true"
-              readOnly
-            />
+            <FormField label="Work email" htmlFor="email">
+              <Input
+                id="email"
+                name="email"
+                type="email"
+                value={email}
+                onChange={(event) => {
+                  setEmail(event.target.value);
+                  setError("");
+                }}
+                placeholder="you@clinic.com"
+                autoComplete="email"
+                maxLength={AUTH_EMAIL_MAX_LENGTH}
+                required
+              />
+            </FormField>
 
             <FormField
               label="Clinic country"
@@ -813,7 +531,7 @@ function RegisterPageInner({
                 name="password"
                 type="password"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                onChange={(event) => setPassword(event.target.value)}
                 placeholder="Create a password"
                 autoComplete="new-password"
                 minLength={AUTH_PASSWORD_MIN_LENGTH}
@@ -821,12 +539,6 @@ function RegisterPageInner({
                 required
               />
             </FormField>
-
-            {cardFirst ? (
-              <p className="rounded-md border border-emerald-100 bg-emerald-50/70 px-3 py-2 text-center text-sm font-medium text-slate-800">
-                {checkoutTrialSummary({ configuredPriceUsd: monthlyPriceUsd }).text}
-              </p>
-            ) : null}
 
             <Button
               type="submit"
@@ -838,9 +550,18 @@ function RegisterPageInner({
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Creating your workspace
                 </>
+              ) : cardFirst ? (
+                <>
+                  Continue
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </>
               ) : (
                 <>
-                  {previewFirst ? "Build my workspace" : cardFirst ? "Continue to secure checkout" : hostedBilling ? "Start my free trial" : "Create my workspace"}
+                  {previewFirst
+                    ? "Build my workspace"
+                    : hostedBilling
+                      ? "Start my free trial"
+                      : "Create my workspace"}
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </>
               )}
@@ -848,45 +569,19 @@ function RegisterPageInner({
 
             <p className="flex items-center justify-center gap-1.5 text-xs text-slate-500">
               <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-              {hostedBilling ? `Free for ${trialDays} days.` : "Free, open-source software."}
-              {previewFirst ? " No card needed to look around." : cardFirst ? " Card required. No charge today." : hostedBilling ? " No credit card required." : ""}
+              {hostedBilling
+                ? `Free for ${trialDays} days.`
+                : "Free, open-source software."}
+              {previewFirst
+                ? " No card needed to look around."
+                : cardFirst
+                  ? " Card required. No charge today."
+                  : hostedBilling
+                    ? " No credit card required."
+                    : ""}
             </p>
 
-            {cardFirst && (
-              <p className="text-center text-xs leading-5 text-slate-500">
-                After your {trialDays}-day trial, ${monthlyPriceUsd} USD/month per
-                active location, plus applicable taxes and usage overages.
-                Billing starts automatically. Cancel in Settings → Plan &amp;
-                Billing before the trial ends to avoid a subscription charge.
-              </p>
-            )}
-
-            <button
-              type="button"
-              onClick={() => showStage("preview")}
-              className="mx-auto inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-primary"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              Back to my first day
-            </button>
-
-            <p className="text-center text-xs text-slate-400">
-              By creating a workspace you agree to the{" "}
-              <Link
-                href="/legal/terms"
-                className="underline underline-offset-2 hover:text-slate-600"
-              >
-                Terms of Service
-              </Link>{" "}
-              and{" "}
-              <Link
-                href="/legal/privacy"
-                className="underline underline-offset-2 hover:text-slate-600"
-              >
-                Privacy Policy
-              </Link>
-              .
-            </p>
+            {!cardFirst ? <TermsNotice /> : null}
           </form>
 
           <p className="mt-8 text-center text-sm text-slate-500">
@@ -901,25 +596,43 @@ function RegisterPageInner({
         </div>
       </div>
 
-      {/* Right pane: gradient, with the platform flush to the bottom-right edge */}
       <div className="relative hidden overflow-hidden bg-[linear-gradient(135deg,#fff7ed_0%,#fdf2f8_45%,#ecfdf5_100%)] lg:block">
         <div className="relative z-10 px-12 pt-16">
           <h2 className="max-w-md font-heading text-3xl font-bold tracking-tight text-slate-950">
-            Your first day, already taking shape.
+            Your clinic workspace, ready for the first day.
           </h2>
           <p className="mt-3 max-w-md text-sm leading-6 text-slate-600">
-            Built around{" "}
-            {clinicModelOption(clinicModel).shortLabel.toLowerCase()} care and
-            the first outcome you chose. You can change any of it once you’re
-            inside.
+            Clinic model and first goal wait until setup, after you&apos;re
+            signed in. You can change them once you&apos;re in.
           </p>
         </div>
-
         <div className="absolute bottom-0 right-0 left-16 top-52">
           <PlatformPreview practiceName={practiceName} />
         </div>
       </div>
     </div>
+  );
+}
+
+function TermsNotice() {
+  return (
+    <p className="text-center text-xs text-slate-400">
+      By creating a workspace you agree to the{" "}
+      <Link
+        href="/legal/terms"
+        className="underline underline-offset-2 hover:text-slate-600"
+      >
+        Terms of Service
+      </Link>{" "}
+      and{" "}
+      <Link
+        href="/legal/privacy"
+        className="underline underline-offset-2 hover:text-slate-600"
+      >
+        Privacy Policy
+      </Link>
+      .
+    </p>
   );
 }
 
@@ -938,7 +651,6 @@ const KPIS = [
   { label: "Revenue", value: "$1,240", icon: Receipt },
 ];
 
-// Appointment colors mirror the real schedule.
 const APPTS = [
   { time: "9:00", title: "Wellness exam", pet: "Biscuit", color: "#0d9488" },
   { time: "10:30", title: "Vaccination", pet: "Luna", color: "#2563eb" },
@@ -956,7 +668,6 @@ function PlatformPreview({ practiceName }: { practiceName: string }) {
   return (
     <div className="h-full w-full overflow-hidden rounded-tl-2xl border-l border-t border-white/80 bg-white shadow-2xl shadow-rose-200/40">
       <div className="flex h-full">
-        {/* Side nav */}
         <aside className="flex w-[150px] shrink-0 flex-col border-r border-slate-100 bg-slate-50/70 p-3">
           <div className="flex items-center gap-2 px-1 pb-4">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-[10px] font-semibold text-primary-foreground">
@@ -988,7 +699,6 @@ function PlatformPreview({ practiceName }: { practiceName: string }) {
           </div>
         </aside>
 
-        {/* Main */}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
             <p className="font-heading text-sm font-semibold text-slate-900">
@@ -1000,7 +710,6 @@ function PlatformPreview({ practiceName }: { practiceName: string }) {
           </div>
 
           <div className="flex-1 space-y-3 p-4">
-            {/* Value cards */}
             <div className="grid grid-cols-3 gap-3">
               {KPIS.map(({ label, value, icon: Icon }) => (
                 <div
@@ -1020,37 +729,35 @@ function PlatformPreview({ practiceName }: { practiceName: string }) {
               ))}
             </div>
 
-            {/* Today's schedule with appointment colors */}
             <div className="rounded-lg border border-slate-100 p-3">
               <p className="text-xs font-semibold text-slate-900">
-                Today's schedule
+                Today&apos;s schedule
               </p>
               <div className="mt-2 space-y-1.5">
-                {APPTS.map((a) => (
+                {APPTS.map((appointment) => (
                   <div
-                    key={a.time}
+                    key={appointment.time}
                     className="flex items-center gap-3 rounded-md px-2.5 py-1.5"
-                    style={{ backgroundColor: `${a.color}14` }}
+                    style={{ backgroundColor: `${appointment.color}14` }}
                   >
                     <span className="w-10 text-[11px] font-medium text-slate-500">
-                      {a.time}
+                      {appointment.time}
                     </span>
                     <span
                       className="h-2 w-2 shrink-0 rounded-full"
-                      style={{ backgroundColor: a.color }}
+                      style={{ backgroundColor: appointment.color }}
                     />
                     <span className="text-xs font-medium text-slate-900">
-                      {a.title}
+                      {appointment.title}
                     </span>
                     <span className="ml-auto text-[11px] text-slate-500">
-                      {a.pet}
+                      {appointment.pet}
                     </span>
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* Ask AI */}
             <div className="rounded-lg border border-slate-100 bg-primary/5 p-3">
               <div className="flex items-center gap-2">
                 <span className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary">

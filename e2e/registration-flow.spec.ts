@@ -11,15 +11,25 @@ test.describe("Registration & First-Time Setup", () => {
 
     await page.goto("/register");
 
-    await page.getByRole("button", { name: "Show my workflows" }).click();
     await page.getByLabel(/practice name/i).fill("Test Animal Hospital");
     await page.getByLabel(/work email/i).fill(uniqueEmail);
-    await page.getByRole("button", { name: "See my first day" }).click();
-    await page.getByRole("button", { name: "Secure my workspace" }).click();
-    await page.getByLabel("Clinic country", { exact: true }).selectOption("US");
     await page.getByLabel(/password/i).fill("TestPassword123!");
+    await page.getByLabel("Clinic country", { exact: true }).selectOption("US");
 
-    await page.getByRole("button", { name: /create my workspace|start my free trial|continue to secure checkout|build my workspace/i }).click();
+    const continueButton = page.getByRole("button", { name: "Continue", exact: true });
+    if (await continueButton.isVisible()) {
+      await continueButton.click();
+      await expect(page.getByText(/\$0 today, trial ends/i)).toBeVisible();
+      await page
+        .getByRole("button", { name: /continue to secure checkout/i })
+        .click();
+    } else {
+      await page
+        .getByRole("button", {
+          name: /create my workspace|start my free trial|build my workspace/i,
+        })
+        .click();
+    }
 
     // Hosted Cloud with Stripe configured sends the practice to card-collected
     // Checkout first. Self-hosted or unconfigured local billing lands directly
@@ -31,6 +41,7 @@ test.describe("Registration & First-Time Setup", () => {
         url.hostname === "stripe.test" ||
         url.hostname.endsWith(".stripe.test") ||
         url.pathname === "/" ||
+        url.pathname.startsWith("/welcome") ||
         url.pathname.startsWith("/login"),
       { timeout: 45_000 }
     );

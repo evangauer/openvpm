@@ -65,6 +65,7 @@ test("Dogfood A: signup, wizard, dashboard", async ({ page }) => {
   await page.fill("#practiceName", PRACTICE);
   await page.fill("#email", EMAIL);
   await page.fill("#password", PASSWORD);
+  await page.selectOption("#country", "US");
   await Promise.all([
     page.waitForURL((url) => url.pathname === "/", { timeout: 60_000 }),
     page.click('button[type="submit"]'),

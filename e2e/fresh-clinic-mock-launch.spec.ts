@@ -258,15 +258,27 @@ test.describe.serial("Fresh clinic mock launch", () => {
 
     // Re-fill until React hydration has caught the values and enabled submit —
     // filling before hydration leaves the button permanently disabled.
-    const submitButton = page.getByRole("button", { name: /create workspace/i });
+    const continueButton = page.getByRole("button", { name: "Continue", exact: true });
+    const directSubmit = page.getByRole("button", {
+      name: /create my workspace|start my free trial|build my workspace/i,
+    });
     for (let attempt = 0; attempt < 4; attempt++) {
       await page.getByLabel(/practice name/i).fill(state.practiceName);
       await page.getByLabel(/work email/i).fill(state.ownerEmail);
       await page.getByLabel(/password/i).fill(password);
-      const enabled = await submitButton.isEnabled({ timeout: 4_000 }).catch(() => false);
+      await page.getByLabel("Clinic country", { exact: true }).selectOption("US");
+      const enabled =
+        (await continueButton.isEnabled({ timeout: 4_000 }).catch(() => false)) ||
+        (await directSubmit.isEnabled({ timeout: 1_000 }).catch(() => false));
       if (enabled) break;
       await page.waitForTimeout(2_000);
     }
+    if (await continueButton.isVisible().catch(() => false)) {
+      await continueButton.click();
+    }
+    const submitButton = page.getByRole("button", {
+      name: /continue to secure checkout|create my workspace|start my free trial|build my workspace/i,
+    });
     await expect(submitButton).toBeEnabled({ timeout: 5_000 });
     await shot(page, "01-register-filled");
     await submitButton.click();
@@ -276,8 +288,8 @@ test.describe.serial("Fresh clinic mock launch", () => {
     await page.waitForURL((url) => isStripeHostname(url.hostname), { timeout: 90_000 });
     record("register", { reachedStripeCheckout: true });
     await completeStripeCheckout(page, "02-subscription");
-    await page.waitForURL((url) => url.pathname.startsWith("/login"), { timeout: 90_000 });
-    await shot(page, "03-checkout-complete-back-at-login");
+    await page.waitForURL((url) => url.pathname.startsWith("/welcome"), { timeout: 90_000 });
+    await shot(page, "03-checkout-complete-welcome");
     record("subscriptionCheckout", { completed: true, returnedTo: page.url() });
 
     // Email verification: Resend is not configured locally, so mint a token

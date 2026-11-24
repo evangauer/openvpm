@@ -33,6 +33,7 @@ import { sendTrackedVerificationEmail } from "@/lib/auth-email-delivery";
 import { sendOptionalPlatformEmail } from "@/lib/email-lifecycle";
 import { appBaseUrl, exposeAuthLinksForPreview } from "@/lib/app-url";
 import { newSubscriptionBillingAccount } from "@/lib/billing/stripe-accounts";
+import { CHECKOUT_WELCOME_PATH } from "@/lib/billing/checkout-welcome";
 import { BILLING_CADENCES } from "@/lib/billing/catalog";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { createSubscriptionCheckoutSession } from "@/lib/stripe";
@@ -216,8 +217,10 @@ export const authRouter = createRouter({
   register: publicProcedure
     .input(
       z.object({
-        // Lean signup collects only practice + email + password. `name` is
-        // optional and derived from the email when omitted.
+        // Lean signup collects practice, work email, password, and country.
+        // `name` is optional and derived from the email when omitted. Clinic
+        // model and first goal are optional here; post-login onboarding asks
+        // when they are missing.
         name: authTextInput("Name", 2, AUTH_NAME_MAX_LENGTH).optional(),
         email: authEmailInput,
         password: authPasswordInput,
@@ -273,6 +276,9 @@ export const authRouter = createRouter({
       }
 
       const onboardingDraft = cleanOnboardingDraft(input.onboardingDraft);
+      // Clinic model and first goal are optional at signup. When both are
+      // absent, post-login onboarding collects them. The clinic builder still
+      // supplies the pair through `build`.
       const registrationProfile = input.build
         ? {
             clinicModel: input.build.practiceType,
@@ -521,7 +527,7 @@ export const authRouter = createRouter({
                 ...(billingAccount === "openvpm" ? { billingAccount } : {}),
                 billingCadence,
                 source: "signup",
-                successUrl: `${base}/login?checkout=success`,
+                successUrl: `${base}${CHECKOUT_WELCOME_PATH}`,
                 cancelUrl: `${base}/login?checkout=cancelled`,
               });
               const checkoutUrl = checkout?.url;

@@ -43,56 +43,30 @@ describe("demo conversion bridge UI", () => {
     expect(register).toContain("acquisition: registrationAcquisition");
   });
 
-  it("reveals a useful first day before asking for account security", () => {
-    expect(register).toContain("A platform truly built for your clinic.");
-    expect(register).toContain("<ClinicIntentBuilder");
-    expect(register).toContain(
-      'type RegistrationStage = "profile" | "workflow" | "preview" | "account"',
-    );
-    expect(register).toContain("Step 1 of 4");
-    expect(register).toContain("Step 2 of 4");
-    expect(register).toContain("Step 3 of 4");
-    expect(register).toContain("Step 4 of 4");
-    expect(register).toContain("What would you like to see?");
-    expect(register).toContain("Pick one useful workflow and we’ll shape");
-    expect(register).toContain("around it.");
-    expect(register).not.toContain(
-      "Just your practice name and work email for now.",
-    );
+  it("asks for four account fields, then the trial summary, before Checkout", () => {
+    expect(register).toContain("Create your clinic workspace.");
+    expect(register).toContain('type RegistrationStage = "details" | "review"');
+    expect(register).toContain("Step 1 of 2");
+    expect(register).toContain("Step 2 of 2");
+    expect(register).not.toContain("Step 1 of 4");
+    expect(register).not.toContain("<ClinicIntentBuilder");
+    expect(register).not.toContain("onboardingDraft:");
     expect(register).toContain('label="Practice name"');
     expect(register).toContain('label="Work email"');
-    expect(register).toContain("See my first day");
-    expect(register).toContain("Your first day is ready.");
-    expect(register).toContain(
-      "<FirstDayRecommendations primaryGoal={firstGoal} />",
-    );
-    expect(register).toContain("Secure my workspace");
-    expect(register).toContain("Secure your workspace.");
-    expect(register.indexOf("Your first day is ready.")).toBeLessThan(
-      register.indexOf("Secure your workspace."),
-    );
+    expect(register).toContain('label="Password"');
+    expect(register).toContain('label="Clinic country"');
+    expect(register).toContain("checkoutTrialSummary(");
+    expect(register).toContain("Continue to secure checkout");
+    expect(register).toContain("Confirm your trial, then checkout.");
+    expect(register).toContain("FUNNEL_EVENTS.signupLand");
+    expect(register).toContain("FUNNEL_EVENTS.signupAccountViewed");
+    expect(register).toContain("FUNNEL_EVENTS.signupSubmitted");
+    expect(register).toContain("FUNNEL_EVENTS.signupSucceeded");
+    expect(register).toContain('await signIn("credentials"');
     expect(firstDayRecommendations).toContain("FIRST_GOAL_RECOMMENDATIONS");
     expect(firstDayRecommendations).toContain("Plan a safe first import");
     expect(firstDayRecommendations).toContain("Explore a ready-made clinic");
     expect(firstDayRecommendations).toContain("Review the self-hosted path");
-    expect(register).toContain('label="Password"');
-    expect(register).not.toContain(
-      "Two quick choices make the rest of setup feel like your clinic—not a generic software tour.",
-    );
-    expect(register).toContain("REGISTRATION_PROFILE_STORAGE_KEY");
-    expect(register).toContain('setStage("workflow")');
-    expect(register).toContain(
-      "Practice name and email intentionally stay out of sessionStorage.",
-    );
-    expect(register).toContain("if (!profileRestored) return;");
-    expect(register).toContain("setProfileRestored(true)");
-    expect(register).toContain("onboardingDraft: { clinicModel, firstGoal }");
-    expect(register).toContain("FUNNEL_EVENTS.signupProfileCompleted");
-    expect(register).toContain("FUNNEL_EVENTS.signupSubmitted");
-    expect(register).toContain("FUNNEL_EVENTS.signupSucceeded");
-    expect(register).not.toContain(
-      "No patient or client information belongs here.",
-    );
   });
 
   it("mounts the demo bar and path tracker in the dashboard shell", () => {
