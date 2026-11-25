@@ -36,6 +36,7 @@ import {
   ConsentNotice,
   formatClock,
   RecordingStatus,
+  ScribePlanNotice,
 } from "@/components/scribe/recorder-parts";
 
 const PHONE_POLL_MS = 3_000;
@@ -57,6 +58,18 @@ export function useVisitScribe(role?: string | null) {
   return Boolean(
     allowed && data?.available && data.enabled && data.configured && data.canRecord,
   );
+}
+
+/** Why the clinic's plan holds Scribe back right now, if it does. */
+function useScribePlanBlock() {
+  const availability = trpc.scribe.availability.useQuery(undefined, {
+    enabled: scribeRolloutEnabled(),
+    staleTime: 60_000,
+  });
+  return {
+    blocked: availability.data?.aiBlocked ?? null,
+    canManage: availability.data?.canManage ?? false,
+  };
 }
 
 type Mode = "idle" | "consent" | "phone-consent";
@@ -88,6 +101,7 @@ export function VisitScribePanel({
   startOpen?: boolean;
 }) {
   const utils = trpc.useUtils();
+  const plan = useScribePlanBlock();
   const [mode, setMode] = useState<Mode>(startOpen ? "consent" : "idle");
   const [showTranscript, setShowTranscript] = useState(false);
   const [draftWhenReady, setDraftWhenReady] = useState(false);
@@ -295,7 +309,7 @@ export function VisitScribePanel({
             transcript is kept with the visit until the note is finalized.
           </p>
         </div>
-        {segments.length > 0 && !capturing && !phoneLive ? (
+        {segments.length > 0 && !capturing && !phoneLive && !plan.blocked ? (
           <Button
             size="sm"
             onClick={() => writeNote(true)}
@@ -316,6 +330,8 @@ export function VisitScribePanel({
           <AlertTriangle className="h-4 w-4 shrink-0" />
           Scribe works while the visit is in exam.
         </p>
+      ) : plan.blocked && !capturing && !phoneLive ? (
+        <ScribePlanNotice blocked={plan.blocked} canManage={plan.canManage} />
       ) : capturing ? (
         <div className="space-y-3">
           <RecordingStatus

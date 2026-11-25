@@ -92,6 +92,38 @@ function MicLevel({ level }: { level: number }) {
   );
 }
 
+/**
+ * The clinic's plan is holding AI back (on the hosted service: a trial with
+ * no card yet, or a lapsed subscription). Shown in place of the record
+ * buttons, so nobody records a visit that cannot be written up.
+ */
+export function ScribePlanNotice({
+  blocked,
+  canManage,
+}: {
+  blocked: { needsCard: boolean; message: string };
+  canManage: boolean;
+}) {
+  return (
+    <div className="space-y-2 text-sm" role="status">
+      <p>
+        {blocked.needsCard
+          ? "Scribe uses OpenVPM AI, which starts once a card is on your trial. Adding a card does not end the trial or charge you today."
+          : blocked.message}
+      </p>
+      {canManage ? (
+        <Button asChild size="sm">
+          <a href="/settings?tab=billing">
+            {blocked.needsCard ? "Add a card to start using Scribe" : "Open billing"}
+          </a>
+        </Button>
+      ) : (
+        <p className="text-muted-foreground">Ask a practice administrator.</p>
+      )}
+    </div>
+  );
+}
+
 export function ConsentNotice({
   onAgree,
   onCancel,

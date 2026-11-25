@@ -10,6 +10,7 @@ import {
 } from "../trpc";
 import { AgentNotConfiguredError, isAgentConfigured } from "@/lib/agent";
 import { SoapDraftUnavailableError } from "@/lib/ai/soap-draft";
+import { readHostedAiAccess } from "@/lib/billing/ai-access";
 import { recordUsage } from "@/lib/billing/usage";
 import {
   clinicalTextInput,
@@ -74,6 +75,7 @@ const UNAVAILABLE = {
   canManage: false,
   configured: false,
   canRecord: false,
+  aiBlocked: null,
 } as const;
 
 /**
@@ -138,12 +140,24 @@ export const scribeRouter = createRouter({
       .where(activePracticeWhere(ctx.practiceId))
       .limit(1);
     if (!practice) throw practiceNotFound();
+    // On the hosted service a clinic's plan can hold AI back (a trial without
+    // a card, a lapsed subscription). Say so before anyone records a visit,
+    // rather than when the first part of the recording is refused.
+    const aiAccess = await readHostedAiAccess(ctx.db, ctx.practiceId);
+    const aiBlocked =
+      aiAccess && !aiAccess.allowed
+        ? {
+            needsCard: aiAccess.reason === "billing_setup_required",
+            message: aiAccess.message ?? "OpenVPM AI is not available.",
+          }
+        : null;
     return {
       available: true,
       enabled: scribePracticeEnabled(practice.settings),
       canManage: ctx.user.role === "admin",
       configured: isAgentConfigured(),
       canRecord: isAgentConfigured() && isScribeAudioConfigured(),
+      aiBlocked,
     };
   }),
 

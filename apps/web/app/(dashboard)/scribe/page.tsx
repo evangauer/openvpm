@@ -43,6 +43,7 @@ import {
 import {
   ConsentNotice,
   RecordingStatus,
+  ScribePlanNotice,
 } from "@/components/scribe/recorder-parts";
 import { useUnsavedChangesGuard } from "@/lib/use-unsaved-changes-guard";
 
@@ -167,7 +168,12 @@ function ScribeWorkspace() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
-      <ScribeTool configured={configured} canRecord={canRecord} />
+      <ScribeTool
+        configured={configured}
+        canRecord={canRecord}
+        aiBlocked={availability.data.aiBlocked}
+        canManage={canManage}
+      />
       {canManage ? (
         <p className="text-xs text-muted-foreground">
           Scribe is on for this clinic.{" "}
@@ -194,9 +200,14 @@ function formatClock(totalSeconds: number) {
 function ScribeTool({
   configured,
   canRecord,
+  aiBlocked,
+  canManage,
 }: {
   configured: boolean;
   canRecord: boolean;
+  /** The clinic's plan holds AI back (hosted service only). */
+  aiBlocked: { needsCard: boolean; message: string } | null;
+  canManage: boolean;
 }) {
   const [patientName, setPatientName] = useState("");
   const [species, setSpecies] = useState("");
@@ -254,6 +265,7 @@ function ScribeTool({
   const transcriptTooLong = transcriptLength > SCRIBE_TRANSCRIPT_MAX_LENGTH;
   const canDraft =
     configured &&
+    !aiBlocked &&
     transcriptLength > 0 &&
     !transcriptTooLong &&
     !draftNote.isPending &&
@@ -390,7 +402,11 @@ function ScribeTool({
           </FormField>
         </div>
 
-        {configured && canRecord ? (
+        {aiBlocked ? (
+          <div className="rounded-md border border-border p-4">
+            <ScribePlanNotice blocked={aiBlocked} canManage={canManage} />
+          </div>
+        ) : configured && canRecord ? (
           <div
             className="space-y-3 rounded-md border border-border p-4"
             aria-label="Visit recording"

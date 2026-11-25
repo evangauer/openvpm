@@ -145,6 +145,7 @@ describe("scribe availability", () => {
       canManage: false,
       configured: false,
       canRecord: false,
+      aiBlocked: null,
     });
     expect(select).not.toHaveBeenCalled();
   });
@@ -160,6 +161,27 @@ describe("scribe availability", () => {
       expect(select).not.toHaveBeenCalled();
     },
   );
+
+  it("says up front when the clinic's plan holds AI back", async () => {
+    // Before anyone records a visit, not when its first part is refused.
+    mocks.readHostedAiAccess.mockResolvedValueOnce({
+      allowed: false,
+      reason: "billing_setup_required",
+      message: "Add a card to your trial to try OpenVPM AI.",
+    });
+    await expect(
+      caller(createDb([OPTED_IN]).db, "admin").availability(),
+    ).resolves.toMatchObject({
+      enabled: true,
+      aiBlocked: {
+        needsCard: true,
+        message: "Add a card to your trial to try OpenVPM AI.",
+      },
+    });
+    await expect(
+      caller(createDb([OPTED_IN]).db).availability(),
+    ).resolves.toMatchObject({ aiBlocked: null });
+  });
 
   it("separates the clinic opt-in from who may change it", async () => {
     await expect(
