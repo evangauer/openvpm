@@ -2,6 +2,7 @@
 
 import { Suspense, useState } from "react";
 import { signIn } from "next-auth/react";
+import { useTranslations } from "next-intl";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -11,9 +12,10 @@ import {
 import { AUTH_PASSWORD_MAX_LENGTH } from "@/lib/auth-password-policy";
 import { PawMark } from "@/components/brand/paw-mark";
 import { DemoLogin } from "@/components/demo/demo-login";
+import { LanguageSwitcher } from "@/components/i18n/language-switcher";
+import { signInErrorMessage, type SignInFailure } from "@/i18n/sign-in-error";
 import { isValidEmail } from "@/lib/utils";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
-import { loginErrorMessage } from "@/lib/login-error-message";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
 
@@ -32,6 +34,8 @@ export default function LoginPage() {
 }
 
 function PracticeLogin() {
+  const t = useTranslations("auth.signIn");
+  const common = useTranslations("common");
   const router = useRouter();
   const searchParams = useSearchParams();
   const checkoutState = searchParams.get("checkout");
@@ -41,17 +45,22 @@ function PracticeLogin() {
   );
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [failure, setFailure] = useState<SignInFailure | null>(null);
   const [loading, setLoading] = useState(false);
   const passwordMeetsPolicy =
     password.length > 0 && password.length <= AUTH_PASSWORD_MAX_LENGTH;
   const canSubmit =
     isAuthEmailLengthValid(email) && isValidEmail(email) && passwordMeetsPolicy;
+  const errorMessage = failure
+    ? signInErrorMessage(failure, (key, values) =>
+        values ? t(key, values) : t(key),
+      )
+    : "";
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!canSubmit || loading) return;
-    setError("");
+    setFailure(null);
     setLoading(true);
     try {
       const result = await signIn("credentials", {
@@ -60,15 +69,15 @@ function PracticeLogin() {
         redirect: false,
       });
       if (result?.error) {
-        setError(loginErrorMessage(result.error));
+        setFailure({ kind: "credentials", error: result.error });
       } else if (result?.ok) {
         router.push(nextPath);
         router.refresh();
       } else {
-        setError("Sign-in is temporarily unavailable. Please try again.");
+        setFailure({ kind: "unavailable" });
       }
     } catch {
-      setError("Sign-in is temporarily unavailable. Please try again.");
+      setFailure({ kind: "unavailable" });
     } finally {
       setLoading(false);
     }
@@ -85,12 +94,11 @@ function PracticeLogin() {
             <PawMark className="h-6 w-6" />
           </span>
           <h1 className="font-heading text-2xl font-bold text-foreground">
-            OpenVPM
+            {common("brand")}
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Sign in to your practice
-          </p>
+          <p className="mt-1 text-sm text-muted-foreground">{t("subtitle")}</p>
         </div>
+        {/* Checkout status stays in English until billing copy is extracted. */}
         {(checkoutState === "success" || checkoutState === "cancelled") && (
           <div
             role="status"
@@ -102,12 +110,12 @@ function PracticeLogin() {
           </div>
         )}
         <form onSubmit={handleSubmit} className="space-y-4">
-          {error && (
+          {errorMessage && (
             <div
               role="alert"
               className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive"
             >
-              {error}
+              {errorMessage}
             </div>
           )}
           <div>
@@ -115,7 +123,7 @@ function PracticeLogin() {
               htmlFor="email"
               className="mb-1.5 block text-sm font-medium text-foreground"
             >
-              Email
+              {t("email")}
             </label>
             <input
               id="email"
@@ -125,7 +133,7 @@ function PracticeLogin() {
               required
               maxLength={AUTH_EMAIL_MAX_LENGTH}
               className="min-h-11 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-              placeholder="you@clinic.com"
+              placeholder={t("emailPlaceholder")}
               autoComplete="email"
             />
           </div>
@@ -134,7 +142,7 @@ function PracticeLogin() {
               htmlFor="password"
               className="mb-1.5 block text-sm font-medium text-foreground"
             >
-              Password
+              {t("password")}
             </label>
             <input
               id="password"
@@ -144,7 +152,7 @@ function PracticeLogin() {
               required
               maxLength={AUTH_PASSWORD_MAX_LENGTH}
               className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-              placeholder="Enter your password"
+              placeholder={t("passwordPlaceholder")}
               autoComplete="current-password"
             />
           </div>
@@ -153,7 +161,7 @@ function PracticeLogin() {
             disabled={!canSubmit || loading}
             className="min-h-11 w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
-            {loading ? "Signing in..." : "Sign in"}
+            {loading ? t("submitting") : t("submit")}
           </button>
         </form>
         <p className="mt-4 text-center text-sm text-muted-foreground">
@@ -161,11 +169,11 @@ function PracticeLogin() {
             href="/forgot-password"
             className="text-primary hover:underline"
           >
-            Forgot your password?
+            {t("forgotPassword")}
           </Link>
         </p>
         <p className="mt-2 text-center text-sm text-muted-foreground">
-          Don&apos;t have an account?{" "}
+          {t("noAccount")}{" "}
           <Link
             href={
               nextPath === "/post-login"
@@ -174,9 +182,10 @@ function PracticeLogin() {
             }
             className="text-primary hover:underline"
           >
-            Register your practice
+            {t("register")}
           </Link>
         </p>
+        <LanguageSwitcher />
       </div>
     </main>
   );

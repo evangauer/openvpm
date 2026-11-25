@@ -1,0 +1,45 @@
+{
+  "metadata": {
+    "title": "OpenVPM: gestione veterinaria open source",
+    "description": "Il primo sistema moderno di gestione della clinica, open source e basato su API, creato per la comunità veterinaria. Chiaro, veloce e gratuito."
+  },
+  "common": {
+    "skipToContent": "Vai al contenuto principale",
+    "brand": "OpenVPM",
+    "language": {
+      "label": "Lingua",
+      "en": "English",
+      "es-419": "Español (Latinoamérica)",
+      "it": "Italiano"
+    }
+  },
+  "auth": {
+    "signIn": {
+      "subtitle": "Accedi alla tua clinica",
+      "email": "Email",
+      "emailPlaceholder": "tu@clinica.it",
+      "password": "Password",
+      "passwordPlaceholder": "Inserisci la password",
+      "submit": "Accedi",
+      "submitting": "Accesso in corso...",
+      "forgotPassword": "Hai dimenticato la password?",
+      "noAccount": "Non hai un account?",
+      "register": "Registra la tua clinica",
+      "invalid": "Email o password non validi",
+      "unavailable": "L'accesso non è disponibile al momento. Riprova.",
+      "rateLimitedMinutes": "Troppi tentativi di accesso. Riprova tra {count, plural, one {# minuto} other {# minuti}}.",
+      "rateLimitedHours": "Troppi tentativi di accesso. Riprova tra {count, plural, one {# ora} other {# ore}}."
+    }
+  },
+  "errors": {
+    "title": "Qualcosa è andato storto",
+    "description": "Abbiamo registrato l'errore. Riprova oppure torna alla dashboard se continua a succedere.",
+    "tryAgain": "Riprova"
+  },
+  "notFound": {
+    "code": "404",
+    "title": "Pagina non trovata",
+    "description": "Questa pagina potrebbe essere stata spostata oppure il collegamento non è più disponibile.",
+    "dashboard": "Vai alla dashboard"
+  }
+}

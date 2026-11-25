@@ -1,9 +1,14 @@
+"use client";
+
 import * as React from "react";
 import Link from "next/link";
 import { Home, SearchX } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 
 export function NotFoundView() {
+  const t = useTranslations("notFound");
+
   return (
     <main
       id="main-content"
@@ -13,18 +18,18 @@ export function NotFoundView() {
         <SearchX className="h-6 w-6 text-primary" aria-hidden="true" />
       </div>
       <div className="mt-4 text-center">
-        <p className="text-sm font-medium text-primary">404</p>
+        <p className="text-sm font-medium text-primary">{t("code")}</p>
         <h1 className="mt-1 font-heading text-2xl font-semibold text-foreground">
-          Page not found
+          {t("title")}
         </h1>
         <p className="mt-2 max-w-md text-sm text-muted-foreground">
-          This page may have moved, or the link may no longer be available.
+          {t("description")}
         </p>
       </div>
       <Button asChild className="mt-6 gap-2">
         <Link href="/">
           <Home className="h-4 w-4" aria-hidden="true" />
-          Go to Dashboard
+          {t("dashboard")}
         </Link>
       </Button>
     </main>

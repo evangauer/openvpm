@@ -59,6 +59,13 @@ environment.
 - tRPC for all internal API endpoints
 - Drizzle ORM for database queries
 
+## Translations
+
+English is the source language. UI translations follow
+[docs/i18n/CONTRIBUTING-TRANSLATIONS.md](docs/i18n/CONTRIBUTING-TRANSLATIONS.md).
+Add a key to `apps/web/messages/en.json` before translating it. Language does
+not change dates, currency, or clinic region.
+
 ## Adding a compatibility endpoint or target
 
 The public REST API ([docs/api](docs/api/README.md)) is OpenVPM's integration

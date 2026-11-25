@@ -1,0 +1,45 @@
+{
+  "metadata": {
+    "title": "OpenVPM: Open-Source Veterinary Practice Management",
+    "description": "The first modern, open-source, API-first practice management system built for the veterinary community. Beautiful, fast, and free."
+  },
+  "common": {
+    "skipToContent": "Skip to main content",
+    "brand": "OpenVPM",
+    "language": {
+      "label": "Language",
+      "en": "English",
+      "es-419": "Español (Latinoamérica)",
+      "it": "Italiano"
+    }
+  },
+  "auth": {
+    "signIn": {
+      "subtitle": "Sign in to your practice",
+      "email": "Email",
+      "emailPlaceholder": "you@clinic.com",
+      "password": "Password",
+      "passwordPlaceholder": "Enter your password",
+      "submit": "Sign in",
+      "submitting": "Signing in...",
+      "forgotPassword": "Forgot your password?",
+      "noAccount": "Don't have an account?",
+      "register": "Register your practice",
+      "invalid": "Invalid email or password",
+      "unavailable": "Sign-in is temporarily unavailable. Please try again.",
+      "rateLimitedMinutes": "Too many sign-in attempts. Try again in {count, plural, one {# minute} other {# minutes}}.",
+      "rateLimitedHours": "Too many sign-in attempts. Try again in {count} hours."
+    }
+  },
+  "errors": {
+    "title": "Something went wrong",
+    "description": "We logged the error. Try again, or return to the dashboard if it keeps happening.",
+    "tryAgain": "Try Again"
+  },
+  "notFound": {
+    "code": "404",
+    "title": "Page not found",
+    "description": "This page may have moved, or the link may no longer be available.",
+    "dashboard": "Go to Dashboard"
+  }
+}
