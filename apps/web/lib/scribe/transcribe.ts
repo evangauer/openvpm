@@ -112,7 +112,14 @@ export function buildTranscriptionPrompt(
 
 const NO_SPEECH_PATTERN = /^\[?\s*no speech\s*\]?\.?$/i;
 /** What speech models write for silence, music, or noise: "[BLANK_AUDIO]". */
-const NON_SPEECH_MARKER_PATTERN = /^(?:\s*[\[(][^\])]{0,40}[\])]\s*)+$/;
+const NON_SPEECH_MARKER_PATTERN = /[[(][^\])]{0,40}[\])]/g;
+
+/** True when the text is nothing but such markers (checked in linear time). */
+function onlyNonSpeechMarkers(text: string): boolean {
+  return (
+    /^[[(]/.test(text) && text.replace(NON_SPEECH_MARKER_PATTERN, "").trim() === ""
+  );
+}
 
 /** Strip the no-speech marker and stray wrapping the model sometimes adds. */
 export function cleanSegmentText(text: string): string {
@@ -122,7 +129,7 @@ export function cleanSegmentText(text: string): string {
     .trim();
   if (NO_SPEECH_PATTERN.test(trimmed)) return "";
   if (
-    NON_SPEECH_MARKER_PATTERN.test(trimmed) &&
+    onlyNonSpeechMarkers(trimmed) &&
     !/^\[inaudible\]$/i.test(trimmed)
   ) {
     return "";

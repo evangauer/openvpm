@@ -220,6 +220,15 @@ describe("scribe transcription", () => {
     );
   });
 
+  it("checks for non-speech markers in linear time", () => {
+    const hostile = `()${" ()".repeat(5000)}x`;
+    const started = performance.now();
+    expect(cleanSegmentText(hostile)).toBe(hostile.slice(0, 4000));
+    expect(performance.now() - started).toBeLessThan(200);
+    expect(cleanSegmentText("[MUSIC] (laughs) [NOISE]")).toBe("");
+    expect(cleanSegmentText("[(x)]")).toBe("[(x)]");
+  });
+
   it("never writes the recording anywhere", () => {
     const source = readFileSync(
       new URL("../transcribe.ts", import.meta.url),
