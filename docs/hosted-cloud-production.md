@@ -743,6 +743,23 @@ Subscribe to:
 
 Store this endpoint secret as `RESEND_WEBHOOK_SECRET`.
 
+### Scribe
+
+Scribe (visit recording to a SOAP draft) is off on Cloud until all of these
+are true. See [`scribe.md`](scribe.md) for what it stores.
+
+1. The speech-to-text and drafting providers' data terms allow clinic audio
+   and transcripts (no training, no retention).
+2. Migration `0118_scribe_visit_transcripts` is applied (photo capture reads
+   its new column, so apply it before deploying the build that contains it).
+3. `SCRIBE_PRACTICE_IDS` lists the first clinics, starting with an internal
+   clinic. Then set `NEXT_PUBLIC_SCRIBE_ENABLED=true` and the speech-to-text
+   settings, and redeploy: the switch is read at build time.
+4. An administrator of each listed clinic turns Scribe on under **All tools**.
+
+To roll back, set `NEXT_PUBLIC_SCRIBE_ENABLED=false` and redeploy. The daily
+`rate-limit-cleanup` job deletes the remaining transcripts within 24 hours.
+
 ## Stripe Setup
 
 The server pins Stripe API version `2026-07-29.dahlia`. Configure all three

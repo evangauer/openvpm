@@ -63,7 +63,7 @@ DO $$
 DECLARE
   t text;
   tbls text[] := array[
-    'offline_field_batches','api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
+    'offline_field_batches','scribe_recordings','scribe_transcript_segments','api_keys','appointment_types','appointment_waitlist','appointments','audit_log','booking_pages',
     'capture_sessions','care_reminders','cases','client_contacts','clients','clinical_notes','clinical_record_corrections','communications','consent_forms','consent_receipt_capabilities','consent_requests','controlled_substance_log','dispense_charge_queue','email_suppressions',
     'external_lab_observations','external_lab_reports','external_prescription_fills','external_prescriptions','files','financial_closes','historical_appointments','historical_documents','insurance_claims','inventory_stock_adjustments','insurance_policies','invoices','lab_report_receipts','lab_report_decisions','lab_result_events','lab_result_replacements','lab_results','legacy_financial_allocations','legacy_financial_documents','legacy_financial_line_items','legacy_financial_payments','location_messaging','messaging_registration_events','messaging_registrations','migration_runs',
     'locations','patient_merge_events','patients','payment_disputes','payment_processor_payouts','payment_processor_refunds','payment_processor_settlements','portal_sessions','practice_payment_accounts','prescription_events','prescriptions','problem_list','procedures','products','purchase_orders',

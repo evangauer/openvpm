@@ -10,6 +10,8 @@ describe("Vercel Analytics capability privacy", () => {
     "https://app.openvpm.com/sign/raw-secret-token",
     "https://app.openvpm.com/treatment-plan/raw-secret-token",
     "/capture/raw-secret-token",
+    "https://app.openvpm.com/scribe-capture/raw-secret-token",
+    "/scribe-capture/raw-secret-token",
     "/sign/raw-secret-token",
     "/treatment-plan/raw-secret-token",
   ])("drops capability-page events before they are sent: %s", (url) => {

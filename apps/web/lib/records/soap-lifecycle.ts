@@ -15,6 +15,23 @@ import {
 } from "@/lib/records/soap-content";
 import { hasUnresolvedSoapTemplatePrompts } from "@/lib/records/soap-templates";
 import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
+import { scribeRolloutEnabled } from "@/lib/scribe/availability";
+import { clearVisitTranscript } from "@/lib/scribe/visit-store";
+
+/**
+ * A visit's Scribe transcript exists only to draft its note, so it goes when
+ * the note is finalized. Where Scribe is switched off this does nothing, so
+ * signing a note is unchanged for deployments without it; the daily clean-up
+ * job removes any transcript left from before the switch was turned off.
+ */
+async function dropScribeTranscript(
+  db: Database,
+  practiceId: string,
+  appointmentId: string,
+) {
+  if (!scribeRolloutEnabled()) return;
+  await clearVisitTranscript(db, practiceId, appointmentId);
+}
 
 export interface SoapSections {
   subjective?: string | null;
@@ -465,6 +482,7 @@ export async function finalizeAppointmentSoapDraft(
     }
     return { outcome: "conflict", note: latest };
   }
+  await dropScribeTranscript(db, input.practiceId, input.appointmentId);
   return { outcome: "finalized", note: finalized, transitioned: true };
 }
 
@@ -629,6 +647,7 @@ export async function createFinalizedAppointmentSoapNote(
       ...finalizedSoapInsertValues({ actor: input.actor, sections }),
     })
     .returning();
+  await dropScribeTranscript(db, input.practiceId, input.appointmentId);
   return note!;
 }
 

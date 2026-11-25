@@ -51,3 +51,4 @@ export * from "./backup-runs";
 export * from "./lab-report-intake";
 
 export * from "./offline-field-batches";
+export * from "./scribe-transcripts";

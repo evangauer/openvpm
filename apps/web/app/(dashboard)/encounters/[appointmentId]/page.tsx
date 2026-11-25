@@ -73,6 +73,7 @@ import {
 } from "@/lib/scheduling/appointment-policy";
 import { ServicePicker } from "@/components/billing/service-picker";
 import { CapturePhotos } from "@/components/records/capture-photos";
+import { RecordVisitButton } from "@/components/scribe/visit-scribe-panel";
 import { ConsentSign } from "@/components/records/consent-sign";
 import { EncounterVitalsCard } from "@/components/records/encounter-vitals-card";
 import { AmbulatorySoapCard } from "@/components/records/ambulatory-soap-card";
@@ -796,6 +797,21 @@ export default function EncounterWorkspacePage() {
                             : "Write SOAP note"}
                         </a>
                       </Button>
+                    ) : null}
+                    {canCreateSoap(role) &&
+                    !isAmbulatoryWorkspace &&
+                    appointment.status === "in_exam" &&
+                    appointment.patientId &&
+                    closeoutQuery.data?.linkedSoapCount === 0 &&
+                    !closeoutQuery.data?.missingSoapReplacement &&
+                    closeoutQuery.data?.closeout?.status !==
+                      "clinical_finalized" &&
+                    closeoutQuery.data?.closeout?.status !== "completed" ? (
+                      <RecordVisitButton
+                        role={role}
+                        patientId={appointment.patientId}
+                        appointmentId={appointmentId}
+                      />
                     ) : null}
                     {canCreateSoap(role) &&
                     !isAmbulatoryWorkspace &&

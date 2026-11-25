@@ -363,9 +363,16 @@ export const captureSessions = pgTable(
     /** 64-hex capability token embedded in the QR link. */
     token: varchar("token", { length: 64 }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    /** "photos" links upload pictures; "scribe" links record the visit. A
+     * link only ever does the one thing it was made for. */
+    purpose: varchar("purpose", { length: 16 }).notNull().default("photos"),
   },
   (table) => ({
     tokenUq: uniqueIndex("capture_sessions_token_uq").on(table.token),
+    purposeCheck: check(
+      "capture_sessions_purpose_check",
+      sql`${table.purpose} in ('photos', 'scribe')`,
+    ),
     practiceIdx: index("capture_sessions_practice_idx").on(
       table.practiceId,
       table.deletedAt,

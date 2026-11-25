@@ -21,6 +21,7 @@ import {
   isNavigationActive,
   type NavigationItem,
 } from "@/lib/navigation";
+import { canUseScribeRole, scribeRolloutEnabled } from "@/lib/scribe/availability";
 import { useSidebarPins } from "@/lib/use-sidebar-pins";
 import { SidebarTools } from "./sidebar-tools";
 import { PawMark } from "@/components/brand/paw-mark";
@@ -61,8 +62,19 @@ export function Sidebar({
       retry: false,
     },
   );
+  // Asked only where the deployment has Scribe switched on; listed only once
+  // the clinic has opted in.
+  const { data: scribe } = trpc.scribe.availability.useQuery(undefined, {
+    enabled: canShowNav && scribeRolloutEnabled() && canUseScribeRole(role),
+    staleTime: 300_000,
+    retry: false,
+  });
   const availableItems = canShowNav
-    ? availableNavigation(role, fieldPilot?.enabled)
+    ? availableNavigation(
+        role,
+        fieldPilot?.enabled,
+        scribe?.available === true && scribe.enabled,
+      )
     : [];
   const coreItems = CORE_PATHS.flatMap((href) =>
     availableItems.filter((item) => item.href === href),

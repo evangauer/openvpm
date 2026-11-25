@@ -125,6 +125,10 @@ export const PRACTICE_EXPORT_SYSTEM_EXCLUSIONS = {
   practiceConversionMilestones:
     "Repairable system analytics projection; rebuild it from authoritative local practice, product, and allowlisted Stripe evidence after restore.",
   rateLimitBuckets: "Transient abuse-control buckets, not clinic-owned data.",
+  scribeTranscriptSegments:
+    "Working transcript of a visit in progress, deleted when its note is finalized; the note itself is the record.",
+  scribeRecordings:
+    "Scribe recording counters (seconds of audio, metered runs); no clinical content.",
   sessions: "Transient authentication sessions.",
   verificationTokens: "Transient authentication verification tokens.",
   authTokens:

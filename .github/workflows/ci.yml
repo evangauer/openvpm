@@ -24,6 +24,8 @@ jobs:
             test: disposable-restore
           - name: Newsletter consent and delivery
             test: newsletter
+          - name: Scribe in a visit
+            test: scribe-visit
     services:
       postgres:
         image: postgres:16-alpine
@@ -45,6 +47,7 @@ jobs:
       GOLDEN_CLINIC_DB_INTEGRATION: "1"
       DISPOSABLE_RESTORE_DB_INTEGRATION: "1"
       NEWSLETTER_DB_INTEGRATION: "1"
+      SCRIBE_DB_INTEGRATION: "1"
       MESSAGING_PROVISIONING_ENABLED: "false"
       MESSAGING_INBOUND_ENABLED: "false"
       MESSAGING_SENDING_ENABLED: "false"

@@ -827,6 +827,13 @@
       "when": 1794600380709,
       "tag": "0117_offline_field_visits",
       "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1795555995984,
+      "tag": "0118_scribe_visit_transcripts",
+      "breakpoints": true
     }
   ]
 }

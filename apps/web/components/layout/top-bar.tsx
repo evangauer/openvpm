@@ -32,6 +32,7 @@ const routeLabels: Record<string, string> = {
   "/migration-archive": "Imported History",
   "/whiteboard": "Whiteboard",
   "/agent": "Agent",
+  "/scribe": "Scribe",
   "/controlled-substances": "Controlled Substances",
   "/reports": "Reports",
   "/settings": "Settings",

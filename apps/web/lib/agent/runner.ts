@@ -146,6 +146,17 @@ function vertexPrivateKey(): string | undefined {
   return nonBlank(process.env.GOOGLE_PRIVATE_KEY)?.replace(/\\n/g, "\n");
 }
 
+/**
+ * Vertex AI express mode: one API key instead of an identity boundary. For
+ * local development only, so it is ignored in a production build: clinic data
+ * goes through an OIDC or service account boundary, which also always takes
+ * precedence here.
+ */
+function vertexApiKey(): string | undefined {
+  if (process.env.NODE_ENV === "production") return undefined;
+  return nonBlank(process.env.GOOGLE_VERTEX_API_KEY);
+}
+
 function anthropicApiKey(): string | undefined {
   return nonBlank(process.env.ANTHROPIC_API_KEY);
 }
@@ -171,7 +182,11 @@ function hasVertexServiceAccountConfiguration(): boolean {
 }
 
 function hasVertexConfiguration(): boolean {
-  return hasVertexOidcConfiguration() || hasVertexServiceAccountConfiguration();
+  return (
+    hasVertexOidcConfiguration() ||
+    hasVertexServiceAccountConfiguration() ||
+    Boolean(vertexApiKey())
+  );
 }
 
 function hasProviderConfiguration(modelId: string): boolean {
@@ -190,15 +205,32 @@ export function isAgentConfigured(): boolean {
  * (e.g. SOAP drafts) that share the agent's provider/model configuration.
  * Throws AgentNotConfiguredError when no provider authentication is set.
  */
-export function configuredModel(): LanguageModel {
-  const modelId = activeModelId();
+export function configuredModel(modelIdOverride?: string): LanguageModel {
+  const modelId = activeModelId(modelIdOverride);
   if (!hasProviderConfiguration(modelId)) throw new AgentNotConfiguredError();
   return resolveModel(modelId);
+}
+
+/**
+ * Whether the model that would be used (override, else the configured one)
+ * accepts audio input and has its provider configured. Only Gemini models take
+ * audio today.
+ */
+export function isAudioModelConfigured(modelIdOverride?: string): boolean {
+  const modelId = activeModelId(modelIdOverride);
+  return isGoogleModel(modelId) && hasProviderConfiguration(modelId);
 }
 
 /** Build an AI SDK model instance for the given model id. */
 function resolveModel(modelId: string) {
   if (isGoogleModel(modelId)) {
+    if (
+      !hasVertexOidcConfiguration() &&
+      !hasVertexServiceAccountConfiguration()
+    ) {
+      const express = createVertex({ apiKey: vertexApiKey() });
+      return express(modelId.replace(/^(google\/|models\/)/, ""));
+    }
     const googleAuthOptions = hasVertexOidcConfiguration()
       ? vertexOidcAuthOptions()
       : {

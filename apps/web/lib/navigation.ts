@@ -17,7 +17,9 @@ import {
   Bot,
   FlaskConical,
   Archive,
+  NotebookPen,
 } from "lucide-react";
+import { SCRIBE_PATH } from "./scribe/availability";
 
 export type UserRole =
   | "admin"
@@ -133,26 +135,42 @@ const fieldItem: NavigationItem = {
   roles: ["admin"],
   description: "Prepare house calls, write notes and print receipts offline",
 };
+/** Optional tool: listed only for clinics that have turned Scribe on. */
+const scribeItem: NavigationItem = {
+  href: SCRIBE_PATH,
+  label: "Scribe",
+  icon: NotebookPen,
+  roles: ["admin", "veterinarian"],
+  description: "Record a visit and get a SOAP note draft",
+};
+const optionalItems = [fieldItem, scribeItem];
 export const TOOL_PATHS = [
   ...baseItems
     .filter(
       (item) => !CORE_PATHS.includes(item.href) && item.href !== "/settings",
     )
     .map((item) => item.href),
-  fieldItem.href,
+  ...optionalItems.map((item) => item.href),
 ];
 export function availableNavigation(
   role: string | null | undefined,
   fieldEnabled = false,
+  scribeEnabled = false,
 ) {
   if (!isUserRole(role)) return [];
-  return [...baseItems, ...(fieldEnabled ? [fieldItem] : [])]
+  return [
+    ...baseItems,
+    ...(fieldEnabled ? [fieldItem] : []),
+    ...(scribeEnabled ? [scribeItem] : []),
+  ]
     .filter((item) => item.roles.includes(role))
     .map((item) => ({
       ...item,
       description:
         descriptions[item.href] ??
-        (item.href === fieldItem.href ? fieldItem.description : ""),
+        optionalItems.find((optional) => optional.href === item.href)
+          ?.description ??
+        "",
     }));
 }
 export function isNavigationActive(href: string, pathname: string) {

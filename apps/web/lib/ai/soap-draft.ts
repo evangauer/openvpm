@@ -51,9 +51,16 @@ function line(label: string, value: string | number | null | undefined): string 
     : `${label}: ${value}\n`;
 }
 
-export function buildSoapDraftPrompt(context: SoapDraftContext): string {
+/**
+ * The patient, allergy, problem-list and vitals lines shared by every AI SOAP
+ * draft prompt. Starts with "Patient:" and ends with a newline.
+ */
+export function buildSoapChartContextBlock(
+  context: Omit<SoapDraftContext, "visitContext">,
+  vitalsHeading = "Most recent vitals",
+): string {
   const { patient, allergies, activeProblems, latestVitals } = context;
-  let prompt = "Draft a SOAP note for this veterinary visit.\n\nPatient:\n";
+  let prompt = "Patient:\n";
   prompt += line("Name", patient.name);
   prompt += line("Species", patient.species);
   prompt += line("Breed", patient.breed);
@@ -75,12 +82,18 @@ export function buildSoapDraftPrompt(context: SoapDraftContext): string {
   }
 
   if (latestVitals) {
-    prompt += "\nMost recent vitals:\n";
+    prompt += `\n${vitalsHeading}:\n`;
     prompt += line("Temperature (C)", latestVitals.temperatureC);
     prompt += line("Heart rate (bpm)", latestVitals.heartRateBpm);
     prompt += line("Respiratory rate (bpm)", latestVitals.respiratoryRateBpm);
     prompt += line("Weight (kg)", latestVitals.weightKg);
   }
+  return prompt;
+}
+
+export function buildSoapDraftPrompt(context: SoapDraftContext): string {
+  let prompt = "Draft a SOAP note for this veterinary visit.\n\n";
+  prompt += buildSoapChartContextBlock(context);
 
   if (context.visitContext) {
     prompt += `\nVisit context from staff:\n${context.visitContext}\n`;
