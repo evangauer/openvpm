@@ -14874,6 +14874,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "capture_sessions_scribe_visit_idx": {
+          "name": "capture_sessions_scribe_visit_idx",
+          "columns": [
+            {
+              "expression": "practice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "appointment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"capture_sessions\".\"purpose\" = 'scribe' and \"capture_sessions\".\"deleted_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {

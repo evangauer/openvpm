@@ -758,7 +758,8 @@ are true. See [`scribe.md`](scribe.md) for what it stores.
 4. An administrator of each listed clinic turns Scribe on under **All tools**.
 
 To roll back, set `NEXT_PUBLIC_SCRIBE_ENABLED=false` and redeploy. The daily
-`rate-limit-cleanup` job deletes the remaining transcripts within 24 hours.
+`rate-limit-cleanup` job deletes the remaining transcripts within two days
+(24 hours after the last recording, on its next daily run).
 
 ## Stripe Setup
 

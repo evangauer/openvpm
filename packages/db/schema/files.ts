@@ -378,6 +378,10 @@ export const captureSessions = pgTable(
       table.deletedAt,
     ),
     patientIdx: index("capture_sessions_patient_idx").on(table.patientId),
+    /** Live Scribe phone links of a visit, ended when its note is signed. */
+    scribeVisitIdx: index("capture_sessions_scribe_visit_idx")
+      .on(table.practiceId, table.appointmentId)
+      .where(sql`${table.purpose} = 'scribe' and ${table.deletedAt} is null`),
     patientTenantFk: foreignKey({
       columns: [table.practiceId, table.patientId],
       foreignColumns: [patients.practiceId, patients.id],

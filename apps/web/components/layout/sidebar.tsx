@@ -62,8 +62,9 @@ export function Sidebar({
       retry: false,
     },
   );
-  // Asked only where the deployment has Scribe switched on; listed only once
-  // the clinic has opted in.
+  // Asked only where the deployment has Scribe switched on. Listed for
+  // everyone once the clinic has opted in, and before that for administrators,
+  // who turn it on from the Scribe page.
   const { data: scribe } = trpc.scribe.availability.useQuery(undefined, {
     enabled: canShowNav && scribeRolloutEnabled() && canUseScribeRole(role),
     staleTime: 300_000,
@@ -73,7 +74,7 @@ export function Sidebar({
     ? availableNavigation(
         role,
         fieldPilot?.enabled,
-        scribe?.available === true && scribe.enabled,
+        scribe?.available === true && (scribe.enabled || scribe.canManage),
       )
     : [];
   const coreItems = CORE_PATHS.flatMap((href) =>

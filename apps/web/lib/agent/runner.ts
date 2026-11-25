@@ -228,7 +228,9 @@ function resolveModel(modelId: string) {
       !hasVertexOidcConfiguration() &&
       !hasVertexServiceAccountConfiguration()
     ) {
-      const express = createVertex({ apiKey: vertexApiKey() });
+      // An empty key stops the SDK from reading GOOGLE_VERTEX_API_KEY itself,
+      // so a production build never falls into express mode.
+      const express = createVertex({ apiKey: vertexApiKey() ?? "" });
       return express(modelId.replace(/^(google\/|models\/)/, ""));
     }
     const googleAuthOptions = hasVertexOidcConfiguration()
@@ -240,6 +242,9 @@ function resolveModel(modelId: string) {
           },
         };
     const vertex = createVertex({
+      // Without this the SDK reads GOOGLE_VERTEX_API_KEY from the environment
+      // and, if set, silently uses it instead of the identity boundary.
+      apiKey: "",
       project: vertexProject(),
       location: vertexLocation(),
       googleAuthOptions,

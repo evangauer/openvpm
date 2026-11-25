@@ -22,7 +22,7 @@ to.
 | What | Stored? |
 |---|---|
 | Audio | Never. It is held in the browser's memory, sent to the speech-to-text service in pieces of 20–30 seconds, and dropped once its text comes back. A piece that fails stays in the browser until it is retried or skipped. |
-| Transcript of a visit | Kept with the visit so the note can be drafted (and redrafted). Deleted when the visit's note is finalized, when a clinic turns Scribe off, or 24 hours after it was recorded, whichever comes first. |
+| Transcript of a visit | Kept with the visit so the note can be drafted (and redrafted). Deleted when the visit's note is finalized, when a clinic turns Scribe off, or by the next daily clean-up once 24 hours have passed since the last recording, whichever comes first. |
 | Transcript on the standalone page | Only in the browser tab. Leaving the page discards it after a warning. |
 | Drafted note | Not saved by Scribe. Inside a visit it becomes the visit's SOAP draft, which the clinician reviews and finalizes. |
 | Usage | Per recording: who recorded, which visit, how many seconds of audio and how many AI runs it was billed as. No words. Kept 30 days. |
@@ -113,8 +113,8 @@ Transcripts are deleted when a note is finalized or a clinic turns Scribe off.
 Transcripts that a visit left behind are removed after 24 hours by the daily
 `/api/cron/rate-limit-cleanup` job and, on self-hosted installations without
 that job, whenever the clinic next uses Scribe. If you switch Scribe off for the
-whole deployment, that daily job still runs and removes what is left within 24
-hours; without it, run the job once by hand after switching off.
+whole deployment, that daily job still runs and removes what is left within two
+days; without it, run the job once by hand after switching off.
 
 ## If something goes wrong
 

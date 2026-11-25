@@ -1,3 +1,5 @@
+import { notFound } from "next/navigation";
+import { scribeRolloutEnabled } from "@/lib/scribe/availability";
 import { ScribeCaptureClient } from "./scribe-capture-client";
 
 /**
@@ -12,6 +14,7 @@ export default async function ScribeCapturePage({
 }: {
   params: Promise<{ token: string }>;
 }) {
+  if (!scribeRolloutEnabled()) notFound();
   const { token } = await params;
   return <ScribeCaptureClient token={token} />;
 }

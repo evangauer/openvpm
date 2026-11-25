@@ -135,7 +135,10 @@ const fieldItem: NavigationItem = {
   roles: ["admin"],
   description: "Prepare house calls, write notes and print receipts offline",
 };
-/** Optional tool: listed only for clinics that have turned Scribe on. */
+/**
+ * Optional tool: listed once a clinic has turned Scribe on, and before that
+ * for its administrators so they can find the switch.
+ */
 const scribeItem: NavigationItem = {
   href: SCRIBE_PATH,
   label: "Scribe",

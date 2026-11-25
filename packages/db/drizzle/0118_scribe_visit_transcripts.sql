@@ -40,6 +40,7 @@ ALTER TABLE "scribe_transcript_segments" ADD CONSTRAINT "scribe_transcript_segme
 ALTER TABLE "scribe_transcript_segments" ADD CONSTRAINT "scribe_transcript_segments_appointment_tenant_fk" FOREIGN KEY ("practice_id","appointment_id") REFERENCES "public"."appointments"("practice_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "scribe_transcript_segments" ADD CONSTRAINT "scribe_transcript_segments_creator_tenant_fk" FOREIGN KEY ("practice_id","created_by") REFERENCES "public"."users"("practice_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "scribe_recordings_recording_key_uq" ON "scribe_recordings" USING btree ("practice_id","recording_key");--> statement-breakpoint
+CREATE INDEX "capture_sessions_scribe_visit_idx" ON "capture_sessions" USING btree ("practice_id","appointment_id") WHERE "capture_sessions"."purpose" = 'scribe' and "capture_sessions"."deleted_at" is null;--> statement-breakpoint
 CREATE INDEX "scribe_recordings_visit_idx" ON "scribe_recordings" USING btree ("practice_id","appointment_id","updated_at");--> statement-breakpoint
 CREATE INDEX "scribe_recordings_created_idx" ON "scribe_recordings" USING btree ("created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "scribe_transcript_segments_client_key_uq" ON "scribe_transcript_segments" USING btree ("practice_id","appointment_id","client_key");--> statement-breakpoint
