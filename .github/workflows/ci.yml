@@ -106,6 +106,9 @@ jobs:
 
       - run: pnpm type-check
 
+      - name: Check message catalogs
+        run: pnpm i18n:check
+
       - run: pnpm test
 
       - run: pnpm build

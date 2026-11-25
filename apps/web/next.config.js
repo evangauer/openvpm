@@ -1,5 +1,7 @@
 const path = require("node:path");
 const { PHASE_DEVELOPMENT_SERVER } = require("next/constants");
+const createNextIntlPlugin = require("next-intl/plugin");
+const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
 // Resolve Next's own dependency so pnpm's strict layout needs no new package.
 const { loadEnvConfig, updateInitialEnv } = require(
   require.resolve("@next/env", { paths: [require.resolve("next/package.json")] })
@@ -36,7 +38,7 @@ const nextConfig = {
   },
 };
 
-module.exports = (phase) => {
+function configure(phase) {
   if (phase === PHASE_DEVELOPMENT_SERVER) {
     const repoRoot = path.resolve(__dirname, "../..");
     // Next has already loaded apps/web env files and cached the result. Keep
@@ -55,4 +57,6 @@ module.exports = (phase) => {
   }
 
   return nextConfig;
-};
+}
+
+module.exports = (phase) => withNextIntl(configure(phase));

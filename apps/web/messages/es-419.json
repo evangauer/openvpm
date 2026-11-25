@@ -1,0 +1,45 @@
+{
+  "metadata": {
+    "title": "OpenVPM: gestión veterinaria de código abierto",
+    "description": "El primer sistema moderno de gestión de clínicas, de código abierto y con API, creado para la comunidad veterinaria. Claro, rápido y gratuito."
+  },
+  "common": {
+    "skipToContent": "Saltar al contenido principal",
+    "brand": "OpenVPM",
+    "language": {
+      "label": "Idioma",
+      "en": "English",
+      "es-419": "Español (Latinoamérica)",
+      "it": "Italiano"
+    }
+  },
+  "auth": {
+    "signIn": {
+      "subtitle": "Inicia sesión en tu clínica",
+      "email": "Correo electrónico",
+      "emailPlaceholder": "tu@clinica.com",
+      "password": "Contraseña",
+      "passwordPlaceholder": "Ingresa tu contraseña",
+      "submit": "Iniciar sesión",
+      "submitting": "Iniciando sesión...",
+      "forgotPassword": "¿Olvidaste tu contraseña?",
+      "noAccount": "¿No tienes una cuenta?",
+      "register": "Registra tu clínica",
+      "invalid": "El correo o la contraseña no son correctos",
+      "unavailable": "El inicio de sesión no está disponible por ahora. Inténtalo de nuevo.",
+      "rateLimitedMinutes": "Demasiados intentos de inicio de sesión. Inténtalo de nuevo en {count, plural, one {# minuto} other {# minutos}}.",
+      "rateLimitedHours": "Demasiados intentos de inicio de sesión. Inténtalo de nuevo en {count, plural, one {# hora} other {# horas}}."
+    }
+  },
+  "errors": {
+    "title": "Algo salió mal",
+    "description": "Registramos el error. Inténtalo de nuevo o vuelve al panel si sigue ocurriendo.",
+    "tryAgain": "Intentar de nuevo"
+  },
+  "notFound": {
+    "code": "404",
+    "title": "Página no encontrada",
+    "description": "Es posible que esta página se haya movido o que el enlace ya no esté disponible.",
+    "dashboard": "Ir al panel"
+  }
+}

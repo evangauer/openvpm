@@ -7,6 +7,7 @@
     "lint": "turbo lint",
     "type-check": "turbo type-check",
     "test": "turbo test",
+    "i18n:check": "pnpm --filter @openpims/web i18n:check",
     "db:push": "pnpm --filter @openpims/db db:push",
     "db:generate": "pnpm --filter @openpims/db db:generate",
     "db:migrate": "pnpm --filter @openpims/db db:migrate",

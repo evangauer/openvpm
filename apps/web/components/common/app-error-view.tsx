@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { AlertTriangle, RotateCcw } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { reportClientError } from "@/components/common/report-client-error";
 import type { ClientErrorSource } from "@/lib/client-error-report";
@@ -15,6 +16,8 @@ export function AppErrorView({
   reset: () => void;
   source: ClientErrorSource;
 }) {
+  const t = useTranslations("errors");
+
   React.useEffect(() => {
     reportClientError(source, error);
   }, [error, source]);
@@ -34,16 +37,15 @@ export function AppErrorView({
           id="app-error-title"
           className="font-heading text-2xl font-semibold"
         >
-          Something went wrong
+          {t("title")}
         </h1>
         <p className="mt-2 max-w-md text-sm text-muted-foreground">
-          We logged the error. Try again, or return to the dashboard if it
-          keeps happening.
+          {t("description")}
         </p>
       </div>
       <Button onClick={reset} className="mt-6 gap-2">
         <RotateCcw className="h-4 w-4" />
-        Try Again
+        {t("tryAgain")}
       </Button>
     </main>
   );

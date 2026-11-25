@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { Inter, DM_Sans } from "next/font/google";
+import { getLocale, getMessages, getTranslations } from "next-intl/server";
+import { IntlProvider } from "@/components/i18n/intl-provider";
 import { Providers } from "@/lib/providers";
+import "@/i18n/global";
 import "@/styles/globals.css";
 
 const inter = Inter({
@@ -13,22 +16,28 @@ const dmSans = DM_Sans({
   variable: "--font-dm-sans",
 });
 
-export const metadata: Metadata = {
-  title: "OpenVPM: Open-Source Veterinary Practice Management",
-  description:
-    "The first modern, open-source, API-first practice management system built for the veterinary community. Beautiful, fast, and free.",
-  icons: {
-    icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
-  },
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations("metadata");
+  return {
+    title: t("title"),
+    description: t("description"),
+    icons: {
+      icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+    },
+  };
+}
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const language = await getLocale();
+  const messages = await getMessages();
+  const t = await getTranslations("common");
+
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang={language} suppressHydrationWarning>
       <body
         className={`${inter.variable} ${dmSans.variable} font-sans antialiased`}
       >
@@ -36,11 +45,13 @@ export default function RootLayout({
           href="#main-content"
           className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-[100] focus:rounded-md focus:bg-primary focus:px-4 focus:py-2 focus:text-primary-foreground"
         >
-          Skip to main content
+          {t("skipToContent")}
         </a>
-        <Providers analyticsEnabled={process.env.VERCEL === "1"}>
-          {children}
-        </Providers>
+        <IntlProvider locale={language} messages={messages}>
+          <Providers analyticsEnabled={process.env.VERCEL === "1"}>
+            {children}
+          </Providers>
+        </IntlProvider>
       </body>
     </html>
   );
