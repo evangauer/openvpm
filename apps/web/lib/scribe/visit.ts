@@ -342,7 +342,11 @@ export async function draftVisitNote(
 
   let draft: SoapDraft;
   try {
-    draft = await draftScribeNote({ transcript, chart });
+    draft = await draftScribeNote({
+      transcript,
+      chart,
+      vocabulary: await loadScribeVocabulary(ctx.db, ctx.practiceId),
+    });
   } catch (error) {
     throw providerError(error, "Could not draft the note. Try again.");
   }

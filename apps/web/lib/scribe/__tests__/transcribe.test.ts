@@ -209,7 +209,10 @@ describe("scribe transcription", () => {
         previousTail: "x".repeat(900),
       });
       expect(prompt).toContain("Species: Dog.");
-      expect(prompt.length).toBeLessThan(400);
+      // A short name list plus the end of the transcript: within what a
+      // Whisper-style server reads.
+      expect(prompt.length).toBeLessThan(650);
+      expect(prompt.endsWith("x".repeat(300))).toBe(true);
     });
   });
 

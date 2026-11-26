@@ -286,6 +286,8 @@ describe("scribe drafting", () => {
     expect(mocks.draftScribeNote).toHaveBeenCalledWith({
       transcript: TRANSCRIPT,
       patientName: "Biscuit",
+      // The clinic's product names, for spelling drug names in the note.
+      vocabulary: ["Otomax"],
     });
     expect(mocks.recordUsage).toHaveBeenCalledWith({
       practiceId: PRACTICE_ID,

@@ -300,7 +300,10 @@ export const scribeRouter = createRouter({
 
       let draft;
       try {
-        draft = await draftScribeNote(input);
+        draft = await draftScribeNote({
+          ...input,
+          vocabulary: await loadScribeVocabulary(ctx.db, ctx.practiceId),
+        });
       } catch (e) {
         if (e instanceof AgentNotConfiguredError) {
           throw new TRPCError({
