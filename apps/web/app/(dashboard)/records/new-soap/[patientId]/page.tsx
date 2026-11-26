@@ -21,6 +21,11 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState } from "@/components/common/empty-state";
 import { CapturePhotos } from "@/components/records/capture-photos";
+import {
+  useVisitScribe,
+  VisitScribePanel,
+} from "@/components/scribe/visit-scribe-panel";
+import type { SoapDraft } from "@/lib/ai/soap-draft";
 import { toast } from "sonner";
 import {
   hasSoapContent,
@@ -394,17 +399,23 @@ export default function NewSoapNotePage() {
   const aiConfigured = agentStatus.data?.configured ?? false;
   const canUseAi = agentStatus.data?.canUseAi ?? false;
   const needsAiBillingSetup = agentStatus.data?.needsBillingSetup ?? false;
+  const applyAiDraft = useCallback((draft: SoapDraft) => {
+    if (finalizedElsewhereRef.current) return;
+    setSubjective(draftTextToHtml(draft.subjective));
+    setObjective(draftTextToHtml(draft.objective));
+    setAssessment(draftTextToHtml(draft.assessment));
+    setPlan(draftTextToHtml(draft.plan));
+  }, []);
   const draftWithAi = trpc.ai.draftSoapNote.useMutation({
     onSuccess: (draft) => {
       if (finalizedElsewhereRef.current) return;
-      setSubjective(draftTextToHtml(draft.subjective));
-      setObjective(draftTextToHtml(draft.objective));
-      setAssessment(draftTextToHtml(draft.assessment));
-      setPlan(draftTextToHtml(draft.plan));
+      applyAiDraft(draft);
       toast.success("Draft ready. Please review and edit before you save.");
     },
     onError: (err) => toast.error(err.message),
   });
+  // Scribe records the visit and drafts into this editor (when switched on).
+  const scribeUsable = useVisitScribe(userRole);
 
   function handleDraftWithAi() {
     if (
@@ -943,6 +954,15 @@ export default function NewSoapNotePage() {
       </div>
 
       <div className="mt-6 space-y-6">
+        {scribeUsable && appointmentId && canCreateSoapNote && !finalizedElsewhere ? (
+          <VisitScribePanel
+            appointmentId={appointmentId}
+            noteHasText={canSave}
+            onDraft={applyAiDraft}
+            disabled={!isOnline}
+            startOpen={searchParams.get("scribe") === "1"}
+          />
+        ) : null}
         <div
           className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card px-4 py-3"
           aria-live="polite"

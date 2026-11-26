@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { AgentNotConfiguredError, isAgentConfigured } from "../runner";
+import {
+  AgentNotConfiguredError,
+  isAgentConfigured,
+  isAudioModelConfigured,
+} from "../runner";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -42,6 +46,34 @@ describe("isAgentConfigured (provider-agnostic)", () => {
     vi.stubEnv("AI_MODEL", "gemini-3.5-flash");
     stubVertexServiceAccountConfiguration();
     expect(isAgentConfigured()).toBe(true);
+  });
+
+  it("accepts a Vertex AI express API key on its own", () => {
+    vi.stubEnv("AI_MODEL", "gemini-3.5-flash");
+    vi.stubEnv("GOOGLE_VERTEX_API_KEY", "   ");
+    expect(isAgentConfigured()).toBe(false);
+    vi.stubEnv("GOOGLE_VERTEX_API_KEY", "synthetic-express-key");
+    expect(isAgentConfigured()).toBe(true);
+  });
+
+  it("ignores the express API key in a production build", () => {
+    vi.stubEnv("AI_MODEL", "gemini-3.5-flash");
+    vi.stubEnv("GOOGLE_VERTEX_API_KEY", "synthetic-express-key");
+    vi.stubEnv("NODE_ENV", "production");
+    expect(isAgentConfigured()).toBe(false);
+  });
+
+  it("reports audio input only for a configured Gemini model", () => {
+    vi.stubEnv("AI_MODEL", "claude-sonnet-4-6");
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+    expect(isAudioModelConfigured()).toBe(false);
+    // An explicit audio model still needs its own provider configured.
+    expect(isAudioModelConfigured("gemini-3.5-flash")).toBe(false);
+    stubVertexServiceAccountConfiguration();
+    expect(isAudioModelConfigured("gemini-3.5-flash")).toBe(true);
+    expect(isAudioModelConfigured()).toBe(false);
+    vi.stubEnv("AI_MODEL", "gemini-3.5-flash");
+    expect(isAudioModelConfigured()).toBe(true);
   });
 
   it("names Vertex AI in the not-configured error", () => {

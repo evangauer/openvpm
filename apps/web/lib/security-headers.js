@@ -21,6 +21,13 @@ const contentSecurityPolicy = [
   .filter(Boolean)
   .join("; ");
 
+// The microphone stays off for the whole app unless Scribe is switched on for
+// this deployment. Scribe records the visit from the clinic's own origin only.
+const microphonePolicy =
+  process.env.NEXT_PUBLIC_SCRIBE_ENABLED?.trim() === "true"
+    ? "microphone=(self)"
+    : "microphone=()";
+
 const securityHeaders = [
   {
     key: "Content-Security-Policy",
@@ -48,8 +55,7 @@ const securityHeaders = [
   },
   {
     key: "Permissions-Policy",
-    value:
-      "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()",
+    value: `camera=(), ${microphonePolicy}, geolocation=(), payment=(), usb=(), interest-cohort=()`,
   },
 ];
 

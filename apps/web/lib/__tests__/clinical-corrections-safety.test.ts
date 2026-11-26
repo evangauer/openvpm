@@ -421,7 +421,8 @@ describe("clinical correction consumers", () => {
     const patient = readRepoFile(
       "apps/web/app/(dashboard)/patients/[id]/page.tsx",
     );
-    const ai = readRepoFile("apps/web/server/routers/ai.ts");
+    // AI SOAP drafts (Draft with AI and Scribe) read the chart through here.
+    const ai = readRepoFile("apps/web/lib/ai/soap-chart-context.ts");
     const agent = readRepoFile("apps/web/lib/agent/tools.ts");
 
     expect(patient).toContain(".filter((vital) => !vital.correctionId)");
@@ -496,7 +497,8 @@ describe("clinical correction consumers", () => {
   it("retains corrected allergies while excluding them from current safety consumers", () => {
     const patientsRouter = readRepoFile("apps/web/server/routers/patients.ts");
     const records = readRepoFile("apps/web/server/routers/records.ts");
-    const ai = readRepoFile("apps/web/server/routers/ai.ts");
+    // AI SOAP drafts (Draft with AI and Scribe) read the chart through here.
+    const ai = readRepoFile("apps/web/lib/ai/soap-chart-context.ts");
     const portal = readRepoFile("apps/web/server/routers/portal.ts");
     const patientPage = readRepoFile(
       "apps/web/app/(dashboard)/patients/[id]/page.tsx",

@@ -139,6 +139,7 @@ describe("runAgent rate limiting", () => {
     await runAgent({ instruction: "Summarize today", context });
 
     expect(mocks.createVertex).toHaveBeenCalledWith({
+      apiKey: "",
       project: "openvpm-ai",
       location: "global",
       googleAuthOptions: {

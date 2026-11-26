@@ -22,9 +22,11 @@ const nextConfig = {
         headers: securityHeaders,
       },
       { source: "/capture/:path*", headers: capabilityHeaders },
+      { source: "/scribe-capture/:path*", headers: capabilityHeaders },
       { source: "/sign/:path*", headers: capabilityHeaders },
       { source: "/treatment-plan/:path*", headers: capabilityHeaders },
       { source: "/api/capture/:path*", headers: capabilityHeaders },
+      { source: "/api/scribe-capture/:path*", headers: capabilityHeaders },
       { source: "/api/sign/:path*", headers: capabilityHeaders },
       { source: "/api/treatment-plan/:path*", headers: capabilityHeaders },
       { source: "/offline/:path*", headers: [

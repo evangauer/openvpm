@@ -86,6 +86,30 @@ describe("personal sidebar tools", () => {
     expect(availableNavigation(undefined, true)).toEqual([]);
   });
 
+  it("lists Scribe only for opted-in clinics and SOAP-writing roles, after every familiar destination", () => {
+    const familiar = availableNavigation("admin").map((item) => item.href);
+    expect(familiar).not.toContain("/scribe");
+    expect(
+      availableNavigation("admin", false, true).map((item) => item.href),
+    ).toEqual([...familiar, "/scribe"]);
+    expect(
+      availableNavigation("veterinarian", false, true).map((item) => item.href),
+    ).toContain("/scribe");
+    for (const role of ["technician", "front_desk", "viewer"]) {
+      expect(
+        availableNavigation(role, true, true).map((item) => item.href),
+      ).not.toContain("/scribe");
+    }
+    expect(
+      availableNavigation("admin", false, true).find(
+        (item) => item.href === "/scribe",
+      )?.description,
+    ).toBeTruthy();
+    expect(parseSidebarPins(serializeSidebarPins(["/scribe"]))).toEqual([
+      "/scribe",
+    ]);
+  });
+
   it("isolates identities and accepts only known optional tool paths", () => {
     expect(sidebarPinsKey("clinic-a", "user-a")).not.toBe(
       sidebarPinsKey("clinic-b", "user-a"),

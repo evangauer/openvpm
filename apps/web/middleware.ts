@@ -17,9 +17,11 @@ import { isSecretIndependentPath } from "./lib/secret-independent-paths";
 const CAPABILITY_PATH_PREFIXES = [
   "/newsletter/confirm",
   "/capture",
+  "/scribe-capture",
   "/sign",
   "/treatment-plan",
   "/api/capture",
+  "/api/scribe-capture",
   "/api/sign",
   "/api/treatment-plan",
 ];
@@ -40,6 +42,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/portal",
   "/register",
   "/reset-password",
+  "/scribe-capture",
   "/sign",
   "/sms",
   "/start",

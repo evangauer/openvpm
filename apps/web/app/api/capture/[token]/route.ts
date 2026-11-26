@@ -97,6 +97,8 @@ async function lookupCaptureSession(database: Database, token: string) {
     .where(
       and(
         eq(captureSessions.token, token),
+        // Scribe recording links never upload photos.
+        eq(captureSessions.purpose, "photos"),
         isNull(captureSessions.deletedAt),
         gt(captureSessions.expiresAt, now),
       ),
