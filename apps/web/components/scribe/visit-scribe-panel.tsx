@@ -74,6 +74,21 @@ function useScribePlanBlock() {
 
 type Mode = "idle" | "consent" | "phone-consent";
 
+/** Bring the note into view once Scribe has filled it in: the payoff. */
+function showNote() {
+  window.requestAnimationFrame(() => {
+    const note = document.getElementById("soap-note-sections");
+    if (!note) return;
+    const reduceMotion = window.matchMedia?.(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    note.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "start",
+    });
+  });
+}
+
 function wordCount(text: string) {
   const trimmed = text.trim();
   return trimmed ? trimmed.split(/\s+/).length : 0;
@@ -166,6 +181,7 @@ export function VisitScribePanel({
         return;
       }
       onDraft(draft);
+      showNote();
       toast.success("Note drafted from the visit. Check every line before you finalize.");
     },
     onError: (error) => toast.error(error.message),
@@ -542,6 +558,7 @@ export function VisitScribePanel({
             size="sm"
             onClick={() => {
               onDraft(heldDraft);
+              showNote();
               setHeldDraft(null);
             }}
           >
@@ -616,15 +633,17 @@ export function RecordVisitButton({
   role,
   patientId,
   appointmentId,
+  size = "sm",
 }: {
   role?: string | null;
   patientId: string;
   appointmentId: string;
+  size?: "sm" | "default";
 }) {
   const usable = useVisitScribe(role);
   if (!usable) return null;
   return (
-    <Button size="sm" variant="outline" asChild>
+    <Button size={size} variant="outline" asChild>
       <a
         href={`/records/new-soap/${patientId}?appointmentId=${appointmentId}&scribe=1`}
       >

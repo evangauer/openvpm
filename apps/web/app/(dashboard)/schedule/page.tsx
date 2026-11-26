@@ -29,6 +29,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { CalendarSubscribe } from "@/components/schedule/calendar-subscribe";
 import { cn } from "@/lib/utils";
 import { providerDisplayName } from "@/lib/provider-display-name";
+import { RecordVisitButton } from "@/components/scribe/visit-scribe-panel";
 import { dateInputTimeUtcInstant } from "@/lib/date-input";
 import {
   addCalendarDays,
@@ -1077,6 +1078,7 @@ function AppointmentDetailPopover({
   isRescheduling: boolean;
   isCancellingSeries: boolean;
 }) {
+  const { data: session } = useSession();
   const [deleteReason, setDeleteReason] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -1710,6 +1712,14 @@ function AppointmentDetailPopover({
                   : "Open visit"}
               </Link>
             </Button>
+            {current === "in_exam" && appointment.patientId ? (
+              // Shown only where Scribe is switched on and usable.
+              <RecordVisitButton
+                role={session?.user?.role}
+                patientId={appointment.patientId}
+                appointmentId={appointment.id}
+              />
+            ) : null}
             {appointment.patientId && (
               <Button size="sm" variant="outline" asChild>
                 <Link
