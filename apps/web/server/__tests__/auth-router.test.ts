@@ -646,11 +646,62 @@ describe("auth router input validation", () => {
     });
   });
 
+  it("accepts registration when clinic model and first goal are omitted", async () => {
+    const { db, updateSet } = createRegistrationDb();
+
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+        country: "US",
+      }),
+    ).resolves.toMatchObject({
+      id: "user-1",
+      email: "owner@example.com",
+    });
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          onboardingState: expect.objectContaining({
+            jurisdictionCountry: "US",
+            jurisdictionSource: "registration",
+          }),
+        }),
+      }),
+    );
+    const saved = JSON.stringify(updateSet.mock.calls);
+    expect(saved).not.toContain("clinicModel");
+    expect(saved).not.toContain("firstGoal");
+    expect(saved).not.toContain("onboardingDraft");
+  });
+
+  it("accepts an empty onboarding draft without profile fields", async () => {
+    const { db, updateSet } = createRegistrationDb();
+
+    await expect(
+      callerWithDb(db).register({
+        email: "owner@example.com",
+        password: "password123",
+        practiceName: "Neighborhood Veterinary",
+        country: "US",
+        onboardingDraft: {},
+      }),
+    ).resolves.toMatchObject({ id: "user-1" });
+
+    const saved = JSON.stringify(updateSet.mock.calls);
+    expect(saved).not.toContain("clinicModel");
+    expect(saved).not.toContain("firstGoal");
+    expect(saved).not.toContain("onboardingDraft");
+  });
+
   it("creates hosted signup checkout without granting a no-card trial", async () => {
     vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
     vi.stubEnv("STRIPE_PRICE_SMS_OVERAGE", "price_sms");
     mocks.billingEnforced.mockReturnValue(true);
-    const { db, insertValues, isInTransaction } = createRegistrationDb();
+    const { db, insertValues, isInTransaction, updateSet } =
+      createRegistrationDb();
     mocks.createSubscriptionCheckoutSession.mockImplementationOnce(async () => {
       expect(isInTransaction()).toBe(true);
       return { url: "https://checkout.stripe.com/signup-checkout" };
@@ -689,10 +740,14 @@ describe("auth router input validation", () => {
         practiceId: "practice-1",
         customerEmail: "owner@example.com",
         trialPeriodDays: 14,
-        successUrl: "http://localhost:3000/login?checkout=success",
+        successUrl: "http://localhost:3000/welcome?checkout=success",
         cancelUrl: "http://localhost:3000/login?checkout=cancelled",
       }),
     );
+    const saved = JSON.stringify(updateSet.mock.calls);
+    expect(saved).not.toContain("clinicModel");
+    expect(saved).not.toContain("firstGoal");
+    expect(saved).not.toContain("onboardingIntent");
   });
 
   it("grants a card-free trial at signup without any Stripe checkout", async () => {

@@ -48,6 +48,7 @@ test.describe("Restore drill", () => {
     await page.getByLabel(/practice name/i).fill("Restore Drill Clinic");
     await page.getByLabel(/work email/i).fill(drillEmail);
     await page.getByLabel(/password/i).fill(drillPassword);
+    await page.getByLabel("Clinic country", { exact: true }).selectOption("US");
     await page.getByRole("button", { name: /create workspace/i }).click();
     await expect(page).toHaveURL(
       (url) => url.pathname === "/" || url.pathname.startsWith("/login"),
