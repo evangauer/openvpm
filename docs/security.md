@@ -74,6 +74,17 @@ validate type checking, tests, and builds when updating them. In particular:
   `@react-email/components`. Its `html-to-text` 10 dependency uses `deepmerge-ts`,
   removing the vulnerable `deepmerge` dependency (GHSA-gcqx-w48m-w2h4), which has
   no patched release.
+- `GHSA-fc5q-39xc-vjpf` (picomatch ReDoS, versions `<=4.0.7`) is listed in
+  `pnpm.auditConfig.ignoreGhsas`. No patched picomatch release exists: the latest
+  2.x is 2.3.2 and the latest release is 4.0.7, both inside the vulnerable range,
+  so an override cannot select a fixed version. The copy CI reports
+  (`picomatch@2.3.2`) is a dev-only build dependency of the docs site, pulled in by
+  Tailwind 3.4 (`chokidar`, `micromatch`, and `fast-glob`) while the docs are
+  built. The same advisory also matches `picomatch@4.0.5` from Tailwind's
+  `sucrase`/`tinyglobby` chain and from Vitest/Vite, still only as devDependencies
+  of the docs site, the web app, and shared config. `pnpm audit --prod` does not
+  report it, and it is not shipped to the app runtime. Remove this ignore once a
+  patched picomatch release exists.
 
 These checks cover published package advisories; they do not establish that a
 running deployment has received the changes.

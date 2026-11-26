@@ -28,6 +28,11 @@
     "turbo": "^2.9.14"
   },
   "pnpm": {
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-fc5q-39xc-vjpf"
+      ]
+    },
     "overrides": {
       "@ai-sdk/provider-utils@4": "4.0.46",
       "drizzle-kit@0.31.10>@esbuild-kit/esm-loader": "-",
