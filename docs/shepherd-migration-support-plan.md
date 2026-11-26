@@ -32,6 +32,80 @@ and operator UI are clinic-independent. A new Shepherd clinic supplies a new
 private manifest and reviewed coverage plan; it does not require clinic-specific
 code or fixtures.
 
+## Shepherd CSV field mapping
+
+Field names only. The importer reads normalized Shepherd headers. A linked row
+appears on the patient chart. An unlinked row stays needs review in the
+archive. Financial fields stay archive-only. Scalar laboratory values use the
+live lab result field names on the chart and are not written into the lab
+review inbox.
+
+| Shepherd table.field | OpenVPM field | Placement |
+| --- | --- | --- |
+| client.id | clients.external_id | in record |
+| client.firstname | clients.first_name | in record |
+| client.lastname | clients.last_name | in record |
+| client.email | clients.email | in record |
+| client_phone.phonenumber | clients.phone | in record |
+| client_address.address | clients.address | in record |
+| client_address.city | clients.city | in record |
+| client_address.state | clients.state | in record |
+| client_address.zipcode | clients.zip | in record |
+| client_patient.clientid | patients.client_id via clients.external_id | in record |
+| client_patient.patientid | patients.external_id | in record |
+| patient.name | patients.name | in record |
+| patient.dateofbirth | patients.dob | in record |
+| patient.color | patients.color | in record |
+| patient.microchipnumber | patients.microchip_number | in record |
+| patient.sexid | patients.sex | in record |
+| patient.statusid | patients.status | in record |
+| patient.isdeceased | patients.status | in record |
+| vaccination.patientid | vaccination_records.patient_id | in record |
+| vaccination.vaccinename | vaccination_records.vaccine_name | in record |
+| vaccination.administrationdate | vaccination_records.administered_at | in record |
+| vaccination.duedate | vaccination_records.next_due_date | in record |
+| vaccination.lotnumber | vaccination_records.lot_number | in record |
+| soap.patientid | soap_notes.patient_id | in record |
+| soap.datelocked | soap_notes.finalized_at | in record |
+| soap_subjective.initialcomplaint | soap_notes.subjective | in record |
+| soap_subjective.history | soap_notes.subjective | in record |
+| soap_subjective.currentmedicationinfo | soap_notes.subjective | in record |
+| soap_assessment.description | soap_notes.assessment | in record |
+| soap_plan.recommendation | soap_notes.plan | in record |
+| appointment.startdate | historical_appointments.started_at | in record, not calendar |
+| appointment.enddate | historical_appointments.ended_at | in record, not calendar |
+| appointment.visitreason | historical_appointments.reason | in record, not calendar |
+| appointment.appointmenttypeid | historical_appointments.appointment_type | in record, not calendar |
+| appointment_patient.patientid | historical_appointments.patient_id | in record, not calendar |
+| prescription.patientid | external_prescriptions.patient_id | in record, not dispensable |
+| prescription.writtenproduct | external_prescriptions.medication_name | in record, not dispensable |
+| product.name | external_prescriptions.medication_name | in record, not dispensable |
+| prescription.direction | external_prescriptions.directions | in record, not dispensable |
+| prescription.quantity | external_prescriptions.quantity | in record, not dispensable |
+| prescription.refillcount | external_prescriptions.refill_count | in record, not refillable |
+| prescription.datecreated | external_prescriptions.prescribed_at | in record, not dispensable |
+| refill.prescriptionid | external_prescription_fills.prescription_id | in record |
+| refill.datefilled | external_prescription_fills.filled_at | in record |
+| refill.quantitydispensed | external_prescription_fills.quantity_dispensed | in record |
+| lab_order.patientid | external_lab_reports.patient_id | in record when linked, else needs review |
+| lab_order.orderid | external_lab_reports.accession_number | in record when linked, else needs review |
+| lab_order.datecreated | external_lab_reports.ordered_at | in record when linked, else needs review |
+| lab_order.testname | lab_results.test_name | in record only when the observation is scalar |
+| lab_order.resultvalue | lab_results.result_value | in record only when the observation is scalar |
+| lab_order.resultunit | lab_results.unit | in record only when the observation is scalar |
+| lab_order.referencerange | lab_results.reference_range_low and reference_range_high | in record only when the range is a single low-high pair |
+| lab_order.resultflag | lab_results.result_flag | in record only when the flag is normal, abnormal, critical, or unknown |
+| invoice.clientid | legacy_financial_documents.client_id | archive-only |
+| invoice.subtotal | legacy_financial_documents.subtotal | archive-only |
+| invoice.tax | legacy_financial_documents.tax | archive-only |
+| invoice.discount | legacy_financial_documents.discount | archive-only |
+| invoice.total | legacy_financial_documents.total | archive-only |
+| invoice.balance | legacy_financial_documents.balance | archive-only |
+| invoice_item.invoiceid | legacy_financial_line_items.document_id | archive-only |
+| payment.clientid | legacy_financial_payments.client_id | archive-only, or needs review when unlinked |
+| payment.amount | legacy_financial_payments.amount | archive-only |
+| payment_allocation.closedamount | legacy_financial_allocations.amount | archive-only |
+
 ## Operational versus historical state
 
 - Owners, patients, vaccinations, finalized notes, care reminders, services,

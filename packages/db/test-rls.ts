@@ -119,6 +119,12 @@ const aSoapDeletedRestoreAddendum = randomUUID();
 const aSoapDraft = randomUUID();
 const aPatient = randomUUID();
 const bPatient = randomUUID();
+const aHistoricalAppointment = randomUUID();
+const bHistoricalAppointment = randomUUID();
+const aExternalPrescription = randomUUID();
+const bExternalPrescription = randomUUID();
+const aExternalLabReport = randomUUID();
+const bExternalLabReport = randomUUID();
 const aRecentClinicalItem = randomUUID();
 const bRecentClinicalItem = randomUUID();
 const crossTenantRecentClinicalItem = randomUUID();
@@ -522,6 +528,36 @@ try {
   await owner`insert into patients (id, practice_id, client_id, name, species)
     select ${bPatient}, ${bId}, id, 'RLS Pet B', 'feline'
     from clients where practice_id = ${bId}`;
+  await owner`insert into historical_appointments
+    (id, practice_id, patient_id, client_id, started_at, ended_at, status,
+     external_source, external_id, import_fingerprint)
+    select ${aHistoricalAppointment}, ${aId}, ${aPatient}, id,
+      '2020-01-01T15:00:00Z', '2020-01-01T15:30:00Z', 'completed',
+      'shepherd', 'rls-visit-a', ${"a".repeat(64)}
+    from clients where practice_id = ${aId}`;
+  await owner`insert into historical_appointments
+    (id, practice_id, patient_id, client_id, started_at, ended_at, status,
+     external_source, external_id, import_fingerprint)
+    select ${bHistoricalAppointment}, ${bId}, ${bPatient}, id,
+      '2020-01-02T15:00:00Z', '2020-01-02T15:30:00Z', 'completed',
+      'shepherd', 'rls-visit-b', ${"b".repeat(64)}
+    from clients where practice_id = ${bId}`;
+  await owner`insert into external_prescriptions
+    (id, practice_id, patient_id, medication_name, status, external_source,
+     external_id, import_fingerprint)
+    values
+    (${aExternalPrescription}, ${aId}, ${aPatient}, 'RLS Historical Medication A',
+      'completed', 'shepherd', 'rls-rx-a', ${"c".repeat(64)}),
+    (${bExternalPrescription}, ${bId}, ${bPatient}, 'RLS Historical Medication B',
+      'completed', 'shepherd', 'rls-rx-b', ${"d".repeat(64)})`;
+  await owner`insert into external_lab_reports
+    (id, practice_id, patient_id, attribution_status, status, external_source,
+     external_id, import_fingerprint)
+    values
+    (${aExternalLabReport}, ${aId}, ${aPatient}, 'matched', 'final', 'shepherd',
+      'rls-lab-a', ${"e".repeat(64)}),
+    (${bExternalLabReport}, ${bId}, ${bPatient}, 'matched', 'final', 'shepherd',
+      'rls-lab-b', ${"f".repeat(64)})`;
   await owner`insert into files
     (id, practice_id, uploaded_by, file_name, file_key, file_url, category,
      patient_id, entity_type, entity_id)
@@ -2348,6 +2384,39 @@ try {
     aLabResultEvents.length === 1 &&
       aLabResultEvents[0]!.id === aLabResultEvent &&
       aLabResultEvents[0]!.practice_id === aId,
+  );
+  const aImportedVisits = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from historical_appointments
+      where id in (${aHistoricalAppointment}, ${bHistoricalAppointment})`;
+  });
+  check(
+    "tenant A sees only A's imported visits",
+    aImportedVisits.length === 1 &&
+      aImportedVisits[0]!.id === aHistoricalAppointment &&
+      aImportedVisits[0]!.practice_id === aId,
+  );
+  const aImportedPrescriptions = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from external_prescriptions
+      where id in (${aExternalPrescription}, ${bExternalPrescription})`;
+  });
+  check(
+    "tenant A sees only A's imported medications",
+    aImportedPrescriptions.length === 1 &&
+      aImportedPrescriptions[0]!.id === aExternalPrescription &&
+      aImportedPrescriptions[0]!.practice_id === aId,
+  );
+  const aImportedLabs = await appTransaction(async (tx) => {
+    await tx`select set_config('app.current_practice_id', ${aId}, true)`;
+    return tx`select id, practice_id from external_lab_reports
+      where id in (${aExternalLabReport}, ${bExternalLabReport})`;
+  });
+  check(
+    "tenant A sees only A's imported lab reports",
+    aImportedLabs.length === 1 &&
+      aImportedLabs[0]!.id === aExternalLabReport &&
+      aImportedLabs[0]!.practice_id === aId,
   );
   const aLabReplacementRows = await appTransaction(async (tx) => {
     await tx`select set_config('app.current_practice_id', ${aId}, true)`;
@@ -4772,6 +4841,9 @@ try {
     await cleanup`delete from file_object_replicas where id in (${aReplica}, ${aSystemReplica})`;
     await cleanup`delete from consent_requests where id in (${pendingConsentWithSignature}, ${unpairedSignedConsent}, ${emptySignatureConsent}, ${mismatchedSignatureConsent})`;
     await cleanup`delete from files where id in (${aFile}, ${bFile}, ${nullCategoryFile}, ${crossTenantUploaderFile}, ${crossTenantPatientFile}, ${wrongAppointmentPatientFile})`;
+    await cleanup`delete from external_lab_reports where id in (${aExternalLabReport}, ${bExternalLabReport})`;
+    await cleanup`delete from external_prescriptions where id in (${aExternalPrescription}, ${bExternalPrescription})`;
+    await cleanup`delete from historical_appointments where id in (${aHistoricalAppointment}, ${bHistoricalAppointment})`;
     await cleanup`delete from patients where id in (${aPatient}, ${bPatient}, ${aMergeTargetPatient}, ${bMergeTargetPatient}, ${aLineageCandidatePatient})`;
     await cleanup`delete from clients where practice_id in (${aId}, ${bId})`;
     await cleanup`delete from staff_schedules where id in (${aStaffSchedule}, ${bStaffSchedule})`;

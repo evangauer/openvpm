@@ -75,6 +75,20 @@ export type MigrationReviewedDisposition = {
     | "duplicate"
     | "error"
     | "unmatched";
+  /**
+   * Where a historical row will be visible after commit. Omitted for planners
+   * that do not classify chart placement. Included in the reviewed-plan hash
+   * only when set, so older previews keep their hash.
+   */
+  placement?: MigrationChartPlacement;
+};
+
+export type MigrationChartPlacement = "in_record" | "archive_only" | "needs_review";
+
+export type MigrationPlacementCounts = {
+  inRecord: number;
+  archiveOnly: number;
+  needsReview: number;
 };
 
 export const MIGRATION_REVIEWED_PLAN_SCHEMA_VERSION = 1;
@@ -84,6 +98,8 @@ export type MigrationReviewedPlan = {
   plannerVersion: string;
   dispositions: readonly MigrationReviewedDisposition[];
   targets: readonly MigrationReviewedTarget[];
+  /** Present only for historical preview plans. Binds the three chart buckets. */
+  placementCounts?: MigrationPlacementCounts;
 };
 
 export type MigrationClaimResult =
@@ -152,12 +168,17 @@ export function migrationReviewedPlanHash(
       rowIndex: disposition.rowIndex,
       entityKind: disposition.entityKind,
       action: disposition.action,
+      placement: disposition.placement ?? "",
     }))
     .sort(
       (left, right) =>
         left.rowIndex - right.rowIndex ||
         left.entityKind.localeCompare(right.entityKind) ||
-        left.action.localeCompare(right.action),
+        left.action.localeCompare(right.action) ||
+        left.placement.localeCompare(right.placement),
+    )
+    .map(({ placement, ...disposition }) =>
+      placement ? { ...disposition, placement } : disposition,
     );
   const targets = [...(input.reviewedPlan?.targets ?? [])]
     .map((target) => ({
@@ -177,6 +198,7 @@ export function migrationReviewedPlanHash(
           (left.targetVersion ?? "").localeCompare(right.targetVersion ?? ""),
         ].find((comparison) => comparison !== 0) ?? 0,
     );
+  const placementCounts = input.reviewedPlan?.placementCounts;
   const canonicalPlan = JSON.stringify({
     schemaVersion: MIGRATION_REVIEWED_PLAN_SCHEMA_VERSION,
     plannerVersion: input.reviewedPlan?.plannerVersion ?? "aggregate-v1",
@@ -184,6 +206,15 @@ export function migrationReviewedPlanHash(
     source: input.source,
     fileHash: migrationFileHash(input.csv),
     summary: normalizedSummary(input.summary),
+    ...(placementCounts
+      ? {
+          placementCounts: {
+            inRecord: placementCounts.inRecord,
+            archiveOnly: placementCounts.archiveOnly,
+            needsReview: placementCounts.needsReview,
+          },
+        }
+      : {}),
     dispositions,
     targets,
   });

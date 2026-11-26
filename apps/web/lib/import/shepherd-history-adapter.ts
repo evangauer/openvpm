@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { normalizeKey } from "@/lib/csv/parse";
+import { mapScalarLabObservation } from "./historical-placement";
 import type { ShepherdRawRow, ShepherdTableKind } from "./shepherd-bundle";
 import type { ShepherdBundleRows, ShepherdDomainCoverage } from "./shepherd-core-adapter";
 
@@ -490,6 +491,8 @@ export function adaptShepherdHistory(
   const externalLabReports: ExternalLabReportImportRecord[] = [];
   const externalLabObservations: ExternalLabObservationImportRecord[] = [];
   let labErrors = 0;
+  let observationAttempts = 0;
+  let observationDeferred = 0;
   labRows.forEach((row, rowIndex) => {
     if (!row.id) {
       labErrors++;
@@ -519,10 +522,43 @@ export function adaptShepherdHistory(
         .sort()
         .at(-1),
       status,
-      orderName: "Imported laboratory order",
+      orderName: bounded(row.testname, 255) || "Imported laboratory order",
       accessionNumber: bounded(row.orderid, 160),
     });
-    issue(issues, "external_lab_reports", rowIndex, "unstructured_lab_result", "warning");
+    const hasScalarHint = Boolean(
+      row.testname ||
+        row.resultvalue ||
+        row.resultunit ||
+        row.referencerange ||
+        row.resultflag,
+    );
+    if (!hasScalarHint) {
+      issue(issues, "external_lab_reports", rowIndex, "unstructured_lab_result", "warning");
+      return;
+    }
+    observationAttempts++;
+    const mapped = mapScalarLabObservation({
+      name: row.testname,
+      value: row.resultvalue,
+      unit: row.resultunit,
+      referenceRange: row.referencerange,
+      flag: row.resultflag,
+    });
+    if (!mapped) {
+      observationDeferred++;
+      issue(issues, "external_lab_reports", rowIndex, "unstructured_lab_result", "warning");
+      return;
+    }
+    externalLabObservations.push({
+      externalObservationId: `${row.id}:scalar`,
+      externalLabReportId: row.id,
+      sortOrder: 0,
+      name: mapped.testName,
+      value: mapped.resultValue,
+      unit: mapped.unit ?? undefined,
+      referenceRange: row.referencerange?.trim() || undefined,
+      flag: row.resultflag?.trim() || undefined,
+    });
   });
   coverageByDomain.externalLabReports = coverage(
     labRows.length,
@@ -531,7 +567,13 @@ export function adaptShepherdHistory(
     0,
     labErrors,
   );
-  coverageByDomain.externalLabObservations = coverage(0, 0, 0, 0, 0);
+  coverageByDomain.externalLabObservations = coverage(
+    observationAttempts,
+    externalLabObservations.length,
+    observationDeferred,
+    0,
+    0,
+  );
 
   const invoiceRows = table(bundle, "invoice");
   const invoiceItems = table(bundle, "invoice_item");
