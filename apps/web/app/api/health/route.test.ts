@@ -887,6 +887,52 @@ describe("health route", () => {
     expect(JSON.stringify(json)).not.toContain("STRIPE_WEBHOOK_SECRET");
   });
 
+  it("reports whether the OpenVPM subscription webhook secret is configured", async () => {
+    mocks.billingEnforced.mockReturnValue(true);
+    stubHostedRequiredEnvs();
+    const secret = "whsec_openvpm_should_not_leak";
+    vi.stubEnv("STRIPE_OPENVPM_ACCOUNT_ID", "acct_openvpm");
+    vi.stubEnv("STRIPE_OPENVPM_SUBSCRIPTION_WEBHOOK_SECRET", secret);
+
+    const ready = await GET();
+    const readyJson = await ready.json();
+
+    expect(ready.status).toBe(200);
+    expect(readyJson.checks.openvpmSubscriptionWebhookSecret).toEqual({
+      ok: true,
+    });
+    expect(
+      Object.keys(readyJson.checks.openvpmSubscriptionWebhookSecret),
+    ).toEqual(["ok"]);
+    expect(JSON.stringify(readyJson)).not.toContain(secret);
+    expect(JSON.stringify(readyJson)).not.toContain("whsec_");
+    expect(JSON.stringify(readyJson)).not.toContain(
+      "STRIPE_OPENVPM_SUBSCRIPTION_WEBHOOK_SECRET",
+    );
+
+    vi.stubEnv("STRIPE_OPENVPM_SUBSCRIPTION_WEBHOOK_SECRET", "  ");
+    const missing = await GET();
+    const missingJson = await missing.json();
+
+    expect(missing.status).toBe(503);
+    expect(missingJson.checks.openvpmSubscriptionWebhookSecret).toEqual({
+      ok: false,
+    });
+    expect(JSON.stringify(missingJson)).not.toContain("acct_openvpm");
+    expect(JSON.stringify(missingJson)).not.toContain(
+      "STRIPE_OPENVPM_SUBSCRIPTION_WEBHOOK_SECRET",
+    );
+
+    vi.stubEnv("STRIPE_OPENVPM_ACCOUNT_ID", "");
+    vi.stubEnv("STRIPE_OPENVPM_SUBSCRIPTION_WEBHOOK_SECRET", secret);
+    const unused = await GET();
+    const unusedJson = await unused.json();
+
+    expect(unused.status).toBe(200);
+    expect(unusedJson.checks.openvpmSubscriptionWebhookSecret).toBeUndefined();
+    expect(JSON.stringify(unusedJson)).not.toContain(secret);
+  });
+
   it("requires the Stripe Connect webhook secret for hosted billing readiness", async () => {
     mocks.billingEnforced.mockReturnValue(true);
     stubHostedRequiredEnvs();

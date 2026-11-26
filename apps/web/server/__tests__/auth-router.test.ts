@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { users } from "@openpims/db";
 
 const mocks = vi.hoisted(() => ({
@@ -28,6 +28,8 @@ const mocks = vi.hoisted(() => ({
     }),
   ),
   sendWelcomeEmail: vi.fn(async () => ({ success: true })),
+  sendEmail: vi.fn(async () => ({ success: true, id: "email_1" })),
+  alertOps: vi.fn(async () => undefined),
   sendOptionalPlatformEmail: vi.fn(
     async (opts: { send: () => Promise<unknown> }) => {
       await opts.send();
@@ -64,6 +66,11 @@ vi.mock("@/lib/auth-tokens", () => ({
 vi.mock("@/lib/email", () => ({
   sendPasswordResetEmail: mocks.sendPasswordResetEmail,
   sendWelcomeEmail: mocks.sendWelcomeEmail,
+  sendEmail: mocks.sendEmail,
+}));
+
+vi.mock("@/lib/alerts", () => ({
+  alertOps: mocks.alertOps,
 }));
 
 vi.mock("@/lib/auth-email-delivery", () => ({
@@ -267,6 +274,10 @@ function createAuthUpdateDb(opts?: { returningRows?: unknown[][] }) {
     updateReturning,
   };
 }
+
+beforeEach(() => {
+  vi.stubEnv("NEW_CLINIC_ALERT_EMAIL", "");
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -1613,6 +1624,74 @@ describe("auth router token validation", () => {
   });
 });
 
+
+describe("new clinic alert", () => {
+  function registerClinic(db: Record<string, unknown>) {
+    return callerWithDb(db).register({
+      email: "owner@example.com",
+      password: "password123",
+      practiceName: "Neighborhood Veterinary",
+      country: "US",
+    });
+  }
+
+  it("sends after the registration transaction commits and does not block signup", async () => {
+    vi.stubEnv("NEW_CLINIC_ALERT_EMAIL", "ops-alerts@example.com");
+    const { db, isInTransaction } = createRegistrationDb();
+    const sendStarted = new Promise<void>((resolve) => {
+      mocks.sendEmail.mockImplementationOnce(() => {
+        expect(isInTransaction()).toBe(false);
+        resolve();
+        return new Promise(() => undefined);
+      });
+    });
+
+    const pending = registerClinic(db);
+    await sendStarted;
+    await expect(pending).resolves.toMatchObject({
+      id: "user-1",
+      email: "owner@example.com",
+    });
+    expect(mocks.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "ops-alerts@example.com",
+        subject: "New OpenVPM clinic: Neighborhood Veterinary [practice-1]",
+        from: "OpenVPM <noreply@mail.openvpm.com>",
+        idempotencyKey: "new-clinic:practice-1",
+      }),
+    );
+  });
+
+  it("skips the alert when the recipient env is unset", async () => {
+    vi.stubEnv("NEW_CLINIC_ALERT_EMAIL", "   ");
+    const { db } = createRegistrationDb();
+
+    await expect(registerClinic(db)).resolves.toMatchObject({ id: "user-1" });
+    await Promise.resolve();
+
+    expect(mocks.sendEmail).not.toHaveBeenCalled();
+    expect(mocks.alertOps).not.toHaveBeenCalled();
+  });
+
+  it("keeps registration successful when the alert send fails", async () => {
+    vi.stubEnv("NEW_CLINIC_ALERT_EMAIL", "ops-alerts@example.com");
+    const { db } = createRegistrationDb();
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    mocks.sendEmail.mockRejectedValueOnce(new Error("smtp down"));
+
+    await expect(registerClinic(db)).resolves.toMatchObject({ id: "user-1" });
+    await vi.waitFor(() => {
+      expect(mocks.alertOps).toHaveBeenCalledWith(
+        "New clinic alert failed",
+        "New OpenVPM clinic: Neighborhood Veterinary [practice-1]: smtp down",
+      );
+    });
+    expect(errorSpy).toHaveBeenCalledWith("[register] new clinic alert failed");
+    errorSpy.mockRestore();
+  });
+});
 
 describe("dedicated OpenVPM signup billing", () => {
   it("pins new trials to OpenVPM without granting access before checkout", async () => {

@@ -843,7 +843,7 @@ Use:
 GET https://app.openvpm.com/api/health
 ```
 
-It checks database connectivity and required hosted configuration for auth, Stripe billing, storage, email, AI, and ops hooks. It never returns secret values. SMS provider setup is reported as advisory until the active provider is provisioned.
+It checks database connectivity and required hosted configuration for auth, Stripe billing, storage, email, AI, and ops hooks. It never returns secret values. When `STRIPE_OPENVPM_ACCOUNT_ID` is set, `checks.openvpmSubscriptionWebhookSecret` is `{ ok: true|false }` for whether `STRIPE_OPENVPM_SUBSCRIPTION_WEBHOOK_SECRET` is configured, with no other fields and never the secret. SMS provider setup is reported as advisory until the active provider is provisioned.
 
 Cron heartbeat/dead-man monitoring gates hosted readiness in `/api/health`: set
 one global `CRON_HEARTBEAT_URL` to receive every cron completion as POST JSON, or
@@ -934,7 +934,12 @@ Create the OpenVPM event destination at
 
 Keep the Get Talky subscription destination and all original env values intact.
 Each handler verifies its own secret and scopes every clinic lookup/update to
-that account. Replayed events retain the existing event-ledger idempotency.
+that account. A signed event is not acknowledged unless its `stripe_events` row
+is durable. An event that cannot be mapped to a clinic on that account is
+stored with no practice id, then alerted, so reconciliation can repair it
+without asking Stripe to retry. Replayed events retain the existing event-ledger
+idempotency. `NEW_CLINIC_ALERT_EMAIL`, when set, receives a platform email after
+a new practice commits; signup still succeeds if that mail is unset or fails.
 Checkout resumes, portal cancellation, quantity sync, and usage meters resolve
 the account from the clinic row. The invoice-payment/Connect surface continues
 to use the original key.
