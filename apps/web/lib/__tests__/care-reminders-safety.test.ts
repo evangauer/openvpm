@@ -9,7 +9,9 @@ describe("care reminder safety contract", () => {
   const schema = read("../../packages/db/schema/care-reminders.ts");
   const rls = read("../../packages/db/rls/enable-rls.sql");
   const router = read("server/routers/care-reminders.ts");
+  const outreach = read("server/care-reminder-outreach.ts");
   const page = read("app/(dashboard)/care-reminders/page.tsx");
+  const bulkPage = read("app/(dashboard)/care-reminders/bulk-outreach.tsx");
 
   it("binds reminders, actors, and import identities to one tenant", () => {
     expect(schema).toContain("care_reminders_patient_tenant_fk");
@@ -45,13 +47,23 @@ describe("care reminder safety contract", () => {
       "Email suppression, SMS consent, sender, and quiet-hour",
     );
     expect(router).toContain("sendOutreach: manageProcedure");
-    expect(router).toContain('operation: "care_reminder"');
-    expect(router).toContain("sendCareReminder(");
-    expect(router).toContain("sendCareReminderSms(");
-    expect(router).toContain("withDurableSmsCommunication");
-    expect(router).toContain("ctx.db.transaction(async (tx)");
-    expect(router).toContain("lockPracticeForExternalSideEffects(db");
-    expect(router).toContain("emailSuppressionSendBlockMessage");
+    expect(router).toContain("deliverCareReminderOutreach");
+    expect(router).toContain("previewBulkOutreach: manageProcedure");
+    expect(router).toContain("sendBulkOutreach: manageProcedure");
+    expect(outreach).toContain('operation: "care_reminder"');
+    expect(outreach).toContain("sendCareReminder(");
+    expect(outreach).toContain("sendCareReminderSms(");
+    expect(outreach).toContain("withDurableSmsCommunication");
+    expect(outreach).toContain("ctx.db.transaction(async (tx)");
+    expect(outreach).toContain("lockPracticeForExternalSideEffects");
+    expect(outreach).toContain("emailSuppressionSendBlockMessage");
+    expect(outreach).toContain("recordAuditLog");
+    expect(outreach).toContain("rateLimit(");
+    expect(outreach).toContain("clientSmsConsent !== true");
+    expect(bulkPage).toContain("Select all matching");
+    expect(bulkPage).toContain("window.confirm(");
+    expect(bulkPage).toContain("data-testid=\"bulk-block-reason\"");
+    expect(page).toContain("CareReminderBulkOutreach");
     const outreachSchema = router.slice(
       router.indexOf("const outreachInput"),
       router.indexOf("const dismissalInput"),

@@ -25,6 +25,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/common/empty-state";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { CareReminderBulkOutreach } from "./bulk-outreach";
 
 type ReminderStatusFilter = "open" | "completed" | "dismissed";
 type ReminderDueFilter = "all" | "overdue" | "upcoming";
@@ -606,6 +607,8 @@ export default function CareRemindersPage() {
           </CardContent>
         </Card>
       ) : null}
+
+      {manageable && status === "open" ? <CareReminderBulkOutreach /> : null}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Metric label="Open" value={counts.open} icon={BellRing} />
