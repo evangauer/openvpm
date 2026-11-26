@@ -1,5 +1,6 @@
 import { generateText } from "ai";
 import { configuredModel, isAudioModelConfigured } from "@/lib/agent/runner";
+import { withCommonDrugNames } from "./drug-names";
 
 /**
  * Speech-to-text for Scribe. One short WAV segment goes out and comes back as
@@ -79,6 +80,13 @@ export class ScribeTranscriptionFailedError extends Error {
   }
 }
 
+/**
+ * Whisper-style servers read only about 224 tokens of hint, shared with the
+ * end of the transcript, so names get a small share of it.
+ */
+const SPEECH_HINT_LIMITS = { maxTerms: 40, maxCharacters: 280 };
+const MODEL_HINT_LIMITS = { maxTerms: 300, maxCharacters: 4000 };
+
 export interface ScribeSegmentInput {
   wav: Uint8Array;
   /** The end of the transcript so far, so wording stays consistent. */
@@ -100,9 +108,10 @@ export function buildTranscriptionPrompt(
     if (patientName) prompt += `Patient name: ${patientName}\n`;
     if (species) prompt += `Species: ${species}\n`;
   }
-  if (input.vocabulary?.length) {
-    prompt += `\nProduct and drug names used at this clinic, for spelling only:\n${input.vocabulary.join(", ")}\n`;
-  }
+  // The clinic's own names first, then common veterinary names. The model
+  // takes a long hint, so it gets the whole common list.
+  const names = withCommonDrugNames(input.vocabulary ?? [], MODEL_HINT_LIMITS);
+  prompt += `\nDrug and product names, for spelling only (the clinic's own first):\n${names.join(", ")}\n`;
   const tail = input.previousTail?.trim().replace(/"{3,}/g, '"');
   if (tail) {
     prompt += `\nThe recording continues from this earlier text. Do not repeat it:\n"""\n${tail}\n"""\n`;
@@ -146,7 +155,10 @@ export function buildSpeechServerPrompt(
   const species = input.species?.trim();
   if (patientName) parts.push(`Patient: ${patientName}.`);
   if (species) parts.push(`Species: ${species}.`);
-  if (input.vocabulary?.length) parts.push(`${input.vocabulary.join(", ")}.`);
+  // Speech servers take a short hint, so the common names only fill what the
+  // clinic's own list leaves free.
+  const names = withCommonDrugNames(input.vocabulary ?? [], SPEECH_HINT_LIMITS);
+  if (names.length) parts.push(`${names.join(", ")}.`);
   // The end of the hint carries the most weight, so the transcript so far
   // goes last.
   const tail = input.previousTail?.trim();

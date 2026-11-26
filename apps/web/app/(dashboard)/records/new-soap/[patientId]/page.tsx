@@ -1120,7 +1120,10 @@ export default function NewSoapNotePage() {
           </div>
         ) : null}
 
-        <div className="rounded-lg border border-border bg-card p-6 space-y-6">
+        <div
+          id="soap-note-sections"
+          className="scroll-mt-20 rounded-lg border border-border bg-card p-6 space-y-6"
+        >
           {/* Subjective */}
           <div>
             <label className="block text-sm font-medium mb-1.5">

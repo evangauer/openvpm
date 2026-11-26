@@ -1133,6 +1133,15 @@ function VisitCompletionGuide({
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </a>
               </Button>
+              {action.target === "soap" && patientId ? (
+                // Shown only where Scribe is switched on and usable.
+                <RecordVisitButton
+                  role={role}
+                  patientId={patientId}
+                  appointmentId={appointmentId}
+                  size="default"
+                />
+              ) : null}
               {action.target === "charge_capture" ? (
                 <Button variant="ghost" asChild>
                   <a href="#visit-closeout">No charge? Continue handoff</a>

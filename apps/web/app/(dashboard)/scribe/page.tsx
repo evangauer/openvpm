@@ -215,6 +215,8 @@ function ScribeTool({
   const [draft, setDraft] = useState<SoapDraft | null>(null);
   const [edited, setEdited] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  // The full note as last copied, to know when leaving would lose nothing.
+  const [copiedNote, setCopiedNote] = useState<string | null>(null);
   const [consentOpen, setConsentOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Set when a recording is stopped: write the note once its text is all in.
@@ -272,8 +274,11 @@ function ScribeTool({
     !recorder.busy;
 
   // The page keeps nothing once you leave, so warn before work is lost.
+  // Once the whole note has been copied out (and not changed since), leaving
+  // loses nothing, so the warning would only get in the way.
+  const copiedFullNote = copiedNote !== null && draft !== null && copiedNote === formatScribeNote(draft);
   useUnsavedChangesGuard(
-    transcriptLength > 0 || draft !== null || recorder.busy,
+    recorder.busy || ((transcriptLength > 0 || draft !== null) && !copiedFullNote),
     "This recording, transcript and note are not saved anywhere. Leave without copying them?",
   );
 
@@ -321,7 +326,7 @@ function ScribeTool({
     sendDraft();
   }
 
-  async function copy(key: string, text: string) {
+  async function copy(key: string, text: string): Promise<boolean> {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(key);
@@ -329,8 +334,10 @@ function ScribeTool({
         () => setCopied((current) => (current === key ? null : current)),
         2000,
       );
+      return true;
     } catch {
       toast.error("Could not copy. Select the text and copy it by hand.");
+      return false;
     }
   }
 
@@ -344,6 +351,7 @@ function ScribeTool({
     setDraft(null);
     setEdited(false);
     setCopied(null);
+    setCopiedNote(null);
     draftNote.reset();
   }
 
@@ -619,7 +627,12 @@ function ScribeTool({
               </p>
             </div>
             <Button
-              onClick={() => copy("all", formatScribeNote(draft))}
+              onClick={() => {
+                const note = formatScribeNote(draft);
+                void copy("all", note).then((ok) => {
+                  if (ok) setCopiedNote(note);
+                });
+              }}
               disabled={formatScribeNote(draft).length === 0}
             >
               {copied === "all" ? (

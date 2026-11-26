@@ -52,16 +52,18 @@ describe("clinic spelling hints", () => {
       vocabulary: ["Simparica Trio", "Otomax"],
       previousTail: "She gets a chewable once a month.",
     };
+    // The clinic's own names come first, then common veterinary names.
     const server = buildSpeechServerPrompt(input);
-    expect(server).toContain("Simparica Trio, Otomax.");
+    expect(server).toContain("Simparica Trio, Otomax, maropitant, Cerenia,");
     expect(server.endsWith("She gets a chewable once a month.")).toBe(true);
 
     const model = buildTranscriptionPrompt(input);
     expect(model).toContain(
-      "Product and drug names used at this clinic, for spelling only:\nSimparica Trio, Otomax\n",
+      "Drug and product names, for spelling only (the clinic's own first):\nSimparica Trio, Otomax, maropitant,",
     );
-    expect(buildTranscriptionPrompt({ vocabulary: [] })).not.toContain(
-      "Product and drug names",
+    // A brand-new clinic with no products still gets the common names.
+    expect(buildTranscriptionPrompt({ vocabulary: [] })).toContain(
+      "maropitant, Cerenia, carprofen",
     );
   });
 });

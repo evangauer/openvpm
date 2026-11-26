@@ -324,6 +324,15 @@ function RegisterPageInner({
     return null;
   }
 
+  // What still stands between this screen and a workspace, in plain words.
+  const submitBlocker =
+    country === ""
+      ? "Choose your clinic country to continue."
+      : country === "OTHER"
+        ? null
+        : password.length < AUTH_PASSWORD_MIN_LENGTH
+          ? `Create a password of at least ${AUTH_PASSWORD_MIN_LENGTH} characters to continue.`
+          : null;
   const canSubmit =
     isRequiredAuthTextValid(practiceName, AUTH_PRACTICE_NAME_MAX_LENGTH, 2) &&
     isAuthEmailLengthValid(email) &&
@@ -821,6 +830,12 @@ function RegisterPageInner({
               />
             </FormField>
 
+            {!canSubmit && !loading && submitBlocker ? (
+              // Say why the button is greyed out instead of leaving people to guess.
+              <p className="text-center text-xs text-slate-500" role="status">
+                {submitBlocker}
+              </p>
+            ) : null}
             <Button
               type="submit"
               disabled={!canSubmit || loading || registerMutation.isPending}
