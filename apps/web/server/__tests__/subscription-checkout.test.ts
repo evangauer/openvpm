@@ -195,6 +195,42 @@ describe("subscription checkout", () => {
     expect(mocks.readBillingSyncState).toHaveBeenCalledWith(db, PRACTICE_ID);
   });
 
+  it("hides resume checkout for active and trialing practices", async () => {
+    vi.stubEnv("HOSTED_BILLING_ENABLED", "true");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
+    const future = new Date("2099-01-01T00:00:00.000Z");
+    const db = createDb([
+      [practice({ billingStatus: "active", stripeSubscriptionId: "sub_active" })],
+      [practice({ billingStatus: "trialing", trialEndsAt: future })],
+      [
+        practice({
+          billingStatus: "trialing",
+          trialEndsAt: future,
+          stripeSubscriptionId: "sub_trial",
+        }),
+      ],
+      [practice({ billingStatus: "none" })],
+    ]);
+    const caller = callerWithDb(db);
+
+    await expect(caller.get()).resolves.toMatchObject({
+      canResumeCheckout: false,
+      hasSubscription: true,
+    });
+    await expect(caller.get()).resolves.toMatchObject({
+      canResumeCheckout: false,
+      hasSubscription: false,
+    });
+    await expect(caller.get()).resolves.toMatchObject({
+      canResumeCheckout: false,
+      hasSubscription: true,
+    });
+    await expect(caller.get()).resolves.toMatchObject({
+      canResumeCheckout: true,
+      hasSubscription: false,
+    });
+  });
+
   it("rejects a second Checkout when a Stripe subscription is already connected", async () => {
     vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_location");
     const db = createDb([
@@ -446,6 +482,38 @@ describe("subscription checkout", () => {
 
 
 describe("per-clinic subscription account", () => {
+  it("uses the stored stripe_billing_account for checkout", async () => {
+    vi.stubEnv("STRIPE_OPENVPM_ACCOUNT_ID", "acct_openvpm");
+    vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_legacy");
+    vi.stubEnv("STRIPE_OPENVPM_PRICE_CLOUD_LOCATION", "price_openvpm");
+    const db = createDb([
+      [practice({ stripeBillingAccount: "openvpm" })],
+      [practice({ stripeBillingAccount: "legacy" })],
+    ]);
+    const caller = callerWithDb(db);
+
+    await caller.createCheckout({ tier: "cloud" });
+    await caller.createCheckout({ tier: "cloud" });
+
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        billingAccount: "openvpm",
+        lineItems: [{ priceId: "price_openvpm", quantity: 2 }],
+      }),
+    );
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        lineItems: [{ priceId: "price_legacy", quantity: 2 }],
+      }),
+    );
+    expect(mocks.createSubscriptionCheckoutSession).toHaveBeenNthCalledWith(
+      2,
+      expect.not.objectContaining({ billingAccount: "openvpm" }),
+    );
+  });
+
   it("uses OpenVPM prices and portal for new clinics while existing clinics stay on legacy", async () => {
     vi.stubEnv("STRIPE_OPENVPM_ACCOUNT_ID", "acct_openvpm");
     vi.stubEnv("STRIPE_PRICE_CLOUD_LOCATION", "price_legacy");

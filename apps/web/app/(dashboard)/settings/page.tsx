@@ -4,7 +4,7 @@ import { ImportRowIssues } from "@/components/settings/import-row-issues";
 
 import { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useSession } from "next-auth/react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Settings,
   Users,
@@ -73,6 +73,7 @@ import { useCurrencyFormatter } from "@/lib/locale/useCurrency";
 import { formatDateInputForTimeZone } from "@/lib/date-input";
 import { isSafeCheckoutRedirectUrl } from "@/lib/checkout-redirect";
 import { TRIAL_DAYS } from "@/lib/billing/plans";
+import { checkoutTrialSummary } from "@/lib/billing/checkout-summary";
 import { trialCalendarDaysLeft } from "@/lib/billing/trial-days";
 import { CloudBillingCadencePicker } from "@/components/billing/cloud-billing-cadence-picker";
 import {
@@ -1446,10 +1447,13 @@ function redirectToClientPaymentUrl(url: unknown) {
 
 function BillingTab() {
   const utils = trpc.useUtils();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [selectedCadence, setSelectedCadence] = useState<BillingCadence>(() =>
     billingCadenceFromQuery(searchParams.get("plan")),
   );
+  const resumeCheckout = searchParams.get("resume") === "checkout";
+  const resumeStarted = useRef(false);
   const {
     data,
     isLoading,
@@ -1465,6 +1469,23 @@ function BillingTab() {
     },
     onError: (e) => toast.error(e.message),
   });
+  useEffect(() => {
+    if (!resumeCheckout || resumeStarted.current || !data?.canResumeCheckout) {
+      return;
+    }
+    const cadenceReady = data.billingOptions.some(
+      (option) => option.cadence === selectedCadence && option.purchasable,
+    );
+    if (!cadenceReady) return;
+    resumeStarted.current = true;
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("resume");
+    const next = params.toString();
+    router.replace(next ? `/settings?${next}` : "/settings", { scroll: false });
+    checkout.mutate({ tier: "cloud", billingCadence: selectedCadence });
+    // One-shot after sign-in. The ref blocks a second Checkout if this reruns.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeCheckout, data, selectedCadence]);
   const setupPaymentAccount =
     trpc.billing.createPaymentAccountOnboarding.useMutation({
       onSuccess: (r) => {
@@ -1578,6 +1599,19 @@ function BillingTab() {
     data.billingSyncStatus &&
     (data.billingSyncStatus.status === "error" ||
       data.billingSyncStatus.status === "legacy");
+  const selectedBillingOption = data.billingOptions.find(
+    (option) => option.cadence === selectedCadence,
+  );
+  const trialSummary = firstActivation
+    ? checkoutTrialSummary({
+        configuredPriceUsd:
+          selectedBillingOption?.priceUsd ?? data.locationUnitPriceMonthlyUsd,
+        plan: data.plans.find((plan) => plan.tier === "cloud") ?? null,
+        cadence: selectedCadence,
+        existingTrialEndsAt:
+          data.billingStatus === "trialing" ? data.trialEndsAt : null,
+      })
+    : null;
 
   return (
     <div className="min-w-0 w-full max-w-full space-y-6">
@@ -1585,7 +1619,10 @@ function BillingTab() {
         <div className="rounded-lg border border-border bg-muted/50 p-4 text-sm">
           <p className="font-medium">Checkout was canceled</p>
           <p className="mt-1 text-muted-foreground">
-            Nothing changed. Choose a schedule whenever you are ready.
+            Nothing was charged.
+            {data.canResumeCheckout
+              ? " Resume checkout whenever you are ready."
+              : " Choose a schedule whenever you are ready."}
           </p>
         </div>
       ) : null}
@@ -1663,6 +1700,11 @@ function BillingTab() {
 
           {firstActivation ? (
             <>
+              {trialSummary ? (
+                <p className="mb-4 text-sm font-medium text-foreground">
+                  {trialSummary.text}
+                </p>
+              ) : null}
               <CloudBillingCadencePicker
                 value={selectedCadence}
                 onValueChange={setSelectedCadence}
@@ -1688,6 +1730,7 @@ function BillingTab() {
                 </div>
                 <Button
                   className="w-full gap-2 sm:w-auto"
+                  size={data.canResumeCheckout ? "lg" : "default"}
                   disabled={
                     checkout.isPending ||
                     !availableCadences.includes(selectedCadence)
@@ -1704,7 +1747,7 @@ function BillingTab() {
                   ) : (
                     <CreditCard className="size-4" />
                   )}
-                  Continue to secure checkout
+                  {data.canResumeCheckout ? "Resume checkout" : "Continue to secure checkout"}
                 </Button>
               </div>
             </>

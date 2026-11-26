@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { Suspense, useEffect, useState, useCallback } from "react";
 import { X } from "lucide-react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { TopBar } from "@/components/layout/top-bar";
@@ -15,6 +15,7 @@ import { VerifyEmailBanner } from "@/components/layout/verify-email-banner";
 import { DemoConversionBar } from "@/components/demo/demo-conversion-bar";
 import { DemoFunnelTracker } from "@/components/demo/demo-funnel-tracker";
 import { RecoveryReviewBanner } from "@/components/layout/recovery-review-banner";
+import { ResumeCheckoutBanner } from "@/components/layout/resume-checkout-banner";
 
 export default function DashboardLayout({
   children,
@@ -87,6 +88,9 @@ export default function DashboardLayout({
             <DemoFunnelTracker />
             <VerifyEmailBanner />
             <RecoveryReviewBanner />
+            <Suspense fallback={null}>
+              <ResumeCheckoutBanner />
+            </Suspense>
             <main
               id="main-content"
               className="min-w-0 w-full max-w-full flex-1 overflow-x-hidden overflow-y-auto bg-surface p-4 sm:p-6"

@@ -13,6 +13,10 @@ import { PawMark } from "@/components/brand/paw-mark";
 import { DemoLogin } from "@/components/demo/demo-login";
 import { isValidEmail } from "@/lib/utils";
 import { safeAuthNextPath } from "@/lib/auth-redirect";
+import {
+  checkoutTrialSummary,
+  RESUME_CHECKOUT_PATH,
+} from "@/lib/billing/checkout-summary";
 import { loginErrorMessage } from "@/lib/login-error-message";
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE?.trim() === "true";
@@ -39,6 +43,8 @@ function PracticeLogin() {
     searchParams.get("next"),
     checkoutState === "cancelled" ? "/settings?tab=billing" : "/post-login",
   );
+  const resumeCheckout = checkoutState === "cancelled";
+  const checkoutSummary = resumeCheckout ? checkoutTrialSummary() : null;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -62,7 +68,7 @@ function PracticeLogin() {
       if (result?.error) {
         setError(loginErrorMessage(result.error));
       } else if (result?.ok) {
-        router.push(nextPath);
+        router.push(resumeCheckout ? RESUME_CHECKOUT_PATH : nextPath);
         router.refresh();
       } else {
         setError("Sign-in is temporarily unavailable. Please try again.");
@@ -98,7 +104,12 @@ function PracticeLogin() {
           >
             {checkoutState === "success"
               ? "Checkout completed. Sign in to open your clinic workspace. Your billing status updates after Stripe confirms checkout."
-              : "Your account is saved, but your trial has not started. Sign in to resume secure checkout in Plan & Billing. No subscription charge was made."}
+              : "Your account is saved, but your trial has not started. Sign in to resume checkout. No subscription charge was made."}
+            {checkoutSummary ? (
+              <p className="mt-2 font-medium text-foreground">
+                {checkoutSummary.text}
+              </p>
+            ) : null}
           </div>
         )}
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -153,7 +164,11 @@ function PracticeLogin() {
             disabled={!canSubmit || loading}
             className="min-h-11 w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
-            {loading ? "Signing in..." : "Sign in"}
+            {loading
+              ? "Signing in..."
+              : resumeCheckout
+                ? "Resume checkout"
+                : "Sign in"}
           </button>
         </form>
         <p className="mt-4 text-center text-sm text-muted-foreground">

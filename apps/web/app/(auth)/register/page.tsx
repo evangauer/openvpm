@@ -3,8 +3,8 @@ import {
   billingEnforced,
   noCardTrialEnabled,
   TRIAL_DAYS,
-  CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD,
 } from "@/lib/billing/plans";
+import { resolveCheckoutMonthlyPriceUsd } from "@/lib/billing/checkout-summary";
 import { previewPercent } from "@/lib/billing/preview";
 import { builderPercent } from "@/lib/build/catalog";
 import { redirect } from "next/navigation";
@@ -43,7 +43,7 @@ export default async function RegisterPage({
       trialDays={TRIAL_DAYS}
       previewPercent={previewPercent()}
       builderPercent={builderShare}
-      monthlyPriceUsd={CLOUD_LOCATION_UNIT_PRICE_MONTHLY_USD}
+      monthlyPriceUsd={resolveCheckoutMonthlyPriceUsd()}
     />
   );
 }
