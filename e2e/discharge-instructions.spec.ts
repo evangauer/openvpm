@@ -54,6 +54,35 @@ test("creates and reviews a chartless handout, copies the edited text, and print
   await page.getByRole("button", { name: "Edit instructions" }).click();
   await page.getByLabel("Follow-up").fill("Call on Monday.");
   await page.getByRole("button", { name: "Review handout" }).click();
+  // Browser clipboard permission can stay pending. The user must still be
+  // looking at the same patient's reviewed handout when copy succeeds.
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: () =>
+          new Promise<void>((resolve) =>
+            window.addEventListener("resolve-copy", () => resolve(), {
+              once: true,
+            }),
+          ),
+      },
+    });
+  });
+  await page.getByRole("button", { name: "Copy instructions" }).click();
+  await expect(
+    page.getByRole("button", { name: "Edit instructions" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Start another handout" }),
+  ).toBeDisabled();
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("resolve-copy"));
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+  await expect(
+    page.getByRole("button", { name: "Edit instructions" }),
+  ).toBeEnabled();
   await context.grantPermissions(["clipboard-read", "clipboard-write"], {
     origin: new URL(baseURL!).origin,
   });

@@ -31,9 +31,9 @@ export function DischargeEditor({
   };
   const [draft, setDraft] = useState<DischargeHandout>(blankDraft);
   const [reviewing, setReviewing] = useState(false);
-  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "manual">(
-    "idle",
-  );
+  const [copyStatus, setCopyStatus] = useState<
+    "idle" | "copying" | "copied" | "manual"
+  >("idle");
   const reviewTitle = useRef<HTMLHeadingElement>(null);
   const patientInput = useRef<HTMLInputElement>(null);
   const fallback = useRef<HTMLTextAreaElement>(null);
@@ -58,6 +58,7 @@ export function DischargeEditor({
   }, [copyStatus]);
 
   async function copyHandout() {
+    setCopyStatus("copying");
     try {
       await navigator.clipboard.writeText(handoutText(practice, draft));
       setCopyStatus("copied");
@@ -134,7 +135,11 @@ export function DischargeEditor({
             </article>
             <div className="mt-5 space-y-3 print:hidden">
               <div className="flex flex-wrap gap-2">
-                <Button onClick={copyHandout} className="gap-2">
+                <Button
+                  onClick={copyHandout}
+                  disabled={copyStatus === "copying"}
+                  className="gap-2"
+                >
                   <Copy size={16} aria-hidden="true" />
                   Copy instructions
                 </Button>
@@ -146,11 +151,16 @@ export function DischargeEditor({
                   <Printer size={16} aria-hidden="true" />
                   Print handout
                 </Button>
-                <Button variant="ghost" onClick={editHandout}>
+                <Button
+                  variant="ghost"
+                  onClick={editHandout}
+                  disabled={copyStatus === "copying"}
+                >
                   Edit instructions
                 </Button>
               </div>
               <p role="status" className="text-sm text-muted-foreground">
+                {copyStatus === "copying" && "Copying the reviewed handout…"}
                 {copyStatus === "copied" &&
                   "Copied. Paste the instructions into the correct patient record."}
                 {copyStatus === "manual" &&
@@ -168,6 +178,7 @@ export function DischargeEditor({
               <Button
                 variant="link"
                 className="px-0"
+                disabled={copyStatus === "copying"}
                 onClick={() => {
                   if (
                     !window.confirm(
@@ -189,8 +200,8 @@ export function DischargeEditor({
               Discharge instructions
             </h1>
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">
-              Write a take-home care plan for the owner. Your draft stays in
-              this tab until you copy or print it.
+              Write a take-home care plan for the owner. This draft stays in
+              your tab. Copy or print it before leaving.
             </p>
             <form
               className="mt-6 space-y-5 rounded-xl border bg-white p-5 sm:p-8"
