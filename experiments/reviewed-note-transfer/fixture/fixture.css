@@ -27,4 +27,5 @@ label > input:not([type="checkbox"]) {
 }
 .review dd { white-space: pre-wrap; overflow-wrap: anywhere; }
 .preview, .apply { margin-top: 1rem; }
+.cancel { color: #145348; background: #fff; border: 1px solid #748780; }
 button:disabled { background: #66756f; cursor: default; }

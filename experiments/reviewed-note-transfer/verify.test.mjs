@@ -52,8 +52,10 @@ test("review a synthetic note and transfer only to a matching, empty draft", asy
   await expect(page).toHaveTitle("OpenVPM · Note transfer lab");
   const preview = page.getByRole("button", { name: "Preview transfer" });
   const apply = page.getByRole("button", { name: "Apply to draft fields" });
+  const cancel = page.getByRole("button", { name: "Cancel transfer" });
   const status = page.getByRole("status");
   const visit = page.getByLabel("Open visit");
+  const behavior = page.getByLabel("Simulated save behavior");
   const source = page.getByLabel("Full SOAP note");
   const patient = page.getByLabel("Expected patient ID");
   const encounter = page.getByLabel("Expected visit ID");
@@ -103,6 +105,23 @@ test("review a synthetic note and transfer only to a matching, empty draft", asy
   await source.fill("");
   await source.focus();
   await page.keyboard.insertText(note);
+  await preview.click();
+  await cancel.click();
+  await expect(status).toContainText("canceled");
+  await expect(preview).toBeFocused();
+  await expect(source).toHaveValue(note);
+  await expect(patient).toHaveValue("DEMO-014");
+  await expect(encounter).toHaveValue("VISIT-07");
+  assert.deepEqual(await values(), empty);
+  await previewAndConfirm();
+  await apply.press("Escape");
+  await expect(apply).toBeHidden();
+  await expect(preview).toBeFocused();
+  assert.deepEqual(await values(), empty);
+  await previewAndConfirm();
+  await cancel.click();
+  await expect(apply).toBeHidden();
+  assert.deepEqual(await values(), empty);
   await previewAndConfirm();
   await expect(page.getByText("Juniper returned for a recheck.", { exact: true })).toBeVisible();
   assert.deepEqual(await values(), empty);
@@ -112,12 +131,20 @@ test("review a synthetic note and transfer only to a matching, empty draft", asy
   await expect(apply).toBeHidden();
   await previewAndConfirm();
   await apply.click();
-  assert.deepEqual(await values(), [
+  const applied = [
     "Juniper returned for a recheck.",
     "Weight: 4.2 kg.",
     "Follow-up on the previous visit.",
     "Return with the log.\n\nBring the <sample> label. Keep it dry.",
-  ]);
+  ];
+  assert.deepEqual(await values(), applied);
+  await expect(page.getByLabel("Subjective", { exact: true })).toBeFocused();
+  for (const index of [1, 2]) {
+    await visit.selectOption({ index });
+    assert.deepEqual(await values(), empty);
+  }
+  await visit.selectOption({ index: 0 });
+  assert.deepEqual(await values(), applied);
   await expect(apply).toBeHidden();
   await preview.click();
   await expect(status).toContainText("already contains text");
@@ -138,11 +165,11 @@ test("review a synthetic note and transfer only to a matching, empty draft", asy
   for (const index of [1, 2]) {
     await previewAndConfirm();
     await visit.selectOption({ index });
-    await apply.click();
-    await expect(status).toContainText("different patient or visit");
     await expect(apply).toBeHidden();
+    await expect(status).toContainText("destination changed");
     assert.deepEqual(await values(), empty);
     await preview.click();
+    await expect(status).toContainText("different patient or visit");
     await expect(apply).toBeHidden();
     await visit.selectOption({ index: 0 });
   }
@@ -150,15 +177,55 @@ test("review a synthetic note and transfer only to a matching, empty draft", asy
   await previewAndConfirm();
   await visit.selectOption({ index: 1 });
   await visit.selectOption({ index: 0 });
+  await expect(apply).toBeHidden();
+  assert.deepEqual(await values(), empty);
+
+  await previewAndConfirm();
+  const plan = page.getByLabel("Plan", { exact: true });
+  await plan.fill("Staff has already started this plan.");
+  await expect(apply).toBeHidden();
+  await preview.click();
+  await expect(status).toContainText("Plan already contains text");
+  await visit.selectOption({ index: 1 });
+  await visit.selectOption({ index: 0 });
+  assert.deepEqual(await values(), ["", "", "", "Staff has already started this plan."]);
+  await plan.fill("");
+  await previewAndConfirm();
+  await plan.fill("A colleague is editing.");
+  await plan.fill("");
+  await expect(apply).toBeHidden();
+  assert.deepEqual(await values(), empty);
+
+  for (const mode of ["autosave", "unknown"]) {
+    await previewAndConfirm();
+    await behavior.selectOption(mode);
+    await expect(apply).toBeHidden();
+    await preview.click();
+    await expect(status).toContainText("unsaved");
+    await expect(apply).toBeHidden();
+    assert.deepEqual(await values(), empty);
+    await behavior.selectOption("manual-draft");
+  }
+
+  // A chart refresh may change the form without a keyboard or pointer event.
+  await previewAndConfirm();
+  await page.locator("#chart form").evaluate(form => { delete form.dataset.saveBehavior; });
+  await apply.click();
+  await expect(status).toContainText("unsaved");
+  assert.deepEqual(await values(), empty);
+  await page.reload();
+  await exampleForPreview();
+  await previewAndConfirm();
+  await page.locator("#chart form").evaluate(form => form.replaceWith(form.cloneNode(true)));
   await apply.click();
   await expect(status).toContainText("chart changed after preview");
   assert.deepEqual(await values(), empty);
 
   await previewAndConfirm();
-  await page.getByLabel("Plan", { exact: true }).fill("Staff has already started this plan.");
+  await plan.evaluate(field => { field.value = "Existing chart text."; });
   await apply.click();
   await expect(status).toContainText("Plan already contains text");
-  assert.deepEqual(await values(), ["", "", "", "Staff has already started this plan."]);
+  assert.deepEqual(await values(), ["", "", "", "Existing chart text."]);
 
   await page.reload();
   await exampleForPreview();

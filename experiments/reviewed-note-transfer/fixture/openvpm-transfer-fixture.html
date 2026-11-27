@@ -14,13 +14,19 @@
       <h1>Note transfer lab</h1>
       <p>Practice with a fictional note and chart. Reload to discard all edits.</p>
       <div id="transfer-lab"><p>Load the unpacked extension to preview a note here.</p></div>
-      <section aria-labelledby="destination">
+      <section id="destination-chart" aria-labelledby="destination">
         <h2 id="destination">Destination chart</h2>
         <label for="visit">Open visit</label>
         <select id="visit">
           <option data-patient="DEMO-014" data-encounter="VISIT-07">Juniper · DEMO-014 · VISIT-07</option>
           <option data-patient="DEMO-028" data-encounter="VISIT-09">Juniper · DEMO-028 · VISIT-09</option>
           <option data-patient="DEMO-014" data-encounter="VISIT-02">Juniper · DEMO-014 · VISIT-02</option>
+        </select>
+        <label for="save-behavior">Simulated save behavior</label>
+        <select id="save-behavior">
+          <option value="manual-draft">Keep fields as an unsaved draft</option>
+          <option value="autosave">Save edits as you type</option>
+          <option value="unknown">Unknown save behavior</option>
         </select>
         <div id="chart"></div>
         <template>
