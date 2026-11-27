@@ -1,63 +1,89 @@
-// This adapter and its note belong only to the synthetic fixture.
+// The adapter is loaded only on the synthetic fixture.
 (() => {
   const fixtureUrl = "http://127.0.0.1:41763/openvpm-transfer-fixture.html";
   const mount = document.querySelector("#transfer-lab");
   if (location.href !== fixtureUrl || !mount) return;
 
-  const note = {
-    patient: "DEMO-014",
-    encounter: "VISIT-07",
-    name: "Juniper",
-    sections: {
-      Subjective: "Owner reports Juniper has been eating normally.",
-      Objective: "Weight recorded at this visit: 4.2 kg.",
-      Assessment: "Routine follow-up visit.",
-      Plan: "Owner will keep the scheduled follow-up appointment.",
-    },
-  };
+  const sectionNames = ["Subjective", "Objective", "Assessment", "Plan"];
+  const example = [
+    "Subjective\nOwner reports Juniper has been eating normally.",
+    "Objective\nWeight recorded at this visit: 4.2 kg.",
+    "Assessment\nRoutine follow-up visit.",
+    "Plan\nOwner will keep the scheduled follow-up appointment.",
+  ].join("\n\n");
+
   const panel = document.createElement("section");
   panel.setAttribute("aria-labelledby", "transfer-heading");
   panel.innerHTML = `
     <h2 id="transfer-heading">Reviewed note</h2>
-    <p class="identity"></p>
+    <p>Paste a fictional note from Scribe’s <strong>Copy full note</strong>, or try the example for patient DEMO-014, visit VISIT-07.</p>
+    <button type="button" class="example">Load example note</button>
+    <label>Full SOAP note<textarea class="source" rows="8" autocomplete="off" spellcheck="false"></textarea></label>
+    <label>Expected patient ID<input class="patient" autocomplete="off" spellcheck="false"></label>
+    <label>Expected visit ID<input class="encounter" autocomplete="off" spellcheck="false"></label>
     <button type="button" class="preview">Preview transfer</button>
-    <dl hidden></dl>
-    <button type="button" class="apply" hidden>Apply to draft fields</button>
+    <div class="review" hidden>
+      <h3>Transfer preview</h3>
+      <p class="identity"></p>
+      <dl></dl>
+      <label><input type="checkbox"> I checked the patient, visit, and all four sections.</label>
+      <button type="button" class="apply" disabled>Apply to draft fields</button>
+    </div>
     <p role="status"></p>
   `;
   mount.replaceChildren(panel);
-  panel.querySelector(".identity").textContent = `${note.name} · ${note.patient} · ${note.encounter}`;
+  const source = panel.querySelector(".source");
+  const patient = panel.querySelector(".patient");
+  const encounter = panel.querySelector(".encounter");
+  const exampleButton = panel.querySelector(".example");
+  const review = panel.querySelector(".review");
   const details = panel.querySelector("dl");
   const status = panel.querySelector("[role=status]");
+  const confirm = panel.querySelector("[type=checkbox]");
   const apply = panel.querySelector(".apply");
-  for (const [label, value] of Object.entries(note.sections)) {
-    const term = document.createElement("dt");
-    const description = document.createElement("dd");
-    term.textContent = label;
-    description.textContent = value;
-    details.append(term, description);
-  }
-
   let preview;
+
+  // Scribe emits a full-line label, a newline and the text for each nonempty
+  // section, separated by a blank line. This four-field adapter fails closed on
+  // partial notes or an ambiguous heading; it never supplies clinical text.
+  function parseFullNote(value) {
+    const lines = value.trim().replaceAll("\r\n", "\n").split("\n");
+    const headings = [];
+    lines.forEach((line, index) => {
+      if (sectionNames.includes(line)) headings.push(index);
+    });
+    const complete = headings.length === sectionNames.length &&
+      headings[0] === 0 &&
+      headings.every((line, i) => lines[line] === sectionNames[i] && (i === 0 || !lines[line - 1].trim()));
+    if (!complete) {
+      throw new Error("Paste all four sections in Scribe’s full-note format, with each heading on its own line and a blank line between sections.");
+    }
+    return headings.map((line, i) => {
+      const text = lines.slice(line + 1, headings[i + 1] ?? lines.length).join("\n").trim();
+      if (!text) throw new Error(`${sectionNames[i]} is empty. Only complete reviewed notes can be transferred.`);
+      return text;
+    });
+  }
 
   function clearPreview(message) {
     preview = undefined;
-    details.hidden = true;
-    apply.hidden = true;
+    review.hidden = true;
+    details.replaceChildren();
+    confirm.checked = false;
+    apply.disabled = true;
     status.textContent = message;
   }
 
-  function inspectChart() {
+  function inspectChart(patientId, encounterId) {
     const charts = document.querySelectorAll("form[data-patient][data-encounter]");
     if (location.href !== fixtureUrl || charts.length !== 1) {
       throw new Error("Open one chart in the local fixture and preview again.");
     }
     const chart = charts[0];
-    if (chart.dataset.patient !== note.patient || chart.dataset.encounter !== note.encounter) {
+    if (chart.dataset.patient !== patientId || chart.dataset.encounter !== encounterId) {
       throw new Error("This note belongs to a different patient or visit. Check both identifiers.");
     }
-    const fields = [];
-    for (const section of Object.keys(note.sections)) {
+    return sectionNames.map((section) => {
       const matches = chart.querySelectorAll(`textarea[name="${section}"]`);
       const field = matches[0];
       if (matches.length !== 1 || field.form !== chart || field.matches(":disabled") || field.readOnly) {
@@ -66,31 +92,61 @@
       if (field.value !== "") {
         throw new Error(`${section} already contains text. Transfer stopped to preserve the chart.`);
       }
-      fields.push(field);
-    }
-    return fields;
+      return field;
+    });
+  }
+
+  exampleButton.addEventListener("click", () => {
+    if (source.value) return;
+    source.value = example;
+    exampleButton.disabled = true;
+    clearPreview("Example loaded. Enter its patient and visit identifiers.");
+  });
+  for (const input of [source, patient, encounter]) {
+    input.addEventListener("input", () => {
+      exampleButton.disabled = Boolean(source.value);
+      clearPreview("Preview the current note and identifiers before applying.");
+    });
   }
 
   panel.querySelector(".preview").addEventListener("click", (event) => {
     if (!event.isTrusted) return;
+    clearPreview("");
     try {
-      preview = inspectChart();
-      details.hidden = false;
-      apply.hidden = false;
-      status.textContent = "Check the patient, visit, and four sections before applying.";
+      const patientId = patient.value.trim();
+      const encounterId = encounter.value.trim();
+      if (!patientId || !encounterId) throw new Error("Enter the expected patient and visit identifiers.");
+      const sections = parseFullNote(source.value);
+      const fields = inspectChart(patientId, encounterId);
+      preview = { patientId, encounterId, text: source.value, sections, fields };
+      panel.querySelector(".identity").textContent = `Patient ${patientId} · Visit ${encounterId}`;
+      sections.forEach((value, i) => {
+        const term = document.createElement("dt");
+        const description = document.createElement("dd");
+        term.textContent = sectionNames[i];
+        description.textContent = value;
+        details.append(term, description);
+      });
+      review.hidden = false;
+      status.textContent = "Confirm the preview to apply these sections.";
     } catch (error) {
       clearPreview(error.message);
     }
   });
 
+  confirm.addEventListener("change", () => { apply.disabled = !confirm.checked; });
   apply.addEventListener("click", (event) => {
-    if (!event.isTrusted || !preview) return;
+    if (!event.isTrusted || !confirm.checked || !preview) return;
     try {
-      const fields = inspectChart();
-      if (!fields.every((field, index) => field === preview[index])) {
+      if (source.value !== preview.text || patient.value.trim() !== preview.patientId ||
+          encounter.value.trim() !== preview.encounterId) {
+        throw new Error("The source changed after preview. Preview the transfer again.");
+      }
+      const fields = inspectChart(preview.patientId, preview.encounterId);
+      if (!fields.every((field, index) => field === preview.fields[index])) {
         throw new Error("The chart changed after preview. Preview the transfer again.");
       }
-      for (const field of fields) field.value = note.sections[field.name];
+      fields.forEach((field, i) => { field.value = preview.sections[i]; });
       clearPreview("Four sections applied to the local draft. Review the chart below.");
     } catch (error) {
       clearPreview(error.message);
