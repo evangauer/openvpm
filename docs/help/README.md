@@ -1,8 +1,8 @@
 # OpenVPM Help
 
 Short guides for running your clinic on OpenVPM. Each one takes a minute or
-two. The same walkthroughs live inside the app: open **Settings** and click
-**Guides** to see them with your own data.
+two. For guided walkthroughs inside the app, open **Settings** and click
+**Guides**.
 
 ## Getting started
 
@@ -21,6 +21,8 @@ two. The same walkthroughs live inside the app: open **Settings** and click
 
 ## For your clients
 
+- [Prepare discharge instructions](discharge-instructions.md). Write, review,
+  and share a take-home handout while using OpenVPM or another PIMS.
 - [Give every client a portal](client-portal.md). Pet parents see visits and
   bills without calling you.
 

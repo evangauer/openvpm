@@ -11,9 +11,11 @@ import {
   PawPrint,
   Calendar,
   Receipt,
+  FileText,
   Menu,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DISCHARGE_AUTHOR_ROLES, DISCHARGE_TOOL_PATH } from "@/lib/encounters/discharge-handout";
 import { TrialBadge } from "@/components/layout/trial-badge";
 
 const routeLabels: Record<string, string> = {
@@ -75,6 +77,12 @@ const NEW_ACTIONS: NewAction[] = [
     href: "/billing/new",
     Icon: Receipt,
     roles: ["admin", "front_desk"],
+  },
+  {
+    label: "Discharge instructions",
+    href: DISCHARGE_TOOL_PATH,
+    Icon: FileText,
+    roles: [...DISCHARGE_AUTHOR_ROLES],
   },
 ];
 
@@ -156,6 +164,7 @@ export function TopBar({
               size="sm"
               className="gap-1"
               onClick={() => setNewMenuOpen((v) => !v)}
+              aria-label="New"
               aria-haspopup="menu"
               aria-expanded={newMenuOpen}
             >
