@@ -1,0 +1,19 @@
+:root {
+  color-scheme: light;
+  background: #f4f7f6;
+  color: #1c3330;
+  font: 1rem/1.5 system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+main { max-width: 44rem; margin: 2rem auto; padding: 0 1rem; }
+section { background: white; border: 1px solid #bfcdc6; border-radius: .5rem; padding: 1.25rem; margin: 1rem 0; }
+h1, h2 { line-height: 1.15; margin: 0; }
+h2 { font-size: 1.25rem; }
+label, dt { font-weight: 600; }
+dd { margin: 0 0 .75rem; }
+label { display: block; margin-top: 1rem; }
+textarea, select, button { font: inherit; border-radius: .25rem; }
+textarea, select { display: block; width: 100%; padding: .45rem; border: 1px solid #889993; }
+button { padding: .5rem .9rem; border: 0; background: #145348; color: white; cursor: pointer; }
+button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid #207fbc; outline-offset: 2px; }
+[role="status"]:empty { margin: 0; }
