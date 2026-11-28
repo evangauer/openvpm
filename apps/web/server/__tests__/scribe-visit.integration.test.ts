@@ -105,6 +105,15 @@ integration("Scribe in a visit", () => {
           species: "canine",
         })
         .returning();
+      const [otherPatient] = await db
+        .insert(schema.patients)
+        .values({
+          practiceId: practice!.id,
+          clientId: client!.id,
+          name: "Synthetic sibling",
+          species: "feline",
+        })
+        .returning();
       await db.insert(schema.patientAllergies).values({
         patientId: patient!.id,
         allergen: "Penicillin",
@@ -188,6 +197,7 @@ integration("Scribe in a visit", () => {
       const recordingKey = randomUUID();
       const first = {
         appointmentId: visit!.id,
+        patientId: patient!.id,
         clientKey: randomUUID(),
         recordingKey,
         audio: AUDIO,
@@ -212,6 +222,7 @@ integration("Scribe in a visit", () => {
 
       const transcript = await caller().scribe.visitTranscript({
         appointmentId: visit!.id,
+        patientId: patient!.id,
       });
       expect(transcript.state).toBe("open");
       expect(transcript.segments.map((s) => s.text)).toEqual([
@@ -260,9 +271,37 @@ integration("Scribe in a visit", () => {
         { action: "recorded", entityId: visit!.id, changes: { fromPhone: 0 } },
       ]);
 
+      // --- Another patient's chart cannot reach this visit ----------------
+      const wrongChart = { appointmentId: visit!.id, patientId: otherPatient!.id };
+      await expect(
+        caller().scribe.visitTranscript(wrongChart),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(
+        caller().scribe.transcribeVisitSegment({
+          ...first,
+          patientId: otherPatient!.id,
+          clientKey: randomUUID(),
+        }),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(
+        caller().scribe.draftVisitNote(wrongChart),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(
+        caller().scribe.startPhoneRecording(wrongChart),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(
+        caller().scribe.clearVisitTranscript(wrongChart),
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+      // Nothing was stored, sent or cleared for the wrong chart.
+      expect((await segmentsFor(visit!.id)).map((s) => s.text)).toEqual([
+        "Owner says Bella has not eaten for three days.",
+        "Temperature is 39.1. Starting maropitant.",
+      ]);
+      expect(mocks.transcribeScribeSegment).toHaveBeenCalledTimes(2);
+
       // --- Other people, other clinics, other devices ---------------------
       await expect(
-        caller(outsider!).scribe.visitTranscript({ appointmentId: visit!.id }),
+        caller(outsider!).scribe.visitTranscript({ appointmentId: visit!.id, patientId: patient!.id }),
       ).rejects.toThrow(/not found/i);
       await expect(
         caller(outsider!).scribe.transcribeVisitSegment({
@@ -271,7 +310,7 @@ integration("Scribe in a visit", () => {
         }),
       ).rejects.toThrow();
       await expect(
-        caller(frontDesk!).scribe.visitTranscript({ appointmentId: visit!.id }),
+        caller(frontDesk!).scribe.visitTranscript({ appointmentId: visit!.id, patientId: patient!.id }),
       ).rejects.toThrow();
       // A second device cannot start recording a visit that is being recorded.
       await expect(
@@ -297,7 +336,7 @@ integration("Scribe in a visit", () => {
         assessment: "",
         plan: "Maropitant.",
       });
-      await caller().scribe.draftVisitNote({ appointmentId: visit!.id });
+      await caller().scribe.draftVisitNote({ appointmentId: visit!.id, patientId: patient!.id });
       const draftInput = mocks.draftScribeNote.mock.calls[0]![0];
       expect(draftInput.transcript).toContain("Starting maropitant");
       expect(draftInput.chart.patient.name).toBe("Bella");
@@ -308,6 +347,7 @@ integration("Scribe in a visit", () => {
       // --- The phone link ----------------------------------------------------
       const phone = await caller().scribe.startPhoneRecording({
         appointmentId: visit!.id,
+        patientId: patient!.id,
       });
       const token = phone.url.match(/\/scribe-capture\/([0-9a-f]{64})$/)?.[1];
       expect(token).toBeTruthy();
@@ -317,7 +357,7 @@ integration("Scribe in a visit", () => {
         .where(eq(schema.captureSessions.appointmentId, visit!.id));
       expect(links).toEqual([{ purpose: "scribe" }]);
       expect(
-        (await caller().scribe.visitTranscript({ appointmentId: visit!.id }))
+        (await caller().scribe.visitTranscript({ appointmentId: visit!.id, patientId: patient!.id }))
           .phoneRecording,
       ).toMatchObject({ connected: false });
 
@@ -344,7 +384,7 @@ integration("Scribe in a visit", () => {
       ).toBe(409);
       expect((await phonePost(token!, { action: "finish" }, DEVICE_B)).status).toBe(409);
       expect(
-        (await caller().scribe.visitTranscript({ appointmentId: visit!.id }))
+        (await caller().scribe.visitTranscript({ appointmentId: visit!.id, patientId: patient!.id }))
           .phoneRecording,
       ).toMatchObject({ connected: true });
 
@@ -417,6 +457,7 @@ integration("Scribe in a visit", () => {
       expect(await segmentsFor(visit!.id)).toEqual([]);
       const after = await caller().scribe.visitTranscript({
         appointmentId: visit!.id,
+        patientId: patient!.id,
       });
       expect(after).toMatchObject({ state: "finalized", phoneRecording: null });
       // The visit is still "in exam", but Scribe is done with it.
@@ -427,10 +468,10 @@ integration("Scribe in a visit", () => {
         }),
       ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
       await expect(
-        caller().scribe.startPhoneRecording({ appointmentId: visit!.id }),
+        caller().scribe.startPhoneRecording({ appointmentId: visit!.id, patientId: patient!.id }),
       ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
       await expect(
-        caller().scribe.draftVisitNote({ appointmentId: visit!.id }),
+        caller().scribe.draftVisitNote({ appointmentId: visit!.id, patientId: patient!.id }),
       ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
       expect((await phonePost(token!, { action: "check" })).status).toBe(404);
 
@@ -462,7 +503,7 @@ integration("Scribe in a visit", () => {
       ]);
 
       // --- Turning Scribe off deletes what it held --------------------------
-      await caller().scribe.startPhoneRecording({ appointmentId: longVisit!.id });
+      await caller().scribe.startPhoneRecording({ appointmentId: longVisit!.id, patientId: patient!.id });
       expect(await caller(admin!).scribe.setEnabled({ enabled: false })).toEqual({
         enabled: false,
       });
@@ -479,17 +520,49 @@ integration("Scribe in a visit", () => {
         );
       expect(openLinks).toEqual([]);
       await expect(
-        caller().scribe.visitTranscript({ appointmentId: longVisit!.id }),
+        caller().scribe.visitTranscript({ appointmentId: longVisit!.id, patientId: patient!.id }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
-      // Nothing said in any of this reached the audit trail.
+      // Signing the note is audited by id alone.
+      const signed = await db
+        .select({
+          entityType: schema.auditLog.entityType,
+          changes: schema.auditLog.changes,
+        })
+        .from(schema.auditLog)
+        .where(
+          and(
+            eq(schema.auditLog.practiceId, practice!.id),
+            eq(schema.auditLog.action, "createSoapNote"),
+          ),
+        );
+      expect(signed).toHaveLength(1);
+      expect(signed[0]).toMatchObject({
+        entityType: "records",
+        changes: { patientId: patient!.id, appointmentId: visit!.id },
+      });
+      expect(Object.keys(signed[0]!.changes as object).sort()).toEqual([
+        "appointmentId",
+        "noteId",
+        "patientId",
+      ]);
+
+      // Nothing said or written in any of this reached the audit trail.
       const trail = JSON.stringify(
         await db
           .select({ changes: schema.auditLog.changes })
           .from(schema.auditLog)
           .where(eq(schema.auditLog.practiceId, practice!.id)),
-      );
-      for (const spoken of ["Bella", "maropitant", "Bland", "eaten"]) {
+      ).toLowerCase();
+      for (const spoken of [
+        "bella",
+        "maropitant",
+        "bland",
+        "eaten",
+        "not eating",
+        "gastroenteritis",
+        "t 39.1",
+      ]) {
         expect(trail).not.toContain(spoken);
       }
     } finally {

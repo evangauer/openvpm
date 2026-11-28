@@ -586,8 +586,9 @@ export const protectedProcedure = t.procedure.use(
       }
       throw error;
     });
-    // Chart notes and recovered SOAP drafts write a required, content-free
-    // audit in the same transaction. Keep clinical text out of generic audits.
+    // Chart notes, SOAP drafts and SOAP notes written in the chart, and
+    // recovered offline drafts write a required, content-free audit in the
+    // same transaction. Keep clinical text out of generic audits.
     // Scribe calls carry a visit transcript or recording and write their own
     // content-free entry.
     // Audit other successful mutations after the tenant transaction committed.
@@ -595,7 +596,7 @@ export const protectedProcedure = t.procedure.use(
     if (
       type === "mutation" &&
       result.ok &&
-      !["patientNotes.create", "offline.saveSoapDraft", "offlineField.prepare", "offlineField.sync", "scribe.draftFromTranscript", "scribe.transcribeSegment", "scribe.transcribeVisitSegment", "scribe.draftVisitNote"].includes(path) &&
+      !["patientNotes.create", "offline.saveSoapDraft", "offlineField.prepare", "offlineField.sync", "records.saveSoapDraft", "records.createSoapNote", "scribe.draftFromTranscript", "scribe.transcribeSegment", "scribe.transcribeVisitSegment", "scribe.draftVisitNote"].includes(path) &&
       !path.startsWith("labReports.")
     ) {
       const rawInput = await getRawInput().catch(() => undefined);

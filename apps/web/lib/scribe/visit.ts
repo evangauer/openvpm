@@ -65,8 +65,15 @@ const FINALIZED_MESSAGE =
 export async function requireOpenVisit(
   ctx: ScribeContext,
   appointmentId: string,
+  /** The chart's patient; omitted only where a phone link already binds it. */
+  patientId?: string,
 ): Promise<ScribeVisit> {
-  const visit = await findScribeVisit(ctx.db, ctx.practiceId, appointmentId);
+  const visit = await findScribeVisit(
+    ctx.db,
+    ctx.practiceId,
+    appointmentId,
+    patientId,
+  );
   if (!visit) {
     throw new TRPCError({ code: "NOT_FOUND", message: "Visit not found." });
   }
@@ -190,6 +197,8 @@ export async function transcribeIntoVisit(
   ctx: ScribeContext,
   input: {
     appointmentId: string;
+    /** The chart's patient. Phone parts are bound by their link instead. */
+    patientId?: string;
     clientKey: string;
     /** Names the recording this part belongs to. */
     recordingKey: string;
@@ -200,7 +209,11 @@ export async function transcribeIntoVisit(
     phoneLinkId?: string;
   },
 ): Promise<{ text: string }> {
-  const visit = await requireOpenVisit(ctx, input.appointmentId);
+  const visit = await requireOpenVisit(
+    ctx,
+    input.appointmentId,
+    input.patientId,
+  );
 
   const existing = await findSegmentByClientKey(
     ctx.db,
@@ -311,8 +324,9 @@ export async function transcribeIntoVisit(
 export async function draftVisitNote(
   ctx: ScribeContext,
   appointmentId: string,
+  patientId: string,
 ): Promise<SoapDraft> {
-  const visit = await requireOpenVisit(ctx, appointmentId);
+  const visit = await requireOpenVisit(ctx, appointmentId, patientId);
   // The whole transcript, never a cut: a transcript stops taking new parts
   // once it reaches the limit, so it is at most one part over it.
   const transcript = joinSegments(

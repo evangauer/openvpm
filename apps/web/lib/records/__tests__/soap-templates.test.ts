@@ -5,7 +5,9 @@ import {
   SOAP_TEMPLATE_PROMPT_MARKER,
   applySoapTemplateToSections,
   getSoapTemplateById,
+  hasUnresolvedScribeReviewMarkers,
   hasUnresolvedSoapTemplatePrompts,
+  SCRIBE_REVIEW_MARKERS,
   soapTemplateSectionsFit,
 } from "../soap-templates";
 
@@ -114,5 +116,40 @@ describe("SOAP note templates", () => {
     );
 
     expect(next).toEqual(template!.sections);
+  });
+});
+
+describe("Scribe review markers", () => {
+  it("finds each marker Scribe writes, in any section and any case", () => {
+    for (const marker of SCRIBE_REVIEW_MARKERS) {
+      expect(
+        hasUnresolvedScribeReviewMarkers({
+          subjective: "Vomiting since Tuesday.",
+          plan: `Maropitant 1 mg/kg ${marker.toUpperCase()} SQ once.`,
+        }),
+      ).toBe(true);
+    }
+    expect(
+      hasUnresolvedScribeReviewMarkers({ objective: "Weight [add]" }),
+    ).toBe(true);
+  });
+
+  it("finds markers inside formatted note text", () => {
+    expect(
+      hasUnresolvedScribeReviewMarkers({
+        assessment: "<p>Gastroenteritis</p><ul><li>Dehydration [confirm]</li></ul>",
+      }),
+    ).toBe(true);
+  });
+
+  it("passes a reviewed note, including ordinary brackets", () => {
+    expect(
+      hasUnresolvedScribeReviewMarkers({
+        subjective: "Owner reports vomiting [x3 overnight].",
+        objective: "T 39.1 C [rectal]",
+        assessment: null,
+        plan: "Recheck in 3 days.",
+      }),
+    ).toBe(false);
   });
 });

@@ -282,6 +282,39 @@ test("a stale tab cannot overwrite the winning encrypted draft or submit its sta
   await expectNote(clinic, expected);
 });
 
+test("a Scribe review marker blocks signing until the clinician resolves it", async ({ page, clinic }, info) => {
+  await login(page.context(), clinic);
+  await page.goto(`/records/new-soap/${clinic.patientId}?appointmentId=${clinic.appointmentId}`);
+  // The four editors, in order: Subjective, Objective, Assessment, Plan.
+  const section = page.getByRole("textbox", { name: "SOAP note section", exact: true });
+  await expect(section).toHaveCount(4);
+  await section.nth(0).fill("Synthetic vomiting since yesterday.");
+  await section.nth(3).fill("Synthetic maropitant 1 mg/kg [confirm] SQ once.");
+  const finalize = page.getByRole("button", { name: "Finalize SOAP note", exact: true });
+  await expect(page.getByRole("alert").filter({ hasText: "Scribe marked what it could not confirm" })).toBeVisible();
+  await expect(finalize).toBeDisabled();
+  await expect(page.getByText(/^Draft saved/)).toBeVisible();
+  await page.getByRole("alert").filter({ hasText: "Scribe marked what it could not confirm" }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath("review-marker-notice.png") });
+  await finalize.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath("review-marker-blocks-signing.png") });
+
+  // The server refuses the saved draft too, whatever the page shows.
+  const [draft] = await clinic.sql`select id, revision from soap_notes where appointment_id = ${clinic.appointmentId}`;
+  const refused = await page.request.post("/api/trpc/records.finalizeSoapNote", {
+    data: { json: { patientId: clinic.patientId, appointmentId: clinic.appointmentId, noteId: draft!.id, expectedRevision: draft!.revision } },
+    headers: { origin: baseURL },
+  });
+  expect(refused.status()).toBe(400);
+  expect(await refused.text()).toContain("[confirm]");
+
+  await section.nth(3).fill("Synthetic maropitant 1 mg/kg SQ once.");
+  await expect(finalize).toBeEnabled();
+  await expect(page.getByRole("alert").filter({ hasText: "Scribe marked what it could not confirm" })).toHaveCount(0);
+  const rows = await clinic.sql`select status from soap_notes where appointment_id = ${clinic.appointmentId}`;
+  expect(rows.map((row) => row.status)).toEqual(["draft"]);
+});
+
 test("expired offline authorization locks charts while retaining drafts for renewed online access", async ({ page, clinic, browserName }) => {
   await prepare(page, clinic);
   await edit(page, { subjective: "Synthetic retained expired draft" });

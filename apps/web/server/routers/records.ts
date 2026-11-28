@@ -1689,15 +1689,34 @@ export const recordsRouter = createRouter({
     .mutation(async ({ ctx, input }) => {
       let note;
       try {
-        note = await ctx.db.transaction((tx) =>
-          createFinalizedAppointmentSoapNote(tx as unknown as Database, {
+        note = await ctx.db.transaction(async (tx) => {
+          const created = await createFinalizedAppointmentSoapNote(
+            tx as unknown as Database,
+            {
+              practiceId: ctx.practiceId,
+              patientId: input.patientId,
+              appointmentId: input.appointmentId,
+              actor: { id: ctx.user.id, name: ctx.user.name },
+              sections: input,
+              rejectReviewMarkers: true,
+            },
+          );
+          // Content-free: the note text lives in the record, not the audit.
+          await tx.insert(auditLog).values({
             practiceId: ctx.practiceId,
-            patientId: input.patientId,
-            appointmentId: input.appointmentId,
-            actor: { id: ctx.user.id, name: ctx.user.name },
-            sections: input,
-          }),
-        );
+            userId: ctx.user.id,
+            action: "createSoapNote",
+            entityType: "records",
+            entityId: created.id,
+            changes: {
+              patientId: created.patientId,
+              appointmentId: created.appointmentId,
+              noteId: created.id,
+            },
+            ipAddress: ctx.ip ?? null,
+          });
+          return created;
+        });
       } catch (error) {
         rethrowSoapLifecycleError(error);
       }
@@ -1745,14 +1764,36 @@ export const recordsRouter = createRouter({
     )
     .mutation(async ({ ctx, input }) => {
       try {
-        return await ctx.db.transaction((tx) =>
-          saveAppointmentSoapDraft(tx as unknown as Database, {
+        return await ctx.db.transaction(async (tx) => {
+          const result = await saveAppointmentSoapDraft(
+            tx as unknown as Database,
+            {
+              practiceId: ctx.practiceId,
+              ...input,
+              actor: { id: ctx.user.id, name: ctx.user.name },
+              sections: input,
+            },
+          );
+          const saved = result.outcome === "already_finalized" ? result.note : result.draft;
+          // Content-free: autosave runs every few seconds while a note is
+          // written, so the section text must never reach the audit log.
+          await tx.insert(auditLog).values({
             practiceId: ctx.practiceId,
-            ...input,
-            actor: { id: ctx.user.id, name: ctx.user.name },
-            sections: input,
-          }),
-        );
+            userId: ctx.user.id,
+            action: "saveSoapDraft",
+            entityType: "records",
+            entityId: saved.id,
+            changes: {
+              patientId: input.patientId,
+              appointmentId: input.appointmentId,
+              noteId: saved.id,
+              outcome: result.outcome,
+              revision: saved.revision,
+            },
+            ipAddress: ctx.ip ?? null,
+          });
+          return result;
+        });
       } catch (error) {
         rethrowSoapLifecycleError(error);
       }

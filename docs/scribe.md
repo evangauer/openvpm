@@ -6,9 +6,15 @@ note for the veterinarian to check. It works in two places:
 - **Inside a visit.** Once the exam has started, **Record visit** on the visit
   page opens the visit's SOAP note with Scribe ready. The draft fills that note,
   next to the patient's chart, and the clinician edits and finalizes it as usual.
+  Scribe marks what it could not settle: `[add]` where the visit did not cover
+  something the note records, `[confirm]` beside a drug, dose or value it may
+  have misheard, and `[inaudible]` where the recording was unclear. The note
+  cannot be finalized until every marker is resolved.
 - **On its own.** The **Scribe** tool records or takes pasted text and drafts a
   note to copy into any other record system. Nothing on that page is saved to a
-  chart, so clinics that keep another practice system can still use it.
+  chart, so clinics that keep another practice system can still use it. Resolve
+  every marker first. In the other system, check the patient, visit and note
+  section before pasting: some editors save as soon as text is entered.
 
 Either way, the clinician can record on the computer, on a phone by scanning a
 code, or from an audio file recorded elsewhere.
