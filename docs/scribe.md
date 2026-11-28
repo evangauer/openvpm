@@ -12,7 +12,9 @@ note for the veterinarian to check. It works in two places:
   cannot be finalized until every marker is resolved.
 - **On its own.** The **Scribe** tool records or takes pasted text and drafts a
   note to copy into any other record system. Nothing on that page is saved to a
-  chart, so clinics that keep another practice system can still use it.
+  chart, so clinics that keep another practice system can still use it. Resolve
+  every marker first. In the other system, check the patient, visit and note
+  section before pasting: some editors save as soon as text is entered.
 
 Either way, the clinician can record on the computer, on a phone by scanning a
 code, or from an audio file recorded elsewhere.
