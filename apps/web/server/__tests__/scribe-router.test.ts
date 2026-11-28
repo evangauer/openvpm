@@ -323,6 +323,17 @@ describe("scribe drafting", () => {
     }
   });
 
+  it("keeps SOAP text written in the chart out of the generic mutation audit", () => {
+    const trpc = readFileSync(new URL("../trpc.ts", import.meta.url), "utf8");
+    const skipList = trpc.slice(
+      trpc.indexOf("Audit other successful mutations"),
+      trpc.indexOf("const rawInput = await getRawInput()"),
+    );
+    for (const path of ["records.saveSoapDraft", "records.createSoapNote"]) {
+      expect(skipList).toContain(`"${path}"`);
+    }
+  });
+
   it("still returns the draft when the audit entry cannot be written", async () => {
     const { db, insertValues } = createDb([OPTED_IN]);
     insertValues.mockRejectedValueOnce(new Error("audit unavailable"));

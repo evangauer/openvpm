@@ -87,6 +87,15 @@ const TRANSCRIBE_RATE_LIMIT = 30;
 const DRAFT_RATE_LIMIT = 10;
 
 /** Both gates (deployment switch and the clinic's opt-in), no provider call. */
+/**
+ * A visit as the chart names it. The patient is checked against the visit,
+ * so a recording, draft or phone link can only belong to the chart it was
+ * started from.
+ */
+const visitInput = z
+  .object({ appointmentId: z.string().guid(), patientId: z.string().guid() })
+  .strict();
+
 async function assertScribeOpen(ctx: ScribeContext) {
   if (!scribeRolloutEnabled() || !scribeClinicAllowed(ctx.practiceId)) {
     throw scribeNotAvailable();
@@ -337,13 +346,14 @@ export const scribeRouter = createRouter({
   /** The visit's transcript so far, and whether a phone is recording it. */
   visitTranscript: protectedProcedure
     .use(requireRole("admin", "veterinarian"))
-    .input(z.object({ appointmentId: z.string().guid() }).strict())
+    .input(visitInput)
     .query(async ({ ctx, input }) => {
       await assertScribeOpen(ctx);
       const visit = await findScribeVisit(
         ctx.db,
         ctx.practiceId,
         input.appointmentId,
+        input.patientId,
       );
       if (!visit) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Visit not found." });
@@ -382,6 +392,7 @@ export const scribeRouter = createRouter({
       z
         .object({
           appointmentId: z.string().guid(),
+          patientId: z.string().guid(),
           clientKey: z.string().uuid(),
           recordingKey: z.string().uuid(),
           audio: z.string().min(1).max(SCRIBE_SEGMENT_MAX_BASE64_LENGTH),
@@ -392,6 +403,7 @@ export const scribeRouter = createRouter({
       const { wav, durationSeconds } = readSegmentAudio(input.audio);
       return transcribeIntoVisit(ctx, {
         appointmentId: input.appointmentId,
+        patientId: input.patientId,
         clientKey: input.clientKey,
         recordingKey: input.recordingKey,
         wav,
@@ -404,18 +416,21 @@ export const scribeRouter = createRouter({
   draftVisitNote: protectedProcedure
     .use(requireRole("admin", "veterinarian"))
     .use(requireFeature("agent"))
-    .input(z.object({ appointmentId: z.string().guid() }).strict())
-    .mutation(async ({ ctx, input }) => draftVisitNote(ctx, input.appointmentId)),
+    .input(visitInput)
+    .mutation(async ({ ctx, input }) =>
+      draftVisitNote(ctx, input.appointmentId, input.patientId),
+    ),
 
   /** Throw away the visit's transcript and stop any phone recording. */
   clearVisitTranscript: protectedProcedure
     .use(requireRole("admin", "veterinarian"))
-    .input(z.object({ appointmentId: z.string().guid() }).strict())
+    .input(visitInput)
     .mutation(async ({ ctx, input }) => {
       const visit = await findScribeVisit(
         ctx.db,
         ctx.practiceId,
         input.appointmentId,
+        input.patientId,
       );
       if (!visit) {
         throw new TRPCError({ code: "NOT_FOUND", message: "Visit not found." });
@@ -431,7 +446,7 @@ export const scribeRouter = createRouter({
   startPhoneRecording: protectedProcedure
     .use(requireRole("admin", "veterinarian"))
     .use(requireFeature("agent"))
-    .input(z.object({ appointmentId: z.string().guid() }).strict())
+    .input(visitInput)
     .mutation(async ({ ctx, input }) => {
       await assertScribeOpen(ctx);
       if (!isScribeAudioConfigured()) {
@@ -440,7 +455,11 @@ export const scribeRouter = createRouter({
           message: "Recording needs an AI model that accepts audio.",
         });
       }
-      const visit = await requireOpenVisit(ctx, input.appointmentId);
+      const visit = await requireOpenVisit(
+        ctx,
+        input.appointmentId,
+        input.patientId,
+      );
       await endPhoneLinks(ctx.db, ctx.practiceId, visit.id);
       const token = generateCaptureToken();
       const expiresAt = new Date(Date.now() + SCRIBE_PHONE_LINK_TTL_MS);

@@ -41,10 +41,16 @@ export interface ScribeVisit {
   species: string;
 }
 
+/**
+ * The visit, if it is this clinic's. With `patientId`, also only if the visit
+ * is that patient's: the chart a clinician is recording from names the
+ * patient, so a visit id from another chart is treated as not found.
+ */
 export async function findScribeVisit(
   db: Database,
   practiceId: string,
   appointmentId: string,
+  patientId?: string,
 ): Promise<ScribeVisit | null> {
   const [visit] = await db
     .select({
@@ -72,6 +78,7 @@ export async function findScribeVisit(
     )
     .limit(1);
   if (!visit?.patientId) return null;
+  if (patientId !== undefined && visit.patientId !== patientId) return null;
   return { ...visit, patientId: visit.patientId };
 }
 

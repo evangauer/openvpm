@@ -13,7 +13,11 @@ import {
   hasSoapContent,
   normalizeSoapSection,
 } from "@/lib/records/soap-content";
-import { hasUnresolvedSoapTemplatePrompts } from "@/lib/records/soap-templates";
+import {
+  hasUnresolvedScribeReviewMarkers,
+  hasUnresolvedSoapTemplatePrompts,
+  SCRIBE_REVIEW_MARKER_MESSAGE,
+} from "@/lib/records/soap-templates";
 import { lockOpenVisitForClinicalAppend } from "@/lib/records/visit-integrity";
 import { scribeRolloutEnabled } from "@/lib/scribe/availability";
 import { clearVisitTranscript } from "@/lib/scribe/visit-store";
@@ -438,6 +442,10 @@ export async function finalizeAppointmentSoapDraft(
       "Replace or delete every SOAP template prompt before finalization.",
     );
   }
+  // Drafts are written in the chart, where Scribe can fill them.
+  if (hasUnresolvedScribeReviewMarkers(storedSections)) {
+    throw new SoapLifecycleError("BAD_REQUEST", SCRIBE_REVIEW_MARKER_MESSAGE);
+  }
 
   const [finalized] = await db
     .update(soapNotes)
@@ -591,6 +599,11 @@ export async function createFinalizedAppointmentSoapNote(
     appointmentId: string;
     actor: SoapActor;
     sections: SoapSections;
+    /**
+     * Refuse Scribe's review markers. On for notes written in the chart;
+     * off for the public API, whose callers send finished notes.
+     */
+    rejectReviewMarkers?: boolean;
   },
 ) {
   const sections = normalizeSoapSections(input.sections);
@@ -605,6 +618,9 @@ export async function createFinalizedAppointmentSoapNote(
       "BAD_REQUEST",
       "Replace or delete every SOAP template prompt before finalization.",
     );
+  }
+  if (input.rejectReviewMarkers && hasUnresolvedScribeReviewMarkers(sections)) {
+    throw new SoapLifecycleError("BAD_REQUEST", SCRIBE_REVIEW_MARKER_MESSAGE);
   }
   await assertOpenSoapVisit(db, input);
   const draft = await getAppointmentSoapDraft(db, input);

@@ -179,6 +179,26 @@ export function hasUnresolvedSoapTemplatePrompts(sections: {
   });
 }
 
+/**
+ * Markers Scribe asks the clinician to resolve: "[add]" where the visit did not
+ * cover something a note records, "[confirm]" beside a drug, dose or value it
+ * may have misheard, and "[inaudible]" carried over from the transcript. A
+ * note must not be signed while any remains.
+ */
+export const SCRIBE_REVIEW_MARKERS = ["[add]", "[confirm]", "[inaudible]"] as const;
+
+export function hasUnresolvedScribeReviewMarkers(sections: {
+  [K in keyof SoapSections]?: string | null;
+}): boolean {
+  return Object.values(sections).some((section) => {
+    const text = soapSectionText(section ?? "").toLowerCase();
+    return SCRIBE_REVIEW_MARKERS.some((marker) => text.includes(marker));
+  });
+}
+
+export const SCRIBE_REVIEW_MARKER_MESSAGE =
+  "Resolve every [add], [confirm] and [inaudible] marker before finalizing.";
+
 export function soapTemplateSectionsFit(template: SoapTemplate): boolean {
   return Object.values(template.sections).every(
     (section) => soapSectionText(section).length <= SOAP_SECTION_MAX_LENGTH

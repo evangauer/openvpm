@@ -36,7 +36,9 @@ import {
   SOAP_NOTE_TEMPLATES,
   applySoapTemplateToSections,
   getSoapTemplateById,
+  hasUnresolvedScribeReviewMarkers,
   hasUnresolvedSoapTemplatePrompts,
+  SCRIBE_REVIEW_MARKER_MESSAGE,
 } from "@/lib/records/soap-templates";
 import {
   guardedSoapNavigationDestination,
@@ -160,7 +162,14 @@ export default function NewSoapNotePage() {
     assessment,
     plan,
   });
-  const canSubmit = canSave && !hasTemplatePrompts;
+  // Scribe marks what it could not settle; each must be resolved first.
+  const hasReviewMarkers = hasUnresolvedScribeReviewMarkers({
+    subjective,
+    objective,
+    assessment,
+    plan,
+  });
+  const canSubmit = canSave && !hasTemplatePrompts && !hasReviewMarkers;
   const selectedTemplate = getSoapTemplateById(selectedTemplateId);
 
   const {
@@ -449,6 +458,10 @@ export default function NewSoapNotePage() {
     }
     if (hasTemplatePrompts) {
       toast.error("Replace or delete every draft prompt before finalizing");
+      return;
+    }
+    if (hasReviewMarkers) {
+      toast.error(SCRIBE_REVIEW_MARKER_MESSAGE);
       return;
     }
     const saved = await persistDraft();
@@ -957,6 +970,7 @@ export default function NewSoapNotePage() {
         {scribeUsable && appointmentId && canCreateSoapNote && !finalizedElsewhere ? (
           <VisitScribePanel
             appointmentId={appointmentId}
+            patientId={params.patientId}
             noteHasText={canSave}
             onDraft={applyAiDraft}
             disabled={!isOnline}
@@ -1118,6 +1132,15 @@ export default function NewSoapNotePage() {
             findings verified during this visit, or delete it if it does not
             apply.
           </div>
+        ) : hasReviewMarkers ? (
+          <div
+            role="alert"
+            className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100"
+          >
+            Scribe marked what it could not confirm. Fill in each [add], check
+            each [confirm] against the visit, and replace each [inaudible],
+            then remove the marker.
+          </div>
         ) : null}
 
         <div
@@ -1208,6 +1231,10 @@ export default function NewSoapNotePage() {
           ) : hasTemplatePrompts ? (
             <p className="text-sm text-amber-700 dark:text-amber-300">
               Replace or delete every draft prompt before finalizing.
+            </p>
+          ) : hasReviewMarkers ? (
+            <p className="text-sm text-amber-700 dark:text-amber-300">
+              {SCRIBE_REVIEW_MARKER_MESSAGE}
             </p>
           ) : null}
           <Button

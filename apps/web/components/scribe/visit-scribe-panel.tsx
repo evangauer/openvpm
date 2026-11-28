@@ -102,12 +102,15 @@ function wordCount(text: string) {
  */
 export function VisitScribePanel({
   appointmentId,
+  patientId,
   noteHasText,
   onDraft,
   disabled,
   startOpen,
 }: {
   appointmentId: string;
+  /** The chart's patient; the server checks it owns the visit. */
+  patientId: string;
   /** The editor already holds text that a draft would replace. */
   noteHasText: boolean;
   onDraft: (draft: SoapDraft) => void;
@@ -129,7 +132,7 @@ export function VisitScribePanel({
   noteHasTextRef.current = noteHasText;
 
   const transcriptQuery = trpc.scribe.visitTranscript.useQuery(
-    { appointmentId },
+    { appointmentId, patientId },
     {
       refetchInterval: (query) =>
         query.state.data?.phoneRecording ? PHONE_POLL_MS : false,
@@ -144,8 +147,8 @@ export function VisitScribePanel({
   transcribeRef.current = transcribeVisitSegment.mutateAsync;
 
   const invalidateTranscript = useCallback(
-    () => utils.scribe.visitTranscript.invalidate({ appointmentId }),
-    [appointmentId, utils],
+    () => utils.scribe.visitTranscript.invalidate({ appointmentId, patientId }),
+    [appointmentId, patientId, utils],
   );
 
   const recorder = useScribeRecorder({
@@ -153,12 +156,16 @@ export function VisitScribePanel({
       // The server keeps the transcript and sends its own tail as context.
       async ({ previousTail: _previousTail, ...input }) => {
         try {
-          return await transcribeRef.current({ appointmentId, ...input });
+          return await transcribeRef.current({
+            appointmentId,
+            patientId,
+            ...input,
+          });
         } catch (error) {
           return rethrowForRecorder(error);
         }
       },
-      [appointmentId],
+      [appointmentId, patientId],
     ),
     onText: useCallback(() => {
       void invalidateTranscript();
@@ -246,9 +253,9 @@ export function VisitScribePanel({
       }
       draftStartedEmptyRef.current = !noteHasTextRef.current;
       setHeldDraft(null);
-      draftMutate({ appointmentId });
+      draftMutate({ appointmentId, patientId });
     },
-    [appointmentId, draftMutate, draftPending],
+    [appointmentId, patientId, draftMutate, draftPending],
   );
 
   // After "Stop and write note" here: wait for the last of the transcript,
@@ -397,7 +404,7 @@ export function VisitScribePanel({
         <ConsentNotice
           agreeLabel="Everyone agrees, show the phone code"
           pending={startPhone.isPending}
-          onAgree={() => startPhone.mutate({ appointmentId })}
+          onAgree={() => startPhone.mutate({ appointmentId, patientId })}
           onCancel={() => setMode("idle")}
         />
       ) : phoneLive ? (
@@ -597,7 +604,7 @@ export function VisitScribePanel({
               disabled={capturing || phoneLive || recorder.busy || clearTranscript.isPending}
               onClick={() => {
                 if (window.confirm("Delete this visit's transcript?")) {
-                  clearTranscript.mutate({ appointmentId });
+                  clearTranscript.mutate({ appointmentId, patientId });
                 }
               }}
             >

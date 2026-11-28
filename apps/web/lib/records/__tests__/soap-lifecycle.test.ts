@@ -710,4 +710,56 @@ describe("SOAP lifecycle service", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
     expect(insertValues).not.toHaveBeenCalled();
   });
+
+  it("refuses to finalize a draft that still holds Scribe review markers", async () => {
+    const draft = note({ revision: 2, plan: "Maropitant 1 mg/kg [confirm] SQ" });
+    const { db, updateSet } = lifecycleDb({
+      selectResults: [...visitPrefix(), [draft]],
+    });
+    await expect(
+      finalizeAppointmentSoapDraft(db, {
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        noteId: NOTE_ID,
+        expectedRevision: 2,
+        actor,
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: expect.stringContaining("[confirm]"),
+    });
+    expect(updateSet).not.toHaveBeenCalled();
+  });
+
+  it("refuses Scribe review markers on a direct note only when the caller asks", async () => {
+    const sections = { subjective: "Vomiting", plan: "Recheck weight [add]" };
+    const refused = lifecycleDb({ selectResults: [] });
+    await expect(
+      createFinalizedAppointmentSoapNote(refused.db, {
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        actor,
+        sections,
+        rejectReviewMarkers: true,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(refused.insertValues).not.toHaveBeenCalled();
+
+    // Without the flag (the public API) the marker check does not run; the
+    // call proceeds to the encounter checks.
+    const allowed = lifecycleDb({
+      selectResults: [...visitPrefix(), [], [{ id: "existing-final" }]],
+    });
+    await expect(
+      createFinalizedAppointmentSoapNote(allowed.db, {
+        practiceId: PRACTICE_ID,
+        patientId: PATIENT_ID,
+        appointmentId: APPOINTMENT_ID,
+        actor,
+        sections,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
 });
