@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "OpenVPM reviewed note transfer lab",
+  "version": "0.1.0",
+  "description": "Preview a fictional SOAP note and transfer it into a matching local test chart.",
+  "content_scripts": [{
+    "matches": ["http://127.0.0.1/openvpm-transfer-fixture.html"],
+    "include_globs": ["http://127.0.0.1:41763/openvpm-transfer-fixture.html"],
+    "js": ["transfer.js"],
+    "run_at": "document_idle"
+  }]
+}

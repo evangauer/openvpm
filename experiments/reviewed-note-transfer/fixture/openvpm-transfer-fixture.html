@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; form-action 'none'; base-uri 'none'">
+    <link rel="stylesheet" href="fixture.css">
+    <link rel="icon" href="data:,">
+    <title>OpenVPM · Note transfer lab</title>
+    <script defer src="fixture.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>Note transfer lab</h1>
+      <p>Practice with a fictional note and chart. Reload to discard all edits.</p>
+      <div id="transfer-lab"><p>Load the unpacked extension to preview a note here.</p></div>
+      <section id="destination-chart" aria-labelledby="destination">
+        <h2 id="destination">Destination chart</h2>
+        <label for="visit">Open visit</label>
+        <select id="visit">
+          <option data-patient="DEMO-014" data-encounter="VISIT-07">Juniper · DEMO-014 · VISIT-07</option>
+          <option data-patient="DEMO-028" data-encounter="VISIT-09">Juniper · DEMO-028 · VISIT-09</option>
+          <option data-patient="DEMO-014" data-encounter="VISIT-02">Juniper · DEMO-014 · VISIT-02</option>
+        </select>
+        <label for="save-behavior">Simulated save behavior</label>
+        <select id="save-behavior">
+          <option value="manual-draft">Keep fields as an unsaved draft</option>
+          <option value="autosave">Save edits as you type</option>
+          <option value="unknown">Unknown save behavior</option>
+        </select>
+        <div id="chart"></div>
+        <template>
+          <form autocomplete="off">
+            <label>Subjective<textarea name="Subjective" rows="2"></textarea></label>
+            <label>Objective<textarea name="Objective" rows="2"></textarea></label>
+            <label>Assessment<textarea name="Assessment" rows="2"></textarea></label>
+            <label>Plan<textarea name="Plan" rows="2"></textarea></label>
+          </form>
+        </template>
+      </section>
+    </main>
+  </body>
+</html>
